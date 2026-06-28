@@ -7,6 +7,8 @@ import {
 import yaml from "js-yaml";
 import { api, post } from "./api";
 import { csvFor, exportBackup, restoreBackup } from "./localDb";
+import AdvancedImportView from "./AdvancedImportView";
+import { problemDisplayLabel } from "./importParser";
 import type { Attempt, Bootstrap, Problem, StudyUpdate, Task } from "./types";
 
 type Page = "dashboard"|"today"|"problems"|"attempt"|"import"|"reviews"|"weak"|"past"|"settings";
@@ -64,7 +66,7 @@ export default function App() {
         page==="today"?<TodayView data={data} busy={busy} run={run} go={go}/>:
         page==="problems"?<ProblemsView data={data} select={setSelected} run={run} busy={busy}/>:
         page==="attempt"?<AttemptView problems={data.problems} run={run} busy={busy}/>:
-        page==="import"?<ImportView problems={data.problems} run={run} busy={busy}/>:
+        page==="import"?<AdvancedImportView problems={data.problems} run={run} busy={busy}/>:
         page==="reviews"?<ReviewsView data={data} run={run} busy={busy}/>:
         page==="weak"?<WeakView data={data} run={run} busy={busy}/>:
         page==="past"?<PastView data={data} run={run} busy={busy}/>:
@@ -135,7 +137,7 @@ function ProblemsView({data,select,run,busy}:{data:Bootstrap;select:(p:Problem)=
   return <>
     <div className="toolbar"><div className="segmented">{["all","A","S","past_exam"].map(x=><button className={filter===x?"active":""} onClick={()=>setFilter(x)} key={x}>{x==="all"?"すべて":x==="past_exam"?"過去問":`${x}問題`}</button>)}</div><label className="search"><Search size={17}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="問題ID・テーマで検索"/></label><button className="primary" onClick={()=>setAdding(true)}><Plus size={17}/>問題を追加</button></div>
     <section className="panel flush"><div className="table-wrap"><table><thead><tr><th>問題ID</th><th>区分</th><th>問題名</th><th>テーマ</th><th>優先度</th><th>推奨</th><th>状態</th><th/></tr></thead><tbody>
-      {shown.map(p=><tr key={p.problem_id} className="clickable" onClick={()=>select(p)}><td><strong>{p.problem_id}</strong></td><td><Badge tone={p.category==="S"?"blue":p.category==="A"?"":"orange"}>{p.category==="past_exam"?"過去問":p.category}</Badge></td><td>{p.title}</td><td>{p.theme||"—"}</td><td>{p.priority}</td><td>{modes[p.recommended_mode]}</td><td><Badge tone={p.completion_status==="completed"?"green":""}>{p.completion_status==="completed"?"完了":"進行中"}</Badge></td><td><ChevronRight size={17}/></td></tr>)}
+      {shown.map(p=><tr key={p.problem_id} className="clickable" onClick={()=>select(p)}><td><strong>{p.problem_id}</strong></td><td><Badge tone={p.category==="S"?"blue":p.category==="A"?"":"orange"}>{p.category==="past_exam"?"過去問":p.category}</Badge></td><td>{problemDisplayLabel(p)}</td><td>{p.theme||"—"}</td><td>{p.priority}</td><td>{modes[p.recommended_mode]}</td><td><Badge tone={p.completion_status==="completed"?"green":p.completion_status==="review_pending"?"orange":""}>{p.completion_status==="completed"?"完了":p.completion_status==="review_pending"?"復習待ち":"進行中"}</Badge></td><td><ChevronRight size={17}/></td></tr>)}
     </tbody></table></div></section>
     {adding&&<Modal title="問題マスターに追加" close={()=>setAdding(false)}><form onSubmit={e=>{e.preventDefault();run(()=>post("/api/problems",form),"問題を追加しました");setAdding(false)}} className="form-grid">
       <Field label="問題ID"><input required value={form.problem_id} onChange={e=>setForm({...form,problem_id:e.target.value.toUpperCase()})} placeholder="WB-6-A-05"/></Field>
@@ -155,8 +157,11 @@ function ProblemsView({data,select,run,busy}:{data:Bootstrap;select:(p:Problem)=
 function ProblemDetail({problem,data,onBack,onAttempt}:{problem:Problem;data:Bootstrap;onBack:()=>void;onAttempt:()=>void}) {
   const attempts=data.attempts.filter(a=>a.problem_id===problem.problem_id);
   const reviews=data.reviews.filter(a=>a.problem_id===problem.problem_id);
-  return <><button className="back" onClick={onBack}>← 問題一覧へ</button><div className="detail-hero"><div><div className="detail-badges"><Badge tone={problem.category==="S"?"blue":""}>{problem.category}</Badge><Badge>{problem.priority}</Badge></div><h2>{problem.title}</h2><p>{problem.theme}</p></div><button className="primary" onClick={onAttempt}><Plus size={17}/>この問題を記録</button></div>
-    <div className="detail-grid"><section className="panel"><h3>問題情報</h3><dl><dt>役割</dt><dd>{problem.role}</dd><dt>推奨モード</dt><dd>{modes[problem.recommended_mode]}</dd><dt>関連S問題</dt><dd>{problem.linked_s_problems||"—"}</dd><dt>関連A問題</dt><dd>{problem.linked_a_problems||"—"}</dd><dt>関連過去問</dt><dd>{problem.linked_past_exams||"—"}</dd><dt>メモ</dt><dd>{problem.notes||"—"}</dd></dl></section>
+  const latest=attempts[0],nextReview=reviews.filter(r=>r.status!=="done").sort((a,b)=>a.due_date.localeCompare(b.due_date))[0];
+  const related=problem.related_s_problem_ids?.length?problem.related_s_problem_ids:String(problem.linked_s_problems||"").split(";").filter(Boolean);
+  return <><button className="back" onClick={onBack}>← 問題一覧へ</button><div className="detail-hero"><div><div className="detail-badges"><Badge tone={problem.category==="S"?"blue":""}>{problem.category}</Badge><Badge>{problem.priority}</Badge></div><h2>{problemDisplayLabel(problem)}</h2><p>{problem.problem_id} ・ {problem.theme}</p></div><button className="primary" onClick={onAttempt}><Plus size={17}/>この問題を記録</button></div>
+    {latest&&<section className="panel latest-result"><div><span>最新評価</span><strong>{latest.score_text||latest.score_label} {latest.score_numeric!=null?`/ ${latest.score_numeric}点`:""} / {latest.mark}</strong></div><div><span>K/W/N/C</span><strong>{latest.error_types?.join(" + ")||latest.error_type}</strong></div><div><span>次回復習</span><strong>{nextReview?.due_date||"—"}</strong></div><div><span>本番選択</span><strong>{latest.exam_selection_rank||"—"}</strong></div></section>}
+    <div className="detail-grid"><section className="panel"><h3>問題情報</h3><dl><dt>役割</dt><dd>{problem.role}</dd><dt>難易度</dt><dd>{problem.difficulty!=null?`難${problem.difficulty}`:"—"}</dd><dt>推奨モード</dt><dd>{modes[problem.recommended_mode]}</dd><dt>関連S問題</dt><dd>{related.join(" / ")||"—"}</dd><dt>関連A問題</dt><dd>{problem.linked_a_problems||"—"}</dd><dt>関連過去問</dt><dd>{problem.linked_past_exams||"—"}</dd><dt>次回課題</dt><dd>{latest?.next_action||"—"}</dd><dt>メモ</dt><dd>{problem.notes||"—"}</dd></dl></section>
     <section className="panel"><h3>復習予定</h3>{reviews.length?reviews.map(r=><div className="history" key={r.id}><CalendarCheck/><div><strong>{r.due_date}</strong><span>{reviewNames[r.review_type]}・{r.status}</span></div></div>):<Empty>復習予定はありません</Empty>}</section></div>
     <section className="panel"><div className="panel-title"><h3>解答履歴</h3><span className="muted">{attempts.length}回</span></div>{attempts.length?<div className="table-wrap"><table><thead><tr><th>日付</th><th>モード</th><th>評価</th><th>K/W/N/C</th><th>ミス</th><th>次の行動</th></tr></thead><tbody>{attempts.map(a=><tr key={a.id}><td>{a.date}</td><td>{modes[a.mode]}</td><td>{a.mark} / {a.score_label}</td><td><ErrorBadge value={a.error_type}/></td><td>{a.error_point||"—"}</td><td>{a.next_action||"—"}</td></tr>)}</tbody></table></div>:<Empty>まだ学習記録がありません</Empty>}</section>
   </>
@@ -168,7 +173,7 @@ function AttemptView({problems,run,busy}:{problems:Problem[];run:(a:()=>Promise<
   const days=form.error_type!=="none"?({K:1,W:3,N:2,C:7} as Record<string,number>)[form.error_type]:form.mark==="◎"?30:form.mark==="○"?14:form.mark==="△"?3:1;
   const submit=(e:React.FormEvent)=>{e.preventDefault();run(()=>post("/api/attempts",form),`記録を保存しました。${days}日後に復習を設定しました`);setForm({...blankUpdate(),time_minutes:"",memo:""})};
   return <div className="form-layout"><form className="panel record-form" onSubmit={submit}><div className="panel-title"><div><span className="eyebrow">NEW ATTEMPT</span><h3>学習記録を入力</h3></div></div>
-    <Field label="問題ID" wide><select required value={form.problem_id} onChange={e=>setForm({...form,problem_id:e.target.value})}><option value="">選択してください</option>{problems.map(p=><option value={p.problem_id} key={p.problem_id}>{p.problem_id}｜{p.title}</option>)}</select></Field>
+    <Field label="問題ID" wide><select required value={form.problem_id} onChange={e=>setForm({...form,problem_id:e.target.value})}><option value="">選択してください</option>{problems.map(p=><option value={p.problem_id} key={p.problem_id}>{problemDisplayLabel(p)}｜{p.problem_id}</option>)}</select></Field>
     <div className="fields-row"><Field label="学習日"><input type="date" value={form.date} onChange={e=>setForm({...form,date:e.target.value})}/></Field><Field label="モード"><select value={form.mode} onChange={e=>setForm({...form,mode:e.target.value})}>{Object.entries(modes).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select></Field><Field label="学習時間（分）"><input type="number" value={form.time_minutes} onChange={e=>setForm({...form,time_minutes:e.target.value})}/></Field></div>
     <div className="choice-block"><label>手応え</label><div className="choice-row">{["◎","○","△","×"].map(x=><button type="button" key={x} className={form.mark===x?"selected":""} onClick={()=>setForm({...form,mark:x})}>{x}</button>)}</div></div>
     <div className="fields-row"><Field label="評価"><select value={form.score_label} onChange={e=>setForm({...form,score_label:e.target.value})}>{["S","A","B","C"].map(x=><option key={x}>{x}</option>)}</select></Field><Field label="エラー分類"><select className={`select-error error-${form.error_type.toLowerCase()}`} value={form.error_type} onChange={e=>setForm({...form,error_type:e.target.value})}><option value="none">なし</option><option value="K">K：骨格</option><option value="W">W：作業</option><option value="N">N：ノート</option><option value="C">C：ケアレス</option></select></Field></div>

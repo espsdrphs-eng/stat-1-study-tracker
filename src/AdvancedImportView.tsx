@@ -1,0 +1,123 @@
+import { useState } from "react";
+import { AlertTriangle, BookOpen, CalendarCheck, ClipboardPaste, Database, NotebookPen, Pencil, X } from "lucide-react";
+import { post } from "./api";
+import { applyProblemMaster, parseStudyText, problemDisplayLabel } from "./importParser";
+import type { Problem, StudyUpdate } from "./types";
+
+const modes:Record<string,string>={skeleton:"骨格",main_calc:"主要計算",full:"フル答案",scan:"スキャン",exam_90min:"90分演習"};
+const intervals:Record<string,number>={K:1,N:2,W:3,C:7,none:14};
+const priority=["K","N","W","C"];
+const reviewDate=(update:StudyUpdate)=>{
+  const date=new Date(`${update.date}T12:00:00`);
+  date.setDate(date.getDate()+Number(update.review_after_days||14));
+  return new Intl.DateTimeFormat("sv-SE").format(date);
+};
+
+function Field({label,children,wide=false}:{label:string;children:React.ReactNode;wide?:boolean}){
+  return <label className={`field ${wide?"wide":""}`}><span>{label}</span>{children}</label>;
+}
+function Pill({children,tone=""}:{children:React.ReactNode;tone?:string}){
+  return <span className={`badge ${tone}`}>{children}</span>;
+}
+
+export default function AdvancedImportView({problems,run,busy}:{
+  problems:Problem[];run:(action:()=>Promise<unknown>,success:string)=>void;busy:boolean;
+}){
+  const [text,setText]=useState("");
+  const [updates,setUpdates]=useState<StudyUpdate[]>([]);
+  const [structured,setStructured]=useState(false);
+  const [editing,setEditing]=useState(false);
+  const [error,setError]=useState("");
+
+  const parse=()=>{
+    setError("");
+    try{
+      const result=parseStudyText(text,problems);
+      setStructured(result.structured);
+      setUpdates(result.updates);
+      setEditing(false);
+      if(!result.updates.length) setError("問題を特定できませんでした。問題ID、章、A/S、問番号を確認してください。");
+    }catch(reason){setError(`解析できませんでした: ${(reason as Error).message}`)}
+  };
+  const change=<K extends keyof StudyUpdate>(index:number,key:K,value:StudyUpdate[K])=>
+    setUpdates(rows=>rows.map((row,i)=>i===index?{...row,[key]:value}:row));
+  const selectProblem=(index:number,problemId:string)=>{
+    const problem=problems.find(p=>p.problem_id===problemId);
+    if(problem) setUpdates(rows=>rows.map((row,i)=>i===index?applyProblemMaster(row,problem):row));
+  };
+  const changeErrors=(index:number,value:string)=>{
+    const errors=[...new Set((value.toUpperCase().match(/\b[KWNC]\b/g)||[]))].sort((a,b)=>priority.indexOf(a)-priority.indexOf(b));
+    const primary=errors[0]||"none",secondary=errors[1]||"";
+    const days=intervals[primary]||14;
+    setUpdates(rows=>rows.map((row,i)=>i===index?{...row,error_types:errors,primary_error_type:primary,
+      secondary_error_type:secondary,error_type:primary,review_after_days:days,
+      review_reason:primary==="none"?"ミス分類なしのため14日後":`${primary}が含まれるため${days}日後`}:row));
+  };
+  const remove=(index:number)=>setUpdates(rows=>rows.filter((_,i)=>i!==index));
+  const canSave=updates.length>0&&updates.every(row=>row.master_matched&&row.problem_id);
+
+  return <div className="import-layout advanced-import">
+    <section className="panel">
+      <div className="panel-title"><div><span className="eyebrow">PASTE FROM GPT</span><h3>GPT回答を貼り付け</h3></div><Pill>API不使用</Pill></div>
+      <p className="muted">YAMLがあれば最優先し、なければ通常文章の見出しと本文から抽出します。</p>
+      <textarea className="paste-area" value={text} onChange={event=>setText(event.target.value)}
+        placeholder={"ChatGPTの解答・添削結果を全文貼り付けてください。\n\n問題表記、評価、点数、K/W/N/C、関連S、弱点ノートを抽出します。"}/>
+      <button className="primary wide-btn" onClick={parse}><ClipboardPaste size={17}/>内容を解析する</button>
+      {error&&<p className="field-error">{error}</p>}
+      <div className="parser-note"><strong>認識する表記例</strong><span>第2章A問20 / 第2章 A問題 問20 / WB-2-A-20</span></div>
+    </section>
+
+    <section className="panel preview">
+      <div className="panel-title"><div><span className="eyebrow">CONFIRM BEFORE SAVE</span><h3>取り込み確認</h3></div>
+        {updates.length>0&&<Pill tone={structured?"green":"orange"}>{structured?"YAML":"文章抽出"}・{updates.length}件</Pill>}
+      </div>
+      {!updates.length?<div className="empty"><ClipboardPaste size={30}/><p>解析結果がここに表示されます</p></div>:<>
+        <div className="confirm-toolbar"><p>保存するまで端末内データは更新されません。</p>
+          <button className="ghost small" onClick={()=>setEditing(value=>!value)}><Pencil size={14}/>{editing?"確認表示に戻る":"修正"}</button>
+        </div>
+        <div className="import-cards">{updates.map((update,index)=>{
+          const related=update.related_s_problem_ids||[];
+          const errors=update.error_types||[];
+          return <article className={`import-card detailed ${!update.master_matched?"unmatched":""}`} key={index}>
+            <div className="import-card-head"><div><strong>{update.display_label||update.problem_id||"問題未特定"}</strong><small>{update.problem_id} ・ 信頼度 {Math.round((update.import_confidence||0)*100)}%</small></div>
+              <button onClick={()=>remove(index)} aria-label="候補を削除"><X size={16}/></button></div>
+            {!update.master_matched&&<div className="match-warning"><AlertTriangle size={17}/><div><strong>問題マスターに未照合です</strong><span>保存前に登録済み問題を選択してください。</span></div></div>}
+            <div className="import-fields expanded">
+              <Field label="問題マスター"><select disabled={!editing&&!!update.master_matched} value={update.master_matched?update.problem_id:""} onChange={event=>selectProblem(index,event.target.value)}>
+                <option value="">問題を選択</option>{problems.map(problem=><option value={problem.problem_id} key={problem.problem_id}>{problemDisplayLabel(problem)}｜{problem.problem_id}</option>)}
+              </select></Field>
+              <Field label="モード"><select disabled={!editing} value={update.mode} onChange={event=>change(index,"mode",event.target.value)}>{Object.entries(modes).map(([key,label])=><option value={key} key={key}>{label}</option>)}</select></Field>
+              <Field label="段階評価"><input readOnly={!editing} value={update.score_text||""} onChange={event=>change(index,"score_text",event.target.value)}/></Field>
+              <Field label="点数"><input readOnly={!editing} type="number" value={update.score_numeric??""} onChange={event=>change(index,"score_numeric",event.target.value===""?null:Number(event.target.value))}/></Field>
+              <Field label="mark"><select disabled={!editing} value={update.mark} onChange={event=>change(index,"mark",event.target.value)}>{["◎","○","△","×"].map(mark=><option key={mark}>{mark}</option>)}</select></Field>
+              <Field label="本番選択"><input readOnly={!editing} value={update.exam_selection_rank||""} onChange={event=>change(index,"exam_selection_rank",event.target.value)}/></Field>
+              <Field label="K/W/N/C"><input readOnly={!editing} value={errors.join(" + ")||"none"} onChange={event=>changeErrors(index,event.target.value)} /></Field>
+              <Field label="次回復習"><input readOnly value={`${update.review_after_days}日後（${reviewDate(update)}）`}/></Field>
+            </div>
+
+            <div className="extracted-block"><span>主テーマ</span><div>{(update.themes||[]).map(theme=><Pill key={theme}>{theme}</Pill>)}{!update.themes?.length&&"—"}</div></div>
+            <Field label="ミス内容" wide><textarea readOnly={!editing} value={update.error_point} onChange={event=>change(index,"error_point",event.target.value)}/></Field>
+            <Field label="次回課題" wide><textarea readOnly={!editing} value={update.next_action} onChange={event=>change(index,"next_action",event.target.value)}/></Field>
+
+            <div className="candidate-grid">
+              <div className="candidate-box weak"><div><NotebookPen size={16}/><strong>弱点ノート候補</strong></div>
+                {update.weak_note?<><p>{update.weak_note.mistake}</p><small>{update.weak_note.correction_rule}</small></>:<p>追加候補なし</p>}</div>
+              <div className="candidate-box s-check"><div><BookOpen size={16}/><strong>関連S確認候補</strong></div>
+                <p>{related.length?related.map(id=>{const problem=problems.find(p=>p.problem_id===id);return problem?problemDisplayLabel(problem):id}).join(" / "):"候補なし"}</p>
+                <small>{errors.includes("K")?"10分骨格確認":errors.includes("N")?"5分確認候補":errors.length?"自動追加なし":"—"}</small></div>
+            </div>
+            <div className="import-effects">
+              <span><CalendarCheck/>復習理由 <strong>{update.review_reason}</strong></span>
+              <span><BookOpen/>関連S <strong>{related.join(", ")||"なし"}</strong></span>
+              <span><NotebookPen/>無視する部分 <strong>{update.ignored_parts?.join(", ")||"なし"}</strong></span>
+            </div>
+          </article>;
+        })}</div>
+        <button disabled={busy||!canSave} className="primary wide-btn" onClick={()=>run(()=>post("/api/import",{updates}),`${updates.length}件を保存しました`)}>
+          <Database size={17}/>{updates.length}件を保存する
+        </button>
+        {!canSave&&<p className="save-blocked">問題マスター未照合の候補があるため、まだ保存できません。</p>}
+      </>}
+    </section>
+  </div>;
+}

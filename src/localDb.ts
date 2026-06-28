@@ -7,6 +7,15 @@ type StoredReview = Review;
 type StoredWeakNote = WeakNote;
 type StoredPastSession = PastSession;
 
+const migrationSProblems=[
+  {chapter:2,number:1,theme:"確率分布の基本"},
+  {chapter:2,number:7,theme:"密度と期待値"},
+  {chapter:2,number:10,theme:"平均・分散の存在"},
+  {chapter:2,number:25,theme:"積率母関数"}
+];
+const labelFor=(chapter:number|null,category:string,number:number,difficulty?:number|null)=>
+  chapter==null?`問${number}`:`第${chapter}章${category}問${number}${difficulty!=null?`（難${difficulty}）`:""}`;
+
 class StudyDatabase extends Dexie {
   problems!: EntityTable<Problem,"problem_id">;
   attempts!: EntityTable<StoredAttempt,"id">;
@@ -27,6 +36,43 @@ class StudyDatabase extends Dexie {
       pastSessions:"++id,year,date,session_type,selection_result",
       sMemory:"&problem_id,state,last_touched",
       meta:"&key"
+    });
+    this.version(2).stores({
+      problems:"&problem_id,category,chapter,priority,completion_status,normalized_label",
+      attempts:"++id,problem_id,date,error_type,mark,primary_error_type,[problem_id+date]",
+      reviews:"++id,problem_id,due_date,status,review_type",
+      roadmap:"&order_index,problem_id,is_active",
+      weakNotes:"++id,problem_id,date,error_type,is_resolved,auto_generated",
+      pastSessions:"++id,year,date,session_type,selection_result",
+      sMemory:"&problem_id,state,last_touched",
+      meta:"&key"
+    }).upgrade(async tx=>{
+      await tx.table("problems").toCollection().modify((problem:Problem)=>{
+        const difficulty=problem.problem_id==="WB-2-A-20"?4:(problem.difficulty??null);
+        const display=problem.source_type==="past_exam"
+          ? `${problem.problem_id.match(/PY-(\d{4})/)?.[1]||""}年問${problem.problem_number}`
+          : labelFor(problem.chapter,problem.category,problem.problem_number,difficulty);
+        problem.difficulty=difficulty;
+        problem.display_label=problem.display_label||display;
+        problem.roadmap_label=problem.roadmap_label||display;
+        problem.normalized_label=problem.normalized_label||display.replace(/\s/g,"");
+        problem.related_s_problem_ids=problem.related_s_problem_ids||String(problem.linked_s_problems||"").split(";").filter(Boolean);
+        problem.linked_past_exam_ids=problem.linked_past_exam_ids||String(problem.linked_past_exams||"").split(";").filter(Boolean);
+      });
+      for(const item of migrationSProblems){
+        const problem_id=`WB-${item.chapter}-S-${String(item.number).padStart(2,"0")}`;
+        if(!await tx.table("problems").get(problem_id)){
+          const display=labelFor(item.chapter,"S",item.number,null);
+          await tx.table("problems").add({
+            id:Date.now()+item.number,problem_id,source_type:"whitebook",category:"S",chapter:item.chapter,
+            problem_number:item.number,title:display,theme:item.theme,priority:"repair",role:"foundation",
+            recommended_mode:"skeleton",linked_past_exams:"",linked_s_problems:"",linked_a_problems:"",
+            notes:"",completion_status:"active",display_label:display,difficulty:null,roadmap_label:display,
+            normalized_label:display,related_s_problem_ids:[],linked_past_exam_ids:[]
+          });
+          await tx.table("sMemory").put({problem_id,state:"stable",k_trigger_count:0});
+        }
+      }
     });
   }
 }
@@ -53,6 +99,7 @@ const blocks:[number,number,string][] = [
   [25,30,"第7章A：検定"],[31,33,"第8章A：区間推定"]
 ];
 const sSeed:[number,number,string][] = [
+  [2,1,"確率分布の基本"],[2,7,"密度と期待値"],[2,10,"平均・分散の存在"],[2,25,"積率母関数"],
   [6,4,"AIC・自由度"],[6,21,"回帰・推定"],[6,22,"回帰・分散分解"],
   [4,7,"変数変換・ヤコビアン"],[5,13,"順序統計量"],[5,17,"最大値・最小値"],
   [7,9,"exact検定"],[7,10,"尤度比検定"]
@@ -82,17 +129,25 @@ const list=(value="")=>String(value).split(/[;,、\s]+/).map(x=>x.trim()).filter
 
 async function initialize() {
   if(await db.meta.get("seeded")) return;
+  if(await db.problems.count()){
+    await db.meta.put({key:"seeded",value:"1"});
+    return;
+  }
   await db.transaction("rw",db.problems,db.roadmap,db.sMemory,db.meta,async()=>{
     const problems:Problem[]=roadmapSeed.map(([chapter,number,theme,mode],i)=>{
       const problem_id=`WB-${chapter}-A-${String(number).padStart(2,"0")}`;
-      return {id:i+1,problem_id,source_type:"whitebook",category:"A",chapter,problem_number:number,title:`第${chapter}章 A${number}`,theme,priority:i<15?"core":"semi_core",role:"training",recommended_mode:mode,linked_past_exams:"",linked_s_problems:sLinks[problem_id]||"",linked_a_problems:"",notes:"",completion_status:"active"};
+      const difficulty=problem_id==="WB-2-A-20"?4:null;
+      const display=labelFor(chapter,"A",number,difficulty);
+      const related=(sLinks[problem_id]||"").split(";").filter(Boolean);
+      return {id:i+1,problem_id,source_type:"whitebook",category:"A",chapter,problem_number:number,title:display,theme,priority:i<15?"core":"semi_core",role:"training",recommended_mode:mode,linked_past_exams:"",linked_s_problems:sLinks[problem_id]||"",linked_a_problems:"",notes:"",completion_status:"active",display_label:display,difficulty,roadmap_label:display,normalized_label:display.replace(/\s/g,""),related_s_problem_ids:related,linked_past_exam_ids:[]};
     });
     let id=problems.length+1;
     for(const [chapter,number,theme] of sSeed){
       const problem_id=`WB-${chapter}-S-${String(number).padStart(2,"0")}`;
-      problems.push({id:id++,problem_id,source_type:"whitebook",category:"S",chapter,problem_number:number,title:`第${chapter}章 S${number}`,theme,priority:"repair",role:"foundation",recommended_mode:"skeleton",linked_past_exams:"",linked_s_problems:"",linked_a_problems:"",notes:"",completion_status:"active"});
+      const display=labelFor(chapter,"S",number,null);
+      problems.push({id:id++,problem_id,source_type:"whitebook",category:"S",chapter,problem_number:number,title:display,theme,priority:"repair",role:"foundation",recommended_mode:"skeleton",linked_past_exams:"",linked_s_problems:"",linked_a_problems:"",notes:"",completion_status:"active",display_label:display,difficulty:null,roadmap_label:display,normalized_label:display.replace(/\s/g,""),related_s_problem_ids:[],linked_past_exam_ids:[]});
     }
-    problems.push({id:id++,problem_id:"PY-2025-Q1",source_type:"past_exam",category:"past_exam",chapter:null,problem_number:1,title:"2025年 問1",theme:"AIC・区分的密度・MLE",priority:"core",role:"exam",recommended_mode:"scan",linked_past_exams:"",linked_s_problems:"WB-6-S-04",linked_a_problems:"WB-6-A-05",notes:"",completion_status:"active"});
+    problems.push({id:id++,problem_id:"PY-2025-Q1",source_type:"past_exam",category:"past_exam",chapter:null,problem_number:1,title:"2025年問1",theme:"AIC・区分的密度・MLE",priority:"core",role:"exam",recommended_mode:"scan",linked_past_exams:"",linked_s_problems:"WB-6-S-04",linked_a_problems:"WB-6-A-05",notes:"",completion_status:"active",display_label:"2025年問1",difficulty:null,roadmap_label:"2025年問1",normalized_label:"2025年問1",related_s_problem_ids:["WB-6-S-04"],linked_past_exam_ids:[]});
     await db.problems.bulkAdd(problems);
     await db.sMemory.bulkAdd(sSeed.map(([chapter,number])=>({problem_id:`WB-${chapter}-S-${String(number).padStart(2,"0")}`,state:"stable",k_trigger_count:0})));
     await db.roadmap.bulkAdd(roadmapSeed.map(([chapter,number,,mode],i)=>({id:i+1,order_index:i+1,problem_id:`WB-${chapter}-A-${String(number).padStart(2,"0")}`,block_name:blocks.find(([from,to])=>i+1>=from&&i+1<=to)![2],expected_mode:mode,load_score:loadFor(mode),is_active:1})));
@@ -102,10 +157,15 @@ async function initialize() {
 
 function reviewDays(input:StudyUpdate) {
   if(input.review_after_days!==undefined&&input.review_after_days!=="") return Number(input.review_after_days);
-  if(input.error_type!=="none") return ({K:1,W:3,N:2,C:7} as Record<string,number>)[input.error_type]??1;
+  const errors=input.error_types?.length?input.error_types:[input.primary_error_type||input.error_type];
+  const intervals=errors.filter(x=>x&&x!=="none").map(x=>({K:1,N:2,W:3,C:7} as Record<string,number>)[x]).filter(Boolean);
+  if(intervals.length) return Math.min(...intervals);
   return input.mark==="◎"?30:input.mark==="○"?14:input.mark==="△"?3:1;
 }
-function reviewType(input:StudyUpdate){return input.error_type==="K"?"skeleton_retry":input.error_type==="W"?"main_calc_retry":input.mode==="full"?"full_retry":"skeleton_retry"}
+function reviewType(input:StudyUpdate){
+  const primary=input.primary_error_type||input.error_type;
+  return primary==="K"?"skeleton_retry":primary==="W"?"main_calc_retry":input.mode==="full"?"full_retry":"skeleton_retry";
+}
 
 async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
   const problem=await db.problems.get(input.problem_id);
@@ -114,25 +174,44 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
   const id=Number(await db.attempts.add({
     id:undefined as unknown as number,problem_id:input.problem_id,date,mode:input.mode||problem.recommended_mode,
     time_minutes:Number(input.time_minutes||0),mark:input.mark||"△",score_label:input.score_label||"B",
-    error_type:input.error_type||"none",error_point:input.error_point||"",next_action:input.next_action||"",memo:String(input.memo||"")
+    error_type:input.primary_error_type||input.error_type||"none",error_point:input.error_point||"",next_action:input.next_action||"",memo:String(input.memo||""),
+    score_text:input.score_text||"",score_numeric:input.score_numeric??null,score_max:input.score_max??null,
+    result_summary:input.result_summary||"",exam_selection_rank:input.exam_selection_rank||"",
+    error_types:input.error_types||[input.error_type||"none"],primary_error_type:input.primary_error_type||input.error_type||"none",
+    secondary_error_type:input.secondary_error_type||"",ignored_parts:input.ignored_parts||[],
+    auto_imported:!!input.auto_imported,import_confidence:input.import_confidence??(input.auto_imported?.8:1)
   }));
   const attempts=(await db.attempts.where("problem_id").equals(input.problem_id).sortBy("date")).filter(x=>x.id!==id);
   const previous=attempts.at(-1);
   if(input.mark==="◎"&&previous?.mark==="◎") await db.problems.update(input.problem_id,{completion_status:"completed"});
-  else await db.reviews.add({id:undefined as unknown as number,problem_id:input.problem_id,due_date:addDays(date,reviewDays(input)),review_type:reviewType(input),status:"pending",generated_from_attempt_id:id});
-  if(input.error_type!=="none"&&input.error_point) await db.weakNotes.add({
-    id:undefined as unknown as number,date,problem_id:input.problem_id,error_type:input.error_type,
-    theme:input.theme||problem.theme,mistake:input.error_point,correction_rule:input.correction_rule||input.next_action||"",is_resolved:0
+  else await db.reviews.add({id:undefined as unknown as number,problem_id:input.problem_id,due_date:addDays(date,reviewDays(input)),review_type:reviewType(input),status:"pending",generated_from_attempt_id:id,reason:input.review_reason});
+  const primary=input.primary_error_type||input.error_type||"none";
+  const weak=input.weak_note;
+  if(primary!=="none"&&(weak?.mistake||input.error_point)) await db.weakNotes.add({
+    id:undefined as unknown as number,date,problem_id:input.problem_id,error_type:weak?.error_type||primary,
+    theme:weak?.theme||input.theme||problem.theme,mistake:weak?.mistake||input.error_point,
+    correction_rule:weak?.correction_rule||input.correction_rule||input.next_action||"",is_resolved:0,
+    source_text:input.source_text||"",auto_generated:!!input.auto_imported
   });
-  if(input.error_type==="K"){
-    const related=[...new Set([...list(input.linked_s_problem),...list(problem.linked_s_problems)])];
+  const errors=input.error_types?.length?input.error_types:[primary];
+  const related=[...new Set([...(input.related_s_problem_ids||input.linked_s_problems||[]),...list(input.linked_s_problem),...list(problem.linked_s_problems)])];
+  if(related.length){
+    await db.problems.update(input.problem_id,{
+      linked_s_problems:related.join(";"),related_s_problem_ids:related,
+      completion_status:primary==="none"?problem.completion_status:"review_pending"
+    });
+  }else if(primary!=="none") await db.problems.update(input.problem_id,{completion_status:"review_pending"});
+  if(errors.includes("K")||errors.includes("N")){
+    const duration=errors.includes("K")?10:5;
+    const reason=errors.includes("K")?"Kが含まれるため関連Sを10分骨格確認":"Nが含まれるため関連Sを5分確認候補";
     for(const sid of related){
       if(!await db.problems.get(sid)) continue;
-      await db.reviews.add({id:undefined as unknown as number,problem_id:sid,due_date:date,review_type:"s_check",status:"pending",generated_from_attempt_id:id});
+      const duplicate=await db.reviews.where("problem_id").equals(sid).filter(r=>r.status==="pending"&&r.review_type==="s_check"&&r.generated_from_attempt_id===id).count();
+      if(!duplicate) await db.reviews.add({id:undefined as unknown as number,problem_id:sid,due_date:date,review_type:"s_check",status:"pending",generated_from_attempt_id:id,duration_minutes:duration,reason});
       const memory=await db.sMemory.get(sid);
       await db.sMemory.put({problem_id:sid,state:"check",last_touched:memory?.last_touched,k_trigger_count:(memory?.k_trigger_count||0)+1});
     }
-    if(problem.chapter!=null){
+    if(errors.includes("K")&&problem.chapter!=null){
       const allAttempts=await db.attempts.toArray();
       const pmap=new Map((await db.problems.toArray()).map(p=>[p.problem_id,p]));
       const chapterK=allAttempts.filter(a=>a.error_type==="K"&&pmap.get(a.problem_id)?.chapter===problem.chapter).length;
@@ -197,22 +276,22 @@ async function bootstrap():Promise<Bootstrap>{
   };
   const dueReviews=reviews.filter(r=>r.status!=="done"&&r.due_date<=today).map(r=>{
     const p=pmap.get(r.problem_id)!;const source=attempts.find(a=>a.id===r.generated_from_attempt_id);
-    return {...r,title:p?.title||r.problem_id,theme:p?.theme||"",error_type:source?.error_type,kind:r.review_type==="s_check"?"S確認":"復習",reason:r.status==="overdue"?`期限切れ（${r.due_date}）`:"本日が復習日",mode:r.review_type==="s_check"?"skeleton":r.review_type.replace("_retry",""),minutes:r.review_type==="s_check"?5:20,load:r.review_type==="s_check"?.2:loadFor(r.review_type.replace("_retry",""))};
+    return {...r,title:p?.display_label||p?.title||r.problem_id,theme:p?.theme||"",error_type:source?.error_type,kind:r.review_type==="s_check"?"S確認":"復習",reason:r.status==="overdue"?`期限切れ（${r.due_date}）`:(r.reason||"本日が復習日"),mode:r.review_type==="s_check"?"skeleton":r.review_type.replace("_retry",""),minutes:r.review_type==="s_check"?(r.duration_minutes||5):20,load:r.review_type==="s_check"?(r.duration_minutes===10?.4:.2):loadFor(r.review_type.replace("_retry",""))};
   }).sort((a,b)=>(a.status==="overdue"&&a.error_type==="K"?0:1)-(b.status==="overdue"&&b.error_type==="K"?0:1));
   const activeS=new Set(dueReviews.filter(r=>r.review_type==="s_check").map(r=>r.problem_id));
   const staleS=sMemory.filter(s=>!activeS.has(s.problem_id)&&(s.state==="forgotten"||s.state==="collapsed"||!!s.last_touched&&s.last_touched<=addDays(today,-30))).map(s=>{
-    const p=pmap.get(s.problem_id)!;return {problem_id:s.problem_id,title:p.title,theme:p.theme,kind:"S点検",reason:s.state==="forgotten"||s.state==="collapsed"?"忘却状態から復旧":"30日以上未確認",mode:s.state==="collapsed"?"full":"skeleton",minutes:s.state==="collapsed"?20:3,load:s.state==="collapsed"?.4:.2};
+    const p=pmap.get(s.problem_id)!;return {problem_id:s.problem_id,title:p.display_label||p.title,theme:p.theme,kind:"S点検",reason:s.state==="forgotten"||s.state==="collapsed"?"忘却状態から復旧":"30日以上未確認",mode:s.state==="collapsed"?"full":"skeleton",minutes:s.state==="collapsed"?20:3,load:s.state==="collapsed"?.4:.2};
   });
   let load=[...dueReviews,...staleS].reduce((sum,x)=>sum+x.load,0);
   const seen=new Set(attempts.map(a=>a.problem_id)),pastDue=!pastSessions.some(s=>String(s.date)>=week),reserve=pastDue?.6:0;
   const newTasks=[];
   for(const r of roadmap.filter(r=>r.is_active&&!seen.has(r.problem_id))){
     if(newTasks.length>=3||load+r.load_score+reserve>4) break;
-    newTasks.push({...r,title:pmap.get(r.problem_id)!.title,theme:pmap.get(r.problem_id)!.theme,kind:"新規A",reason:`ロードマップ ${r.order_index}番`,mode:r.expected_mode,minutes:r.expected_mode==="full"?35:20,load:r.load_score});load+=r.load_score;
+    newTasks.push({...r,title:pmap.get(r.problem_id)!.display_label||pmap.get(r.problem_id)!.title,theme:pmap.get(r.problem_id)!.theme,kind:"新規A",reason:`ロードマップ ${r.order_index}番`,mode:r.expected_mode,minutes:r.expected_mode==="full"?35:20,load:r.load_score});load+=r.load_score;
   }
   const pastTasks=pastDue&&load+.6<=4?[{problem_id:"PAST-SCAN",title:"5問から3問を選ぶ",kind:"過去問",reason:"今週の選題練習",mode:"scan",minutes:15,load:.6}]:[];
   const weak=weakNotes.filter(w=>!w.is_resolved).at(-1);
-  const weakTask=weak?[{...weak,title:pmap.get(weak.problem_id)?.title||weak.problem_id,kind:"弱点ノート",reason:"未解決ミスの確認",mode:"scan",minutes:5,load:.1}]:[];
+  const weakTask=weak?[{...weak,title:pmap.get(weak.problem_id)?.display_label||pmap.get(weak.problem_id)?.title||weak.problem_id,kind:"弱点ノート",reason:"未解決ミスの確認",mode:"scan",minutes:5,load:.1}]:[];
   const tasks=[...dueReviews,...staleS,...newTasks,...pastTasks,...weakTask];
   const totalLoad=Math.round(tasks.reduce((sum,x)=>sum+x.load,0)*10)/10;
   return {problems:problems.sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.category.localeCompare(b.category)||a.problem_number-b.problem_number),attempts,reviews,roadmap,weakNotes,pastSessions,dashboard,today:{tasks,totalLoad,warning:totalLoad>4?"今日は負荷が4.0を超えています。1問を骨格モードに落とすか、翌日に回してください。":""}} as Bootstrap;
@@ -230,7 +309,11 @@ export async function localGet<T>(path:string):Promise<T>{
 export async function localPost<T>(path:string,body:any):Promise<T>{
   await initialize();
   if(path==="/api/problems"){
-    await db.problems.add({...body,id:Date.now(),chapter:body.chapter?Number(body.chapter):null,problem_number:Number(body.problem_number),completion_status:"active"});
+    const chapter=body.chapter?Number(body.chapter):null,number=Number(body.problem_number),difficulty=body.difficulty?Number(body.difficulty):null;
+    const display=body.source_type==="past_exam"?body.title:labelFor(chapter,body.category,number,difficulty);
+    await db.problems.add({...body,id:Date.now(),chapter,problem_number:number,difficulty,completion_status:"active",
+      display_label:display,roadmap_label:display,normalized_label:display.replace(/\s/g,""),
+      related_s_problem_ids:list(body.linked_s_problems),linked_past_exam_ids:list(body.linked_past_exams)});
     if(body.category==="S") await db.sMemory.put({problem_id:body.problem_id,state:"stable",k_trigger_count:0});
   } else if(path==="/api/attempts") {
     await db.transaction("rw",db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,()=>saveAttempt(body));
