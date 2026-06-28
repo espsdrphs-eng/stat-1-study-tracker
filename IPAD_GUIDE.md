@@ -1,9 +1,11 @@
 # iPad版 運用ガイド
 
+公開URL: https://espsdrphs-eng.github.io/stat-1-study-tracker/
+
 ## 1. 初回インストール
 
 1. iPadをインターネットへ接続します。
-2. Safariで公開URLを開きます。
+2. Safariで `https://espsdrphs-eng.github.io/stat-1-study-tracker/` を開きます。
 3. Safari上部の共有ボタン（四角から上向き矢印）を押します。
 4. メニューを下へ動かし、「ホーム画面に追加」を押します。
 5. 名前が「統計一級」になっていることを確認し、「追加」を押します。

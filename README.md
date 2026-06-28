@@ -2,6 +2,8 @@
 
 iPad単体で使えるオフライン対応PWAです。学習記録はiPad内のIndexedDBに保存され、外部APIや常時稼働PCは使いません。
 
+公開URL: https://espsdrphs-eng.github.io/stat-1-study-tracker/
+
 ## iPadで使う
 
 1. 公開URLをiPadのSafariで開く
