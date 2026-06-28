@@ -9,11 +9,12 @@ export const todayString=()=>new Intl.DateTimeFormat("sv-SE",{
 }).format(new Date());
 
 export function canonicalProblemId(value:string){
-  const white=value.match(/WB-(\d+)-([AS])-(\d+)/i);
+  const cleaned=value.replace(/[“”"'`]/g,"").replace(/[‐‑‒–—―ー]/g,"-");
+  const white=cleaned.match(/WB-(\d+)-([AS])-(\d+)/i);
   if(white) return `WB-${Number(white[1])}-${white[2].toUpperCase()}-${String(Number(white[3])).padStart(2,"0")}`;
-  const past=value.match(/PY-(\d{4})-Q(\d+)/i);
+  const past=cleaned.match(/PY-(\d{4})-Q(\d+)/i);
   if(past) return `PY-${past[1]}-Q${Number(past[2])}`;
-  return value.trim().toUpperCase();
+  return cleaned.trim().toUpperCase();
 }
 
 export function problemDisplayLabel(problem:Problem){
@@ -198,21 +199,31 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
 function extractStructured(text:string){
   const marker=text.search(/(?:^|\n)study_updates?:\s*(?:\n|$)/m);
   if(marker<0) return null;
-  const source=text.slice(marker).trim().replace(/[“”]/g,'"').replace(/[‘’]/g,"'");
+  const source=text.slice(marker).trim().replace(/[“”]/g,'"').replace(/[‘’]/g,"'")
+    .replace(/^\s*```(?:yaml|yml)?\s*$/gim,"").replace(/\t/g,"  ").trim();
   const lines=source.split(/\r?\n/);
   const firstContent=lines.slice(1).find(line=>line.trim());
+  const forced=[lines[0],...lines.slice(1).map(line=>line.trim()?`  ${line.trimStart()}`:line)].join("\n");
   const repaired=firstContent&&!/^\s/.test(firstContent)
     ? [lines[0],...lines.slice(1).map(line=>line.trim()?`  ${line}`:line)].join("\n")
     : source;
-  return yaml.load(repaired,{schema:yaml.JSON_SCHEMA});
+  try{return yaml.load(repaired,{schema:yaml.JSON_SCHEMA})}
+  catch(error){
+    if(forced!==repaired) return yaml.load(forced,{schema:yaml.JSON_SCHEMA});
+    throw error;
+  }
 }
 
 export function parseStudyText(text:string,problems:Problem[]){
   const structured=extractStructured(text);
   if(structured&&typeof structured==="object"){
     const obj=structured as Record<string,unknown>;
-    const rows=Array.isArray(obj.study_updates)?obj.study_updates:obj.study_update?[obj.study_update]:[];
-    return {structured:true,updates:rows.filter(x=>x&&typeof x==="object").map(x=>normalizeUpdate(x as Record<string,unknown>,text,problems))};
+    let rows:unknown[]=Array.isArray(obj.study_updates)?obj.study_updates:obj.study_update?[obj.study_update]:[];
+    // GPTやコピー元がインデントを落とすと study_update が null になり、
+    // 各フィールドがトップレベルへ展開される。そこも1件として受け入れる。
+    if(!rows.length&&obj.problem_id) rows=[obj];
+    const updates=rows.filter(x=>x&&typeof x==="object").map(x=>normalizeUpdate(x as Record<string,unknown>,text,problems));
+    if(updates.length) return {structured:true,updates};
   }
   const candidate=deriveCandidate(text);
   if(!candidate) return {structured:false,updates:[] as StudyUpdate[]};

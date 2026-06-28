@@ -73,3 +73,25 @@ test("imports smart-quoted, unindented study_update output", () => {
   assert.equal(update.weak_notes?.length, 5);
   assert.equal(update.weak_notes?.[0].correction_rule, "f(k)=P(X=k) を最初に明記する。");
 });
+
+test("accepts fenced YAML, lowercase category, and Unicode dashes", () => {
+  const text = `\`\`\`yaml
+study_update:
+problem_id: “WB–2–s–06”
+display_label: “第2章S問6”
+date: “2026-06-29”
+mode: “詳細版”
+mark: “△”
+score_numeric: 72
+error_types:
+- “W”
+- “N”
+review_after_days: 2
+\`\`\``;
+  const result = parseStudyText(text, problems);
+  assert.equal(result.updates.length, 1);
+  assert.equal(result.updates[0].problem_id, "WB-2-S-06");
+  assert.equal(result.updates[0].master_matched, true);
+  assert.equal(result.updates[0].mode, "full");
+  assert.deepEqual(result.updates[0].error_types, ["W", "N"]);
+});
