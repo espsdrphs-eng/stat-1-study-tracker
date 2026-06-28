@@ -52,6 +52,7 @@ export type StudyUpdate = {
   result_summary?:string; exam_selection_rank?:string; error_types?:string[];
   primary_error_type?:string; secondary_error_type?:string; review_reason?:string;
   weak_note?:{theme:string;error_type:string;mistake:string;correction_rule:string};
+  weak_notes?:Array<{theme:string;error_type:string;mistake:string;correction_rule:string}>;
   source_text?:string; auto_imported?:boolean; import_confidence?:number;
   master_matched?:boolean; status?:string;
 };

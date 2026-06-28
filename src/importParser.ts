@@ -48,7 +48,17 @@ function normalizeErrors(values:unknown){
   const found=Array.isArray(values)
     ? values.flatMap(x=>String(x).toUpperCase().match(/\b[KWNC]\b/g)||[])
     : String(values||"").toUpperCase().match(/\b[KWNC]\b/g)||[];
-  return [...new Set(found)].sort((a,b)=>errorPriority.indexOf(a)-errorPriority.indexOf(b));
+  return [...new Set(found)];
+}
+function normalizeMode(value:unknown,text:string){
+  const raw=scalar(value).trim();
+  if(["skeleton","main_calc","full","scan","exam_90min"].includes(raw)) return raw;
+  if(/90分|3問答案/.test(raw)) return "exam_90min";
+  if(/5問スキャン|選題|スキャン/.test(raw)) return "scan";
+  if(/主要計算|途中式/.test(raw)) return "main_calc";
+  if(/骨格/.test(raw)) return "skeleton";
+  if(/詳細|総合|フル|答案/.test(raw)) return "full";
+  return inferMode(text);
 }
 function inferMode(text:string){
   if(/90\s*分|3\s*問答案/.test(text)) return "exam_90min";
@@ -143,19 +153,29 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
   const scoreMax=raw.score_max!=null?Number(raw.score_max):scoreMatch?Number(scoreMatch[2]):scoreNumeric!=null?100:null;
   const diagnostic=extractLine(text,/該当/);
   const errors=normalizeErrors(raw.error_types??raw.primary_error_type??raw.error_type??diagnostic);
-  const primary=scalar(raw.primary_error_type)||errors[0]||"none";
-  const secondary=scalar(raw.secondary_error_type)||errors[1]||"";
-  const days=raw.review_after_days!=null?Number(raw.review_after_days):(errorIntervals[primary]??14);
+  const shortestError=[...errors].sort((a,b)=>errorPriority.indexOf(a)-errorPriority.indexOf(b))[0]||"none";
+  const primary=scalar(raw.primary_error_type)||shortestError;
+  const secondary=scalar(raw.secondary_error_type)||errors.find(error=>error!==primary)||"";
+  const days=raw.review_after_days!=null?Number(raw.review_after_days):(errorIntervals[shortestError]??14);
   const mark=scalar(raw.mark)||markFromScore(scoreNumeric);
   const resultSummary=scalar(raw.result_summary)||extractLine(text,/最終結論/);
   const examRank=scalar(raw.exam_selection_rank)||extractLine(text,/本番で選ぶべきか/).match(/[SABC]/i)?.[0]?.toUpperCase()||"";
-  const mode=scalar(raw.mode)||inferMode(text);
+  const mode=normalizeMode(raw.mode,text);
   const inferredPoint=/平均/.test(text)&&/MGF|積率母関数/.test(text)?"平均非存在とMGF非存在の示し方が答案として粗い":text.match(/最大のズレ\s*[：:]\s*([^\n]+)/)?.[1]?.trim()||"";
   const errorPoint=scalar(raw.error_point)||inferredPoint;
   const nextAction=scalar(raw.next_action)||(/E\[\|X\|\]/.test(text)?"E[|X|]の発散計算を再演習し、平均の存在条件をノート化する。":"抽出内容を確認し、誤りの根拠を再演習する。");
   const weak=raw.weak_note&&typeof raw.weak_note==="object"
     ? raw.weak_note as StudyUpdate["weak_note"]
     : weakNoteFromText(text,candidate,primary,themes);
+  const weakNotes=Array.isArray(raw.weak_notes)?raw.weak_notes.map(item=>{
+    if(item&&typeof item==="object"){
+      const note=item as Record<string,unknown>;
+      return {theme:scalar(note.theme)||themes.slice(0,2).join("・"),error_type:scalar(note.error_type)||primary,
+        mistake:scalar(note.mistake)||scalar(note.correction_rule),correction_rule:scalar(note.correction_rule)||scalar(note.mistake)};
+    }
+    const rule=scalar(item);
+    return {theme:themes.slice(0,2).join("・")||master?.theme||"",error_type:primary,mistake:rule,correction_rule:rule};
+  }).filter(note=>note.mistake):weak?[weak]:[];
   const display=master?problemDisplayLabel({...master,difficulty}):candidate.startsWith("PY-")
     ? `${candidate.match(/PY-(\d{4})/)?.[1]}年問${problemNumber}`
     : chapter&&category?`第${chapter}章${category}問${problemNumber}${difficulty!=null?`（難${difficulty}）`:""}`:candidate;
@@ -169,8 +189,8 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
     linked_past_exams:stringArray(raw.linked_past_exams),ignored_parts:ignored,score_text:scoreText,
     score_numeric:scoreNumeric,score_max:scoreMax,result_summary:resultSummary,exam_selection_rank:examRank,
     error_types:errors,primary_error_type:primary,secondary_error_type:secondary,
-    review_after_days:days,review_reason:primary==="none"?"ミス分類なしのため14日後":`${primary}が含まれるため${days}日後`,
-    weak_note:weak,correction_rule:weak?.correction_rule,source_text:text,auto_imported:true,
+    review_after_days:days,review_reason:shortestError==="none"?"ミス分類なしのため14日後":`${shortestError}が含まれるため${days}日後`,
+    weak_note:weakNotes[0],weak_notes:weakNotes,correction_rule:weakNotes[0]?.correction_rule,source_text:text,auto_imported:true,
     import_confidence:Math.round(confidence*100)/100,master_matched:!!master,status:"review_required"
   };
 }
@@ -178,7 +198,13 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
 function extractStructured(text:string){
   const marker=text.search(/(?:^|\n)study_updates?:\s*(?:\n|$)/m);
   if(marker<0) return null;
-  return yaml.load(text.slice(marker).trim(),{schema:yaml.JSON_SCHEMA});
+  const source=text.slice(marker).trim().replace(/[“”]/g,'"').replace(/[‘’]/g,"'");
+  const lines=source.split(/\r?\n/);
+  const firstContent=lines.slice(1).find(line=>line.trim());
+  const repaired=firstContent&&!/^\s/.test(firstContent)
+    ? [lines[0],...lines.slice(1).map(line=>line.trim()?`  ${line}`:line)].join("\n")
+    : source;
+  return yaml.load(repaired,{schema:yaml.JSON_SCHEMA});
 }
 
 export function parseStudyText(text:string,problems:Problem[]){

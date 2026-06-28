@@ -7,7 +7,8 @@
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
     "start": "vite preview --host 0.0.0.0 --port 4174",
-    "check": "tsc -b"
+    "check": "tsc -b",
+    "test": "node --experimental-strip-types --test tests/*.test.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.5.2",

@@ -9,6 +9,7 @@ type StoredPastSession = PastSession;
 
 const migrationSProblems=[
   {chapter:2,number:1,theme:"確率分布の基本"},
+  {chapter:2,number:6,theme:"非負整数値確率変数の期待値"},
   {chapter:2,number:7,theme:"密度と期待値"},
   {chapter:2,number:10,theme:"平均・分散の存在"},
   {chapter:2,number:25,theme:"積率母関数"}
@@ -74,6 +75,30 @@ class StudyDatabase extends Dexie {
         }
       }
     });
+    this.version(3).stores({
+      problems:"&problem_id,category,chapter,priority,completion_status,normalized_label",
+      attempts:"++id,problem_id,date,error_type,mark,primary_error_type,[problem_id+date]",
+      reviews:"++id,problem_id,due_date,status,review_type",
+      roadmap:"&order_index,problem_id,is_active",
+      weakNotes:"++id,problem_id,date,error_type,is_resolved,auto_generated",
+      pastSessions:"++id,year,date,session_type,selection_result",
+      sMemory:"&problem_id,state,last_touched",
+      meta:"&key"
+    }).upgrade(async tx=>{
+      const item=migrationSProblems.find(problem=>problem.number===6)!;
+      const problem_id="WB-2-S-06";
+      if(!await tx.table("problems").get(problem_id)){
+        const display=labelFor(item.chapter,"S",item.number,null);
+        await tx.table("problems").add({
+          id:Date.now()+item.number,problem_id,source_type:"whitebook",category:"S",chapter:item.chapter,
+          problem_number:item.number,title:display,theme:item.theme,priority:"repair",role:"foundation",
+          recommended_mode:"skeleton",linked_past_exams:"",linked_s_problems:"",linked_a_problems:"",
+          notes:"",completion_status:"active",display_label:display,difficulty:null,roadmap_label:display,
+          normalized_label:display,related_s_problem_ids:[],linked_past_exam_ids:[]
+        });
+        await tx.table("sMemory").put({problem_id,state:"stable",k_trigger_count:0});
+      }
+    });
   }
 }
 
@@ -99,7 +124,7 @@ const blocks:[number,number,string][] = [
   [25,30,"第7章A：検定"],[31,33,"第8章A：区間推定"]
 ];
 const sSeed:[number,number,string][] = [
-  [2,1,"確率分布の基本"],[2,7,"密度と期待値"],[2,10,"平均・分散の存在"],[2,25,"積率母関数"],
+  [2,1,"確率分布の基本"],[2,6,"非負整数値確率変数の期待値"],[2,7,"密度と期待値"],[2,10,"平均・分散の存在"],[2,25,"積率母関数"],
   [6,4,"AIC・自由度"],[6,21,"回帰・推定"],[6,22,"回帰・分散分解"],
   [4,7,"変数変換・ヤコビアン"],[5,13,"順序統計量"],[5,17,"最大値・最小値"],
   [7,9,"exact検定"],[7,10,"尤度比検定"]
@@ -186,11 +211,12 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
   if(input.mark==="◎"&&previous?.mark==="◎") await db.problems.update(input.problem_id,{completion_status:"completed"});
   else await db.reviews.add({id:undefined as unknown as number,problem_id:input.problem_id,due_date:addDays(date,reviewDays(input)),review_type:reviewType(input),status:"pending",generated_from_attempt_id:id,reason:input.review_reason});
   const primary=input.primary_error_type||input.error_type||"none";
-  const weak=input.weak_note;
-  if(primary!=="none"&&(weak?.mistake||input.error_point)) await db.weakNotes.add({
-    id:undefined as unknown as number,date,problem_id:input.problem_id,error_type:weak?.error_type||primary,
-    theme:weak?.theme||input.theme||problem.theme,mistake:weak?.mistake||input.error_point,
-    correction_rule:weak?.correction_rule||input.correction_rule||input.next_action||"",is_resolved:0,
+  const weakCandidates=input.weak_notes?.length?input.weak_notes:input.weak_note?[input.weak_note]:
+    primary!=="none"&&input.error_point?[{theme:input.theme||problem.theme,error_type:primary,mistake:input.error_point,correction_rule:input.correction_rule||input.next_action||""}]:[];
+  for(const weak of weakCandidates) await db.weakNotes.add({
+    id:undefined as unknown as number,date,problem_id:input.problem_id,error_type:weak.error_type||primary,
+    theme:weak.theme||input.theme||problem.theme,mistake:weak.mistake,
+    correction_rule:weak.correction_rule||input.correction_rule||input.next_action||"",is_resolved:0,
     source_text:input.source_text||"",auto_generated:!!input.auto_imported
   });
   const errors=input.error_types?.length?input.error_types:[primary];

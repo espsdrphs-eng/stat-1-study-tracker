@@ -101,7 +101,8 @@ export default function AdvancedImportView({problems,run,busy}:{
 
             <div className="candidate-grid">
               <div className="candidate-box weak"><div><NotebookPen size={16}/><strong>弱点ノート候補</strong></div>
-                {update.weak_note?<><p>{update.weak_note.mistake}</p><small>{update.weak_note.correction_rule}</small></>:<p>追加候補なし</p>}</div>
+                {update.weak_notes?.length?<ul className="weak-candidate-list">{update.weak_notes.map((note,n)=><li key={n}>{note.correction_rule||note.mistake}</li>)}</ul>
+                  :update.weak_note?<><p>{update.weak_note.mistake}</p><small>{update.weak_note.correction_rule}</small></>:<p>追加候補なし</p>}</div>
               <div className="candidate-box s-check"><div><BookOpen size={16}/><strong>関連S確認候補</strong></div>
                 <p>{related.length?related.map(id=>{const problem=problems.find(p=>p.problem_id===id);return problem?problemDisplayLabel(problem):id}).join(" / "):"候補なし"}</p>
                 <small>{errors.includes("K")?"10分骨格確認":errors.includes("N")?"5分確認候補":errors.length?"自動追加なし":"—"}</small></div>
