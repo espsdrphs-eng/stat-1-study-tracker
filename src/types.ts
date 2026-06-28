@@ -17,6 +17,9 @@ export type Attempt = {
 export type Review = {
   id:number; problem_id:string; due_date:string; review_type:string; status:string; generated_from_attempt_id:number;
   duration_minutes?:number; reason?:string;
+  review_reason?:string; review_method?:string; review_instruction?:string; review_steps?:string[];
+  estimated_minutes?:number; requires_full_answer?:boolean; requires_s_check?:boolean;
+  linked_s_problem_ids?:string[]; interval_days?:number; generated_from_past_session_id?:number;
 };
 export type WeakNote = {
   id:number; date:string; problem_id:string; error_type:string; theme:string; mistake:string;
@@ -29,6 +32,9 @@ export type PastSession = Record<string, string|number> & { id:number; year:numb
 export type Task = {
   id?:number; problem_id:string; title:string; kind:string; reason:string; mode:string;
   minutes:number; load:number; status?:string; error_type?:string;
+  due_date?:string; review_reason?:string; review_method?:string; review_instruction?:string;
+  review_steps?:string[]; estimated_minutes?:number; requires_full_answer?:boolean;
+  requires_s_check?:boolean; linked_s_problem_ids?:string[];
 };
 export type WeaknessInsight = {
   theme:string; score:number; level:"重点"|"注意"|"観察"; confidence:"参考"|"暫定"|"分析可能";

@@ -2,14 +2,15 @@ import { useState } from "react";
 import { AlertTriangle, BookOpen, CalendarCheck, ClipboardPaste, Database, NotebookPen, Pencil, X } from "lucide-react";
 import { post } from "./api";
 import { applyProblemMaster, parseStudyText, problemDisplayLabel } from "./importParser";
+import { createAttemptReviewPlan } from "./reviewRules";
 import type { Problem, StudyUpdate } from "./types";
 
 const modes:Record<string,string>={skeleton:"骨格",main_calc:"主要計算",full:"フル答案",scan:"スキャン",exam_90min:"90分演習"};
 const intervals:Record<string,number>={K:1,N:2,W:3,C:7,none:14};
 const priority=["K","N","W","C"];
-const reviewDate=(update:StudyUpdate)=>{
+const reviewDate=(update:StudyUpdate,days:number)=>{
   const date=new Date(`${update.date}T12:00:00`);
-  date.setDate(date.getDate()+Number(update.review_after_days||14));
+  date.setDate(date.getDate()+days);
   return new Intl.DateTimeFormat("sv-SE").format(date);
 };
 
@@ -78,6 +79,7 @@ export default function AdvancedImportView({problems,run,busy}:{
         <div className="import-cards">{updates.map((update,index)=>{
           const related=update.related_s_problem_ids||[];
           const errors=update.error_types||[];
+          const reviewPlan=createAttemptReviewPlan(update,related);
           return <article className={`import-card detailed ${!update.master_matched?"unmatched":""}`} key={index}>
             <div className="import-card-head"><div><strong>{update.display_label||update.problem_id||"問題未特定"}</strong><small>{update.problem_id} ・ 信頼度 {Math.round((update.import_confidence||0)*100)}%</small></div>
               <button onClick={()=>remove(index)} aria-label="候補を削除"><X size={16}/></button></div>
@@ -92,7 +94,7 @@ export default function AdvancedImportView({problems,run,busy}:{
               <Field label="mark"><select disabled={!editing} value={update.mark} onChange={event=>change(index,"mark",event.target.value)}>{["◎","○","△","×"].map(mark=><option key={mark}>{mark}</option>)}</select></Field>
               <Field label="本番選択"><input readOnly={!editing} value={update.exam_selection_rank||""} onChange={event=>change(index,"exam_selection_rank",event.target.value)}/></Field>
               <Field label="K/W/N/C"><input readOnly={!editing} value={errors.join(" + ")||"none"} onChange={event=>changeErrors(index,event.target.value)} /></Field>
-              <Field label="次回復習"><input readOnly value={`${update.review_after_days}日後（${reviewDate(update)}）`}/></Field>
+              <Field label="次回復習"><input readOnly value={`${reviewPlan.interval_days}日後（${reviewDate(update,reviewPlan.interval_days||14)}）`}/></Field>
             </div>
 
             <div className="extracted-block"><span>主テーマ</span><div>{(update.themes||[]).map(theme=><Pill key={theme}>{theme}</Pill>)}{!update.themes?.length&&"—"}</div></div>
@@ -108,8 +110,9 @@ export default function AdvancedImportView({problems,run,busy}:{
                 <small>{errors.includes("K")?"10分骨格確認":errors.includes("N")?"5分確認候補":errors.length?"自動追加なし":"—"}</small></div>
             </div>
             <div className="import-effects">
-              <span><CalendarCheck/>復習理由 <strong>{update.review_reason}</strong></span>
-              <span><BookOpen/>関連S <strong>{related.join(", ")||"なし"}</strong></span>
+              <span><CalendarCheck/>復習理由 <strong>{reviewPlan.review_reason}</strong></span>
+              <span><CalendarCheck/>復習方法 <strong>{reviewPlan.review_method}・{reviewPlan.estimated_minutes}分</strong></span>
+              <span><BookOpen/>関連S <strong>{reviewPlan.requires_s_check?related.join(", "):"確認不要"}</strong></span>
               <span><NotebookPen/>無視する部分 <strong>{update.ignored_parts?.join(", ")||"なし"}</strong></span>
               {update.math_localized&&<span><Pencil size={14}/>数式表記 <strong>日本語化済み</strong></span>}
             </div>

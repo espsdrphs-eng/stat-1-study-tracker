@@ -2,6 +2,7 @@ import Dexie, { type EntityTable } from "dexie";
 import type { Attempt, Bootstrap, PastSession, Problem, Review, Roadmap, StudyUpdate, WeakNote } from "./types";
 import { japaneseizeMathText } from "./mathJapanese.ts";
 import { analyzeWeaknesses } from "./weaknessAnalytics.ts";
+import { createAttemptReviewPlan, createPastReviewPlan, createSReviewPlan, type ReviewPlan, type SState } from "./reviewRules.ts";
 
 type SMemory = { problem_id:string; state:"stable"|"check"|"forgotten"|"collapsed"; last_touched?:string; k_trigger_count:number };
 type StoredAttempt = Attempt;
@@ -101,6 +102,16 @@ class StudyDatabase extends Dexie {
         await tx.table("sMemory").put({problem_id,state:"stable",k_trigger_count:0});
       }
     });
+    this.version(4).stores({
+      problems:"&problem_id,category,chapter,priority,completion_status,normalized_label",
+      attempts:"++id,problem_id,date,error_type,mark,primary_error_type,[problem_id+date]",
+      reviews:"++id,problem_id,due_date,status,review_type",
+      roadmap:"&order_index,problem_id,is_active",
+      weakNotes:"++id,problem_id,date,error_type,is_resolved,auto_generated",
+      pastSessions:"++id,year,date,session_type,selection_result",
+      sMemory:"&problem_id,state,last_touched",
+      meta:"&key"
+    });
   }
 }
 
@@ -182,17 +193,11 @@ async function initialize() {
   });
 }
 
-function reviewDays(input:StudyUpdate) {
-  if(input.review_after_days!==undefined&&input.review_after_days!=="") return Number(input.review_after_days);
-  const errors=input.error_types?.length?input.error_types:[input.primary_error_type||input.error_type];
-  const intervals=errors.filter(x=>x&&x!=="none").map(x=>({K:1,N:2,W:3,C:7} as Record<string,number>)[x]).filter(Boolean);
-  if(intervals.length) return Math.min(...intervals);
-  return input.mark==="◎"?30:input.mark==="○"?14:input.mark==="△"?3:1;
-}
-function reviewType(input:StudyUpdate){
-  const primary=input.primary_error_type||input.error_type;
-  return primary==="K"?"skeleton_retry":primary==="W"?"main_calc_retry":input.mode==="full"?"full_retry":"skeleton_retry";
-}
+const planFields=(plan:ReviewPlan)=>({
+  review_reason:plan.review_reason,review_method:plan.review_method,review_instruction:plan.review_instruction,
+  review_steps:plan.review_steps,estimated_minutes:plan.estimated_minutes,requires_full_answer:plan.requires_full_answer,
+  requires_s_check:plan.requires_s_check,linked_s_problem_ids:plan.linked_s_problem_ids,interval_days:plan.interval_days
+});
 
 async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
   const problem=await db.problems.get(input.problem_id);
@@ -200,21 +205,31 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
   const date=input.date||todayString();
   const localizedErrorPoint=japaneseizeMathText(input.error_point||"");
   const localizedNextAction=japaneseizeMathText(input.next_action||"");
+  const primary=input.primary_error_type||input.error_type||"none";
+  const errors=input.error_types?.length?input.error_types:[primary];
+  const related=[...new Set([...(input.related_s_problem_ids||input.linked_s_problems||[]),...list(input.linked_s_problem),...list(problem.linked_s_problems)])];
   const id=Number(await db.attempts.add({
     id:undefined as unknown as number,problem_id:input.problem_id,date,mode:input.mode||problem.recommended_mode,
     time_minutes:Number(input.time_minutes||0),mark:input.mark||"△",score_label:input.score_label||"B",
-    error_type:input.primary_error_type||input.error_type||"none",error_point:localizedErrorPoint,next_action:localizedNextAction,memo:String(input.memo||""),
+    error_type:primary,error_point:localizedErrorPoint,next_action:localizedNextAction,memo:String(input.memo||""),
     score_text:input.score_text||"",score_numeric:input.score_numeric??null,score_max:input.score_max??null,
     result_summary:japaneseizeMathText(input.result_summary||""),exam_selection_rank:input.exam_selection_rank||"",
-    error_types:input.error_types||[input.error_type||"none"],primary_error_type:input.primary_error_type||input.error_type||"none",
+    error_types:errors,primary_error_type:primary,
     secondary_error_type:input.secondary_error_type||"",ignored_parts:input.ignored_parts||[],
     auto_imported:!!input.auto_imported,import_confidence:input.import_confidence??(input.auto_imported?.8:1)
   }));
   const attempts=(await db.attempts.where("problem_id").equals(input.problem_id).sortBy("date")).filter(x=>x.id!==id);
   const previous=attempts.at(-1);
-  if(input.mark==="◎"&&previous?.mark==="◎") await db.problems.update(input.problem_id,{completion_status:"completed"});
-  else await db.reviews.add({id:undefined as unknown as number,problem_id:input.problem_id,due_date:addDays(date,reviewDays(input)),review_type:reviewType(input),status:"pending",generated_from_attempt_id:id,reason:input.review_reason});
-  const primary=input.primary_error_type||input.error_type||"none";
+  let consecutivePerfect=0;
+  for(const attempt of [...attempts].reverse()){if(attempt.mark==="◎") consecutivePerfect++;else break}
+  const sState:SState=input.mark==="◎"||input.mark==="○"?"stable":input.mark==="×"?"forgotten":"check";
+  const plan=problem.category==="S"?createSReviewPlan(sState):createAttemptReviewPlan(input,related,consecutivePerfect);
+  await db.reviews.add({
+    id:undefined as unknown as number,problem_id:input.problem_id,due_date:addDays(date,plan.interval_days||14),
+    review_type:plan.review_type,status:"pending",generated_from_attempt_id:id,duration_minutes:plan.estimated_minutes,
+    reason:plan.review_reason,...planFields(plan)
+  });
+  if(plan.completion_candidate) await db.problems.update(input.problem_id,{completion_status:"completion_candidate"});
   const weakCandidates=input.weak_notes?.length?input.weak_notes:input.weak_note?[input.weak_note]:
     primary!=="none"&&localizedErrorPoint?[{theme:input.theme||problem.theme,error_type:primary,mistake:localizedErrorPoint,correction_rule:japaneseizeMathText(input.correction_rule||localizedNextAction)}]:[];
   for(const weak of weakCandidates) await db.weakNotes.add({
@@ -223,23 +238,25 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
     correction_rule:japaneseizeMathText(weak.correction_rule||input.correction_rule||localizedNextAction),is_resolved:0,
     source_text:input.source_text||"",auto_generated:!!input.auto_imported
   });
-  const errors=input.error_types?.length?input.error_types:[primary];
-  const related=[...new Set([...(input.related_s_problem_ids||input.linked_s_problems||[]),...list(input.linked_s_problem),...list(problem.linked_s_problems)])];
   if(related.length){
     await db.problems.update(input.problem_id,{
-      linked_s_problems:related.join(";"),related_s_problem_ids:related,
-      completion_status:primary==="none"?problem.completion_status:"review_pending"
+      linked_s_problems:related.join(";"),related_s_problem_ids:related
     });
-  }else if(primary!=="none") await db.problems.update(input.problem_id,{completion_status:"review_pending"});
+  }
+  if(primary!=="none") await db.problems.update(input.problem_id,{completion_status:"review_pending"});
   if(errors.includes("K")||errors.includes("N")){
-    const duration=errors.includes("K")?10:5;
-    const reason=errors.includes("K")?"Kが含まれるため関連Sを10分骨格確認":"Nが含まれるため関連Sを5分確認候補";
+    const linkedState:SState=errors.includes("K")?"collapsed":"check";
+    const sPlan=createSReviewPlan(linkedState);
     for(const sid of related){
       if(!await db.problems.get(sid)) continue;
       const duplicate=await db.reviews.where("problem_id").equals(sid).filter(r=>r.status==="pending"&&r.review_type==="s_check"&&r.generated_from_attempt_id===id).count();
-      if(!duplicate) await db.reviews.add({id:undefined as unknown as number,problem_id:sid,due_date:date,review_type:"s_check",status:"pending",generated_from_attempt_id:id,duration_minutes:duration,reason});
+      if(!duplicate) await db.reviews.add({
+        id:undefined as unknown as number,problem_id:sid,due_date:addDays(date,sPlan.interval_days||1),
+        review_type:"s_check",status:"pending",generated_from_attempt_id:id,duration_minutes:sPlan.estimated_minutes,
+        reason:sPlan.review_reason,...planFields(sPlan)
+      });
       const memory=await db.sMemory.get(sid);
-      await db.sMemory.put({problem_id:sid,state:"check",last_touched:memory?.last_touched,k_trigger_count:(memory?.k_trigger_count||0)+1});
+      await db.sMemory.put({problem_id:sid,state:linkedState,last_touched:memory?.last_touched,k_trigger_count:(memory?.k_trigger_count||0)+1});
     }
     if(errors.includes("K")&&problem.chapter!=null){
       const allAttempts=await db.attempts.toArray();
@@ -247,17 +264,21 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
       const chapterK=allAttempts.filter(a=>a.error_type==="K"&&pmap.get(a.problem_id)?.chapter===problem.chapter).length;
       if(chapterK>=2){
         const chapterS=(await db.problems.where("category").equals("S").toArray()).filter(p=>p.chapter===problem.chapter);
+        const collapsedPlan=createSReviewPlan("collapsed");
         for(const s of chapterS){
           const pending=await db.reviews.where("problem_id").equals(s.problem_id).filter(r=>r.review_type==="s_check"&&r.status==="pending").count();
-          if(!pending) await db.reviews.add({id:undefined as unknown as number,problem_id:s.problem_id,due_date:date,review_type:"s_check",status:"pending",generated_from_attempt_id:id});
+          if(!pending) await db.reviews.add({
+            id:undefined as unknown as number,problem_id:s.problem_id,due_date:addDays(date,1),
+            review_type:"s_check",status:"pending",generated_from_attempt_id:id,duration_minutes:collapsedPlan.estimated_minutes,
+            reason:collapsedPlan.review_reason,...planFields(collapsedPlan)
+          });
         }
       }
     }
   }
   if(problem.category==="S"){
-    const state=input.mark==="◎"||input.mark==="○"?"stable":input.mark==="×"?"forgotten":"check";
     const old=await db.sMemory.get(input.problem_id);
-    await db.sMemory.put({problem_id:input.problem_id,state,last_touched:date,k_trigger_count:old?.k_trigger_count||0});
+    await db.sMemory.put({problem_id:input.problem_id,state:sState,last_touched:date,k_trigger_count:old?.k_trigger_count||0});
   }
   return id;
 }
@@ -274,8 +295,20 @@ async function bootstrap():Promise<Bootstrap>{
     db.weakNotes.orderBy("id").reverse().toArray(),db.pastSessions.orderBy("id").reverse().toArray(),db.sMemory.toArray()
   ]);
   const today=todayString(),week=addDays(today,-6),fortnight=addDays(today,-13);
-  const reviews=rawReviews.map(r=>({...r,status:r.status!=="done"&&r.due_date<today?"overdue":r.status}));
   const pmap=new Map(problems.map(p=>[p.problem_id,p]));
+  const smap=new Map(sMemory.map(memory=>[memory.problem_id,memory]));
+  const attemptMap=new Map(attempts.map(attempt=>[attempt.id,attempt]));
+  const reviews=rawReviews.map(review=>{
+    const status=review.status!=="done"&&review.due_date<today?"overdue":review.status;
+    if(review.review_method) return {...review,status};
+    const problem=pmap.get(review.problem_id);
+    const source=attemptMap.get(review.generated_from_attempt_id);
+    const linked=problem?[...(problem.related_s_problem_ids||[]),...list(problem.linked_s_problems)]:[];
+    const legacyPlan=review.review_type==="s_check"
+      ?createSReviewPlan((smap.get(review.problem_id)?.state||"check") as SState)
+      :source?createAttemptReviewPlan(source,linked,0):null;
+    return legacyPlan?{...review,status,duration_minutes:legacyPlan.estimated_minutes,reason:legacyPlan.review_reason,...planFields(legacyPlan)}:{...review,status};
+  });
   const a14=new Set(attempts.filter(a=>a.date>=fortnight&&pmap.get(a.problem_id)?.category==="A").map(a=>a.problem_id)).size;
   const skeleton=attempts.filter(a=>a.date>=fortnight&&a.mode==="skeleton");
   const skeletonGood=skeleton.filter(a=>["◎","○"].includes(a.mark)).length;
@@ -309,11 +342,11 @@ async function bootstrap():Promise<Bootstrap>{
   };
   const dueReviews=reviews.filter(r=>r.status!=="done"&&r.due_date<=today).map(r=>{
     const p=pmap.get(r.problem_id)!;const source=attempts.find(a=>a.id===r.generated_from_attempt_id);
-    return {...r,title:p?.display_label||p?.title||r.problem_id,theme:p?.theme||"",error_type:source?.error_type,kind:r.review_type==="s_check"?"S確認":"復習",reason:r.status==="overdue"?`期限切れ（${r.due_date}）`:(r.reason||"本日が復習日"),mode:r.review_type==="s_check"?"skeleton":r.review_type.replace("_retry",""),minutes:r.review_type==="s_check"?(r.duration_minutes||5):20,load:r.review_type==="s_check"?(r.duration_minutes===10?.4:.2):loadFor(r.review_type.replace("_retry",""))};
+    return {...r,title:p?.display_label||p?.title||(r.generated_from_past_session_id?`${r.problem_id.replace("-SESSION","")} 過去問演習`:r.problem_id),theme:p?.theme||"",error_type:source?.error_type,kind:r.review_type==="s_check"?"S確認":r.generated_from_past_session_id?"過去問復習":"復習",reason:r.status==="overdue"?`期限切れ（${r.due_date}）`:"本日が復習日",mode:r.requires_full_answer?"exam_90min":r.review_type==="s_check"?"skeleton":r.review_type==="main_calc_retry"?"main_calc":r.review_type==="careless_check"?"scan":"skeleton",minutes:r.estimated_minutes||r.duration_minutes||20,load:loadFor(r.requires_full_answer?"exam_90min":r.review_type==="main_calc_retry"?"main_calc":r.review_type==="careless_check"?"scan":"skeleton")};
   }).sort((a,b)=>(a.status==="overdue"&&a.error_type==="K"?0:1)-(b.status==="overdue"&&b.error_type==="K"?0:1));
   const activeS=new Set(dueReviews.filter(r=>r.review_type==="s_check").map(r=>r.problem_id));
   const staleS=sMemory.filter(s=>!activeS.has(s.problem_id)&&(s.state==="forgotten"||s.state==="collapsed"||!!s.last_touched&&s.last_touched<=addDays(today,-30))).map(s=>{
-    const p=pmap.get(s.problem_id)!;return {problem_id:s.problem_id,title:p.display_label||p.title,theme:p.theme,kind:"S点検",reason:s.state==="forgotten"||s.state==="collapsed"?"忘却状態から復旧":"30日以上未確認",mode:s.state==="collapsed"?"full":"skeleton",minutes:s.state==="collapsed"?20:3,load:s.state==="collapsed"?.4:.2};
+    const p=pmap.get(s.problem_id)!,sPlan=createSReviewPlan(s.state);return {problem_id:s.problem_id,title:p.display_label||p.title,theme:p.theme,kind:"S点検",reason:s.state==="forgotten"||s.state==="collapsed"?"忘却状態から復旧":"30日以上未確認",mode:sPlan.mode,minutes:sPlan.estimated_minutes||5,load:s.state==="collapsed"?.4:.2,...planFields(sPlan)};
   });
   let load=[...dueReviews,...staleS].reduce((sum,x)=>sum+x.load,0);
   const seen=new Set(attempts.map(a=>a.problem_id)),pastDue=!pastSessions.some(s=>String(s.date)>=week),reserve=pastDue?.6:0;
@@ -357,7 +390,17 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
   } else if(/^\/api\/weak-notes\/\d+\/resolve$/.test(path)) {
     await db.weakNotes.update(Number(path.split("/")[3]),{is_resolved:1});
   } else if(path==="/api/past-sessions") {
-    await db.pastSessions.add({...body,id:undefined as unknown as number,year:Number(body.year),selection_time_minutes:Number(body.selection_time_minutes||0),completed_questions_count:Number(body.completed_questions_count||0)});
+    await db.transaction("rw",db.pastSessions,db.reviews,async()=>{
+      const session={...body,id:undefined as unknown as number,year:Number(body.year),selection_time_minutes:Number(body.selection_time_minutes||0),completed_questions_count:Number(body.completed_questions_count||0)};
+      const sessionId=Number(await db.pastSessions.add(session));
+      const plan=createPastReviewPlan(session);
+      await db.reviews.add({
+        id:undefined as unknown as number,problem_id:`PY-${session.year}-SESSION`,
+        due_date:addDays(String(session.date||todayString()),plan.interval_days||7),review_type:plan.review_type,
+        status:"pending",generated_from_attempt_id:0,generated_from_past_session_id:sessionId,
+        duration_minutes:plan.estimated_minutes,reason:plan.review_reason,...planFields(plan)
+      });
+    });
   } else throw new Error(`未対応の保存です: ${path}`);
   return {ok:true} as T;
 }
