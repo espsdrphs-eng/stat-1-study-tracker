@@ -1,5 +1,6 @@
 import yaml from "js-yaml";
 import type { Problem, StudyUpdate } from "./types";
+import { japaneseizeMathText } from "./mathJapanese.ts";
 
 const errorIntervals:Record<string,number>={K:1,N:2,W:3,C:7,none:14};
 const errorPriority=["K","N","W","C"];
@@ -159,12 +160,15 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
   const secondary=scalar(raw.secondary_error_type)||errors.find(error=>error!==primary)||"";
   const days=raw.review_after_days!=null?Number(raw.review_after_days):(errorIntervals[shortestError]??14);
   const mark=scalar(raw.mark)||markFromScore(scoreNumeric);
-  const resultSummary=scalar(raw.result_summary)||extractLine(text,/最終結論/);
+  const rawResultSummary=scalar(raw.result_summary)||extractLine(text,/最終結論/);
+  const resultSummary=japaneseizeMathText(rawResultSummary);
   const examRank=scalar(raw.exam_selection_rank)||extractLine(text,/本番で選ぶべきか/).match(/[SABC]/i)?.[0]?.toUpperCase()||"";
   const mode=normalizeMode(raw.mode,text);
   const inferredPoint=/平均/.test(text)&&/MGF|積率母関数/.test(text)?"平均非存在とMGF非存在の示し方が答案として粗い":text.match(/最大のズレ\s*[：:]\s*([^\n]+)/)?.[1]?.trim()||"";
-  const errorPoint=scalar(raw.error_point)||inferredPoint;
-  const nextAction=scalar(raw.next_action)||(/E\[\|X\|\]/.test(text)?"E[|X|]の発散計算を再演習し、平均の存在条件をノート化する。":"抽出内容を確認し、誤りの根拠を再演習する。");
+  const rawErrorPoint=scalar(raw.error_point)||inferredPoint;
+  const rawNextAction=scalar(raw.next_action)||(/E\[\|X\|\]/.test(text)?"E[|X|]の発散計算を再演習し、平均の存在条件をノート化する。":"抽出内容を確認し、誤りの根拠を再演習する。");
+  const errorPoint=japaneseizeMathText(rawErrorPoint);
+  const nextAction=japaneseizeMathText(rawNextAction);
   const weak=raw.weak_note&&typeof raw.weak_note==="object"
     ? raw.weak_note as StudyUpdate["weak_note"]
     : weakNoteFromText(text,candidate,primary,themes);
@@ -172,11 +176,15 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
     if(item&&typeof item==="object"){
       const note=item as Record<string,unknown>;
       return {theme:scalar(note.theme)||themes.slice(0,2).join("・"),error_type:scalar(note.error_type)||primary,
-        mistake:scalar(note.mistake)||scalar(note.correction_rule),correction_rule:scalar(note.correction_rule)||scalar(note.mistake)};
+        mistake:japaneseizeMathText(scalar(note.mistake)||scalar(note.correction_rule)),
+        correction_rule:japaneseizeMathText(scalar(note.correction_rule)||scalar(note.mistake))};
     }
-    const rule=scalar(item);
+    const rule=japaneseizeMathText(scalar(item));
     return {theme:themes.slice(0,2).join("・")||master?.theme||"",error_type:primary,mistake:rule,correction_rule:rule};
   }).filter(note=>note.mistake):weak?[weak]:[];
+  const localizedWeakNotes=weakNotes.map(note=>({
+    ...note,mistake:japaneseizeMathText(note.mistake),correction_rule:japaneseizeMathText(note.correction_rule)
+  }));
   const display=master?problemDisplayLabel({...master,difficulty}):candidate.startsWith("PY-")
     ? `${candidate.match(/PY-(\d{4})/)?.[1]}年問${problemNumber}`
     : chapter&&category?`第${chapter}章${category}問${problemNumber}${difficulty!=null?`（難${difficulty}）`:""}`:candidate;
@@ -191,8 +199,10 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
     score_numeric:scoreNumeric,score_max:scoreMax,result_summary:resultSummary,exam_selection_rank:examRank,
     error_types:errors,primary_error_type:primary,secondary_error_type:secondary,
     review_after_days:days,review_reason:shortestError==="none"?"ミス分類なしのため14日後":`${shortestError}が含まれるため${days}日後`,
-    weak_note:weakNotes[0],weak_notes:weakNotes,correction_rule:weakNotes[0]?.correction_rule,source_text:text,auto_imported:true,
-    import_confidence:Math.round(confidence*100)/100,master_matched:!!master,status:"review_required"
+    weak_note:localizedWeakNotes[0],weak_notes:localizedWeakNotes,correction_rule:localizedWeakNotes[0]?.correction_rule,source_text:text,auto_imported:true,
+    import_confidence:Math.round(confidence*100)/100,master_matched:!!master,status:"review_required",
+    math_localized:rawResultSummary!==resultSummary||rawErrorPoint!==errorPoint||rawNextAction!==nextAction||
+      weakNotes.some((note,index)=>note.mistake!==localizedWeakNotes[index]?.mistake||note.correction_rule!==localizedWeakNotes[index]?.correction_rule)
   };
 }
 

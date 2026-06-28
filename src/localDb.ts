@@ -1,5 +1,6 @@
 import Dexie, { type EntityTable } from "dexie";
 import type { Attempt, Bootstrap, PastSession, Problem, Review, Roadmap, StudyUpdate, WeakNote } from "./types";
+import { japaneseizeMathText } from "./mathJapanese.ts";
 
 type SMemory = { problem_id:string; state:"stable"|"check"|"forgotten"|"collapsed"; last_touched?:string; k_trigger_count:number };
 type StoredAttempt = Attempt;
@@ -196,12 +197,14 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
   const problem=await db.problems.get(input.problem_id);
   if(!problem) throw new Error(`未登録の問題IDです: ${input.problem_id}`);
   const date=input.date||todayString();
+  const localizedErrorPoint=japaneseizeMathText(input.error_point||"");
+  const localizedNextAction=japaneseizeMathText(input.next_action||"");
   const id=Number(await db.attempts.add({
     id:undefined as unknown as number,problem_id:input.problem_id,date,mode:input.mode||problem.recommended_mode,
     time_minutes:Number(input.time_minutes||0),mark:input.mark||"△",score_label:input.score_label||"B",
-    error_type:input.primary_error_type||input.error_type||"none",error_point:input.error_point||"",next_action:input.next_action||"",memo:String(input.memo||""),
+    error_type:input.primary_error_type||input.error_type||"none",error_point:localizedErrorPoint,next_action:localizedNextAction,memo:String(input.memo||""),
     score_text:input.score_text||"",score_numeric:input.score_numeric??null,score_max:input.score_max??null,
-    result_summary:input.result_summary||"",exam_selection_rank:input.exam_selection_rank||"",
+    result_summary:japaneseizeMathText(input.result_summary||""),exam_selection_rank:input.exam_selection_rank||"",
     error_types:input.error_types||[input.error_type||"none"],primary_error_type:input.primary_error_type||input.error_type||"none",
     secondary_error_type:input.secondary_error_type||"",ignored_parts:input.ignored_parts||[],
     auto_imported:!!input.auto_imported,import_confidence:input.import_confidence??(input.auto_imported?.8:1)
@@ -212,11 +215,11 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
   else await db.reviews.add({id:undefined as unknown as number,problem_id:input.problem_id,due_date:addDays(date,reviewDays(input)),review_type:reviewType(input),status:"pending",generated_from_attempt_id:id,reason:input.review_reason});
   const primary=input.primary_error_type||input.error_type||"none";
   const weakCandidates=input.weak_notes?.length?input.weak_notes:input.weak_note?[input.weak_note]:
-    primary!=="none"&&input.error_point?[{theme:input.theme||problem.theme,error_type:primary,mistake:input.error_point,correction_rule:input.correction_rule||input.next_action||""}]:[];
+    primary!=="none"&&localizedErrorPoint?[{theme:input.theme||problem.theme,error_type:primary,mistake:localizedErrorPoint,correction_rule:japaneseizeMathText(input.correction_rule||localizedNextAction)}]:[];
   for(const weak of weakCandidates) await db.weakNotes.add({
     id:undefined as unknown as number,date,problem_id:input.problem_id,error_type:weak.error_type||primary,
-    theme:weak.theme||input.theme||problem.theme,mistake:weak.mistake,
-    correction_rule:weak.correction_rule||input.correction_rule||input.next_action||"",is_resolved:0,
+    theme:weak.theme||input.theme||problem.theme,mistake:japaneseizeMathText(weak.mistake),
+    correction_rule:japaneseizeMathText(weak.correction_rule||input.correction_rule||localizedNextAction),is_resolved:0,
     source_text:input.source_text||"",auto_generated:!!input.auto_imported
   });
   const errors=input.error_types?.length?input.error_types:[primary];

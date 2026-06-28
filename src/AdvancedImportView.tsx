@@ -111,6 +111,7 @@ export default function AdvancedImportView({problems,run,busy}:{
               <span><CalendarCheck/>復習理由 <strong>{update.review_reason}</strong></span>
               <span><BookOpen/>関連S <strong>{related.join(", ")||"なし"}</strong></span>
               <span><NotebookPen/>無視する部分 <strong>{update.ignored_parts?.join(", ")||"なし"}</strong></span>
+              {update.math_localized&&<span><Pencil size={14}/>数式表記 <strong>日本語化済み</strong></span>}
             </div>
           </article>;
         })}</div>

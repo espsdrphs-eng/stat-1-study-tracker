@@ -71,7 +71,8 @@ test("imports smart-quoted, unindented study_update output", () => {
   assert.equal(update.review_reason, "Nが含まれるため2日後");
   assert.deepEqual(update.related_s_problem_ids, ["WB-2-S-07"]);
   assert.equal(update.weak_notes?.length, 5);
-  assert.equal(update.weak_notes?.[0].correction_rule, "f(k)=P(X=k) を最初に明記する。");
+  assert.equal(update.weak_notes?.[0].correction_rule, "f(k)は、Xがkとなる確率を最初に明記する。");
+  assert.equal(update.math_localized, true);
 });
 
 test("accepts fenced YAML, lowercase category, and Unicode dashes", () => {

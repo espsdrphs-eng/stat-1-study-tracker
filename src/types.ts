@@ -54,5 +54,5 @@ export type StudyUpdate = {
   weak_note?:{theme:string;error_type:string;mistake:string;correction_rule:string};
   weak_notes?:Array<{theme:string;error_type:string;mistake:string;correction_rule:string}>;
   source_text?:string; auto_imported?:boolean; import_confidence?:number;
-  master_matched?:boolean; status?:string;
+  master_matched?:boolean; status?:string; math_localized?:boolean;
 };
