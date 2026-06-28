@@ -30,10 +30,18 @@ export type Task = {
   id?:number; problem_id:string; title:string; kind:string; reason:string; mode:string;
   minutes:number; load:number; status?:string; error_type?:string;
 };
+export type WeaknessInsight = {
+  theme:string; score:number; level:"重点"|"注意"|"観察"; confidence:"参考"|"暫定"|"分析可能";
+  sampleCount:number; latestDate:string; dominantError:string; recurrence:number;
+  errorCounts:Record<string,number>; evidence:string[]; recommendedA:string[]; recommendedS:string[];
+  action:string; mode:string; minutes:number; load:number;
+};
 export type Dashboard = {
   today:string; weekA:number; weekPast:number; kRecurrence:number; pending:number; overdue:number;
   sStableRate:number; sForgotten:number; scanSuccess:number; examSuccess:number;
   dangerChapters:{chapter:number;count:number}[]; nextTheme:string;
+  analysisConfidence:"参考"|"暫定"|"分析可能"; analysisAttemptCount:number;
+  weaknessInsights:WeaknessInsight[];
   pace:{label:string;checks:boolean[];a14:number;pastSkeleton:number;kRepeat:number;skeletonRate:number;weakUpdates:number;delayed3:number;suggestion:string};
 };
 export type Bootstrap = {

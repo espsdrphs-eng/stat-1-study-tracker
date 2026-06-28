@@ -1,6 +1,7 @@
 import Dexie, { type EntityTable } from "dexie";
 import type { Attempt, Bootstrap, PastSession, Problem, Review, Roadmap, StudyUpdate, WeakNote } from "./types";
 import { japaneseizeMathText } from "./mathJapanese.ts";
+import { analyzeWeaknesses } from "./weaknessAnalytics.ts";
 
 type SMemory = { problem_id:string; state:"stable"|"check"|"forgotten"|"collapsed"; last_touched?:string; k_trigger_count:number };
 type StoredAttempt = Attempt;
@@ -291,6 +292,7 @@ async function bootstrap():Promise<Bootstrap>{
   attempts.filter(a=>a.date>=fortnight&&a.error_type==="K").forEach(a=>{const c=pmap.get(a.problem_id)?.chapter;if(c!=null)chapterCounts.set(c,(chapterCounts.get(c)||0)+1)});
   const themeCounts=new Map<string,number>();
   weakNotes.filter(w=>!w.is_resolved).forEach(w=>themeCounts.set(w.theme,(themeCounts.get(w.theme)||0)+1));
+  const weaknessAnalysis=analyzeWeaknesses(problems,attempts,reviews,weakNotes,today);
   const dashboard={
     today,weekA:new Set(attempts.filter(a=>a.date>=week&&pmap.get(a.problem_id)?.category==="A").map(a=>a.problem_id)).size,
     weekPast:pastSessions.filter(s=>String(s.date)>=week).length,kRecurrence:kRepeat,
@@ -301,6 +303,8 @@ async function bootstrap():Promise<Bootstrap>{
     examSuccess:exams.length?Math.round(exams.filter(s=>Number(s.completed_questions_count)>=3).length/exams.length*100):0,
     dangerChapters:[...chapterCounts.entries()].sort((a,b)=>b[1]-a[1]).slice(0,3).map(([chapter,count])=>({chapter,count})),
     nextTheme:[...themeCounts.entries()].sort((a,b)=>b[1]-a[1])[0]?.[0]||"ロードマップ先頭のA問題",
+    analysisConfidence:weaknessAnalysis.confidence,analysisAttemptCount:weaknessAnalysis.attemptCount,
+    weaknessInsights:weaknessAnalysis.insights,
     pace:{label:paceLabel,checks,a14,pastSkeleton,kRepeat,skeletonRate:skeleton.length?Math.round(skeletonGood/skeleton.length*100):0,weakUpdates,delayed3,suggestion:paceLabel==="危険"?"新規A問題を減らし、K問題とS復旧を優先してください。":""}
   };
   const dueReviews=reviews.filter(r=>r.status!=="done"&&r.due_date<=today).map(r=>{

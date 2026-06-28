@@ -107,6 +107,26 @@ function DashboardView({data,go}:{data:Bootstrap;go:(p:Page)=>void}) {
         {d.pace.suggestion&&<p className="pace-advice">{d.pace.suggestion}</p>}
       </section>
     </div>
+    <section className="section-head weakness-heading">
+      <div><span className="eyebrow">WEAKNESS ANALYSIS</span><h2>苦手分析と対策</h2></div>
+      <div className="analysis-status"><Badge tone={d.analysisConfidence==="分析可能"?"green":d.analysisConfidence==="暫定"?"orange":""}>{d.analysisConfidence}</Badge><span>{d.analysisAttemptCount}件の学習記録から判定</span></div>
+    </section>
+    {d.weaknessInsights.length?<div className="weakness-grid">{d.weaknessInsights.map((insight,index)=>
+      <section className={`panel weakness-card level-${insight.level}`} key={insight.theme}>
+        <div className="weakness-card-head">
+          <div><span className="weakness-rank">優先 {index+1}</span><h3>{insight.theme}</h3></div>
+          <div className="weakness-score"><strong>{insight.score}</strong><span>苦手度</span></div>
+        </div>
+        <div className="weakness-tags"><Badge tone={insight.level==="重点"?"red":insight.level==="注意"?"orange":""}>{insight.level}</Badge><ErrorBadge value={insight.dominantError}/><span>{insight.sampleCount}回の記録</span></div>
+        <ul className="evidence-list">{insight.evidence.map(item=><li key={item}>{item}</li>)}</ul>
+        <div className="repair-targets">
+          <span>戻る問題</span>
+          <div>{insight.recommendedS.map(id=><Badge tone="blue" key={id}>{id}</Badge>)}{insight.recommendedA.map(id=><Badge key={id}>{id}</Badge>)}{!insight.recommendedS.length&&!insight.recommendedA.length&&<small>関連問題を問題マスターに設定してください</small>}</div>
+        </div>
+        <div className="recommended-action"><Target size={18}/><div><span>推奨する次の行動</span><strong>{insight.action}</strong><small>{modes[insight.mode]||insight.mode}・約{insight.minutes}分・負荷 {insight.load.toFixed(1)}</small></div></div>
+        <button className="ghost weakness-start" onClick={()=>go("attempt")}><Play size={15}/>この対策を記録する</button>
+      </section>)}</div>:
+      <section className="panel analysis-empty"><Target size={28}/><div><strong>分析に必要な記録を蓄積中です</strong><p>学習記録にK/W/N/Cまたは△・×が入ると、苦手テーマと戻る問題を自動提案します。</p></div></section>}
     <div className="three-col">
       <section className="panel mini-stat"><span>5問スキャン成功率</span><strong>{d.scanSuccess}%</strong><div className="progress"><i style={{width:`${d.scanSuccess}%`}}/></div></section>
       <section className="panel mini-stat"><span>3問答案成立率</span><strong>{d.examSuccess}%</strong><div className="progress"><i style={{width:`${d.examSuccess}%`}}/></div></section>
