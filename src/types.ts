@@ -34,7 +34,7 @@ export type Task = {
   minutes:number; load:number; status?:string; error_type?:string;
   due_date?:string; review_reason?:string; review_method?:string; review_instruction?:string;
   review_steps?:string[]; estimated_minutes?:number; requires_full_answer?:boolean;
-  requires_s_check?:boolean; linked_s_problem_ids?:string[];
+  requires_s_check?:boolean; linked_s_problem_ids?:string[]; checked?:boolean;
 };
 export type WeaknessInsight = {
   theme:string; score:number; level:"重点"|"注意"|"観察"; confidence:"参考"|"暫定"|"分析可能";

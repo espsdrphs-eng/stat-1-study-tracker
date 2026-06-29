@@ -112,6 +112,20 @@ class StudyDatabase extends Dexie {
       sMemory:"&problem_id,state,last_touched",
       meta:"&key"
     });
+    this.version(5).stores({
+      problems:"&problem_id,category,chapter,priority,completion_status,normalized_label",
+      attempts:"++id,problem_id,date,error_type,mark,primary_error_type,[problem_id+date]",
+      reviews:"++id,problem_id,due_date,status,review_type",
+      roadmap:"&order_index,problem_id,is_active",
+      weakNotes:"++id,problem_id,date,error_type,is_resolved,auto_generated",
+      pastSessions:"++id,year,date,session_type,selection_result",
+      sMemory:"&problem_id,state,last_touched",
+      meta:"&key"
+    }).upgrade(async tx=>{
+      await tx.table("reviews").toCollection().modify((review:Review)=>{
+        if(review.generated_from_past_session_id) review.status="done";
+      });
+    });
   }
 }
 
@@ -290,9 +304,9 @@ function suggest(theme=""){
 
 async function bootstrap():Promise<Bootstrap>{
   await initialize();
-  const [problems,attempts,rawReviews,roadmap,weakNotes,pastSessions,sMemory]=await Promise.all([
+  const [problems,attempts,rawReviews,roadmap,weakNotes,pastSessions,sMemory,metaEntries]=await Promise.all([
     db.problems.toArray(),db.attempts.orderBy("id").reverse().toArray(),db.reviews.orderBy("due_date").toArray(),db.roadmap.orderBy("order_index").toArray(),
-    db.weakNotes.orderBy("id").reverse().toArray(),db.pastSessions.orderBy("id").reverse().toArray(),db.sMemory.toArray()
+    db.weakNotes.orderBy("id").reverse().toArray(),db.pastSessions.orderBy("id").reverse().toArray(),db.sMemory.toArray(),db.meta.toArray()
   ]);
   const today=todayString(),week=addDays(today,-6),fortnight=addDays(today,-13);
   const pmap=new Map(problems.map(p=>[p.problem_id,p]));
@@ -315,12 +329,13 @@ async function bootstrap():Promise<Bootstrap>{
   const kGroups=new Map<string,number>();
   attempts.filter(a=>a.date>=fortnight&&a.error_type==="K").forEach(a=>kGroups.set(a.problem_id,(kGroups.get(a.problem_id)||0)+1));
   const kRepeat=[...kGroups.values()].filter(n=>n>1).length;
-  const pastSkeleton=attempts.filter(a=>a.date>=fortnight&&a.mode==="skeleton"&&pmap.get(a.problem_id)?.category==="past_exam").length;
+  const pastSkeleton=attempts.filter(a=>a.date>=fortnight&&pmap.get(a.problem_id)?.category==="past_exam").length;
   const delayed3=reviews.filter(r=>r.status!=="done"&&r.due_date<addDays(today,-3)).length;
   const weakUpdates=weakNotes.filter(w=>w.date>=week).length;
   const checks=[a14>=10&&a14<=14,pastSkeleton>=2,kRepeat<=2,skeleton.length>0&&skeletonGood/skeleton.length>=.8,weakUpdates>=2,delayed3===0];
   const paceLabel=checks.filter(Boolean).length>=5?"合格ペース":checks.filter(Boolean).length>=3?"注意":"危険";
   const scans=pastSessions.filter(s=>s.session_type==="scan_5_questions"),exams=pastSessions.filter(s=>s.session_type==="exam_90min");
+  const pastAttempts=attempts.filter(attempt=>pmap.get(attempt.problem_id)?.category==="past_exam");
   const chapterCounts=new Map<number,number>();
   attempts.filter(a=>a.date>=fortnight&&a.error_type==="K").forEach(a=>{const c=pmap.get(a.problem_id)?.chapter;if(c!=null)chapterCounts.set(c,(chapterCounts.get(c)||0)+1)});
   const themeCounts=new Map<string,number>();
@@ -328,7 +343,7 @@ async function bootstrap():Promise<Bootstrap>{
   const weaknessAnalysis=analyzeWeaknesses(problems,attempts,reviews,weakNotes,today);
   const dashboard={
     today,weekA:new Set(attempts.filter(a=>a.date>=week&&pmap.get(a.problem_id)?.category==="A").map(a=>a.problem_id)).size,
-    weekPast:pastSessions.filter(s=>String(s.date)>=week).length,kRecurrence:kRepeat,
+    weekPast:pastAttempts.filter(attempt=>attempt.date>=week).length,kRecurrence:kRepeat,
     pending:reviews.filter(r=>r.status!=="done").length,overdue:reviews.filter(r=>r.status==="overdue").length,
     sStableRate:sMemory.length?Math.round(sMemory.filter(s=>s.state==="stable").length/sMemory.length*100):0,
     sForgotten:sMemory.filter(s=>["forgotten","collapsed","check"].includes(s.state)).length,
@@ -349,17 +364,19 @@ async function bootstrap():Promise<Bootstrap>{
     const p=pmap.get(s.problem_id)!,sPlan=createSReviewPlan(s.state);return {problem_id:s.problem_id,title:p.display_label||p.title,theme:p.theme,kind:"S点検",reason:s.state==="forgotten"||s.state==="collapsed"?"忘却状態から復旧":"30日以上未確認",mode:sPlan.mode,minutes:sPlan.estimated_minutes||5,load:s.state==="collapsed"?.4:.2,...planFields(sPlan)};
   });
   let load=[...dueReviews,...staleS].reduce((sum,x)=>sum+x.load,0);
-  const seen=new Set(attempts.map(a=>a.problem_id)),pastDue=!pastSessions.some(s=>String(s.date)>=week),reserve=pastDue?.6:0;
+  const seen=new Set(attempts.map(a=>a.problem_id));
   const newTasks=[];
   for(const r of roadmap.filter(r=>r.is_active&&!seen.has(r.problem_id))){
-    if(newTasks.length>=3||load+r.load_score+reserve>4) break;
+    if(newTasks.length>=3||load+r.load_score>4) break;
     newTasks.push({...r,title:pmap.get(r.problem_id)!.display_label||pmap.get(r.problem_id)!.title,theme:pmap.get(r.problem_id)!.theme,kind:"新規A",reason:`ロードマップ ${r.order_index}番`,mode:r.expected_mode,minutes:r.expected_mode==="full"?35:20,load:r.load_score});load+=r.load_score;
   }
-  const pastTasks=pastDue&&load+.6<=4?[{problem_id:"PAST-SCAN",title:"5問から3問を選ぶ",kind:"過去問",reason:"今週の選題練習",mode:"scan",minutes:15,load:.6}]:[];
   const weak=weakNotes.filter(w=>!w.is_resolved).at(-1);
   const weakTask=weak?[{...weak,title:pmap.get(weak.problem_id)?.display_label||pmap.get(weak.problem_id)?.title||weak.problem_id,kind:"弱点ノート",reason:"未解決ミスの確認",mode:"scan",minutes:5,load:.1}]:[];
-  const tasks=[...dueReviews,...staleS,...newTasks,...pastTasks,...weakTask];
-  const totalLoad=Math.round(tasks.reduce((sum,x)=>sum+x.load,0)*10)/10;
+  const checkedKeys=new Set(metaEntries.filter(entry=>entry.key.startsWith(`today-check:${today}:`)&&entry.value==="1").map(entry=>entry.key));
+  const tasks=[...dueReviews,...staleS,...newTasks,...weakTask].map(task=>({
+    ...task,checked:checkedKeys.has(`today-check:${today}:${task.problem_id}:${task.kind}`)
+  }));
+  const totalLoad=Math.round(tasks.filter(task=>!task.checked).reduce((sum,x)=>sum+x.load,0)*10)/10;
   return {problems:problems.sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.category.localeCompare(b.category)||a.problem_number-b.problem_number),attempts,reviews,roadmap,weakNotes,pastSessions,dashboard,today:{tasks,totalLoad,warning:totalLoad>4?"今日は負荷が4.0を超えています。1問を骨格モードに落とすか、翌日に回してください。":""}} as Bootstrap;
 }
 
@@ -387,6 +404,9 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     await db.transaction("rw",db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,async()=>{for(const update of body.updates) await saveAttempt(update)});
   } else if(/^\/api\/reviews\/\d+\/done$/.test(path)) {
     await db.reviews.update(Number(path.split("/")[3]),{status:"done"});
+  } else if(path==="/api/today-check") {
+    const key=`today-check:${body.date||todayString()}:${body.problem_id}:${body.kind}`;
+    if(body.checked) await db.meta.put({key,value:"1"}); else await db.meta.delete(key);
   } else if(/^\/api\/weak-notes\/\d+\/resolve$/.test(path)) {
     await db.weakNotes.update(Number(path.split("/")[3]),{is_resolved:1});
   } else if(path==="/api/past-sessions") {

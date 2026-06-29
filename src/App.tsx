@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   AlertTriangle, Archive, BookOpen, CalendarCheck, Check, ChevronRight, ClipboardPaste,
   Clock3, Database, Download, Gauge, LayoutDashboard, ListChecks, Menu, NotebookPen,
@@ -14,8 +14,8 @@ import type { Attempt, Bootstrap, Problem, Review, StudyUpdate, Task } from "./t
 
 type Page = "dashboard"|"today"|"problems"|"attempt"|"import"|"reviews"|"weak"|"past"|"settings";
 const pageTitles:Record<Page,string> = {
-  dashboard:"ダッシュボード",today:"今日やること",problems:"問題一覧",attempt:"学習記録",
-  import:"GPT回答取り込み",reviews:"復習予定",weak:"弱点ノート",past:"過去問モード",settings:"設定"
+  dashboard:"ダッシュボード",today:"今日やること",problems:"問題一覧",attempt:"手入力（予備）",
+  import:"GPT回答取り込み",reviews:"復習予定",weak:"弱点ノート",past:"過去問分析",settings:"設定"
 };
 const nav = [
   ["dashboard",LayoutDashboard],["today",ListChecks],["problems",BookOpen],["attempt",NotebookPen],
@@ -62,7 +62,7 @@ export default function App() {
       <header><button className="menu-btn" onClick={()=>setMenu(true)}><Menu/></button><div><span className="eyebrow">{data.dashboard.today.replaceAll("-",".")}</span><h1>{selected?selected.problem_id:pageTitles[page]}</h1></div><button className="icon-btn" onClick={load} title="更新"><RefreshCw size={19}/></button></header>
       {(message||error)&&<div className={`toast ${error?"danger":""}`} onClick={()=>{setMessage("");setError("")}}>{error||message}<X size={16}/></div>}
       <div className="content">
-        {selected?<ProblemDetail problem={selected} data={data} onBack={()=>setSelected(null)} onAttempt={()=>{setSelected(null);setPage("attempt")}}/>:
+        {selected?<ProblemDetail problem={selected} data={data} onBack={()=>setSelected(null)} onImport={()=>{setSelected(null);setPage("import")}}/>:
         page==="dashboard"?<DashboardView data={data} go={go}/>:
         page==="today"?<TodayView data={data} busy={busy} run={run} go={go}/>:
         page==="problems"?<ProblemsView data={data} select={setSelected} run={run} busy={busy}/>:
@@ -70,7 +70,7 @@ export default function App() {
         page==="import"?<AdvancedImportView problems={data.problems} run={run} busy={busy}/>:
         page==="reviews"?<ReviewsView data={data} run={run} busy={busy}/>:
         page==="weak"?<WeakView data={data} run={run} busy={busy}/>:
-        page==="past"?<PastView data={data} run={run} busy={busy}/>:
+        page==="past"?<PastView data={data} go={go}/>:
         <SettingsView data={data} run={run} busy={busy}/>}
       </div>
     </main>
@@ -79,18 +79,22 @@ export default function App() {
 
 function DashboardView({data,go}:{data:Bootstrap;go:(p:Page)=>void}) {
   const d=data.dashboard;
-  const paceLabels=["A問題 10〜14題","過去問骨格 2問以上","K再発 2題以内","骨格再現率 80%以上","弱点ノート 週1回以上","3日超の遅延なし"];
+  const pastIds=new Set(data.problems.filter(problem=>problem.category==="past_exam").map(problem=>problem.problem_id));
+  const pastAttemptCount=data.attempts.filter(attempt=>pastIds.has(attempt.problem_id)).length;
+  const pastReviewCount=data.reviews.filter(review=>review.status!=="done"&&pastIds.has(review.problem_id)).length;
+  const paceLabels=["A問題 10〜14題","過去問GPT採点 2件以上","K再発 2題以内","骨格再現率 80%以上","弱点ノート 週1回以上","3日超の遅延なし"];
+  const nextTask=data.today.tasks.find(task=>!task.checked);
   return <>
     <section className="hero">
-      <div><span className="eyebrow">NEXT ACTION</span><h2>{data.today.tasks[0]?.title||"本日の課題は完了です"}</h2><p>{data.today.tasks[0]?.reason||"記録を振り返り、次のロードマップを確認しましょう。"}</p></div>
+      <div><span className="eyebrow">NEXT ACTION</span><h2>{nextTask?.title||"本日の課題は完了です"}</h2><p>{nextTask?.reason||"記録を振り返り、次のロードマップを確認しましょう。"}</p></div>
       <button className="primary" onClick={()=>go("today")}><Play size={18}/> 今日の課題を見る</button>
     </section>
     {data.today.warning&&<div className="warning"><AlertTriangle/><div><strong>負荷オーバー</strong><p>{data.today.warning}</p></div></div>}
     <section className="section-head"><div><span className="eyebrow">OVERVIEW</span><h2>今週の学習状況</h2></div><span className="muted">直近7日間</span></section>
     <div className="metrics-grid">
-      <Metric label="今日の負荷" value={data.today.totalLoad.toFixed(1)} unit="/ 4.0" hint={`${data.today.tasks.length}件の課題`} tone={data.today.totalLoad>4?"red":""}/>
+      <Metric label="今日の負荷" value={data.today.totalLoad.toFixed(1)} unit="/ 4.0" hint={`${data.today.tasks.filter(task=>!task.checked).length}件の未完了課題`} tone={data.today.totalLoad>4?"red":""}/>
       <Metric label="A問題進捗" value={d.weekA} unit="題" hint="今週の新規・復習"/>
-      <Metric label="過去問演習" value={d.weekPast} unit="回" hint="スキャン・90分"/>
+      <Metric label="過去問GPT採点" value={d.weekPast} unit="件" hint="今週の取り込み"/>
       <Metric label="K再発" value={d.kRecurrence} unit="題" hint="直近2週間" tone={d.kRecurrence>2?"red":""}/>
       <Metric label="復習待ち" value={d.pending} unit="件" hint={`うち遅延 ${d.overdue}件`} tone={d.overdue?"amber":""}/>
       <Metric label="S問題安定率" value={d.sStableRate} unit="%" hint={`要確認 ${d.sForgotten}件`}/>
@@ -125,19 +129,19 @@ function DashboardView({data,go}:{data:Bootstrap;go:(p:Page)=>void}) {
           <div>{insight.recommendedS.map(id=><Badge tone="blue" key={id}>{id}</Badge>)}{insight.recommendedA.map(id=><Badge key={id}>{id}</Badge>)}{!insight.recommendedS.length&&!insight.recommendedA.length&&<small>関連問題を問題マスターに設定してください</small>}</div>
         </div>
         <div className="recommended-action"><Target size={18}/><div><span>推奨する次の行動</span><strong>{insight.action}</strong><small>{modes[insight.mode]||insight.mode}・約{insight.minutes}分・負荷 {insight.load.toFixed(1)}</small></div></div>
-        <button className="ghost weakness-start" onClick={()=>go("attempt")}><Play size={15}/>この対策を記録する</button>
+        <button className="ghost weakness-start" onClick={()=>go("import")}><ClipboardPaste size={15}/>GPT採点結果を取り込む</button>
       </section>)}</div>:
       <section className="panel analysis-empty"><Target size={28}/><div><strong>分析に必要な記録を蓄積中です</strong><p>学習記録にK/W/N/Cまたは△・×が入ると、苦手テーマと戻る問題を自動提案します。</p></div></section>}
     <div className="three-col">
-      <section className="panel mini-stat"><span>5問スキャン成功率</span><strong>{d.scanSuccess}%</strong><div className="progress"><i style={{width:`${d.scanSuccess}%`}}/></div></section>
-      <section className="panel mini-stat"><span>3問答案成立率</span><strong>{d.examSuccess}%</strong><div className="progress"><i style={{width:`${d.examSuccess}%`}}/></div></section>
+      <section className="panel mini-stat"><span>過去問GPT採点</span><strong>{pastAttemptCount}件</strong><div className="progress"><i style={{width:`${Math.min(100,pastAttemptCount*10)}%`}}/></div></section>
+      <section className="panel mini-stat"><span>過去問の復習待ち</span><strong>{pastReviewCount}件</strong><div className="progress"><i style={{width:`${Math.min(100,pastReviewCount*20)}%`}}/></div></section>
       <section className="panel focus"><span>次の重点テーマ</span><strong>{d.nextTheme}</strong><small>危険章 {d.dangerChapters.map(x=>`第${x.chapter}章`).join("・")||"なし"}</small></section>
     </div>
   </>
 }
 
 function TaskRow({task}:{task:Task}) {
-  return <div className="task-row"><div className={`task-icon ${task.kind==="S確認"?"s":task.error_type==="K"?"k":""}`}>{task.kind.slice(0,1)}</div><div className="task-main"><strong>{task.problem_id}</strong><span>{task.title}</span></div><div className="task-meta"><Badge>{modes[task.mode]||task.mode}</Badge><span><Clock3 size={14}/>{task.minutes}分</span><b>{task.load.toFixed(1)}</b></div></div>
+  return <div className={`task-row ${task.checked?"task-checked":""}`}><div className={`task-icon ${task.kind==="S確認"?"s":task.error_type==="K"?"k":""}`}>{task.checked?<Check size={15}/>:task.kind.slice(0,1)}</div><div className="task-main"><strong>{task.problem_id}</strong><span>{task.title}</span></div><div className="task-meta"><Badge>{modes[task.mode]||task.mode}</Badge><span><Clock3 size={14}/>{task.minutes}分</span><b>{task.load.toFixed(1)}</b></div></div>
 }
 function ReviewPlanDetails({item,compact=false}:{item:Partial<Review&Task>;compact?:boolean}) {
   if(!item.review_method&&!item.review_reason) return null;
@@ -155,17 +159,20 @@ function ReviewPlanDetails({item,compact=false}:{item:Partial<Review&Task>;compa
 }
 function TodayView({data,busy,run,go}:{data:Bootstrap;busy:boolean;run:(a:()=>Promise<unknown>,s:string)=>void;go:(p:Page)=>void}) {
   return <>
-    <div className="page-intro"><div><p>期限とロードマップから自動編成しています。</p></div><div className={`load-pill ${data.today.totalLoad>4?"over":""}`}><Gauge/><div><span>合計負荷</span><strong>{data.today.totalLoad.toFixed(1)} / 4.0</strong></div></div></div>
+    <div className="page-intro"><div><p>課題を終えたらチェックを付け、GPTの採点結果を取り込んでください。</p><button className="text-btn" onClick={()=>go("import")}><ClipboardPaste size={15}/>GPT採点結果を取り込む</button></div><div className={`load-pill ${data.today.totalLoad>4?"over":""}`}><Gauge/><div><span>合計負荷</span><strong>{data.today.totalLoad.toFixed(1)} / 4.0</strong></div></div></div>
     {data.today.warning&&<div className="warning"><AlertTriangle/><div><strong>詰め込みすぎです</strong><p>{data.today.warning}</p></div></div>}
     <section className="panel">
       <div className="table-wrap"><table><thead><tr><th>種類</th><th>問題</th><th>推奨モード</th><th>目安</th><th>負荷</th><th>理由</th><th/></tr></thead>
-      <tbody>{data.today.tasks.map((t,i)=><TodayTaskRows key={`${t.problem_id}-${i}`} task={t} busy={busy} run={run} go={go}/>)}</tbody></table></div>
+      <tbody>{data.today.tasks.map((t,i)=><TodayTaskRows key={`${t.problem_id}-${i}`} task={t} busy={busy} run={run} date={data.dashboard.today}/>)}</tbody></table></div>
       {!data.today.tasks.length&&<Empty>今日の課題は完了しました</Empty>}
     </section>
   </>
 }
-function TodayTaskRows({task:t,busy,run,go}:{task:Task;busy:boolean;run:(a:()=>Promise<unknown>,s:string)=>void;go:(p:Page)=>void}) {
-  return <><tr><td><Badge tone={t.kind==="S確認"?"blue":t.error_type==="K"?"red":""}>{t.kind}</Badge></td><td><strong>{t.problem_id}</strong><small>{t.title}</small></td><td>{modes[t.mode]||t.mode}</td><td>{t.minutes}分</td><td><strong>{t.load.toFixed(1)}</strong></td><td>{t.reason}</td><td><div className="row-actions"><button className="small primary" onClick={()=>go(t.kind.includes("過去問")?"past":"attempt")}><Play size={14}/>開始</button>{t.id&&t.kind!=="新規A"&&t.kind!=="弱点ノート"&&<button disabled={busy} className="small ghost" onClick={()=>run(()=>post(`/api/reviews/${t.id}/done`,{}),"復習を完了にしました")}><Check size={14}/>完了</button>}</div></td></tr>
+function TodayTaskRows({task:t,busy,run,date}:{task:Task;busy:boolean;run:(a:()=>Promise<unknown>,s:string)=>void;date:string}) {
+  const toggle=()=>t.id&&t.kind!=="新規A"&&t.kind!=="弱点ノート"
+    ?run(()=>post(`/api/reviews/${t.id}/done`,{}),"復習を完了にしました")
+    :run(()=>post("/api/today-check",{date,problem_id:t.problem_id,kind:t.kind,checked:!t.checked}),t.checked?"チェックを外しました":"取り組み済みにしました");
+  return <><tr className={t.checked?"task-checked":""}><td><Badge tone={t.kind==="S確認"?"blue":t.error_type==="K"?"red":""}>{t.kind}</Badge></td><td><strong>{t.problem_id}</strong><small>{t.title}</small></td><td>{modes[t.mode]||t.mode}</td><td>{t.minutes}分</td><td><strong>{t.load.toFixed(1)}</strong></td><td>{t.reason}</td><td><label className="task-check"><input type="checkbox" checked={!!t.checked} disabled={busy} onChange={toggle}/><span>取り組み済み</span></label></td></tr>
     {(t.review_method||t.review_reason)&&<tr className="task-plan-row"><td colSpan={7}><ReviewPlanDetails item={t} compact/></td></tr>}</>;
 }
 
@@ -193,12 +200,12 @@ function ProblemsView({data,select,run,busy}:{data:Bootstrap;select:(p:Problem)=
   </>
 }
 
-function ProblemDetail({problem,data,onBack,onAttempt}:{problem:Problem;data:Bootstrap;onBack:()=>void;onAttempt:()=>void}) {
+function ProblemDetail({problem,data,onBack,onImport}:{problem:Problem;data:Bootstrap;onBack:()=>void;onImport:()=>void}) {
   const attempts=data.attempts.filter(a=>a.problem_id===problem.problem_id);
   const reviews=data.reviews.filter(a=>a.problem_id===problem.problem_id);
   const latest=attempts[0],nextReview=reviews.filter(r=>r.status!=="done").sort((a,b)=>a.due_date.localeCompare(b.due_date))[0];
   const related=problem.related_s_problem_ids?.length?problem.related_s_problem_ids:String(problem.linked_s_problems||"").split(";").filter(Boolean);
-  return <><button className="back" onClick={onBack}>← 問題一覧へ</button><div className="detail-hero"><div><div className="detail-badges"><Badge tone={problem.category==="S"?"blue":""}>{problem.category}</Badge><Badge>{problem.priority}</Badge></div><h2>{problemDisplayLabel(problem)}</h2><p>{problem.problem_id} ・ {problem.theme}</p></div><button className="primary" onClick={onAttempt}><Plus size={17}/>この問題を記録</button></div>
+  return <><button className="back" onClick={onBack}>← 問題一覧へ</button><div className="detail-hero"><div><div className="detail-badges"><Badge tone={problem.category==="S"?"blue":""}>{problem.category}</Badge><Badge>{problem.priority}</Badge></div><h2>{problemDisplayLabel(problem)}</h2><p>{problem.problem_id} ・ {problem.theme}</p></div><button className="primary" onClick={onImport}><ClipboardPaste size={17}/>GPT採点結果を取り込む</button></div>
     {latest&&<section className="panel latest-result"><div><span>最新評価</span><strong>{latest.score_text||latest.score_label} {latest.score_numeric!=null?`/ ${latest.score_numeric}点`:""} / {latest.mark}</strong></div><div><span>K/W/N/C</span><strong>{latest.error_types?.join(" + ")||latest.error_type}</strong></div><div><span>次回復習</span><strong>{nextReview?.due_date||"—"}</strong></div><div><span>本番選択</span><strong>{latest.exam_selection_rank||"—"}</strong></div></section>}
     <div className="detail-grid"><section className="panel"><h3>問題情報</h3><dl><dt>役割</dt><dd>{problem.role}</dd><dt>難易度</dt><dd>{problem.difficulty!=null?`難${problem.difficulty}`:"—"}</dd><dt>推奨モード</dt><dd>{modes[problem.recommended_mode]}</dd><dt>関連S問題</dt><dd>{related.join(" / ")||"—"}</dd><dt>関連A問題</dt><dd>{problem.linked_a_problems||"—"}</dd><dt>関連過去問</dt><dd>{problem.linked_past_exams||"—"}</dd><dt>次回課題</dt><dd>{latest?.next_action||"—"}</dd><dt>メモ</dt><dd>{problem.notes||"—"}</dd></dl></section>
     <section className="panel"><h3>復習予定</h3>{nextReview?<><div className="history"><CalendarCheck/><div><strong>{nextReview.due_date}</strong><span>{reviewNames[nextReview.review_type]||nextReview.review_method}・{nextReview.status}</span></div></div><ReviewPlanDetails item={nextReview}/></>:<Empty>復習予定はありません</Empty>}</section></div>
@@ -275,23 +282,43 @@ function WeakView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:
   return <><div className="toolbar"><p className="muted">1ミス1行。修正ルールを短く、再利用できる形で残します。</p><label className="check"><input type="checkbox" checked={showResolved} onChange={e=>setShowResolved(e.target.checked)}/>解決済みも表示</label></div><section className="panel flush"><div className="table-wrap"><table><thead><tr><th>日付</th><th>分類</th><th>問題</th><th>テーマ</th><th>ミス</th><th>修正ルール</th><th/></tr></thead><tbody>{rows.map(w=><tr className={w.is_resolved?"resolved":""} key={w.id}><td>{w.date}</td><td><ErrorBadge value={w.error_type}/></td><td><strong>{w.problem_id}</strong></td><td>{w.theme}</td><td>{w.mistake}</td><td><strong>{w.correction_rule||"—"}</strong></td><td>{!w.is_resolved&&<button disabled={busy} className="small ghost" onClick={()=>run(()=>post(`/api/weak-notes/${w.id}/resolve`,{}),"弱点を解決済みにしました")}><Check size={14}/>解決</button>}</td></tr>)}</tbody></table></div>{!rows.length&&<Empty>未解決の弱点はありません</Empty>}</section></>
 }
 
-function PastView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean}) {
-  const [mode,setMode]=useState<"scan_5_questions"|"exam_90min">("scan_5_questions");
-  const [suggestions,setSuggestions]=useState<{trigger:string;problem_id:string}[]>([]);
-  const [form,setForm]=useState<Record<string,string>>({year:"2025",date:todayString(),selected_questions:"",skipped_questions:"",selection_reason:"",skip_reason:"",selection_time_minutes:"",completed_questions_count:"",partial_score_memo:"",time_allocation_memo:"",selection_result:"questionable",repair_targets:""});
-  useEffect(()=>{if(!form.repair_targets){setSuggestions([]);return}const t=setTimeout(()=>api<{trigger:string;problem_id:string}[]>(`/api/repair-suggestions?theme=${encodeURIComponent(form.repair_targets)}`).then(setSuggestions),250);return()=>clearTimeout(t)},[form.repair_targets]);
-  const submit=(e:React.FormEvent)=>{e.preventDefault();run(()=>post("/api/past-sessions",{...form,session_type:mode}),"過去問演習を記録しました")};
-  return <div className="past-layout"><section className="panel"><div className="mode-tabs"><button className={mode==="scan_5_questions"?"active":""} onClick={()=>setMode("scan_5_questions")}><Search/>5問スキャン<span>選題力を鍛える</span></button><button className={mode==="exam_90min"?"active":""} onClick={()=>setMode("exam_90min")}><Clock3/>90分答案<span>本番を再現する</span></button></div><form className="past-form" onSubmit={submit}>
-    <div className="fields-row"><Field label="年度"><input type="number" value={form.year} onChange={e=>setForm({...form,year:e.target.value})}/></Field><Field label="実施日"><input type="date" value={form.date} onChange={e=>setForm({...form,date:e.target.value})}/></Field>{mode==="scan_5_questions"?<Field label="5問確認時間（分）"><input type="number" value={form.selection_time_minutes} onChange={e=>setForm({...form,selection_time_minutes:e.target.value})}/></Field>:<Field label="完走数"><input type="number" max="3" value={form.completed_questions_count} onChange={e=>setForm({...form,completed_questions_count:e.target.value})}/></Field>}</div>
-    <Field label={mode==="scan_5_questions"?"選んだ3問":"選択問題"} wide><input required value={form.selected_questions} onChange={e=>setForm({...form,selected_questions:e.target.value})} placeholder="Q1, Q3, Q5"/></Field>
-    {mode==="scan_5_questions"&&<Field label="捨てた2問" wide><input value={form.skipped_questions} onChange={e=>setForm({...form,skipped_questions:e.target.value})} placeholder="Q2, Q4"/></Field>}
-    <Field label="選んだ理由" wide><textarea value={form.selection_reason} onChange={e=>setForm({...form,selection_reason:e.target.value})}/></Field>
-    {mode==="scan_5_questions"?<Field label="捨てた理由" wide><textarea value={form.skip_reason} onChange={e=>setForm({...form,skip_reason:e.target.value})}/></Field>:<><Field label="小問回収率・最大失点要因" wide><textarea value={form.partial_score_memo} onChange={e=>setForm({...form,partial_score_memo:e.target.value})}/></Field><Field label="時間配分" wide><textarea value={form.time_allocation_memo} onChange={e=>setForm({...form,time_allocation_memo:e.target.value})}/></Field></>}
-    <Field label="落とした型・戻るテーマ" wide><input value={form.repair_targets} onChange={e=>setForm({...form,repair_targets:e.target.value})} placeholder="例：変数変換、LRT、信頼区間"/></Field>
-    {suggestions.length>0&&<div className="repair-box"><span>提案する戻り先</span><div>{suggestions.map(x=><Badge key={x.problem_id} tone={x.problem_id.includes("-S-")?"blue":""}>{x.problem_id}</Badge>)}</div></div>}
-    <Field label="選題評価"><div className="choice-row text">{[["good","良い"],["questionable","要検討"],["failed","失敗"]].map(([k,v])=><button type="button" className={form.selection_result===k?"selected":""} onClick={()=>setForm({...form,selection_result:k})} key={k}>{v}</button>)}</div></Field>
-    <div className="form-actions"><button className="primary" disabled={busy}>記録を保存</button></div>
-  </form></section><aside className="panel session-history"><h3>最近の過去問演習</h3>{data.pastSessions.length?data.pastSessions.slice(0,8).map(s=><div className="session" key={s.id}><div><strong>{s.year}年</strong><Badge>{s.session_type==="scan_5_questions"?"5問スキャン":"90分答案"}</Badge></div><span>{s.date} ・ 選択 {s.selected_questions}</span></div>):<Empty>演習記録はありません</Empty>}</aside></div>
+function PastView({data,go}:{data:Bootstrap;go:(p:Page)=>void}) {
+  const pastProblems=data.problems.filter(problem=>problem.category==="past_exam");
+  const pmap=new Map(pastProblems.map(problem=>[problem.problem_id,problem]));
+  const attempts=data.attempts.filter(attempt=>pmap.has(attempt.problem_id));
+  const errorAttempts=attempts.filter(attempt=>(attempt.error_types||[attempt.error_type]).some(error=>error!=="none"));
+  const pending=data.reviews.filter(review=>review.status!=="done"&&pmap.has(review.problem_id));
+  const themes=new Set(errorAttempts.map(attempt=>pmap.get(attempt.problem_id)?.theme).filter(Boolean));
+  return <>
+    <section className="past-analysis-intro">
+      <div><span className="eyebrow">PAST EXAM ANALYSIS</span><h2>過去問はGPT採点結果から分析します</h2><p>選題フォームへの手入力は不要です。GPTの採点結果を貼り付けると、白本とは分けて失点箇所・復習予定・戻るA/S問題を整理します。</p></div>
+      <button className="primary" onClick={()=>go("import")}><ClipboardPaste size={17}/>GPT採点結果を取り込む</button>
+    </section>
+    <div className="past-analysis-metrics">
+      <Metric label="取り込み済み" value={attempts.length} unit="件" hint="過去問の採点履歴"/>
+      <Metric label="要復習" value={errorAttempts.length} unit="件" hint="K/W/N/Cあり" tone={errorAttempts.length?"amber":""}/>
+      <Metric label="復習待ち" value={pending.length} unit="件" hint="過去問の未完了予定"/>
+      <Metric label="苦手テーマ" value={themes.size} unit="件" hint="失点したテーマ"/>
+    </div>
+    <section className="section-head"><div><span className="eyebrow">REPAIR TARGETS</span><h2>過去問で明らかになった要復習箇所</h2></div></section>
+    <div className="past-result-list">{errorAttempts.map(attempt=>{
+      const problem=pmap.get(attempt.problem_id)!;
+      const review=data.reviews.find(item=>item.generated_from_attempt_id===attempt.id&&item.problem_id===attempt.problem_id);
+      const insight=data.dashboard.weaknessInsights.find(item=>item.theme.includes(problem.theme)||problem.theme.includes(item.theme));
+      const direct=[...String(problem.linked_a_problems||"").split(/[;,、\s]+/),...(problem.related_s_problem_ids||[])].filter(Boolean);
+      const targets=[...new Set([...direct,...(insight?.recommendedA||[]),...(insight?.recommendedS||[])])];
+      return <article className="panel past-result-card" key={attempt.id}>
+        <div className="past-result-head"><div><ErrorBadge value={attempt.primary_error_type||attempt.error_type}/><h3>{problemDisplayLabel(problem)}</h3><span>{attempt.date} ・ {attempt.score_text||attempt.score_label} {attempt.score_numeric!=null?`${attempt.score_numeric}点`:""}</span></div>{review&&<Badge tone={review.status==="overdue"?"red":"orange"}>{review.due_date} 復習</Badge>}</div>
+        <div className="past-result-body"><div><span>失点・不安定だった箇所</span><p>{attempt.error_point||attempt.result_summary||"詳細未入力"}</p></div><div><span>次に直すこと</span><p>{attempt.next_action||review?.review_instruction||"GPT採点結果の指示を確認"}</p></div></div>
+        <div className="repair-targets"><span>戻るA/S問題</span><div>{targets.map(id=><Badge tone={id.includes("-S-")?"blue":""} key={id}>{id}</Badge>)}{!targets.length&&<small>関連問題はまだ未設定です</small>}</div></div>
+        {review&&<ReviewPlanDetails item={review} compact/>}
+      </article>;
+    })}</div>
+    {!errorAttempts.length&&<section className="panel"><Empty>過去問のGPT採点結果を取り込むと、要復習箇所がここに表示されます</Empty></section>}
+    <section className="panel past-master"><div className="panel-title"><div><span className="eyebrow">PAST EXAM MASTER</span><h3>登録済み過去問</h3></div><Badge>{pastProblems.length}問</Badge></div>
+      {pastProblems.map(problem=><div className="past-master-row" key={problem.problem_id}><div><strong>{problemDisplayLabel(problem)}</strong><span>{problem.problem_id} ・ {problem.theme}</span></div><small>関連A/S：{[problem.linked_a_problems,...(problem.related_s_problem_ids||[])].filter(Boolean).join(" / ")||"未設定"}</small></div>)}
+    </section>
+  </>;
 }
 
 function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean}) {
