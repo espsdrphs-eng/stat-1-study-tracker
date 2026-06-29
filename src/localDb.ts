@@ -142,6 +142,22 @@ class StudyDatabase extends Dexie {
         note.quiz_wrong_count=note.quiz_wrong_count||0;
       });
     });
+    this.version(7).stores({
+      problems:"&problem_id,category,chapter,priority,completion_status,normalized_label",
+      attempts:"++id,problem_id,date,error_type,mark,primary_error_type,[problem_id+date]",
+      reviews:"++id,problem_id,due_date,status,review_type",
+      roadmap:"&order_index,problem_id,is_active",
+      weakNotes:"++id,problem_id,date,error_type,is_resolved,auto_generated,last_quizzed_at",
+      pastSessions:"++id,year,date,session_type,selection_result",
+      sMemory:"&problem_id,state,last_touched",
+      meta:"&key"
+    }).upgrade(async tx=>{
+      const attempts=await tx.table("attempts").toArray() as Attempt[];
+      await tx.table("weakNotes").toCollection().modify((note:WeakNote)=>{
+        note.generated_from_attempt_id=note.generated_from_attempt_id||
+          attempts.find(attempt=>attempt.problem_id===note.problem_id&&attempt.date===note.date)?.id;
+      });
+    });
   }
 }
 
@@ -266,7 +282,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
     id:undefined as unknown as number,date,problem_id:input.problem_id,error_type:weak.error_type||primary,
     theme:weak.theme||input.theme||problem.theme,mistake:japaneseizeMathText(weak.mistake),
     correction_rule:japaneseizeMathText(weak.correction_rule||input.correction_rule||localizedNextAction),is_resolved:0,
-    source_text:input.source_text||"",auto_generated:!!input.auto_imported
+    source_text:input.source_text||"",auto_generated:!!input.auto_imported,generated_from_attempt_id:id
   });
   if(related.length){
     await db.problems.update(input.problem_id,{
@@ -311,6 +327,90 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
     await db.sMemory.put({problem_id:input.problem_id,state:sState,last_touched:date,k_trigger_count:old?.k_trigger_count||0});
   }
   return id;
+}
+
+const editedErrors=(value:unknown,fallback="none")=>{
+  const errors=[...new Set(String(value===undefined?fallback:value).toUpperCase().match(/\b[KWNC]\b/g)||[])];
+  return errors.length?errors:["none"];
+};
+
+async function refreshLinkedSMemory(linkedIds:string[]){
+  if(!linkedIds.length) return;
+  const [attempts,problems]=await Promise.all([db.attempts.toArray(),db.problems.toArray()]);
+  const pmap=new Map(problems.map(problem=>[problem.problem_id,problem]));
+  for(const sid of [...new Set(linkedIds)]){
+    const triggers=attempts.filter(attempt=>{
+      const problem=pmap.get(attempt.problem_id);
+      const links=[...(problem?.related_s_problem_ids||[]),...list(problem?.linked_s_problems||"")];
+      return links.includes(sid)&&(attempt.error_types||[attempt.error_type]).some(error=>error==="K"||error==="N");
+    });
+    const state:SState=triggers.some(attempt=>(attempt.error_types||[attempt.error_type]).includes("K"))?"collapsed":
+      triggers.length?"check":"stable";
+    const old=await db.sMemory.get(sid);
+    await db.sMemory.put({problem_id:sid,state,last_touched:old?.last_touched,k_trigger_count:triggers.length});
+  }
+}
+
+async function updateAttemptAnalysis(id:number,body:Record<string,unknown>){
+  const attempt=await db.attempts.get(id);
+  if(!attempt) throw new Error("編集する採点結果が見つかりません");
+  const problem=await db.problems.get(attempt.problem_id);
+  if(!problem) throw new Error("問題マスターが見つかりません");
+  const oldNotes=(await db.weakNotes.toArray()).filter(note=>note.generated_from_attempt_id===id||
+    (!note.generated_from_attempt_id&&note.problem_id===attempt.problem_id&&note.date===attempt.date));
+  const errors=editedErrors(body.error_types,attempt.error_type),primary=errors[0];
+  const date=String(body.date||attempt.date),errorPoint=japaneseizeMathText(String(body.error_point??attempt.error_point)),
+    nextAction=japaneseizeMathText(String(body.next_action??attempt.next_action));
+  const scoreValue=body.score_numeric??attempt.score_numeric;
+  const updated:Attempt={...attempt,date,mark:String(body.mark||attempt.mark),score_label:String(body.score_label||attempt.score_label),
+    score_numeric:scoreValue===""||scoreValue==null?null:Number(scoreValue),
+    error_type:primary,primary_error_type:primary,error_types:errors,error_point:errorPoint,next_action:nextAction};
+  await db.attempts.put(updated);
+  const reviewIds=(await db.reviews.toArray()).filter(review=>review.generated_from_attempt_id===id).map(review=>review.id);
+  if(reviewIds.length) await db.reviews.bulkDelete(reviewIds);
+  const noteIds=oldNotes.map(note=>note.id);
+  if(noteIds.length) await db.weakNotes.bulkDelete(noteIds);
+  const related=[...(problem.related_s_problem_ids||[]),...list(problem.linked_s_problems)];
+  const plan=problem.category==="S"
+    ?createSReviewPlan(updated.mark==="◎"||updated.mark==="○"?"stable":updated.mark==="×"?"forgotten":"check")
+    :createAttemptReviewPlan(updated,related,0);
+  await db.reviews.add({id:undefined as unknown as number,problem_id:attempt.problem_id,due_date:addDays(date,plan.interval_days||14),
+    review_type:plan.review_type,status:"pending",generated_from_attempt_id:id,duration_minutes:plan.estimated_minutes,
+    reason:plan.review_reason,...planFields(plan)});
+  const theme=String(body.theme||oldNotes[0]?.theme||problem.theme);
+  if(primary!=="none"&&errorPoint) await db.weakNotes.add({
+    id:undefined as unknown as number,date,problem_id:attempt.problem_id,error_type:primary,theme,mistake:errorPoint,
+    correction_rule:japaneseizeMathText(String(body.correction_rule||oldNotes[0]?.correction_rule||nextAction)),
+    is_resolved:0,source_text:oldNotes[0]?.source_text||"",auto_generated:true,generated_from_attempt_id:id
+  });
+  if((errors.includes("K")||errors.includes("N"))&&related.length){
+    const state:SState=errors.includes("K")?"collapsed":"check",sPlan=createSReviewPlan(state);
+    for(const sid of [...new Set(related)]){
+      if(!await db.problems.get(sid)) continue;
+      await db.reviews.add({id:undefined as unknown as number,problem_id:sid,due_date:addDays(date,sPlan.interval_days||1),
+        review_type:"s_check",status:"pending",generated_from_attempt_id:id,duration_minutes:sPlan.estimated_minutes,
+        reason:sPlan.review_reason,...planFields(sPlan)});
+    }
+  }
+  await refreshLinkedSMemory(related);
+  await db.problems.update(attempt.problem_id,{completion_status:primary==="none"?"active":"review_pending"});
+}
+
+async function deleteAttemptAnalysis(id:number){
+  const attempt=await db.attempts.get(id);
+  if(!attempt) throw new Error("削除する採点結果が見つかりません");
+  const reviewIds=(await db.reviews.toArray()).filter(review=>review.generated_from_attempt_id===id).map(review=>review.id);
+  const noteIds=(await db.weakNotes.toArray()).filter(note=>note.generated_from_attempt_id===id||
+    (!note.generated_from_attempt_id&&note.problem_id===attempt.problem_id&&note.date===attempt.date)).map(note=>note.id);
+  await db.attempts.delete(id);
+  if(reviewIds.length) await db.reviews.bulkDelete(reviewIds);
+  if(noteIds.length) await db.weakNotes.bulkDelete(noteIds);
+  const problem=await db.problems.get(attempt.problem_id);
+  const related=[...(problem?.related_s_problem_ids||[]),...list(problem?.linked_s_problems||"")];
+  await refreshLinkedSMemory(related);
+  const remaining=await db.attempts.where("problem_id").equals(attempt.problem_id).toArray();
+  const stillWeak=remaining.some(item=>(item.error_types||[item.error_type]).some(error=>error!=="none"));
+  await db.problems.update(attempt.problem_id,{completion_status:stillWeak?"review_pending":"active"});
 }
 
 function suggest(theme=""){
@@ -416,6 +516,12 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     await db.transaction("rw",db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,()=>saveAttempt(body));
   } else if(path==="/api/import") {
     await db.transaction("rw",db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,async()=>{for(const update of body.updates) await saveAttempt(update)});
+  } else if(/^\/api\/attempts\/\d+\/update$/.test(path)) {
+    await db.transaction("rw",db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,
+      ()=>updateAttemptAnalysis(Number(path.split("/")[3]),body));
+  } else if(/^\/api\/attempts\/\d+\/delete$/.test(path)) {
+    await db.transaction("rw",db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,
+      ()=>deleteAttemptAnalysis(Number(path.split("/")[3])));
   } else if(/^\/api\/reviews\/\d+\/done$/.test(path)) {
     await db.reviews.update(Number(path.split("/")[3]),{status:"done"});
   } else if(/^\/api\/reviews\/\d+\/pending$/.test(path)) {

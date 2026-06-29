@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import {
   AlertTriangle, Archive, BarChart3, BookOpen, CalendarCheck, Check, ChevronRight, ClipboardPaste,
   Clock3, Copy, Database, Download, Gauge, LayoutDashboard, ListChecks, Menu, NotebookPen,
-  Play, Plus, RefreshCw, Search, Settings, Sparkles, Target, X
+  Pencil, Play, Plus, RefreshCw, Search, Settings, Sparkles, Target, Trash2, X
 } from "lucide-react";
 import yaml from "js-yaml";
 import { api, post } from "./api";
@@ -70,7 +70,7 @@ export default function App() {
         page==="attempt"?<AttemptView problems={data.problems} run={run} busy={busy}/>:
         page==="import"?<AdvancedImportView problems={data.problems} run={run} busy={busy}/>:
         page==="reviews"?<ReviewsView data={data} run={run} busy={busy}/>:
-        page==="weak"?<WeakView data={data}/>:
+        page==="weak"?<WeakView data={data} run={run} busy={busy}/>:
         page==="past"?<PastView data={data} go={go}/>:
         <SettingsView data={data} run={run} busy={busy}/>}
       </div>
@@ -130,7 +130,7 @@ function DashboardView({data,go}:{data:Bootstrap;go:(p:Page)=>void}) {
           <div>{insight.recommendedS.map(id=><Badge tone="blue" key={id}>{id}</Badge>)}{insight.recommendedA.map(id=><Badge key={id}>{id}</Badge>)}{!insight.recommendedS.length&&!insight.recommendedA.length&&<small>関連問題を問題マスターに設定してください</small>}</div>
         </div>
         <div className="recommended-action"><Target size={18}/><div><span>推奨する次の行動</span><strong>{insight.action}</strong><small>{modes[insight.mode]||insight.mode}・約{insight.minutes}分・負荷 {insight.load.toFixed(1)}</small></div></div>
-        <button className="ghost weakness-start" onClick={()=>go("import")}><ClipboardPaste size={15}/>GPT採点結果を取り込む</button>
+        <div className="weakness-actions"><button className="ghost weakness-start" onClick={()=>go("weak")}><Pencil size={15}/>登録内容を編集</button><button className="ghost weakness-start" onClick={()=>go("import")}><ClipboardPaste size={15}/>GPT採点結果を取り込む</button></div>
       </section>)}</div>:
       <section className="panel analysis-empty"><Target size={28}/><div><strong>分析に必要な記録を蓄積中です</strong><p>学習記録にK/W/N/Cまたは△・×が入ると、苦手テーマと戻る問題を自動提案します。</p></div></section>}
     <div className="three-col">
@@ -293,9 +293,11 @@ function ReviewsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>
   const rows=data.reviews.filter(r=>filter==="all"||(filter==="open"?["pending","overdue"].includes(r.status):r.status===filter));
   return <><div className="toolbar"><div className="segmented">{[["open","未完了"],["overdue","期限切れ"],["done","完了"],["all","すべて"]].map(([k,v])=><button key={k} className={filter===k?"active":""} onClick={()=>setFilter(k)}>{v}</button>)}</div></div><div className="review-list">{rows.map(r=><article className="panel review-card" key={r.id}><div className="review-card-head"><div><Badge tone={r.status==="overdue"?"red":r.status==="done"?"green":""}>{r.status==="overdue"?"期限切れ":r.status==="done"?"完了":"予定"}</Badge><h3>{pmap[r.problem_id]?.display_label||pmap[r.problem_id]?.title||r.problem_id}</h3><span>{r.problem_id} ・ 次回復習 {r.due_date}</span></div>{r.status==="done"?<button disabled={busy} className="small ghost" onClick={()=>run(()=>post(`/api/reviews/${r.id}/pending`,{}),"未完了に戻しました")}>未完了に戻す</button>:<button disabled={busy} className="small ghost" onClick={()=>run(()=>post(`/api/reviews/${r.id}/done`,{}),"復習を完了にしました")}><Check size={14}/>完了</button>}</div><ReviewPlanDetails item={r}/></article>)}</div>{!rows.length&&<section className="panel"><Empty>該当する復習予定はありません</Empty></section>}</>
 }
-function WeakView({data}:{data:Bootstrap}) {
+function WeakView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean}) {
   const [selected,setSelected]=useState<string[]>([]);
   const [copied,setCopied]=useState(false);
+  const [editing,setEditing]=useState<Attempt|null>(null);
+  const [form,setForm]=useState<Record<string,string>>({});
   const trend=analyzeWeakTrends(data.problems,data.attempts,data.weakNotes);
   const topThemes=trend.themes.slice(0,8),maxTheme=Math.max(1,...topThemes.map(theme=>theme.score));
   const themeSignature=topThemes.map(theme=>theme.label).join("|");
@@ -309,6 +311,23 @@ function WeakView({data}:{data:Bootstrap}) {
   const quizPrompt=buildQuizPrompt(selected,data.problems,data.attempts,data.weakNotes,5);
   const copyPrompt=async()=>{await navigator.clipboard.writeText(quizPrompt);setCopied(true);setTimeout(()=>setCopied(false),1800)};
   const dominantError=[...trend.errors].sort((a,b)=>b.score-a.score)[0]?.error||"—";
+  const analysisAttempts=data.attempts.filter(attempt=>(attempt.error_types||[attempt.error_type]).some(error=>error!=="none"));
+  const noteFor=(attempt:Attempt)=>data.weakNotes.find(note=>note.generated_from_attempt_id===attempt.id)||
+    data.weakNotes.find(note=>note.problem_id===attempt.problem_id&&note.date===attempt.date);
+  const editAttempt=(attempt:Attempt)=>{
+    const note=noteFor(attempt),problem=data.problems.find(item=>item.problem_id===attempt.problem_id);
+    setEditing(attempt);setForm({date:attempt.date,mark:attempt.mark,score_label:attempt.score_label,
+      score_numeric:attempt.score_numeric==null?"":String(attempt.score_numeric),
+      error_types:(attempt.error_types||[attempt.error_type]).filter(error=>error!=="none").join(" + "),
+      theme:note?.theme||problem?.theme||"",error_point:attempt.error_point||"",next_action:attempt.next_action||"",
+      correction_rule:note?.correction_rule||attempt.next_action||""});
+  };
+  const saveEdit=(event:React.FormEvent)=>{event.preventDefault();if(!editing)return;setEditing(null);
+    run(()=>post(`/api/attempts/${editing.id}/update`,form),"採点データを更新し、苦手分析と復習予定を再計算しました")};
+  const removeAttempt=(attempt:Attempt)=>{
+    if(!window.confirm(`${attempt.problem_id}（${attempt.date}）の採点データを削除します。関連する復習予定と弱点傾向データも削除されます。`))return;
+    run(()=>post(`/api/attempts/${attempt.id}/delete`,{}),"採点データと関連する分析・復習予定を削除しました");
+  };
   if(!trend.attemptCount) return <><section className="weak-trend-hero"><div><span className="eyebrow">WEAKNESS TRENDS</span><h2>GPT採点が集まると、苦手の傾向が見えてきます</h2><p>弱点ノートは自分で管理する一覧ではなく、採点結果から傾向を作るための分析データとして使います。</p></div></section><section className="panel"><Empty>まだ分析データがありません。GPT採点結果を取り込むと自動で蓄積されます</Empty></section></>;
   return <>
     <section className="weak-trend-hero"><div><span className="eyebrow">WEAKNESS TRENDS</span><h2>採点結果から見える苦手傾向</h2><p>ここは復習タスクの一覧ではありません。問題とGPT採点結果から、繰り返し落としているテーマとミスの型を俯瞰する場所です。</p></div><div className="trend-summary"><strong>{trend.themes.length}</strong><span>検出テーマ</span><small>最多 {trend.topTheme}</small></div></section>
@@ -330,7 +349,23 @@ function WeakView({data}:{data:Bootstrap}) {
       <textarea className="quiz-prompt" readOnly value={quizPrompt}/>
       <button className="primary copy-quiz" disabled={!selected.length} onClick={copyPrompt}>{copied?<Check size={17}/>:<Copy size={17}/>} {copied?"コピーしました":"GPTクイズ用プロンプトをコピー"}</button>
     </section>
-    <details className="panel trend-evidence"><summary>分析に使った最近の採点記録を見る</summary><div>{data.weakNotes.slice(0,12).map(note=><div className="evidence-row" key={note.id}><ErrorBadge value={note.error_type}/><div><strong>{note.theme}</strong><span>{note.problem_id} ・ {note.mistake}</span></div></div>)}</div></details>
+    <details className="panel trend-evidence"><summary>分析に使った採点データを編集・削除</summary><div>{analysisAttempts.map(attempt=>{
+      const note=noteFor(attempt),problem=data.problems.find(item=>item.problem_id===attempt.problem_id);
+      return <div className="evidence-row managed" key={attempt.id}><ErrorBadge value={attempt.primary_error_type||attempt.error_type}/><div><strong>{note?.theme||problem?.theme||"テーマ未設定"}</strong><span>{attempt.date} ・ {attempt.problem_id} ・ {attempt.error_point||"ミス内容未入力"}</span></div><div className="evidence-actions"><button className="small ghost" onClick={()=>editAttempt(attempt)}><Pencil size={13}/>編集</button><button className="small danger-button" disabled={busy} onClick={()=>removeAttempt(attempt)}><Trash2 size={13}/>削除</button></div></div>})}</div></details>
+    {editing&&<Modal title="苦手分析の根拠データを編集" close={()=>setEditing(null)}><form className="form-grid analysis-edit-form" onSubmit={saveEdit}>
+      <Field label="問題"><input value={editing.problem_id} readOnly/></Field>
+      <Field label="採点日"><input type="date" value={form.date} onChange={event=>setForm({...form,date:event.target.value})}/></Field>
+      <Field label="mark"><select value={form.mark} onChange={event=>setForm({...form,mark:event.target.value})}>{["◎","○","△","×"].map(mark=><option key={mark}>{mark}</option>)}</select></Field>
+      <Field label="評価"><select value={form.score_label} onChange={event=>setForm({...form,score_label:event.target.value})}>{["S","A","B","C"].map(score=><option key={score}>{score}</option>)}</select></Field>
+      <Field label="点数"><input type="number" value={form.score_numeric} onChange={event=>setForm({...form,score_numeric:event.target.value})}/></Field>
+      <Field label="K/W/N/C（複数可・空欄でなし）"><input value={form.error_types} onChange={event=>setForm({...form,error_types:event.target.value.toUpperCase()})} placeholder="K + W"/></Field>
+      <Field label="分析テーマ" wide><input value={form.theme} onChange={event=>setForm({...form,theme:event.target.value})}/></Field>
+      <Field label="ミス内容" wide><textarea value={form.error_point} onChange={event=>setForm({...form,error_point:event.target.value})}/></Field>
+      <Field label="修正ルール" wide><textarea value={form.correction_rule} onChange={event=>setForm({...form,correction_rule:event.target.value})}/></Field>
+      <Field label="次の行動" wide><textarea value={form.next_action} onChange={event=>setForm({...form,next_action:event.target.value})}/></Field>
+      <div className="analysis-edit-note wide"><AlertTriangle size={16}/><span>保存すると、この採点結果から作られた復習予定と弱点傾向が新しい内容で再計算されます。</span></div>
+      <div className="form-actions wide"><button type="button" className="ghost" onClick={()=>setEditing(null)}>キャンセル</button><button className="primary" disabled={busy}>更新する</button></div>
+    </form></Modal>}
   </>;
 }
 
