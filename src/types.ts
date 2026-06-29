@@ -24,6 +24,7 @@ export type Review = {
 export type WeakNote = {
   id:number; date:string; problem_id:string; error_type:string; theme:string; mistake:string;
   correction_rule:string; is_resolved:number; source_text?:string; auto_generated?:boolean;
+  last_quizzed_at?:string; quiz_correct_count?:number; quiz_wrong_count?:number;
 };
 export type Roadmap = {
   id:number; order_index:number; problem_id:string; block_name:string; expected_mode:string; load_score:number; is_active:number;

@@ -3,6 +3,7 @@ import type { Attempt, Bootstrap, PastSession, Problem, Review, Roadmap, StudyUp
 import { japaneseizeMathText } from "./mathJapanese.ts";
 import { analyzeWeaknesses } from "./weaknessAnalytics.ts";
 import { createAttemptReviewPlan, createPastReviewPlan, createSReviewPlan, type ReviewPlan, type SState } from "./reviewRules.ts";
+import { applyWeakNoteQuizResult } from "./weakNoteQuiz.ts";
 
 type SMemory = { problem_id:string; state:"stable"|"check"|"forgotten"|"collapsed"; last_touched?:string; k_trigger_count:number };
 type StoredAttempt = Attempt;
@@ -124,6 +125,21 @@ class StudyDatabase extends Dexie {
     }).upgrade(async tx=>{
       await tx.table("reviews").toCollection().modify((review:Review)=>{
         if(review.generated_from_past_session_id) review.status="done";
+      });
+    });
+    this.version(6).stores({
+      problems:"&problem_id,category,chapter,priority,completion_status,normalized_label",
+      attempts:"++id,problem_id,date,error_type,mark,primary_error_type,[problem_id+date]",
+      reviews:"++id,problem_id,due_date,status,review_type",
+      roadmap:"&order_index,problem_id,is_active",
+      weakNotes:"++id,problem_id,date,error_type,is_resolved,auto_generated,last_quizzed_at",
+      pastSessions:"++id,year,date,session_type,selection_result",
+      sMemory:"&problem_id,state,last_touched",
+      meta:"&key"
+    }).upgrade(async tx=>{
+      await tx.table("weakNotes").toCollection().modify((note:WeakNote)=>{
+        note.quiz_correct_count=note.quiz_correct_count||0;
+        note.quiz_wrong_count=note.quiz_wrong_count||0;
       });
     });
   }
@@ -404,11 +420,19 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     await db.transaction("rw",db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,async()=>{for(const update of body.updates) await saveAttempt(update)});
   } else if(/^\/api\/reviews\/\d+\/done$/.test(path)) {
     await db.reviews.update(Number(path.split("/")[3]),{status:"done"});
+  } else if(/^\/api\/reviews\/\d+\/pending$/.test(path)) {
+    await db.reviews.update(Number(path.split("/")[3]),{status:"pending"});
   } else if(path==="/api/today-check") {
     const key=`today-check:${body.date||todayString()}:${body.problem_id}:${body.kind}`;
     if(body.checked) await db.meta.put({key,value:"1"}); else await db.meta.delete(key);
   } else if(/^\/api\/weak-notes\/\d+\/resolve$/.test(path)) {
     await db.weakNotes.update(Number(path.split("/")[3]),{is_resolved:1});
+  } else if(/^\/api\/weak-notes\/\d+\/unresolve$/.test(path)) {
+    await db.weakNotes.update(Number(path.split("/")[3]),{is_resolved:0,quiz_correct_count:0});
+  } else if(/^\/api\/weak-notes\/\d+\/quiz$/.test(path)) {
+    const id=Number(path.split("/")[3]),note=await db.weakNotes.get(id);
+    if(!note) throw new Error("弱点ノートが見つかりません");
+    await db.weakNotes.update(id,applyWeakNoteQuizResult(note,body.result==="remembered"?"remembered":"retry"));
   } else if(path==="/api/past-sessions") {
     await db.transaction("rw",db.pastSessions,db.reviews,async()=>{
       const session={...body,id:undefined as unknown as number,year:Number(body.year),selection_time_minutes:Number(body.selection_time_minutes||0),completed_questions_count:Number(body.completed_questions_count||0)};

@@ -143,8 +143,22 @@ function DashboardView({data,go}:{data:Bootstrap;go:(p:Page)=>void}) {
 function TaskRow({task}:{task:Task}) {
   return <div className={`task-row ${task.checked?"task-checked":""}`}><div className={`task-icon ${task.kind==="S確認"?"s":task.error_type==="K"?"k":""}`}>{task.checked?<Check size={15}/>:task.kind.slice(0,1)}</div><div className="task-main"><strong>{task.problem_id}</strong><span>{task.title}</span></div><div className="task-meta"><Badge>{modes[task.mode]||task.mode}</Badge><span><Clock3 size={14}/>{task.minutes}分</span><b>{task.load.toFixed(1)}</b></div></div>
 }
+function shortReviewActions(item:Partial<Review&Task>){
+  const method=item.review_method||"";
+  const linked=item.linked_s_problem_ids?.join(" / ");
+  if(method.includes("骨格再現＋")) return [linked?`${linked}を5〜10分確認する`:"型・出発式・主役の統計量を書く","同じ問題の骨格だけを何も見ずに書く"];
+  if(method.includes("ノート補修")) return ["弱点ノートに修正ルールを1行追加する","途中式を省略せず、同じ問題の骨格を書く"];
+  if(method.includes("該当作業")) return ["落とした計算・積分・和の変形だけを書き直す","同じ作業を何も見ずにもう一度行う"];
+  if(method.includes("チェックリスト")) return ["再発防止のチェック項目を1つ作る","ミスした箇所だけを見直す"];
+  if(method.includes("3分")) return ["型・出発式・主役の統計量だけを確認する"];
+  if(method.includes("骨格確認")||method.includes("骨格再構築")) return ["出発式と使う定理を自力で書く","見ずに骨格を再現する"];
+  if(method.includes("復旧")) return ["関連S問題で出発式と条件を復旧する","元のA問題の骨格へ戻る"];
+  if(method.includes("過去問")) return ["最大失点要因に対応するA/S問題を補修する","時間配分または答案化を1点だけ修正する"];
+  return item.review_steps?.slice(0,2)||[item.review_instruction||"問題の必要部分だけを確認する"];
+}
 function ReviewPlanDetails({item,compact=false}:{item:Partial<Review&Task>;compact?:boolean}) {
   if(!item.review_method&&!item.review_reason) return null;
+  const actions=shortReviewActions(item).filter(Boolean).slice(0,2);
   return <div className={`review-plan ${compact?"compact":""}`}>
     <div className="review-plan-summary">
       {item.due_date&&<div><span>復習日</span><strong>{item.due_date}</strong></div>}
@@ -153,8 +167,9 @@ function ReviewPlanDetails({item,compact=false}:{item:Partial<Review&Task>;compa
       <div><span>答案</span><strong>{item.requires_full_answer?"フル答案が必要":"骨格・必要部分だけ"}</strong></div>
       <div><span>関連S</span><strong>{item.requires_s_check?`確認する${item.linked_s_problem_ids?.length?`（${item.linked_s_problem_ids.join(" / ")}）`:""}`:"確認不要"}</strong></div>
     </div>
-    <div className="review-explanation"><span>なぜ復習するか</span><p>{item.review_reason}</p><span>どう復習するか</span><p>{item.review_instruction}</p></div>
-    {!!item.review_steps?.length&&<details open={!compact}><summary>復習ステップ（{item.review_steps.length}項目）</summary><ol>{item.review_steps.map((step,index)=><li key={`${index}-${step}`}>{step}</li>)}</ol></details>}
+    <div className="next-actions"><span>今回やること</span><ol>{actions.map((action,index)=><li key={`${index}-${action}`}>{action}</li>)}</ol></div>
+    <details><summary>理由と詳しい手順を見る</summary><div className="review-explanation"><span>なぜ復習するか</span><p>{item.review_reason}</p><span>復習時に見るポイント</span><p>{item.review_instruction}</p></div>
+      {!!item.review_steps?.length&&<ol>{item.review_steps.map((step,index)=><li key={`${index}-${step}`}>{step}</li>)}</ol>}</details>
   </div>;
 }
 function TodayView({data,busy,run,go}:{data:Bootstrap;busy:boolean;run:(a:()=>Promise<unknown>,s:string)=>void;go:(p:Page)=>void}) {
@@ -275,11 +290,28 @@ function ImportView({problems,run,busy}:{problems:Problem[];run:(a:()=>Promise<u
 function ReviewsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean}) {
   const [filter,setFilter]=useState("open"); const pmap=Object.fromEntries(data.problems.map(p=>[p.problem_id,p]));
   const rows=data.reviews.filter(r=>filter==="all"||(filter==="open"?["pending","overdue"].includes(r.status):r.status===filter));
-  return <><div className="toolbar"><div className="segmented">{[["open","未完了"],["overdue","期限切れ"],["done","完了"],["all","すべて"]].map(([k,v])=><button key={k} className={filter===k?"active":""} onClick={()=>setFilter(k)}>{v}</button>)}</div></div><div className="review-list">{rows.map(r=><article className="panel review-card" key={r.id}><div className="review-card-head"><div><Badge tone={r.status==="overdue"?"red":r.status==="done"?"green":""}>{r.status==="overdue"?"期限切れ":r.status==="done"?"完了":"予定"}</Badge><h3>{pmap[r.problem_id]?.display_label||pmap[r.problem_id]?.title||r.problem_id}</h3><span>{r.problem_id} ・ 次回復習 {r.due_date}</span></div>{r.status!=="done"&&<button disabled={busy} className="small ghost" onClick={()=>run(()=>post(`/api/reviews/${r.id}/done`,{}),"復習を完了にしました")}><Check size={14}/>完了</button>}</div><ReviewPlanDetails item={r}/></article>)}</div>{!rows.length&&<section className="panel"><Empty>該当する復習予定はありません</Empty></section>}</>
+  return <><div className="toolbar"><div className="segmented">{[["open","未完了"],["overdue","期限切れ"],["done","完了"],["all","すべて"]].map(([k,v])=><button key={k} className={filter===k?"active":""} onClick={()=>setFilter(k)}>{v}</button>)}</div></div><div className="review-list">{rows.map(r=><article className="panel review-card" key={r.id}><div className="review-card-head"><div><Badge tone={r.status==="overdue"?"red":r.status==="done"?"green":""}>{r.status==="overdue"?"期限切れ":r.status==="done"?"完了":"予定"}</Badge><h3>{pmap[r.problem_id]?.display_label||pmap[r.problem_id]?.title||r.problem_id}</h3><span>{r.problem_id} ・ 次回復習 {r.due_date}</span></div>{r.status==="done"?<button disabled={busy} className="small ghost" onClick={()=>run(()=>post(`/api/reviews/${r.id}/pending`,{}),"未完了に戻しました")}>未完了に戻す</button>:<button disabled={busy} className="small ghost" onClick={()=>run(()=>post(`/api/reviews/${r.id}/done`,{}),"復習を完了にしました")}><Check size={14}/>完了</button>}</div><ReviewPlanDetails item={r}/></article>)}</div>{!rows.length&&<section className="panel"><Empty>該当する復習予定はありません</Empty></section>}</>
 }
 function WeakView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean}) {
-  const [showResolved,setShowResolved]=useState(false);const rows=data.weakNotes.filter(x=>showResolved||!x.is_resolved);
-  return <><div className="toolbar"><p className="muted">1ミス1行。修正ルールを短く、再利用できる形で残します。</p><label className="check"><input type="checkbox" checked={showResolved} onChange={e=>setShowResolved(e.target.checked)}/>解決済みも表示</label></div><section className="panel flush"><div className="table-wrap"><table><thead><tr><th>日付</th><th>分類</th><th>問題</th><th>テーマ</th><th>ミス</th><th>修正ルール</th><th/></tr></thead><tbody>{rows.map(w=><tr className={w.is_resolved?"resolved":""} key={w.id}><td>{w.date}</td><td><ErrorBadge value={w.error_type}/></td><td><strong>{w.problem_id}</strong></td><td>{w.theme}</td><td>{w.mistake}</td><td><strong>{w.correction_rule||"—"}</strong></td><td>{!w.is_resolved&&<button disabled={busy} className="small ghost" onClick={()=>run(()=>post(`/api/weak-notes/${w.id}/resolve`,{}),"弱点を解決済みにしました")}><Check size={14}/>解決</button>}</td></tr>)}</tbody></table></div>{!rows.length&&<Empty>未解決の弱点はありません</Empty>}</section></>
+  const [tab,setTab]=useState<"quiz"|"list">("quiz");
+  const [revealed,setRevealed]=useState(false);
+  const queue=data.weakNotes.filter(note=>!note.is_resolved).sort((a,b)=>(a.last_quizzed_at||"").localeCompare(b.last_quizzed_at||"")||a.id-b.id);
+  const note=queue[0];
+  const answer=(result:"remembered"|"retry")=>{
+    setRevealed(false);
+    run(()=>post(`/api/weak-notes/${note.id}/quiz`,{result}),result==="remembered"?"1回できました。2回できると定着扱いになります":"未習得のまま残しました。後でもう一度出題します");
+  };
+  return <>
+    <section className="weak-guide"><div><span className="eyebrow">ACTIVE RECALL</span><h2>ミスを「次は直せるルール」に変える</h2><p>ミス内容を見て修正ルールを思い出し、答えを確認します。「できた」が2回で定着扱いです。間違えたノートはいつでも未解決に戻せます。</p></div><div><strong>{queue.length}</strong><span>未習得</span></div></section>
+    <div className="toolbar"><div className="segmented"><button className={tab==="quiz"?"active":""} onClick={()=>{setTab("quiz");setRevealed(false)}}>クイズで復習</button><button className={tab==="list"?"active":""} onClick={()=>setTab("list")}>ノート一覧</button></div></div>
+    {tab==="quiz"?note?<section className="panel weak-quiz">
+      <div className="weak-quiz-head"><div><ErrorBadge value={note.error_type}/><span>{note.problem_id} ・ {note.theme}</span></div><Badge>{(note.quiz_correct_count||0)} / 2 回できた</Badge></div>
+      <div className="quiz-question"><span>問題</span><h3>このミスを次回防ぐためのルールは？</h3><p>{note.mistake}</p><small>声に出すか、紙に1行書いてから答えを表示してください。</small></div>
+      {!revealed?<button className="primary quiz-reveal" onClick={()=>setRevealed(true)}><BookOpen size={17}/>答えを見る</button>:
+        <div className="quiz-answer"><span>修正ルール</span><strong>{note.correction_rule||"修正ルールが未登録です"}</strong><div><button disabled={busy} className="ghost" onClick={()=>answer("retry")}>まだ不安</button><button disabled={busy} className="primary" onClick={()=>answer("remembered")}><Check size={16}/>できた</button></div></div>}
+    </section>:<section className="panel"><Empty>未習得の弱点はありません。間違いが再発したら「ノート一覧」から未解決に戻せます</Empty></section>:
+    <section className="panel flush"><div className="table-wrap"><table><thead><tr><th>状態</th><th>分類</th><th>問題・テーマ</th><th>ミス</th><th>次回の修正ルール</th><th>クイズ</th><th/></tr></thead><tbody>{data.weakNotes.map(w=><tr className={w.is_resolved?"resolved-row":""} key={w.id}><td><Badge tone={w.is_resolved?"green":"orange"}>{w.is_resolved?"定着":"未習得"}</Badge></td><td><ErrorBadge value={w.error_type}/></td><td><strong>{w.problem_id}</strong><small>{w.theme}</small></td><td>{w.mistake}</td><td><strong>{w.correction_rule||"—"}</strong></td><td>{w.quiz_correct_count||0}/2<small>不安 {w.quiz_wrong_count||0}回</small></td><td>{w.is_resolved?<button disabled={busy} className="small ghost" onClick={()=>run(()=>post(`/api/weak-notes/${w.id}/unresolve`,{}),"未解決に戻しました")}>未解決に戻す</button>:<button disabled={busy} className="small ghost" onClick={()=>run(()=>post(`/api/weak-notes/${w.id}/resolve`,{}),"定着扱いにしました")}><Check size={14}/>定着扱い</button>}</td></tr>)}</tbody></table></div>{!data.weakNotes.length&&<Empty>弱点ノートはまだありません。GPT採点取り込みから自動追加されます</Empty>}</section>}
+  </>;
 }
 
 function PastView({data,go}:{data:Bootstrap;go:(p:Page)=>void}) {
