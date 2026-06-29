@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import {
-  AlertTriangle, Archive, BookOpen, CalendarCheck, Check, ChevronRight, ClipboardPaste,
-  Clock3, Database, Download, Gauge, LayoutDashboard, ListChecks, Menu, NotebookPen,
-  Play, Plus, RefreshCw, Search, Settings, Target, X
+  AlertTriangle, Archive, BarChart3, BookOpen, CalendarCheck, Check, ChevronRight, ClipboardPaste,
+  Clock3, Copy, Database, Download, Gauge, LayoutDashboard, ListChecks, Menu, NotebookPen,
+  Play, Plus, RefreshCw, Search, Settings, Sparkles, Target, X
 } from "lucide-react";
 import yaml from "js-yaml";
 import { api, post } from "./api";
@@ -10,12 +10,13 @@ import { csvFor, exportBackup, restoreBackup } from "./localDb";
 import AdvancedImportView from "./AdvancedImportView";
 import { problemDisplayLabel } from "./importParser";
 import { createAttemptReviewPlan } from "./reviewRules";
+import { analyzeWeakTrends, buildQuizPrompt } from "./weakTrend";
 import type { Attempt, Bootstrap, Problem, Review, StudyUpdate, Task } from "./types";
 
 type Page = "dashboard"|"today"|"problems"|"attempt"|"import"|"reviews"|"weak"|"past"|"settings";
 const pageTitles:Record<Page,string> = {
   dashboard:"ダッシュボード",today:"今日やること",problems:"問題一覧",attempt:"手入力（予備）",
-  import:"GPT回答取り込み",reviews:"復習予定",weak:"弱点ノート",past:"過去問分析",settings:"設定"
+  import:"GPT回答取り込み",reviews:"復習予定",weak:"弱点傾向",past:"過去問分析",settings:"設定"
 };
 const nav = [
   ["dashboard",LayoutDashboard],["today",ListChecks],["problems",BookOpen],["attempt",NotebookPen],
@@ -69,7 +70,7 @@ export default function App() {
         page==="attempt"?<AttemptView problems={data.problems} run={run} busy={busy}/>:
         page==="import"?<AdvancedImportView problems={data.problems} run={run} busy={busy}/>:
         page==="reviews"?<ReviewsView data={data} run={run} busy={busy}/>:
-        page==="weak"?<WeakView data={data} run={run} busy={busy}/>:
+        page==="weak"?<WeakView data={data}/>:
         page==="past"?<PastView data={data} go={go}/>:
         <SettingsView data={data} run={run} busy={busy}/>}
       </div>
@@ -82,7 +83,7 @@ function DashboardView({data,go}:{data:Bootstrap;go:(p:Page)=>void}) {
   const pastIds=new Set(data.problems.filter(problem=>problem.category==="past_exam").map(problem=>problem.problem_id));
   const pastAttemptCount=data.attempts.filter(attempt=>pastIds.has(attempt.problem_id)).length;
   const pastReviewCount=data.reviews.filter(review=>review.status!=="done"&&pastIds.has(review.problem_id)).length;
-  const paceLabels=["A問題 10〜14題","過去問GPT採点 2件以上","K再発 2題以内","骨格再現率 80%以上","弱点ノート 週1回以上","3日超の遅延なし"];
+  const paceLabels=["A問題 10〜14題","過去問GPT採点 2件以上","K再発 2題以内","骨格再現率 80%以上","弱点傾向データ 週1回以上","3日超の遅延なし"];
   const nextTask=data.today.tasks.find(task=>!task.checked);
   return <>
     <section className="hero">
@@ -282,7 +283,7 @@ function ImportView({problems,run,busy}:{problems:Problem[];run:(a:()=>Promise<u
       <div className="import-cards">{updates.map((u,i)=><div className="import-card" key={i}><div className="import-card-head"><strong>{i+1}. {u.problem_id||"問題ID未設定"}</strong><button onClick={()=>setUpdates(updates.filter((_,n)=>n!==i))}><X size={16}/></button></div>
         <div className="import-fields"><Field label="問題ID"><select value={u.problem_id} onChange={e=>updateOne(i,"problem_id",e.target.value)}><option value="">選択</option>{problems.map(p=><option value={p.problem_id} key={p.problem_id}>{p.problem_id}</option>)}</select></Field><Field label="モード"><select value={u.mode} onChange={e=>updateOne(i,"mode",e.target.value)}>{Object.entries(modes).map(([k,v])=><option value={k} key={k}>{v}</option>)}</select></Field><Field label="評価"><input value={`${u.mark} / ${u.score_label}`} readOnly/></Field><Field label="K/W/N/C"><select value={u.error_type} onChange={e=>updateOne(i,"error_type",e.target.value)}><option value="none">なし</option>{["K","W","N","C"].map(x=><option key={x}>{x}</option>)}</select></Field></div>
         <Field label="落とした点" wide><textarea value={u.error_point} onChange={e=>updateOne(i,"error_point",e.target.value)}/></Field><Field label="次の行動" wide><textarea value={u.next_action} onChange={e=>updateOne(i,"next_action",e.target.value)}/></Field>
-        <div className="import-effects"><span><CalendarCheck/>次回復習日 <strong>{reviewDate(u)}</strong></span><span><BookOpen/>S確認 <strong>{u.error_type==="K"?(u.linked_s_problem||"関連設定なし"):"追加なし"}</strong></span><span><NotebookPen/>弱点ノート <strong>{u.error_type!=="none"&&u.error_point?"1行追加":"追加なし"}</strong></span></div>
+        <div className="import-effects"><span><CalendarCheck/>次回復習日 <strong>{reviewDate(u)}</strong></span><span><BookOpen/>S確認 <strong>{u.error_type==="K"?(u.linked_s_problem||"関連設定なし"):"追加なし"}</strong></span><span><NotebookPen/>弱点傾向 <strong>{u.error_type!=="none"&&u.error_point?"分析データに追加":"追加なし"}</strong></span></div>
       </div>)}</div><button disabled={busy||updates.some(x=>!x.problem_id)} className="primary wide-btn" onClick={()=>run(()=>post("/api/import",{updates}),`${updates.length}件を一括保存しました`)}><Database size={17}/>{updates.length}件を保存する</button></>}
     </section></div>
 }
@@ -292,25 +293,44 @@ function ReviewsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>
   const rows=data.reviews.filter(r=>filter==="all"||(filter==="open"?["pending","overdue"].includes(r.status):r.status===filter));
   return <><div className="toolbar"><div className="segmented">{[["open","未完了"],["overdue","期限切れ"],["done","完了"],["all","すべて"]].map(([k,v])=><button key={k} className={filter===k?"active":""} onClick={()=>setFilter(k)}>{v}</button>)}</div></div><div className="review-list">{rows.map(r=><article className="panel review-card" key={r.id}><div className="review-card-head"><div><Badge tone={r.status==="overdue"?"red":r.status==="done"?"green":""}>{r.status==="overdue"?"期限切れ":r.status==="done"?"完了":"予定"}</Badge><h3>{pmap[r.problem_id]?.display_label||pmap[r.problem_id]?.title||r.problem_id}</h3><span>{r.problem_id} ・ 次回復習 {r.due_date}</span></div>{r.status==="done"?<button disabled={busy} className="small ghost" onClick={()=>run(()=>post(`/api/reviews/${r.id}/pending`,{}),"未完了に戻しました")}>未完了に戻す</button>:<button disabled={busy} className="small ghost" onClick={()=>run(()=>post(`/api/reviews/${r.id}/done`,{}),"復習を完了にしました")}><Check size={14}/>完了</button>}</div><ReviewPlanDetails item={r}/></article>)}</div>{!rows.length&&<section className="panel"><Empty>該当する復習予定はありません</Empty></section>}</>
 }
-function WeakView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean}) {
-  const [tab,setTab]=useState<"quiz"|"list">("quiz");
-  const [revealed,setRevealed]=useState(false);
-  const queue=data.weakNotes.filter(note=>!note.is_resolved).sort((a,b)=>(a.last_quizzed_at||"").localeCompare(b.last_quizzed_at||"")||a.id-b.id);
-  const note=queue[0];
-  const answer=(result:"remembered"|"retry")=>{
-    setRevealed(false);
-    run(()=>post(`/api/weak-notes/${note.id}/quiz`,{result}),result==="remembered"?"1回できました。2回できると定着扱いになります":"未習得のまま残しました。後でもう一度出題します");
-  };
+function WeakView({data}:{data:Bootstrap}) {
+  const [selected,setSelected]=useState<string[]>([]);
+  const [copied,setCopied]=useState(false);
+  const trend=analyzeWeakTrends(data.problems,data.attempts,data.weakNotes);
+  const topThemes=trend.themes.slice(0,8),maxTheme=Math.max(1,...topThemes.map(theme=>theme.score));
+  const themeSignature=topThemes.map(theme=>theme.label).join("|");
+  useEffect(()=>{setSelected(current=>current.length?current.filter(theme=>topThemes.some(row=>row.label===theme)):topThemes.slice(0,3).map(theme=>theme.label))},[themeSignature]);
+  const errorCounts=Object.fromEntries(trend.errors.map(error=>[error.error,error.count])) as Record<string,number>;
+  const errorTotal=trend.errors.reduce((sum,error)=>sum+error.count,0);
+  const errorColors:Record<string,string>={K:"#b33c36",W:"#d17a35",N:"#487da9",C:"#8b9290"};
+  let stop=0;
+  const donutParts=["K","W","N","C"].map(error=>{const start=stop;stop+=errorTotal?errorCounts[error]/errorTotal*100:0;return `${errorColors[error]} ${start}% ${stop}%`});
+  const weekly=trend.weeks,maxWeek=Math.max(1,...weekly.map(week=>week.score));
+  const quizPrompt=buildQuizPrompt(selected,data.problems,data.attempts,data.weakNotes,5);
+  const copyPrompt=async()=>{await navigator.clipboard.writeText(quizPrompt);setCopied(true);setTimeout(()=>setCopied(false),1800)};
+  const dominantError=[...trend.errors].sort((a,b)=>b.score-a.score)[0]?.error||"—";
+  if(!trend.attemptCount) return <><section className="weak-trend-hero"><div><span className="eyebrow">WEAKNESS TRENDS</span><h2>GPT採点が集まると、苦手の傾向が見えてきます</h2><p>弱点ノートは自分で管理する一覧ではなく、採点結果から傾向を作るための分析データとして使います。</p></div></section><section className="panel"><Empty>まだ分析データがありません。GPT採点結果を取り込むと自動で蓄積されます</Empty></section></>;
   return <>
-    <section className="weak-guide"><div><span className="eyebrow">ACTIVE RECALL</span><h2>ミスを「次は直せるルール」に変える</h2><p>ミス内容を見て修正ルールを思い出し、答えを確認します。「できた」が2回で定着扱いです。間違えたノートはいつでも未解決に戻せます。</p></div><div><strong>{queue.length}</strong><span>未習得</span></div></section>
-    <div className="toolbar"><div className="segmented"><button className={tab==="quiz"?"active":""} onClick={()=>{setTab("quiz");setRevealed(false)}}>クイズで復習</button><button className={tab==="list"?"active":""} onClick={()=>setTab("list")}>ノート一覧</button></div></div>
-    {tab==="quiz"?note?<section className="panel weak-quiz">
-      <div className="weak-quiz-head"><div><ErrorBadge value={note.error_type}/><span>{note.problem_id} ・ {note.theme}</span></div><Badge>{(note.quiz_correct_count||0)} / 2 回できた</Badge></div>
-      <div className="quiz-question"><span>問題</span><h3>このミスを次回防ぐためのルールは？</h3><p>{note.mistake}</p><small>声に出すか、紙に1行書いてから答えを表示してください。</small></div>
-      {!revealed?<button className="primary quiz-reveal" onClick={()=>setRevealed(true)}><BookOpen size={17}/>答えを見る</button>:
-        <div className="quiz-answer"><span>修正ルール</span><strong>{note.correction_rule||"修正ルールが未登録です"}</strong><div><button disabled={busy} className="ghost" onClick={()=>answer("retry")}>まだ不安</button><button disabled={busy} className="primary" onClick={()=>answer("remembered")}><Check size={16}/>できた</button></div></div>}
-    </section>:<section className="panel"><Empty>未習得の弱点はありません。間違いが再発したら「ノート一覧」から未解決に戻せます</Empty></section>:
-    <section className="panel flush"><div className="table-wrap"><table><thead><tr><th>状態</th><th>分類</th><th>問題・テーマ</th><th>ミス</th><th>次回の修正ルール</th><th>クイズ</th><th/></tr></thead><tbody>{data.weakNotes.map(w=><tr className={w.is_resolved?"resolved-row":""} key={w.id}><td><Badge tone={w.is_resolved?"green":"orange"}>{w.is_resolved?"定着":"未習得"}</Badge></td><td><ErrorBadge value={w.error_type}/></td><td><strong>{w.problem_id}</strong><small>{w.theme}</small></td><td>{w.mistake}</td><td><strong>{w.correction_rule||"—"}</strong></td><td>{w.quiz_correct_count||0}/2<small>不安 {w.quiz_wrong_count||0}回</small></td><td>{w.is_resolved?<button disabled={busy} className="small ghost" onClick={()=>run(()=>post(`/api/weak-notes/${w.id}/unresolve`,{}),"未解決に戻しました")}>未解決に戻す</button>:<button disabled={busy} className="small ghost" onClick={()=>run(()=>post(`/api/weak-notes/${w.id}/resolve`,{}),"定着扱いにしました")}><Check size={14}/>定着扱い</button>}</td></tr>)}</tbody></table></div>{!data.weakNotes.length&&<Empty>弱点ノートはまだありません。GPT採点取り込みから自動追加されます</Empty>}</section>}
+    <section className="weak-trend-hero"><div><span className="eyebrow">WEAKNESS TRENDS</span><h2>採点結果から見える苦手傾向</h2><p>ここは復習タスクの一覧ではありません。問題とGPT採点結果から、繰り返し落としているテーマとミスの型を俯瞰する場所です。</p></div><div className="trend-summary"><strong>{trend.themes.length}</strong><span>検出テーマ</span><small>最多 {trend.topTheme}</small></div></section>
+    <div className="trend-metrics"><Metric label="分析した採点" value={trend.attemptCount} unit="件" hint="K/W/N/Cがある結果"/><Metric label="最多テーマ" value={topThemes[0]?.score||0} unit="点" hint={trend.topTheme}/><Metric label="主なミス型" value={dominantError} hint={`${errorCounts[dominantError]||0}件`}/><Metric label="K発生率" value={trend.kRate} unit="%" hint="骨格崩れの割合"/></div>
+    <div className="trend-grid">
+      <section className="panel theme-chart"><div className="panel-title"><div><span className="eyebrow">BY THEME</span><h3>苦手テーマ上位</h3></div><BarChart3 size={19}/></div>
+        {topThemes.map(theme=><div className="theme-bar-row" key={theme.label}><div><strong>{theme.label}</strong><span>採点 {theme.count}件</span></div><div className="theme-bar"><i style={{width:`${theme.score/maxTheme*100}%`}}/></div><b>{theme.score}</b></div>)}
+      </section>
+      <section className="panel error-chart"><div className="panel-title"><div><span className="eyebrow">BY ERROR TYPE</span><h3>K/W/N/Cの構成</h3></div></div>
+        <div className="donut-wrap"><div className="error-donut" style={{background:errorTotal?`conic-gradient(${donutParts.join(",")})`:"#e8ece8"}}><strong>{errorTotal}</strong><span>分類済み</span></div>
+          <div className="error-legend">{["K","W","N","C"].map(error=><div key={error}><i style={{background:errorColors[error]}}/><strong>{error}</strong><span>{errorCounts[error]}件</span></div>)}</div></div>
+      </section>
+      <section className="panel weekly-chart"><div className="panel-title"><div><span className="eyebrow">6 WEEK TREND</span><h3>ミス検出数の推移</h3></div></div>
+        <div className="week-bars">{weekly.map(week=><div key={week.label}><span>{week.score}</span><i style={{height:`${Math.max(4,week.score/maxWeek*100)}%`}}/><small>{week.label.slice(5)}</small></div>)}</div>
+      </section>
+    </div>
+    <section className="panel quiz-builder"><div className="quiz-builder-head"><div><span className="eyebrow">QUIZ WITH GPT</span><h2>苦手テーマをGPTでクイズ復習</h2><p>復習したいテーマを選び、プロンプトをコピーして普段使っているGPTへ貼り付けます。アプリから外部へ自動送信はしません。</p></div><Sparkles size={25}/></div>
+      <div className="theme-picker">{topThemes.map(theme=><label className={selected.includes(theme.label)?"selected":""} key={theme.label}><input type="checkbox" checked={selected.includes(theme.label)} onChange={()=>setSelected(values=>values.includes(theme.label)?values.filter(value=>value!==theme.label):[...values,theme.label])}/><span>{theme.label}</span><b>{theme.score}点</b></label>)}</div>
+      <textarea className="quiz-prompt" readOnly value={quizPrompt}/>
+      <button className="primary copy-quiz" disabled={!selected.length} onClick={copyPrompt}>{copied?<Check size={17}/>:<Copy size={17}/>} {copied?"コピーしました":"GPTクイズ用プロンプトをコピー"}</button>
+    </section>
+    <details className="panel trend-evidence"><summary>分析に使った最近の採点記録を見る</summary><div>{data.weakNotes.slice(0,12).map(note=><div className="evidence-row" key={note.id}><ErrorBadge value={note.error_type}/><div><strong>{note.theme}</strong><span>{note.problem_id} ・ {note.mistake}</span></div></div>)}</div></details>
   </>;
 }
 

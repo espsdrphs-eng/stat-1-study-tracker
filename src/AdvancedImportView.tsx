@@ -102,7 +102,7 @@ export default function AdvancedImportView({problems,run,busy}:{
             <Field label="次回課題" wide><textarea readOnly={!editing} value={update.next_action} onChange={event=>change(index,"next_action",event.target.value)}/></Field>
 
             <div className="candidate-grid">
-              <div className="candidate-box weak"><div><NotebookPen size={16}/><strong>弱点ノート候補</strong></div>
+              <div className="candidate-box weak"><div><NotebookPen size={16}/><strong>弱点傾向データ</strong></div>
                 {update.weak_notes?.length?<ul className="weak-candidate-list">{update.weak_notes.map((note,n)=><li key={n}>{note.correction_rule||note.mistake}</li>)}</ul>
                   :update.weak_note?<><p>{update.weak_note.mistake}</p><small>{update.weak_note.correction_rule}</small></>:<p>追加候補なし</p>}</div>
               <div className="candidate-box s-check"><div><BookOpen size={16}/><strong>関連S確認候補</strong></div>
@@ -113,7 +113,7 @@ export default function AdvancedImportView({problems,run,busy}:{
               <span><CalendarCheck/>復習理由 <strong>{reviewPlan.review_reason}</strong></span>
               <span><CalendarCheck/>復習方法 <strong>{reviewPlan.review_method}・{reviewPlan.estimated_minutes}分</strong></span>
               <span><BookOpen/>関連S <strong>{reviewPlan.requires_s_check?related.join(", "):"確認不要"}</strong></span>
-              <span><NotebookPen/>無視する部分 <strong>{update.ignored_parts?.join(", ")||"なし"}</strong></span>
+              <span><NotebookPen/>傾向分析 <strong>{update.weak_notes?.length||update.weak_note? "自動蓄積":"追加なし"}</strong></span>
               {update.math_localized&&<span><Pencil size={14}/>数式表記 <strong>日本語化済み</strong></span>}
             </div>
           </article>;

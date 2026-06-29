@@ -386,10 +386,8 @@ async function bootstrap():Promise<Bootstrap>{
     if(newTasks.length>=3||load+r.load_score>4) break;
     newTasks.push({...r,title:pmap.get(r.problem_id)!.display_label||pmap.get(r.problem_id)!.title,theme:pmap.get(r.problem_id)!.theme,kind:"新規A",reason:`ロードマップ ${r.order_index}番`,mode:r.expected_mode,minutes:r.expected_mode==="full"?35:20,load:r.load_score});load+=r.load_score;
   }
-  const weak=weakNotes.filter(w=>!w.is_resolved).at(-1);
-  const weakTask=weak?[{...weak,title:pmap.get(weak.problem_id)?.display_label||pmap.get(weak.problem_id)?.title||weak.problem_id,kind:"弱点ノート",reason:"未解決ミスの確認",mode:"scan",minutes:5,load:.1}]:[];
   const checkedKeys=new Set(metaEntries.filter(entry=>entry.key.startsWith(`today-check:${today}:`)&&entry.value==="1").map(entry=>entry.key));
-  const tasks=[...dueReviews,...staleS,...newTasks,...weakTask].map(task=>({
+  const tasks=[...dueReviews,...staleS,...newTasks].map(task=>({
     ...task,checked:checkedKeys.has(`today-check:${today}:${task.problem_id}:${task.kind}`)
   }));
   const totalLoad=Math.round(tasks.filter(task=>!task.checked).reduce((sum,x)=>sum+x.load,0)*10)/10;
