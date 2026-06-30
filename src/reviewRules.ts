@@ -6,6 +6,7 @@ export type ReviewPlan=Pick<Review,
   "requires_full_answer"|"requires_s_check"|"linked_s_problem_ids"|"interval_days"> & {
   review_type:string; mode:string; completion_candidate?:boolean;
 };
+export type ReviewOutcome={result:"success"|"partial"|"failed";hint_used:boolean;time_minutes:number};
 
 const priority=["K","N","W","C"];
 const interval:Record<string,number>={K:1,N:2,W:3,C:7,none:14};
@@ -71,6 +72,35 @@ export function createAttemptReviewPlan(
     requires_s_check:requiresS,linked_s_problem_ids:requiresS?linkedS:[],interval_days:days,
     review_type:selected==="W"?"main_calc_retry":selected==="K"||selected==="N"?"skeleton_retry":selected==="C"?"careless_check":"skeleton_retry",
     mode:stable?"scan":definition.mode,completion_candidate:perfectStreak>=3&&selected==="none"
+  };
+}
+
+export function createAdaptiveReviewPlan(
+  source:Attempt,review:Review,outcome:ReviewOutcome,linkedS:string[]=[]
+):ReviewPlan{
+  const previous=Math.max(1,Number(review.interval_days||14));
+  const sourceErrors=normalizedErrors(source);
+  const successful=outcome.result==="success";
+  const attemptLike:Attempt={...source,
+    mark:successful?(outcome.hint_used?"○":"◎"):outcome.result==="partial"?"△":"×",
+    error_type:successful?"none":sourceErrors[0]||"K",
+    primary_error_type:successful?"none":sourceErrors[0]||"K",
+    error_types:successful?[]:sourceErrors.length?sourceErrors:["K"]
+  };
+  const plan=createAttemptReviewPlan(attemptLike,linkedS,0);
+  const days=outcome.result==="failed"?1:
+    outcome.result==="partial"?Math.min(7,Math.max(2,Math.round(previous*.6))):
+    outcome.hint_used?Math.min(30,Math.max(7,Math.round(previous*1.7))):
+    Math.min(30,Math.max(14,Math.round(previous*2.5)));
+  const outcomeLabel=outcome.result==="success"?"自力再現できた":outcome.result==="partial"?"一部のみ再現できた":"再現できなかった";
+  return {...plan,interval_days:days,
+    review_reason:`前回復習は「${outcomeLabel}」${outcome.hint_used?"（ヒント使用）":""}だったため、${days}日後に再確認する。`,
+    review_instruction:successful
+      ?"次回も答えを見る前に型・出発式・結論を自力で想起し、別の問題でも同じ型を選べるか確認する。"
+      :plan.review_instruction,
+    estimated_minutes:successful?5:plan.estimated_minutes,
+    requires_s_check:!successful&&plan.requires_s_check,
+    linked_s_problem_ids:!successful?plan.linked_s_problem_ids:[]
   };
 }
 

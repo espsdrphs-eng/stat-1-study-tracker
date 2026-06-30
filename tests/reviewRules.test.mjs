@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createAttemptReviewPlan, createPastReviewPlan, createSReviewPlan } from "../src/reviewRules.ts";
+import { createAdaptiveReviewPlan, createAttemptReviewPlan, createPastReviewPlan, createSReviewPlan } from "../src/reviewRules.ts";
 
 const update=(errors,mark="△")=>({
   problem_id:"WB-2-A-20",date:"2026-06-29",mode:"full",mark,score_label:"B",
@@ -67,4 +67,21 @@ test("過去問は選題と90分答案を別ルールで扱う",()=>{
   assert.deepEqual([scanFailed.interval_days,scanFailed.review_method],[2,"選題やり直し"]);
   assert.deepEqual([examGood.interval_days,examGood.review_method,examGood.requires_full_answer],[14,"弱点だけ補修",true]);
   assert.deepEqual([examFailed.interval_days,examFailed.review_method,examFailed.requires_full_answer],[5,"過去問補修",true]);
+});
+
+test("復習結果に応じて次回間隔を適応させる",()=>{
+  const source={...update(["W"]),id:1,time_minutes:20,score_numeric:60,memo:""};
+  const review={id:1,problem_id:source.problem_id,due_date:"2026-06-30",review_type:"main_calc_retry",status:"pending",generated_from_attempt_id:1,interval_days:10};
+  assert.equal(createAdaptiveReviewPlan(source,review,{result:"failed",hint_used:false,time_minutes:10}).interval_days,1);
+  assert.equal(createAdaptiveReviewPlan(source,review,{result:"partial",hint_used:false,time_minutes:10}).interval_days,6);
+  assert.equal(createAdaptiveReviewPlan(source,review,{result:"success",hint_used:true,time_minutes:8}).interval_days,17);
+  assert.equal(createAdaptiveReviewPlan(source,review,{result:"success",hint_used:false,time_minutes:6}).interval_days,25);
+});
+
+test("自力成功の適応間隔は30日を上限にする",()=>{
+  const source={...update(["K"]),id:1,time_minutes:20,score_numeric:50,memo:""};
+  const review={id:1,problem_id:source.problem_id,due_date:"2026-06-30",review_type:"skeleton_retry",status:"pending",generated_from_attempt_id:1,interval_days:20};
+  const plan=createAdaptiveReviewPlan(source,review,{result:"success",hint_used:false,time_minutes:5});
+  assert.equal(plan.interval_days,30);
+  assert.equal(plan.requires_s_check,false);
 });

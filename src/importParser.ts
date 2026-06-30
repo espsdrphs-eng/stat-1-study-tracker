@@ -189,6 +189,8 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
     ? `${candidate.match(/PY-(\d{4})/)?.[1]}年問${problemNumber}`
     : chapter&&category?`第${chapter}章${category}問${problemNumber}${difficulty!=null?`（難${difficulty}）`:""}`:candidate;
   const confidence=[candidate,master,scoreText||scoreNumeric!=null,errors.length,themes.length].filter(Boolean).length/5;
+  const gradingConfidenceRaw=raw.grading_confidence??raw.confidence;
+  const gradingConfidence=gradingConfidenceRaw==null?null:Math.min(1,Number(gradingConfidenceRaw)>1?Number(gradingConfidenceRaw)/100:Number(gradingConfidenceRaw));
   return {
     problem_id:candidate,date:scalar(raw.date)==="auto_today"||!raw.date?todayString():scalar(raw.date),
     mode,mark,score_label:scoreLabel(scoreText,scoreNumeric),error_type:primary,error_point:errorPoint,next_action:nextAction,
@@ -200,6 +202,8 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
     error_types:errors,primary_error_type:primary,secondary_error_type:secondary,
     review_after_days:days,review_reason:shortestError==="none"?"ミス分類なしのため14日後":`${shortestError}が含まれるため${days}日後`,
     weak_note:localizedWeakNotes[0],weak_notes:localizedWeakNotes,correction_rule:localizedWeakNotes[0]?.correction_rule,source_text:text,auto_imported:true,
+    grading_confidence:Number.isFinite(gradingConfidence)?gradingConfidence:null,
+    rubric_version:scalar(raw.rubric_version),uncertain_points:stringArray(raw.uncertain_points),
     import_confidence:Math.round(confidence*100)/100,master_matched:!!master,status:"review_required",
     math_localized:rawResultSummary!==resultSummary||rawErrorPoint!==errorPoint||rawNextAction!==nextAction||
       weakNotes.some((note,index)=>note.mistake!==localizedWeakNotes[index]?.mistake||note.correction_rule!==localizedWeakNotes[index]?.correction_rule)

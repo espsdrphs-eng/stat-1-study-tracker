@@ -2,8 +2,9 @@ import Dexie, { type EntityTable } from "dexie";
 import type { Attempt, Bootstrap, PastSession, Problem, Review, Roadmap, StudyUpdate, WeakNote } from "./types";
 import { japaneseizeMathText } from "./mathJapanese.ts";
 import { analyzeWeaknesses } from "./weaknessAnalytics.ts";
-import { createAttemptReviewPlan, createPastReviewPlan, createSReviewPlan, type ReviewPlan, type SState } from "./reviewRules.ts";
+import { createAdaptiveReviewPlan, createAttemptReviewPlan, createPastReviewPlan, createSReviewPlan, type ReviewOutcome, type ReviewPlan, type SState } from "./reviewRules.ts";
 import { applyWeakNoteQuizResult } from "./weakNoteQuiz.ts";
+import { selectMixedPractice } from "./studyScheduler.ts";
 
 type SMemory = { problem_id:string; state:"stable"|"check"|"forgotten"|"collapsed"; last_touched?:string; k_trigger_count:number };
 type StoredAttempt = Attempt;
@@ -158,6 +159,27 @@ class StudyDatabase extends Dexie {
           attempts.find(attempt=>attempt.problem_id===note.problem_id&&attempt.date===note.date)?.id;
       });
     });
+    this.version(8).stores({
+      problems:"&problem_id,category,chapter,priority,completion_status,normalized_label",
+      attempts:"++id,problem_id,date,error_type,mark,primary_error_type,[problem_id+date]",
+      reviews:"++id,problem_id,due_date,status,review_type",
+      roadmap:"&order_index,problem_id,is_active",
+      weakNotes:"++id,problem_id,date,error_type,is_resolved,auto_generated,last_quizzed_at",
+      pastSessions:"++id,year,date,session_type,selection_result",
+      sMemory:"&problem_id,state,last_touched",
+      meta:"&key"
+    }).upgrade(async tx=>{
+      const rows=await tx.table("reviews").toArray() as Review[];
+      const groups=new Map<string,Review[]>();
+      rows.filter(review=>review.status!=="done").forEach(review=>groups.set(review.problem_id,[...(groups.get(review.problem_id)||[]),review]));
+      for(const duplicates of groups.values()){
+        if(duplicates.length<2) continue;
+        const sorted=[...duplicates].sort((a,b)=>b.id-a.id),keep=sorted[0];
+        keep.due_date=duplicates.map(review=>review.due_date).sort()[0];
+        await tx.table("reviews").put(keep);
+        await tx.table("reviews").bulkDelete(sorted.slice(1).map(review=>review.id));
+      }
+    });
   }
 }
 
@@ -209,6 +231,12 @@ const addDays=(date:string,days:number)=>{
   const d=new Date(`${date}T12:00:00`);d.setDate(d.getDate()+Number(days));
   return new Intl.DateTimeFormat("sv-SE",{year:"numeric",month:"2-digit",day:"2-digit"}).format(d);
 };
+async function reviewDueDate(date:string,days:number){
+  const normal=addDays(date,days),examDate=(await db.meta.get("exam_date"))?.value||"";
+  if(!examDate||examDate<=date||normal<addDays(examDate,-2)) return normal;
+  const preExam=addDays(examDate,-3);
+  return preExam>date?preExam:addDays(date,1);
+}
 const list=(value="")=>String(value).split(/[;,、\s]+/).map(x=>x.trim()).filter(Boolean);
 
 async function initialize() {
@@ -244,6 +272,13 @@ const planFields=(plan:ReviewPlan)=>({
   review_steps:plan.review_steps,estimated_minutes:plan.estimated_minutes,requires_full_answer:plan.requires_full_answer,
   requires_s_check:plan.requires_s_check,linked_s_problem_ids:plan.linked_s_problem_ids,interval_days:plan.interval_days
 });
+type ReviewInsert=Omit<Review,"id">;
+async function addOrReplaceReview(review:ReviewInsert){
+  const pending=(await db.reviews.where("problem_id").equals(review.problem_id).toArray()).filter(item=>item.status!=="done");
+  const dueDate=[review.due_date,...pending.map(item=>item.due_date)].sort()[0];
+  if(pending.length) await db.reviews.bulkDelete(pending.map(item=>item.id));
+  return Number(await db.reviews.add({id:undefined as unknown as number,...review,due_date:dueDate}));
+}
 
 async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
   const problem=await db.problems.get(input.problem_id);
@@ -262,7 +297,9 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
     result_summary:japaneseizeMathText(input.result_summary||""),exam_selection_rank:input.exam_selection_rank||"",
     error_types:errors,primary_error_type:primary,
     secondary_error_type:input.secondary_error_type||"",ignored_parts:input.ignored_parts||[],
-    auto_imported:!!input.auto_imported,import_confidence:input.import_confidence??(input.auto_imported?.8:1)
+    auto_imported:!!input.auto_imported,import_confidence:input.import_confidence??(input.auto_imported?.8:1),
+    grading_confidence:input.grading_confidence??null,rubric_version:input.rubric_version||"",
+    uncertain_points:input.uncertain_points||[]
   }));
   const attempts=(await db.attempts.where("problem_id").equals(input.problem_id).sortBy("date")).filter(x=>x.id!==id);
   const previous=attempts.at(-1);
@@ -270,8 +307,8 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
   for(const attempt of [...attempts].reverse()){if(attempt.mark==="◎") consecutivePerfect++;else break}
   const sState:SState=input.mark==="◎"||input.mark==="○"?"stable":input.mark==="×"?"forgotten":"check";
   const plan=problem.category==="S"?createSReviewPlan(sState):createAttemptReviewPlan(input,related,consecutivePerfect);
-  await db.reviews.add({
-    id:undefined as unknown as number,problem_id:input.problem_id,due_date:addDays(date,plan.interval_days||14),
+  await addOrReplaceReview({
+    problem_id:input.problem_id,due_date:await reviewDueDate(date,plan.interval_days||14),
     review_type:plan.review_type,status:"pending",generated_from_attempt_id:id,duration_minutes:plan.estimated_minutes,
     reason:plan.review_reason,...planFields(plan)
   });
@@ -295,9 +332,8 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
     const sPlan=createSReviewPlan(linkedState);
     for(const sid of related){
       if(!await db.problems.get(sid)) continue;
-      const duplicate=await db.reviews.where("problem_id").equals(sid).filter(r=>r.status==="pending"&&r.review_type==="s_check"&&r.generated_from_attempt_id===id).count();
-      if(!duplicate) await db.reviews.add({
-        id:undefined as unknown as number,problem_id:sid,due_date:addDays(date,sPlan.interval_days||1),
+      await addOrReplaceReview({
+        problem_id:sid,due_date:await reviewDueDate(date,sPlan.interval_days||1),
         review_type:"s_check",status:"pending",generated_from_attempt_id:id,duration_minutes:sPlan.estimated_minutes,
         reason:sPlan.review_reason,...planFields(sPlan)
       });
@@ -312,9 +348,8 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
         const chapterS=(await db.problems.where("category").equals("S").toArray()).filter(p=>p.chapter===problem.chapter);
         const collapsedPlan=createSReviewPlan("collapsed");
         for(const s of chapterS){
-          const pending=await db.reviews.where("problem_id").equals(s.problem_id).filter(r=>r.review_type==="s_check"&&r.status==="pending").count();
-          if(!pending) await db.reviews.add({
-            id:undefined as unknown as number,problem_id:s.problem_id,due_date:addDays(date,1),
+          await addOrReplaceReview({
+            problem_id:s.problem_id,due_date:await reviewDueDate(date,1),
             review_type:"s_check",status:"pending",generated_from_attempt_id:id,duration_minutes:collapsedPlan.estimated_minutes,
             reason:collapsedPlan.review_reason,...planFields(collapsedPlan)
           });
@@ -339,11 +374,14 @@ async function refreshLinkedSMemory(linkedIds:string[]){
   const [attempts,problems]=await Promise.all([db.attempts.toArray(),db.problems.toArray()]);
   const pmap=new Map(problems.map(problem=>[problem.problem_id,problem]));
   for(const sid of [...new Set(linkedIds)]){
-    const triggers=attempts.filter(attempt=>{
+    const linkedAttempts=attempts.filter(attempt=>{
       const problem=pmap.get(attempt.problem_id);
       const links=[...(problem?.related_s_problem_ids||[]),...list(problem?.linked_s_problems||"")];
-      return links.includes(sid)&&(attempt.error_types||[attempt.error_type]).some(error=>error==="K"||error==="N");
+      return links.includes(sid);
     });
+    const latestByProblem=new Map<string,Attempt>();
+    [...linkedAttempts].sort((a,b)=>a.date.localeCompare(b.date)||a.id-b.id).forEach(attempt=>latestByProblem.set(attempt.problem_id,attempt));
+    const triggers=[...latestByProblem.values()].filter(attempt=>(attempt.error_types||[attempt.error_type]).some(error=>error==="K"||error==="N"));
     const state:SState=triggers.some(attempt=>(attempt.error_types||[attempt.error_type]).includes("K"))?"collapsed":
       triggers.length?"check":"stable";
     const old=await db.sMemory.get(sid);
@@ -374,7 +412,7 @@ async function updateAttemptAnalysis(id:number,body:Record<string,unknown>){
   const plan=problem.category==="S"
     ?createSReviewPlan(updated.mark==="◎"||updated.mark==="○"?"stable":updated.mark==="×"?"forgotten":"check")
     :createAttemptReviewPlan(updated,related,0);
-  await db.reviews.add({id:undefined as unknown as number,problem_id:attempt.problem_id,due_date:addDays(date,plan.interval_days||14),
+  await addOrReplaceReview({problem_id:attempt.problem_id,due_date:await reviewDueDate(date,plan.interval_days||14),
     review_type:plan.review_type,status:"pending",generated_from_attempt_id:id,duration_minutes:plan.estimated_minutes,
     reason:plan.review_reason,...planFields(plan)});
   const theme=String(body.theme||oldNotes[0]?.theme||problem.theme);
@@ -387,7 +425,7 @@ async function updateAttemptAnalysis(id:number,body:Record<string,unknown>){
     const state:SState=errors.includes("K")?"collapsed":"check",sPlan=createSReviewPlan(state);
     for(const sid of [...new Set(related)]){
       if(!await db.problems.get(sid)) continue;
-      await db.reviews.add({id:undefined as unknown as number,problem_id:sid,due_date:addDays(date,sPlan.interval_days||1),
+      await addOrReplaceReview({problem_id:sid,due_date:await reviewDueDate(date,sPlan.interval_days||1),
         review_type:"s_check",status:"pending",generated_from_attempt_id:id,duration_minutes:sPlan.estimated_minutes,
         reason:sPlan.review_reason,...planFields(sPlan)});
     }
@@ -411,6 +449,63 @@ async function deleteAttemptAnalysis(id:number){
   const remaining=await db.attempts.where("problem_id").equals(attempt.problem_id).toArray();
   const stillWeak=remaining.some(item=>(item.error_types||[item.error_type]).some(error=>error!=="none"));
   await db.problems.update(attempt.problem_id,{completion_status:stillWeak?"review_pending":"active"});
+}
+
+async function completeReview(id:number,body:Record<string,unknown>){
+  const review=await db.reviews.get(id);
+  if(!review) throw new Error("復習予定が見つかりません");
+  const source=await db.attempts.get(review.generated_from_attempt_id);
+  const problem=await db.problems.get(review.problem_id);
+  if(!source||!problem) throw new Error("復習元の採点データが見つかりません");
+  const outcome:ReviewOutcome={
+    result:["success","partial","failed"].includes(String(body.result))?String(body.result) as ReviewOutcome["result"]:"partial",
+    hint_used:!!body.hint_used,time_minutes:Number(body.time_minutes||0)
+  };
+  const related=[...(problem.related_s_problem_ids||[]),...list(problem.linked_s_problems)];
+  const plan=createAdaptiveReviewPlan(source,review,outcome,related);
+  const successful=outcome.result==="success",sourceErrors=(source.error_types||[source.error_type]).filter(error=>error!=="none");
+  const errors=successful?[]:sourceErrors.length?sourceErrors:["K"];
+  const date=todayString(),mark=successful?(outcome.hint_used?"○":"◎"):outcome.result==="partial"?"△":"×";
+  const attemptId=Number(await db.attempts.add({
+    ...source,id:undefined as unknown as number,problem_id:review.problem_id,date,mode:plan.mode,
+    time_minutes:outcome.time_minutes,mark,score_label:successful?"A":outcome.result==="partial"?"B":"C",
+    error_type:errors[0]||"none",primary_error_type:errors[0]||"none",secondary_error_type:errors[1]||"",
+    error_types:errors,error_point:successful?"":source.error_point,
+    next_action:plan.review_instruction||"",memo:"復習結果から自動記録",
+    score_text:"",score_numeric:null,score_max:null,result_summary:`復習結果：${outcome.result}${outcome.hint_used?"・ヒント使用":""}`,
+    auto_imported:false,import_confidence:1,grading_confidence:1,rubric_version:"REVIEW-SELF-v1",
+    uncertain_points:[],generated_from_review_id:id,is_review_attempt:true
+  }));
+  await db.reviews.update(id,{status:"done",completion_result:outcome.result,hint_used:outcome.hint_used,
+    completion_time_minutes:outcome.time_minutes,completed_at:new Date().toISOString()});
+  await addOrReplaceReview({problem_id:review.problem_id,due_date:await reviewDueDate(date,plan.interval_days||14),
+    review_type:plan.review_type,status:"pending",generated_from_attempt_id:attemptId,duration_minutes:plan.estimated_minutes,
+    reason:plan.review_reason,...planFields(plan)});
+  if(successful){
+    const resolved=(await db.weakNotes.toArray()).filter(note=>note.generated_from_attempt_id===source.id);
+    for(const note of resolved) await db.weakNotes.update(note.id,{is_resolved:1});
+  }
+  if(!successful&&source.error_point) await db.weakNotes.add({
+    id:undefined as unknown as number,date,problem_id:review.problem_id,error_type:errors[0],theme:problem.theme,
+    mistake:source.error_point,correction_rule:source.next_action||plan.review_instruction||"",is_resolved:0,
+    source_text:"",auto_generated:true,generated_from_attempt_id:attemptId
+  });
+  if(plan.requires_s_check){
+    const sPlan=createSReviewPlan(errors.includes("K")?"collapsed":"check");
+    for(const sid of plan.linked_s_problem_ids||[]){
+      if(!await db.problems.get(sid)) continue;
+      await addOrReplaceReview({problem_id:sid,due_date:await reviewDueDate(date,sPlan.interval_days||1),review_type:"s_check",
+        status:"pending",generated_from_attempt_id:attemptId,duration_minutes:sPlan.estimated_minutes,
+        reason:sPlan.review_reason,...planFields(sPlan)});
+    }
+  }
+  if(problem.category==="S"){
+    const old=await db.sMemory.get(problem.problem_id);
+    const state:SState=successful?"stable":outcome.result==="partial"?"check":"forgotten";
+    await db.sMemory.put({problem_id:problem.problem_id,state,last_touched:date,k_trigger_count:old?.k_trigger_count||0});
+  }
+  await refreshLinkedSMemory(related);
+  await db.problems.update(review.problem_id,{completion_status:successful?"active":"review_pending"});
 }
 
 function suggest(theme=""){
@@ -473,7 +568,9 @@ async function bootstrap():Promise<Bootstrap>{
   };
   const dueReviews=reviews.filter(r=>r.status!=="done"&&r.due_date<=today).map(r=>{
     const p=pmap.get(r.problem_id)!;const source=attempts.find(a=>a.id===r.generated_from_attempt_id);
-    return {...r,title:p?.display_label||p?.title||(r.generated_from_past_session_id?`${r.problem_id.replace("-SESSION","")} 過去問演習`:r.problem_id),theme:p?.theme||"",error_type:source?.error_type,kind:r.review_type==="s_check"?"S確認":r.generated_from_past_session_id?"過去問復習":"復習",reason:r.status==="overdue"?`期限切れ（${r.due_date}）`:"本日が復習日",mode:r.requires_full_answer?"exam_90min":r.review_type==="s_check"?"skeleton":r.review_type==="main_calc_retry"?"main_calc":r.review_type==="careless_check"?"scan":"skeleton",minutes:r.estimated_minutes||r.duration_minutes||20,load:loadFor(r.requires_full_answer?"exam_90min":r.review_type==="main_calc_retry"?"main_calc":r.review_type==="careless_check"?"scan":"skeleton")};
+    const defaultMinutes=r.estimated_minutes||r.duration_minutes||20;
+    const minutes=source?.is_review_attempt&&source.time_minutes>0?Math.max(3,Math.round((defaultMinutes+source.time_minutes)/2)):defaultMinutes;
+    return {...r,title:p?.display_label||p?.title||(r.generated_from_past_session_id?`${r.problem_id.replace("-SESSION","")} 過去問演習`:r.problem_id),theme:p?.theme||"",error_type:source?.error_type,kind:r.review_type==="s_check"?"S確認":r.generated_from_past_session_id?"過去問復習":"復習",reason:r.status==="overdue"?`期限切れ（${r.due_date}）`:"本日が復習日",mode:r.requires_full_answer?"exam_90min":r.review_type==="s_check"?"skeleton":r.review_type==="main_calc_retry"?"main_calc":r.review_type==="careless_check"?"scan":"skeleton",minutes,estimated_minutes:minutes,load:loadFor(r.requires_full_answer?"exam_90min":r.review_type==="main_calc_retry"?"main_calc":r.review_type==="careless_check"?"scan":"skeleton")};
   }).sort((a,b)=>(a.status==="overdue"&&a.error_type==="K"?0:1)-(b.status==="overdue"&&b.error_type==="K"?0:1));
   const activeS=new Set(dueReviews.filter(r=>r.review_type==="s_check").map(r=>r.problem_id));
   const staleS=sMemory.filter(s=>!activeS.has(s.problem_id)&&(s.state==="forgotten"||s.state==="collapsed"||!!s.last_touched&&s.last_touched<=addDays(today,-30))).map(s=>{
@@ -481,17 +578,24 @@ async function bootstrap():Promise<Bootstrap>{
   });
   let load=[...dueReviews,...staleS].reduce((sum,x)=>sum+x.load,0);
   const seen=new Set(attempts.map(a=>a.problem_id));
+  const occupied=new Set([...dueReviews,...staleS].map(task=>task.problem_id));
+  const mixedProblem=selectMixedPractice(problems,attempts,occupied,today);
+  const mixedReserve=mixedProblem ? .5 : 0;
   const newTasks=[];
   for(const r of roadmap.filter(r=>r.is_active&&!seen.has(r.problem_id))){
-    if(newTasks.length>=3||load+r.load_score>4) break;
+    if(newTasks.length>=3||load+r.load_score+mixedReserve>4) break;
     newTasks.push({...r,title:pmap.get(r.problem_id)!.display_label||pmap.get(r.problem_id)!.title,theme:pmap.get(r.problem_id)!.theme,kind:"新規A",reason:`ロードマップ ${r.order_index}番`,mode:r.expected_mode,minutes:r.expected_mode==="full"?35:20,load:r.load_score});load+=r.load_score;
   }
+  const mixedTasks=mixedProblem&&load+.5<=4?[{problem_id:mixedProblem.problem_id,title:mixedProblem.display_label||mixedProblem.title,
+    theme:mixedProblem.theme,kind:"混合確認",reason:"既習テーマから型を見分ける混合演習",mode:"skeleton",minutes:12,load:.5}]:[];
+  if(mixedTasks.length) load+=.5;
   const checkedKeys=new Set(metaEntries.filter(entry=>entry.key.startsWith(`today-check:${today}:`)&&entry.value==="1").map(entry=>entry.key));
-  const tasks=[...dueReviews,...staleS,...newTasks].map(task=>({
+  const tasks=[...dueReviews,...staleS,...newTasks,...mixedTasks].map(task=>({
     ...task,checked:checkedKeys.has(`today-check:${today}:${task.problem_id}:${task.kind}`)
   }));
   const totalLoad=Math.round(tasks.filter(task=>!task.checked).reduce((sum,x)=>sum+x.load,0)*10)/10;
-  return {problems:problems.sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.category.localeCompare(b.category)||a.problem_number-b.problem_number),attempts,reviews,roadmap,weakNotes,pastSessions,dashboard,today:{tasks,totalLoad,warning:totalLoad>4?"今日は負荷が4.0を超えています。1問を骨格モードに落とすか、翌日に回してください。":""}} as Bootstrap;
+  const settings={exam_date:metaEntries.find(entry=>entry.key==="exam_date")?.value||""};
+  return {problems:problems.sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.category.localeCompare(b.category)||a.problem_number-b.problem_number),attempts,reviews,roadmap,weakNotes,pastSessions,dashboard,settings,today:{tasks,totalLoad,warning:totalLoad>4?"今日は負荷が4.0を超えています。1問を骨格モードに落とすか、翌日に回してください。":""}} as Bootstrap;
 }
 
 export async function localGet<T>(path:string):Promise<T>{
@@ -513,15 +617,18 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
       related_s_problem_ids:list(body.linked_s_problems),linked_past_exam_ids:list(body.linked_past_exams)});
     if(body.category==="S") await db.sMemory.put({problem_id:body.problem_id,state:"stable",k_trigger_count:0});
   } else if(path==="/api/attempts") {
-    await db.transaction("rw",db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,()=>saveAttempt(body));
+    await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta],()=>saveAttempt(body));
   } else if(path==="/api/import") {
-    await db.transaction("rw",db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,async()=>{for(const update of body.updates) await saveAttempt(update)});
+    await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta],async()=>{for(const update of body.updates) await saveAttempt(update)});
   } else if(/^\/api\/attempts\/\d+\/update$/.test(path)) {
-    await db.transaction("rw",db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,
+    await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta],
       ()=>updateAttemptAnalysis(Number(path.split("/")[3]),body));
   } else if(/^\/api\/attempts\/\d+\/delete$/.test(path)) {
-    await db.transaction("rw",db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,
+    await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta],
       ()=>deleteAttemptAnalysis(Number(path.split("/")[3])));
+  } else if(/^\/api\/reviews\/\d+\/complete$/.test(path)) {
+    await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta],
+      ()=>completeReview(Number(path.split("/")[3]),body));
   } else if(/^\/api\/reviews\/\d+\/done$/.test(path)) {
     await db.reviews.update(Number(path.split("/")[3]),{status:"done"});
   } else if(/^\/api\/reviews\/\d+\/pending$/.test(path)) {
@@ -529,6 +636,17 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
   } else if(path==="/api/today-check") {
     const key=`today-check:${body.date||todayString()}:${body.problem_id}:${body.kind}`;
     if(body.checked) await db.meta.put({key,value:"1"}); else await db.meta.delete(key);
+  } else if(path==="/api/settings") {
+    const examDate=String(body.exam_date||"");
+    await db.transaction("rw",db.meta,db.reviews,async()=>{
+      await db.meta.put({key:"exam_date",value:examDate});
+      if(examDate&&examDate>todayString()){
+        const cap=addDays(examDate,-3),minimum=addDays(todayString(),1);
+        const due=cap>minimum?cap:minimum;
+        const pending=await db.reviews.filter(review=>review.status!=="done"&&review.due_date>=addDays(examDate,-2)).toArray();
+        for(const review of pending) await db.reviews.update(review.id,{due_date:due});
+      }
+    });
   } else if(/^\/api\/weak-notes\/\d+\/resolve$/.test(path)) {
     await db.weakNotes.update(Number(path.split("/")[3]),{is_resolved:1});
   } else if(/^\/api\/weak-notes\/\d+\/unresolve$/.test(path)) {
@@ -538,13 +656,13 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     if(!note) throw new Error("弱点ノートが見つかりません");
     await db.weakNotes.update(id,applyWeakNoteQuizResult(note,body.result==="remembered"?"remembered":"retry"));
   } else if(path==="/api/past-sessions") {
-    await db.transaction("rw",db.pastSessions,db.reviews,async()=>{
+    await db.transaction("rw",db.pastSessions,db.reviews,db.meta,async()=>{
       const session={...body,id:undefined as unknown as number,year:Number(body.year),selection_time_minutes:Number(body.selection_time_minutes||0),completed_questions_count:Number(body.completed_questions_count||0)};
       const sessionId=Number(await db.pastSessions.add(session));
       const plan=createPastReviewPlan(session);
-      await db.reviews.add({
-        id:undefined as unknown as number,problem_id:`PY-${session.year}-SESSION`,
-        due_date:addDays(String(session.date||todayString()),plan.interval_days||7),review_type:plan.review_type,
+      await addOrReplaceReview({
+        problem_id:`PY-${session.year}-SESSION`,
+        due_date:await reviewDueDate(String(session.date||todayString()),plan.interval_days||7),review_type:plan.review_type,
         status:"pending",generated_from_attempt_id:0,generated_from_past_session_id:sessionId,
         duration_minutes:plan.estimated_minutes,reason:plan.review_reason,...planFields(plan)
       });

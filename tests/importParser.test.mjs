@@ -40,6 +40,10 @@ primary_error_type: “W”
 error_point: “和の順序交換で、0<=n<=k-1 を k>=n+1 に直し、内側の和を 1-F(n) と見る部分が弱い。”
 next_action: “E[X]=sum_{k=1}^∞ kf(k)、E[X]=sum_{k=1}^∞ sum_{n=0}^{k-1} f(k)、E[X]=sum_{n=0}^∞ sum_{k=n+1}^∞ f(k) の3行を何も見ずに書く。”
 review_after_days: 2
+grading_confidence: 85
+rubric_version: “STAT1-GRADE-v2”
+uncertain_points:
+- “模範解答が未提示”
 linked_s_problems:
 - “WB-2-S-07”
 linked_past_exams: []
@@ -69,6 +73,9 @@ test("imports smart-quoted, unindented study_update output", () => {
   assert.equal(update.secondary_error_type, "N");
   assert.equal(update.review_after_days, 2);
   assert.equal(update.review_reason, "Nが含まれるため2日後");
+  assert.equal(update.grading_confidence, .85);
+  assert.equal(update.rubric_version, "STAT1-GRADE-v2");
+  assert.deepEqual(update.uncertain_points, ["模範解答が未提示"]);
   assert.deepEqual(update.related_s_problem_ids, ["WB-2-S-07"]);
   assert.equal(update.weak_notes?.length, 5);
   assert.equal(update.weak_notes?.[0].correction_rule, "f(k)は、Xがkとなる確率を最初に明記する。");

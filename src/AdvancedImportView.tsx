@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { AlertTriangle, BookOpen, CalendarCheck, ClipboardPaste, Database, NotebookPen, Pencil, X } from "lucide-react";
+import { AlertTriangle, BookOpen, CalendarCheck, Check, ClipboardPaste, Copy, Database, NotebookPen, Pencil, X } from "lucide-react";
 import { post } from "./api";
-import { applyProblemMaster, parseStudyText, problemDisplayLabel } from "./importParser";
+import { applyProblemMaster, parseStudyText, problemDisplayLabel, todayString } from "./importParser";
 import { createAttemptReviewPlan } from "./reviewRules";
+import { buildGradingPrompt, GRADING_RUBRIC_VERSION } from "./gradingPrompt";
 import type { Problem, StudyUpdate } from "./types";
 
 const modes:Record<string,string>={skeleton:"骨格",main_calc:"主要計算",full:"フル答案",scan:"スキャン",exam_90min:"90分演習"};
@@ -29,6 +30,8 @@ export default function AdvancedImportView({problems,run,busy}:{
   const [structured,setStructured]=useState(false);
   const [editing,setEditing]=useState(false);
   const [error,setError]=useState("");
+  const [gradingCopied,setGradingCopied]=useState(false);
+  const gradingPrompt=buildGradingPrompt(todayString());
 
   const parse=()=>{
     setError("");
@@ -66,6 +69,8 @@ export default function AdvancedImportView({problems,run,busy}:{
       <button className="primary wide-btn" onClick={parse}><ClipboardPaste size={17}/>内容を解析する</button>
       {error&&<p className="field-error">{error}</p>}
       <div className="parser-note"><strong>認識する表記例</strong><span>第2章A問20 / 第2章 A問題 問20 / WB-2-A-20</span></div>
+      <details className="grading-prompt-box"><summary>安定した採点用プロンプト</summary><p>採点基準・根拠・確信度を固定する {GRADING_RUBRIC_VERSION} です。</p>
+        <textarea readOnly value={gradingPrompt}/><button className="ghost small" onClick={async()=>{await navigator.clipboard.writeText(gradingPrompt);setGradingCopied(true);setTimeout(()=>setGradingCopied(false),1800)}}>{gradingCopied?<Check size={14}/>:<Copy size={14}/>} {gradingCopied?"コピーしました":"採点用プロンプトをコピー"}</button></details>
     </section>
 
     <section className="panel preview">
@@ -81,9 +86,10 @@ export default function AdvancedImportView({problems,run,busy}:{
           const errors=update.error_types||[];
           const reviewPlan=createAttemptReviewPlan(update,related);
           return <article className={`import-card detailed ${!update.master_matched?"unmatched":""}`} key={index}>
-            <div className="import-card-head"><div><strong>{update.display_label||update.problem_id||"問題未特定"}</strong><small>{update.problem_id} ・ 信頼度 {Math.round((update.import_confidence||0)*100)}%</small></div>
+            <div className="import-card-head"><div><strong>{update.display_label||update.problem_id||"問題未特定"}</strong><small>{update.problem_id} ・ 抽出信頼度 {Math.round((update.import_confidence||0)*100)}% ・ 採点確信度 {update.grading_confidence==null?"未記載":`${Math.round(update.grading_confidence*100)}%`}</small></div>
               <button onClick={()=>remove(index)} aria-label="候補を削除"><X size={16}/></button></div>
             {!update.master_matched&&<div className="match-warning"><AlertTriangle size={17}/><div><strong>問題マスターに未照合です</strong><span>保存前に登録済み問題を選択してください。</span></div></div>}
+            {update.grading_confidence!=null&&update.grading_confidence<.7&&<div className="match-warning"><AlertTriangle size={17}/><div><strong>採点確信度が低い結果です</strong><span>{update.uncertain_points?.join(" / ")||"根拠を確認してから保存してください。"}</span></div></div>}
             <div className="import-fields expanded">
               <Field label="問題マスター"><select disabled={!editing&&!!update.master_matched} value={update.master_matched?update.problem_id:""} onChange={event=>selectProblem(index,event.target.value)}>
                 <option value="">問題を選択</option>{problems.map(problem=><option value={problem.problem_id} key={problem.problem_id}>{problemDisplayLabel(problem)}｜{problem.problem_id}</option>)}

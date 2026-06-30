@@ -46,3 +46,23 @@ test("学習記録数に応じて分析信頼度を段階表示する",()=>{
   assert.equal(analyzeWeaknesses(problems,Array.from({length:5},(_,i)=>attempt(i+1,`2026-06-${20+i}`,"W")),[],[],"2026-06-29").confidence,"暫定");
   assert.equal(analyzeWeaknesses(problems,Array.from({length:15},(_,i)=>attempt(i+1,`2026-06-${String(i+1).padStart(2,"0")}`,"W")),[],[],"2026-06-29").confidence,"分析可能");
 });
+
+test("苦手度は生の件数ではなく失敗率と最近度で補正する",()=>{
+  const problems=[problem("WB-6-A-05","A","AIC・自由度")];
+  const onlyFailure=analyzeWeaknesses(problems,[attempt(1,"2026-06-28","K")],[],[],"2026-06-29").insights[0];
+  const mostlySuccess=analyzeWeaknesses(problems,[
+    attempt(1,"2026-06-28","K"),
+    ...Array.from({length:9},(_,i)=>attempt(i+2,"2026-06-29","none","◎",95))
+  ],[],[],"2026-06-29").insights[0];
+  const oldFailure=analyzeWeaknesses(problems,[attempt(1,"2025-12-01","K")],[],[],"2026-06-29").insights[0];
+  assert.ok(mostlySuccess.score<onlyFailure.score);
+  assert.ok(oldFailure.score<onlyFailure.score);
+});
+
+test("採点確信度が低い結果は苦手度への影響を弱める",()=>{
+  const problems=[problem("WB-6-A-05","A","AIC・自由度")];
+  const high={...attempt(1,"2026-06-28","K"),grading_confidence:1};
+  const low={...attempt(1,"2026-06-28","K"),grading_confidence:.3};
+  assert.ok(analyzeWeaknesses(problems,[low],[],[],"2026-06-29").insights[0].score<
+    analyzeWeaknesses(problems,[high],[],[],"2026-06-29").insights[0].score);
+});

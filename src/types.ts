@@ -12,7 +12,8 @@ export type Attempt = {
   score_text?:string; score_numeric?:number|null; score_max?:number|null; result_summary?:string;
   exam_selection_rank?:string; error_types?:string[]; primary_error_type?:string;
   secondary_error_type?:string; ignored_parts?:string[]; auto_imported?:boolean;
-  import_confidence?:number;
+  import_confidence?:number; grading_confidence?:number|null; rubric_version?:string;
+  uncertain_points?:string[]; generated_from_review_id?:number; is_review_attempt?:boolean;
 };
 export type Review = {
   id:number; problem_id:string; due_date:string; review_type:string; status:string; generated_from_attempt_id:number;
@@ -20,6 +21,8 @@ export type Review = {
   review_reason?:string; review_method?:string; review_instruction?:string; review_steps?:string[];
   estimated_minutes?:number; requires_full_answer?:boolean; requires_s_check?:boolean;
   linked_s_problem_ids?:string[]; interval_days?:number; generated_from_past_session_id?:number;
+  completion_result?:"success"|"partial"|"failed"; hint_used?:boolean;
+  completion_time_minutes?:number; completed_at?:string;
 };
 export type WeakNote = {
   id:number; date:string; problem_id:string; error_type:string; theme:string; mistake:string;
@@ -55,6 +58,7 @@ export type Dashboard = {
 export type Bootstrap = {
   problems:Problem[]; attempts:Attempt[]; reviews:Review[]; roadmap:Roadmap[];
   weakNotes:WeakNote[]; pastSessions:PastSession[]; dashboard:Dashboard;
+  settings:{exam_date:string};
   today:{tasks:Task[];totalLoad:number;warning:string};
 };
 export type StudyUpdate = {
@@ -70,5 +74,6 @@ export type StudyUpdate = {
   weak_note?:{theme:string;error_type:string;mistake:string;correction_rule:string};
   weak_notes?:Array<{theme:string;error_type:string;mistake:string;correction_rule:string}>;
   source_text?:string; auto_imported?:boolean; import_confidence?:number;
+  grading_confidence?:number|null; rubric_version?:string; uncertain_points?:string[];
   master_matched?:boolean; status?:string; math_localized?:boolean;
 };
