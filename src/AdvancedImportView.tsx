@@ -95,10 +95,10 @@ export default function AdvancedImportView({problems,run,busy}:{
                 <option value="">問題を選択</option>{problems.map(problem=><option value={problem.problem_id} key={problem.problem_id}>{problemDisplayLabel(problem)}｜{problem.problem_id}</option>)}
               </select></Field>
               <Field label="モード"><select disabled={!editing} value={update.mode} onChange={event=>change(index,"mode",event.target.value)}>{Object.entries(modes).map(([key,label])=><option value={key} key={key}>{label}</option>)}</select></Field>
-              <Field label="段階評価"><input readOnly={!editing} value={update.score_text||""} onChange={event=>change(index,"score_text",event.target.value)}/></Field>
+              <Field label="段階評価"><input readOnly={!editing} value={update.score_text||update.score_label||""} onChange={event=>change(index,"score_text",event.target.value)}/></Field>
               <Field label="点数"><input readOnly={!editing} type="number" value={update.score_numeric??""} onChange={event=>change(index,"score_numeric",event.target.value===""?null:Number(event.target.value))}/></Field>
               <Field label="mark"><select disabled={!editing} value={update.mark} onChange={event=>change(index,"mark",event.target.value)}>{["◎","○","△","×"].map(mark=><option key={mark}>{mark}</option>)}</select></Field>
-              <Field label="本番選択"><input readOnly={!editing} value={update.exam_selection_rank||""} onChange={event=>change(index,"exam_selection_rank",event.target.value)}/></Field>
+              <Field label="本番選択"><input readOnly={!editing} value={update.exam_selection_rank||(!editing?"未判定（任意・保存可）":"")} onChange={event=>change(index,"exam_selection_rank",event.target.value)}/></Field>
               <Field label="K/W/N/C"><input readOnly={!editing} value={errors.join(" + ")||"none"} onChange={event=>changeErrors(index,event.target.value)} /></Field>
               <Field label="次回復習"><input readOnly value={`${reviewPlan.interval_days}日後（${reviewDate(update,reviewPlan.interval_days||14)}）`}/></Field>
             </div>

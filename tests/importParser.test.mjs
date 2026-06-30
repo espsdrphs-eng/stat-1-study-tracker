@@ -82,6 +82,23 @@ test("imports smart-quoted, unindented study_update output", () => {
   assert.equal(update.math_localized, true);
 });
 
+test("fills confirmation score and theme from score_label and problem master", () => {
+  const result = parseStudyText(`study_update:
+problem_id: "WB-2-S-06"
+date: "2026-06-30"
+mode: "full"
+mark: "○"
+score_label: "A-"
+score_numeric: 78
+error_types:
+  - "N"
+`, problems);
+  const update = result.updates[0];
+  assert.equal(update.score_text, "A-");
+  assert.equal(update.score_label, "A");
+  assert.deepEqual(update.themes, [problems[0].theme]);
+});
+
 test("accepts fenced YAML, lowercase category, and Unicode dashes", () => {
   const text = `\`\`\`yaml
 study_update:

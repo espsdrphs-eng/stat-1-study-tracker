@@ -145,11 +145,13 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
   const parsedDifficulty=raw.difficulty==null?difficultyFrom(text):Number(raw.difficulty);
   const difficulty=master?.difficulty??(Number.isFinite(parsedDifficulty)?parsedDifficulty:null);
   const rawThemes=raw.theme??raw.themes??extractLine(text,/主テーマ/);
-  const themes=Array.isArray(rawThemes)?rawThemes.map(String):parseThemes(scalar(rawThemes));
+  const parsedThemes=Array.isArray(rawThemes)?rawThemes.map(String).filter(Boolean):parseThemes(scalar(rawThemes));
+  const themes=parsedThemes.length?parsedThemes:(master?.theme?[master.theme]:[]);
   const relatedRaw=raw.related_s_problem_ids??raw.linked_s_problems??raw.linked_s_problem;
   const related=relatedRaw?stringArray(relatedRaw).map(canonicalProblemId):parseRelatedS(text,chapter);
   const ignored=stringArray(raw.ignored_parts??extractLine(text,/今回無視する部分/));
-  const scoreText=scalar(raw.score_text)||extractLine(text,/段階評価|総合評価/).match(/[SABC][+-]?/i)?.[0]?.toUpperCase()||"";
+  const scoreText=scalar(raw.score_text)||scalar(raw.score_label)||
+    extractLine(text,/段階評価|総合評価/).match(/[SABC][+-]?/i)?.[0]?.toUpperCase()||"";
   const scoreMatch=text.match(/点数\s*[：:]\s*(\d+(?:\.\d+)?)\s*\/\s*(\d+)/);
   const scoreNumeric=raw.score_numeric!=null?Number(raw.score_numeric):scoreMatch?Number(scoreMatch[1]):null;
   const scoreMax=raw.score_max!=null?Number(raw.score_max):scoreMatch?Number(scoreMatch[2]):scoreNumeric!=null?100:null;
