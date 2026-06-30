@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>統計検定1級 GoodNotes解答シート</title>
+<style>
+  @page { size: 12in 9in; margin: 0; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #fff; color: #263b35; font-family: "Yu Gothic UI","Hiragino Sans",sans-serif; }
+  .sheet { width: 12in; height: 9in; padding: .38in .44in .34in; break-after: page; position: relative; overflow: hidden; background: #fff; }
+  .sheet:last-child { break-after: auto; }
+  .head { height: .68in; border-bottom: 2px solid #315c4e; display: grid; grid-template-columns: 1fr auto; align-items: start; gap: .2in; }
+  .title { display: flex; align-items: baseline; gap: .16in; }
+  .title h1 { margin: 0; font-size: 20px; letter-spacing: .08em; color: #173d32; }
+  .title b { font-size: 10px; color: #6e817a; letter-spacing: .12em; }
+  .meta { display: grid; grid-template-columns: 1.7in 1.45in 1.05in; gap: .12in; }
+  .meta span, .line-field { border-bottom: 1px solid #94aaa2; min-height: .27in; font-size: 9px; color: #73857f; padding: 2px 4px; }
+  .meta span::before { font-weight: 700; color: #34584d; }
+  .meta .id::before { content: "問題ID　"; }
+  .meta .date::before { content: "日付　"; }
+  .meta .time::before { content: "時間　"; }
+  .body { height: calc(100% - .92in); padding-top: .18in; display: grid; gap: .12in; }
+  .box { border: 1px solid #b8c8c2; border-radius: 7px; padding: .1in .12in; min-height: 0; position: relative; }
+  .box h2 { margin: 0 0 .07in; font-size: 10px; letter-spacing: .08em; color: #315c4e; }
+  .hint { color: #91a19c; font-size: 8px; font-weight: 400; margin-left: .08in; }
+  .write { height: calc(100% - .2in); background: repeating-linear-gradient(to bottom, transparent 0, transparent .285in, #dbe4e0 .295in); }
+  .grid { height: calc(100% - .2in); background-image: linear-gradient(#e0e7e4 1px, transparent 1px),linear-gradient(90deg,#e0e7e4 1px,transparent 1px); background-size: .25in .25in; }
+  .checks { display: flex; gap: .18in; flex-wrap: wrap; align-items: center; font-size: 8px; color: #657b73; }
+  .checks i { display: inline-block; width: .13in; height: .13in; border: 1px solid #90a59d; border-radius: 2px; vertical-align: -2px; margin-right: 4px; }
+  .foot { position: absolute; left: .44in; right: .44in; bottom: .11in; display: flex; justify-content: space-between; font-size: 7px; color: #9aa8a3; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: .12in; min-height: 0; }
+  .three { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: .12in; min-height: 0; }
+  .steps { counter-reset: step; display: grid; grid-template-columns: repeat(5,1fr); gap: .08in; height: calc(100% - .18in); }
+  .steps div { border-left: 2px solid #b9cbbf; padding: .04in .07in; background: #f7f9f6; }
+  .steps div::before { counter-increment: step; content: counter(step); display: block; font-size: 8px; font-weight: 700; color: #668173; }
+  .answer-area { height: calc(100% - .23in); background: repeating-linear-gradient(to bottom, transparent 0, transparent .31in, #dbe4e0 .32in); }
+  .qtable { width: 100%; border-collapse: collapse; font-size: 8px; height: calc(100% - .2in); }
+  .qtable th,.qtable td { border: 1px solid #b9c8c3; padding: .05in; }
+  .qtable th { color: #315c4e; background: #edf3ef; }
+  .qtable td:first-child { width: .52in; text-align: center; font-weight: 700; }
+  .rank { display: grid; grid-template-columns: .9in 1fr 1fr; gap: .1in; height: calc(100% - .2in); }
+  .rank > div { border-bottom: 1px solid #d5dfdb; font-size: 8px; color: #647871; padding: .06in; }
+  .clock { display: grid; grid-template-columns: repeat(3,1fr); gap: .12in; height: calc(100% - .2in); }
+  .clock > div { border: 1px solid #cad6d1; border-radius: 6px; padding: .08in; }
+  .clock b { font-size: 9px; color: #315c4e; }
+  .clock p { height: .48in; border-bottom: 1px solid #d5dfdb; margin: .06in 0 0; }
+  .mode-note { position: absolute; right: .46in; top: .88in; color: #71867d; font-size: 8px; }
+  .light { background: #f8faf7; }
+</style>
+</head>
+<body>
+
+<section class="sheet" data-mode="skeleton">
+  <header class="head"><div class="title"><h1>骨格答案シート</h1><b>SKELETON / 10–20 MIN</b></div><div class="meta"><span class="id"></span><span class="date"></span><span class="time"></span></div></header>
+  <div class="mode-note">フル計算はしない。答案の設計図を自力で再現する。</div>
+  <main class="body" style="grid-template-rows:.65in .95in .72in 1.04in 1.18in .78in;">
+    <div class="two"><div class="box"><h2>問題の型 <span class="hint">一言で分類</span></h2><div class="write"></div></div><div class="box"><h2>求めるもの・結論の形</h2><div class="write"></div></div></div>
+    <div class="box"><h2>出発式</h2><div class="write"></div></div>
+    <div class="three"><div class="box"><h2>主役の統計量・変数</h2><div class="write"></div></div><div class="box"><h2>条件・仮定</h2><div class="write"></div></div><div class="box"><h2>使う定理・分布</h2><div class="write"></div></div></div>
+    <div class="box"><h2>解答の流れ <span class="hint">式または短文で5段階</span></h2><div class="steps"><div></div><div></div><div></div><div></div><div></div></div></div>
+    <div class="box"><h2>必要な式・主要計算の入口</h2><div class="grid"></div></div>
+    <div class="box light"><h2>最終結論</h2><div class="write"></div></div>
+  </main>
+  <div class="foot"><span class="checks"><span><i></i>型</span><span><i></i>出発式</span><span><i></i>条件</span><span><i></i>統計量</span><span><i></i>定理</span><span><i></i>結論</span></span><span>統計一級 STUDY TRACKER</span></div>
+</section>
+
+<section class="sheet" data-mode="main_calc">
+  <header class="head"><div class="title"><h1>主要計算シート</h1><b>MAIN CALCULATION / 10–20 MIN</b></div><div class="meta"><span class="id"></span><span class="date"></span><span class="time"></span></div></header>
+  <div class="mode-note">得点の中心になる計算だけを、途中式を省略せずに書く。</div>
+  <main class="body" style="grid-template-rows:.7in .75in 4.2in .72in;">
+    <div class="three"><div class="box"><h2>問題の型</h2><div class="write"></div></div><div class="box"><h2>出発式</h2><div class="write"></div></div><div class="box"><h2>今回練習する計算</h2><div class="write"></div></div></div>
+    <div class="box light"><h2>計算前に固定するもの</h2><div class="checks"><span><i></i>積分範囲・場合分け</span><span><i></i>添字</span><span><i></i>変数と変換</span><span><i></i>条件</span><span><i></i>目標の式</span></div></div>
+    <div class="box"><h2>主要計算 <span class="hint">計算・展開・積分・和・ヤコビアン・尤度微分など</span></h2><div class="grid"></div></div>
+    <div class="two"><div class="box"><h2>計算結果</h2><div class="write"></div></div><div class="box"><h2>結論への接続を1行で</h2><div class="write"></div></div></div>
+  </main>
+  <div class="foot"><span class="checks"><span><i></i>範囲</span><span><i></i>添字</span><span><i></i>符号</span><span><i></i>係数</span><span><i></i>条件</span><span><i></i>次元・自由度</span></span><span>統計一級 STUDY TRACKER</span></div>
+</section>
+
+<section class="sheet" data-mode="full">
+  <header class="head"><div class="title"><h1>フル答案シート 1/2</h1><b>FULL ANSWER</b></div><div class="meta"><span class="id"></span><span class="date"></span><span class="time"></span></div></header>
+  <main class="body" style="grid-template-rows:.62in 5.52in;">
+    <div class="two"><div class="box light"><h2>問題の型・方針</h2><div class="write"></div></div><div class="box light"><h2>求めるもの・条件</h2><div class="write"></div></div></div>
+    <div class="box"><h2>答案</h2><div class="answer-area"></div></div>
+  </main>
+  <div class="foot"><span class="checks"><span><i></i>定義</span><span><i></i>条件</span><span><i></i>根拠</span><span><i></i>途中式</span><span><i></i>結論</span></span><span>統計一級 STUDY TRACKER</span></div>
+</section>
+
+<section class="sheet" data-mode="full">
+  <header class="head"><div class="title"><h1>フル答案シート 2/2</h1><b>CONTINUATION</b></div><div class="meta"><span class="id"></span><span class="date"></span><span class="time"></span></div></header>
+  <main class="body" style="grid-template-rows:5.55in .62in;">
+    <div class="box"><h2>答案・続き</h2><div class="answer-area"></div></div>
+    <div class="two"><div class="box light"><h2>最終結論</h2><div class="write"></div></div><div class="box light"><h2>見直しで直した箇所</h2><div class="write"></div></div></div>
+  </main>
+  <div class="foot"><span class="checks"><span><i></i>問われた内容に回答</span><span><i></i>記号を定義</span><span><i></i>条件を確認</span><span><i></i>結論を明記</span></span><span>統計一級 STUDY TRACKER</span></div>
+</section>
+
+<section class="sheet" data-mode="scan">
+  <header class="head"><div class="title"><h1>5問スキャン・選題シート</h1><b>SCAN 5 QUESTIONS / SELECT 3</b></div><div class="meta"><span class="id"></span><span class="date"></span><span class="time"></span></div></header>
+  <main class="body" style="grid-template-rows:3.08in 1.4in 1.52in;">
+    <div class="box"><h2>5問比較 <span class="hint">解き始めず、型・入口・リスクを判定する</span></h2><table class="qtable"><thead><tr><th>問題</th><th>テーマ・型</th><th>出発式が出るか</th><th>完走見込み</th><th>時間</th><th>最大リスク</th><th>選択</th></tr></thead><tbody><tr><td>問1</td><td></td><td></td><td></td><td></td><td></td><td></td></tr><tr><td>問2</td><td></td><td></td><td></td><td></td><td></td><td></td></tr><tr><td>問3</td><td></td><td></td><td></td><td></td><td></td><td></td></tr><tr><td>問4</td><td></td><td></td><td></td><td></td><td></td><td></td></tr><tr><td>問5</td><td></td><td></td><td></td><td></td><td></td><td></td></tr></tbody></table></div>
+    <div class="two"><div class="box"><h2>選ぶ3問と理由</h2><div class="rank"><div>順位</div><div>問題</div><div>選ぶ理由</div><div>1</div><div></div><div></div><div>2</div><div></div><div></div><div>3</div><div></div><div></div></div></div><div class="box"><h2>捨てる2問と理由</h2><div class="write"></div></div></div>
+    <div class="two"><div class="box"><h2>90分の時間配分案</h2><div class="clock"><div><b>第1問　　分</b><p></p></div><div><b>第2問　　分</b><p></p></div><div><b>第3問　　分</b><p></p></div></div></div><div class="box light"><h2>選題評価・次回の判断ルール</h2><div class="write"></div></div></div>
+  </main>
+  <div class="foot"><span class="checks"><span><i></i>入口</span><span><i></i>小問回収</span><span><i></i>計算量</span><span><i></i>事故リスク</span><span><i></i>撤退基準</span></span><span>統計一級 STUDY TRACKER</span></div>
+</section>
+
+<section class="sheet" data-mode="exam_90min">
+  <header class="head"><div class="title"><h1>90分演習・作戦シート</h1><b>EXAM 90 MIN / PLAN</b></div><div class="meta"><span class="id"></span><span class="date"></span><span class="time"></span></div></header>
+  <main class="body" style="grid-template-rows:1.25in 1.08in 1.55in 2.14in;">
+    <div class="box"><h2>5問スキャン</h2><table class="qtable"><thead><tr><th>問題</th><th>型・テーマ</th><th>入口</th><th>リスク</th><th>選択</th></tr></thead><tbody><tr><td>問1</td><td></td><td></td><td></td><td></td></tr><tr><td>問2</td><td></td><td></td><td></td><td></td></tr><tr><td>問3</td><td></td><td></td><td></td><td></td></tr><tr><td>問4</td><td></td><td></td><td></td><td></td></tr><tr><td>問5</td><td></td><td></td><td></td><td></td></tr></tbody></table></div>
+    <div class="box"><h2>選択3問・着手順・予定時間</h2><div class="clock"><div><b>1番手：問　／　分</b><p></p></div><div><b>2番手：問　／　分</b><p></p></div><div><b>3番手：問　／　分</b><p></p></div></div></div>
+    <div class="three"><div class="box"><h2>開始時刻・終了目標</h2><div class="write"></div></div><div class="box"><h2>撤退基準</h2><div class="write"></div></div><div class="box"><h2>回収優先の小問</h2><div class="write"></div></div></div>
+    <div class="two"><div class="box"><h2>終了後：最大失点要因</h2><div class="write"></div></div><div class="box"><h2>戻るA問題・S問題</h2><div class="write"></div></div></div>
+  </main>
+  <div class="foot"><span class="checks"><span><i></i>選題10分以内</span><span><i></i>途中経過を残す</span><span><i></i>完走数を優先</span><span><i></i>最後5分は見直し</span></span><span>統計一級 STUDY TRACKER</span></div>
+</section>
+
+<section class="sheet" data-mode="exam_90min">
+  <header class="head"><div class="title"><h1>90分演習・答案 1/3</h1><b>FIRST CHOICE</b></div><div class="meta"><span class="id"></span><span class="date"></span><span class="time"></span></div></header>
+  <main class="body" style="grid-template-rows:.58in 5.55in;"><div class="two"><div class="box light"><h2>選択問題・型</h2><div class="write"></div></div><div class="box light"><h2>終了予定時刻</h2><div class="write"></div></div></div><div class="box"><h2>答案</h2><div class="answer-area"></div></div></main>
+  <div class="foot"><span class="checks"><span><i></i>条件</span><span><i></i>根拠</span><span><i></i>小問回収</span><span><i></i>結論</span></span><span>統計一級 STUDY TRACKER</span></div>
+</section>
+
+<section class="sheet" data-mode="exam_90min">
+  <header class="head"><div class="title"><h1>90分演習・答案 2/3</h1><b>SECOND CHOICE</b></div><div class="meta"><span class="id"></span><span class="date"></span><span class="time"></span></div></header>
+  <main class="body" style="grid-template-rows:.58in 5.55in;"><div class="two"><div class="box light"><h2>選択問題・型</h2><div class="write"></div></div><div class="box light"><h2>終了予定時刻</h2><div class="write"></div></div></div><div class="box"><h2>答案</h2><div class="answer-area"></div></div></main>
+  <div class="foot"><span class="checks"><span><i></i>条件</span><span><i></i>根拠</span><span><i></i>小問回収</span><span><i></i>結論</span></span><span>統計一級 STUDY TRACKER</span></div>
+</section>
+
+<section class="sheet" data-mode="exam_90min">
+  <header class="head"><div class="title"><h1>90分演習・答案 3/3</h1><b>THIRD CHOICE</b></div><div class="meta"><span class="id"></span><span class="date"></span><span class="time"></span></div></header>
+  <main class="body" style="grid-template-rows:.58in 5.55in;"><div class="two"><div class="box light"><h2>選択問題・型</h2><div class="write"></div></div><div class="box light"><h2>終了予定時刻</h2><div class="write"></div></div></div><div class="box"><h2>答案</h2><div class="answer-area"></div></div></main>
+  <div class="foot"><span class="checks"><span><i></i>条件</span><span><i></i>根拠</span><span><i></i>小問回収</span><span><i></i>結論</span></span><span>統計一級 STUDY TRACKER</span></div>
+</section>
+
+<script>
+  const mode = new URLSearchParams(location.search).get("mode") || "all";
+  if (mode !== "all") document.querySelectorAll(".sheet").forEach(sheet => {
+    if (sheet.dataset.mode !== mode) sheet.remove();
+  });
+</script>
+</body>
+</html>

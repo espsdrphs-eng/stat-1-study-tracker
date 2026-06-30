@@ -13,16 +13,18 @@ import { createAttemptReviewPlan } from "./reviewRules";
 import { analyzeWeakTrends, buildQuizPrompt } from "./weakTrend";
 import type { Attempt, Bootstrap, Problem, Review, StudyUpdate, Task } from "./types";
 
-type Page = "dashboard"|"today"|"problems"|"attempt"|"import"|"reviews"|"weak"|"past"|"settings";
+type Page = "dashboard"|"today"|"problems"|"attempt"|"import"|"reviews"|"weak"|"past"|"sheets"|"settings";
 const pageTitles:Record<Page,string> = {
   dashboard:"ダッシュボード",today:"今日やること",problems:"問題一覧",attempt:"手入力（予備）",
-  import:"GPT回答取り込み",reviews:"復習予定",weak:"弱点傾向",past:"過去問分析",settings:"設定"
+  import:"GPT回答取り込み",reviews:"復習予定",weak:"弱点傾向",past:"過去問分析",sheets:"解答シート",settings:"設定"
 };
 const nav = [
   ["dashboard",LayoutDashboard],["today",ListChecks],["problems",BookOpen],["attempt",NotebookPen],
-  ["import",ClipboardPaste],["reviews",CalendarCheck],["weak",AlertTriangle],["past",Target],["settings",Settings]
+  ["import",ClipboardPaste],["reviews",CalendarCheck],["weak",AlertTriangle],["past",Target],["sheets",Download],["settings",Settings]
 ] as const;
 const modes:Record<string,string>={skeleton:"骨格",main_calc:"主要計算",full:"フル答案",scan:"スキャン",exam_90min:"90分演習"};
+const sheetFiles:Record<string,string>={skeleton:"01-skeleton.pdf",main_calc:"02-main-calculation.pdf",full:"03-full-answer.pdf",scan:"04-five-question-scan.pdf",exam_90min:"05-exam-90min.pdf"};
+const sheetHref=(mode:string)=>`./answer-sheets/${sheetFiles[mode]||sheetFiles.skeleton}`;
 const reviewNames:Record<string,string>={skeleton_retry:"骨格再現",main_calc_retry:"主要計算",full_retry:"フル再演習",careless_check:"チェックリスト確認",s_check:"S確認",past_exam_link:"過去問連動",past_exam_selection:"選題確認",past_exam_retry:"過去問補修"};
 const todayString = () => new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Tokyo",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
 const blankUpdate = ():StudyUpdate => ({problem_id:"",date:todayString(),mode:"full",mark:"△",score_label:"B",error_type:"none",error_point:"",next_action:""});
@@ -72,6 +74,7 @@ export default function App() {
         page==="reviews"?<ReviewsView data={data} run={run} busy={busy}/>:
         page==="weak"?<WeakView data={data} run={run} busy={busy}/>:
         page==="past"?<PastView data={data} go={go}/>:
+        page==="sheets"?<AnswerSheetsView/>:
         <SettingsView data={data} run={run} busy={busy}/>}
       </div>
     </main>
@@ -207,7 +210,7 @@ function TodayTaskRows({task:t,busy,run,date,onReview}:{task:Task;busy:boolean;r
   const toggle=()=>isReview
     ?onReview(t)
     :run(()=>post("/api/today-check",{date,problem_id:t.problem_id,kind:t.kind,checked:!t.checked}),t.checked?"チェックを外しました":"解答済み・採点待ちにしました");
-  return <><tr className={t.checked?"task-checked":""}><td><Badge tone={t.kind==="S確認"?"blue":t.error_type==="K"?"red":""}>{t.kind}</Badge></td><td><strong>{t.problem_id}</strong><small>{t.title}{t.checked&&<em className="grading-wait">採点待ち</em>}</small></td><td>{modes[t.mode]||t.mode}</td><td>{t.minutes}分</td><td><strong>{t.load.toFixed(1)}</strong></td><td>{t.reason}</td><td><label className="task-check"><input type="checkbox" checked={!!t.checked} disabled={busy} onChange={toggle}/><span>{isReview?"復習結果を記録":"解答済み"}</span></label></td></tr>
+  return <><tr className={t.checked?"task-checked":""}><td><Badge tone={t.kind==="S確認"?"blue":t.error_type==="K"?"red":""}>{t.kind}</Badge></td><td><strong>{t.problem_id}</strong><small>{t.title}{t.checked&&<em className="grading-wait">採点待ち</em>}</small></td><td>{modes[t.mode]||t.mode}</td><td>{t.minutes}分</td><td><strong>{t.load.toFixed(1)}</strong></td><td>{t.reason}</td><td><div className="task-actions"><a className="sheet-link" href={sheetHref(t.mode)} target="_blank" rel="noreferrer"><Download size={13}/>シート</a><label className="task-check"><input type="checkbox" checked={!!t.checked} disabled={busy} onChange={toggle}/><span>{isReview?"復習結果を記録":"解答済み"}</span></label></div></td></tr>
     {(t.review_method||t.review_reason)&&<tr className="task-plan-row"><td colSpan={7}><ReviewPlanDetails item={t} compact/></td></tr>}</>;
 }
 
@@ -426,6 +429,29 @@ function PastView({data,go}:{data:Bootstrap;go:(p:Page)=>void}) {
     <section className="panel past-master"><div className="panel-title"><div><span className="eyebrow">PAST EXAM MASTER</span><h3>登録済み過去問</h3></div><Badge>{pastProblems.length}問</Badge></div>
       {pastProblems.map(problem=><div className="past-master-row" key={problem.problem_id}><div><strong>{problemDisplayLabel(problem)}</strong><span>{problem.problem_id} ・ {problem.theme}</span></div><small>関連A/S：{[problem.linked_a_problems,...(problem.related_s_problem_ids||[])].filter(Boolean).join(" / ")||"未設定"}</small></div>)}
     </section>
+  </>;
+}
+
+function AnswerSheetsView(){
+  const sheets=[
+    {mode:"skeleton",title:"骨格答案",pages:"1ページ",time:"10〜20分",description:"型、出発式、主役の統計量、条件、定理、結論を答案の設計図として残します。"},
+    {mode:"main_calc",title:"主要計算",pages:"1ページ",time:"10〜20分",description:"計算・積分・和・変数変換など、得点の中心になる作業部分だけを途中式付きで書きます。"},
+    {mode:"full",title:"フル答案",pages:"2ページ",time:"30〜45分",description:"採点可能な答案を最初から最後まで書くための、方針欄付き横罫シートです。"},
+    {mode:"scan",title:"5問スキャン",pages:"1ページ",time:"5〜10分",description:"5問の型、入口、完走見込み、事故リスクを比較し、選ぶ3問と捨てる2問を決めます。"},
+    {mode:"exam_90min",title:"90分演習",pages:"4ページ",time:"90分",description:"選題・時間配分の作戦ページと、選択した3問それぞれの答案ページです。"}
+  ];
+  const allHref="./answer-sheets/00-all-answer-sheets.pdf";
+  return <>
+    <section className="answer-sheet-hero">
+      <div><span className="eyebrow">GOODNOTES / IPAD LANDSCAPE</span><h2>解答方式に合わせて、書く場所を先に決める</h2><p>すべてiPad横画面と同じ4:3比率です。PDFを開いてGoodNotesへ共有し、原本を複製してから使ってください。</p></div>
+      <a className="primary" href={allHref} target="_blank" rel="noreferrer"><Download size={17}/>全シートをまとめて開く</a>
+    </section>
+    <div className="answer-sheet-grid">{sheets.map(sheet=><section className={`panel answer-sheet-card mode-${sheet.mode}`} key={sheet.mode}>
+      <div className="sheet-preview"><NotebookPen size={24}/><span>{sheet.pages}</span></div>
+      <div className="sheet-card-body"><div><Badge>{modes[sheet.mode]}</Badge><h3>{sheet.title}シート</h3></div><p>{sheet.description}</p><small>目安 {sheet.time}・{sheet.pages}</small></div>
+      <a className="ghost" href={sheetHref(sheet.mode)} target="_blank" rel="noreferrer"><Download size={15}/>PDFを開く</a>
+    </section>)}</div>
+    <section className="panel goodnotes-guide"><div><span className="eyebrow">HOW TO USE</span><h3>GoodNotesへの入れ方</h3></div><ol><li>使うモードの「PDFを開く」を押す</li><li>iPadの共有ボタンから「Goodnotesで開く」を選ぶ</li><li>「新規書類として読み込む」で保存する</li><li>毎回、原本ページを複製してから答案を書く</li><li>書き終えたページを画像またはPDFでGPTへ送る</li></ol></section>
   </>;
 }
 
