@@ -30,7 +30,7 @@ study_update:
   date: "${date}"
   mode: "full"
   mark: "△"
-  score_text: "B 72点"
+  score_label: "B"
   score_numeric: 72
   result_summary: "答案全体の短い評価"
   error_types:
@@ -53,5 +53,6 @@ study_update:
       mistake: "今回のミス"
       correction_rule: "次回の修正ルール"
 
+exam_selection_rank や「本番で選ぶか」の判定は出力しないでください。
 まず採点結果と根拠を説明し、最後にYAMLだけをコードブロックで出力してください。`;
 }
