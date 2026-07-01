@@ -5,6 +5,7 @@ import { analyzeWeaknesses } from "./weaknessAnalytics.ts";
 import { createAdaptiveReviewPlan, createAttemptReviewPlan, createPastReviewPlan, createSReviewPlan, type ReviewOutcome, type ReviewPlan, type SState } from "./reviewRules.ts";
 import { applyWeakNoteQuizResult } from "./weakNoteQuiz.ts";
 import { selectMixedPractice } from "./studyScheduler.ts";
+import { buildProgressPlan, daysUntilExam } from "./studyProgress.ts";
 
 type SMemory = { problem_id:string; state:"stable"|"check"|"forgotten"|"collapsed"; last_touched?:string; k_trigger_count:number };
 type StoredAttempt = Attempt;
@@ -299,8 +300,15 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
     secondary_error_type:input.secondary_error_type||"",ignored_parts:input.ignored_parts||[],
     auto_imported:!!input.auto_imported,import_confidence:input.import_confidence??(input.auto_imported?.8:1),
     grading_confidence:input.grading_confidence??null,rubric_version:input.rubric_version||"",
-    uncertain_points:input.uncertain_points||[]
+    uncertain_points:input.uncertain_points||[],generated_from_review_id:input.generated_from_review_id,
+    is_review_attempt:!!input.generated_from_review_id
   }));
+  if(input.generated_from_review_id){
+    await db.reviews.update(input.generated_from_review_id,{
+      status:"done",completion_result:input.review_outcome||(["◎","○"].includes(input.mark)?"success":input.mark==="△"?"partial":"failed"),
+      hint_used:!!input.hint_used,completion_time_minutes:Number(input.time_minutes||0),completed_at:date
+    });
+  }
   const attempts=(await db.attempts.where("problem_id").equals(input.problem_id).sortBy("date")).filter(x=>x.id!==id);
   const previous=attempts.at(-1);
   let consecutivePerfect=0;
@@ -523,6 +531,10 @@ async function bootstrap():Promise<Bootstrap>{
   const pmap=new Map(problems.map(p=>[p.problem_id,p]));
   const smap=new Map(sMemory.map(memory=>[memory.problem_id,memory]));
   const attemptMap=new Map(attempts.map(attempt=>[attempt.id,attempt]));
+  const settings={
+    exam_date:metaEntries.find(entry=>entry.key==="exam_date")?.value||"",
+    daily_study_minutes:Math.max(30,Number(metaEntries.find(entry=>entry.key==="daily_study_minutes")?.value||150))
+  };
   const reviews=rawReviews.map(review=>{
     const status=review.status!=="done"&&review.due_date<today?"overdue":review.status;
     if(review.review_method) return {...review,status};
@@ -543,9 +555,16 @@ async function bootstrap():Promise<Bootstrap>{
   const pastSkeleton=attempts.filter(a=>a.date>=fortnight&&pmap.get(a.problem_id)?.category==="past_exam").length;
   const delayed3=reviews.filter(r=>r.status!=="done"&&r.due_date<addDays(today,-3)).length;
   const weakUpdates=weakNotes.filter(w=>w.date>=week).length;
-  const checks=[a14>=10&&a14<=14,pastSkeleton>=2,kRepeat<=2,skeleton.length>0&&skeletonGood/skeleton.length>=.8,weakUpdates>=2,delayed3===0];
-  const paceLabel=checks.filter(Boolean).length>=5?"合格ペース":checks.filter(Boolean).length>=3?"注意":"危険";
   const scans=pastSessions.filter(s=>s.session_type==="scan_5_questions"),exams=pastSessions.filter(s=>s.session_type==="exam_90min");
+  const studyDays14=new Set(attempts.filter(a=>a.date>=fortnight).map(a=>a.date)).size;
+  const actualMinutes14=attempts.filter(a=>a.date>=fortnight).reduce((sum,a)=>sum+Math.max(0,Number(a.time_minutes||0)),0);
+  const progress=buildProgressPlan(daysUntilExam(today,settings.exam_date),{
+    a14,past14:pastSkeleton,scan14:scans.filter(s=>String(s.date)>=fortnight).length,
+    exam14:exams.filter(s=>String(s.date)>=fortnight).length,kRepeat,
+    skeletonCount:skeleton.length,skeletonRate:skeleton.length?Math.round(skeletonGood/skeleton.length*100):0,
+    studyDays14,actualMinutes14,delayed3,dailyTargetMinutes:settings.daily_study_minutes
+  });
+  const checks=progress.checks.map(item=>item.status==="ok");
   const pastAttempts=attempts.filter(attempt=>pmap.get(attempt.problem_id)?.category==="past_exam");
   const chapterCounts=new Map<number,number>();
   attempts.filter(a=>a.date>=fortnight&&a.error_type==="K").forEach(a=>{const c=pmap.get(a.problem_id)?.chapter;if(c!=null)chapterCounts.set(c,(chapterCounts.get(c)||0)+1)});
@@ -564,38 +583,59 @@ async function bootstrap():Promise<Bootstrap>{
     nextTheme:[...themeCounts.entries()].sort((a,b)=>b[1]-a[1])[0]?.[0]||"ロードマップ先頭のA問題",
     analysisConfidence:weaknessAnalysis.confidence,analysisAttemptCount:weaknessAnalysis.attemptCount,
     weaknessInsights:weaknessAnalysis.insights,
-    pace:{label:paceLabel,checks,a14,pastSkeleton,kRepeat,skeletonRate:skeleton.length?Math.round(skeletonGood/skeleton.length*100):0,weakUpdates,delayed3,suggestion:paceLabel==="危険"?"新規A問題を減らし、K問題とS復旧を優先してください。":""}
+    pace:{label:progress.label,checks,items:progress.checks,a14,pastSkeleton,kRepeat,
+      skeletonRate:skeleton.length?Math.round(skeletonGood/skeleton.length*100):0,weakUpdates,delayed3,
+      suggestion:progress.suggestion,phase:progress.phase,phaseLabel:progress.phaseLabel,summary:progress.summary,
+      nextPhase:progress.nextPhase,daysRemaining:progress.daysRemaining,examDateIsEstimate:!settings.exam_date}
   };
   const dueReviews=reviews.filter(r=>r.status!=="done"&&r.due_date<=today).map(r=>{
     const p=pmap.get(r.problem_id)!;const source=attempts.find(a=>a.id===r.generated_from_attempt_id);
     const defaultMinutes=r.estimated_minutes||r.duration_minutes||20;
     const minutes=source?.is_review_attempt&&source.time_minutes>0?Math.max(3,Math.round((defaultMinutes+source.time_minutes)/2)):defaultMinutes;
-    return {...r,title:p?.display_label||p?.title||(r.generated_from_past_session_id?`${r.problem_id.replace("-SESSION","")} 過去問演習`:r.problem_id),theme:p?.theme||"",error_type:source?.error_type,kind:r.review_type==="s_check"?"S確認":r.generated_from_past_session_id?"過去問復習":"復習",reason:r.status==="overdue"?`期限切れ（${r.due_date}）`:"本日が復習日",mode:r.requires_full_answer?"exam_90min":r.review_type==="s_check"?"skeleton":r.review_type==="main_calc_retry"?"main_calc":r.review_type==="careless_check"?"scan":"skeleton",minutes,estimated_minutes:minutes,load:loadFor(r.requires_full_answer?"exam_90min":r.review_type==="main_calc_retry"?"main_calc":r.review_type==="careless_check"?"scan":"skeleton")};
+    return {...r,title:p?.display_label||p?.title||(r.generated_from_past_session_id?`${r.problem_id.replace("-SESSION","")} 過去問演習`:r.problem_id),theme:p?.theme||"",error_type:source?.error_type,
+      previous_date:source?.date,previous_score:source?`${source.score_text||source.score_label}${source.score_numeric!=null?` ${source.score_numeric}点`:""}`:"",
+      previous_errors:source?.error_types||[source?.error_type||"none"],previous_error_point:source?.error_point||"",previous_next_action:source?.next_action||"",
+      kind:r.review_type==="s_check"?"S確認":r.generated_from_past_session_id?"過去問復習":"復習",reason:r.status==="overdue"?`期限切れ（${r.due_date}）`:"本日が復習日",
+      mode:r.requires_full_answer?"exam_90min":r.review_type==="s_check"?"skeleton":r.review_type==="main_calc_retry"?"main_calc":r.review_type==="careless_check"?"scan":"skeleton",
+      minutes,estimated_minutes:minutes,load:loadFor(r.requires_full_answer?"exam_90min":r.review_type==="main_calc_retry"?"main_calc":r.review_type==="careless_check"?"scan":"skeleton")};
   }).sort((a,b)=>(a.status==="overdue"&&a.error_type==="K"?0:1)-(b.status==="overdue"&&b.error_type==="K"?0:1));
   const activeS=new Set(dueReviews.filter(r=>r.review_type==="s_check").map(r=>r.problem_id));
   const staleS=sMemory.filter(s=>!activeS.has(s.problem_id)&&(s.state==="forgotten"||s.state==="collapsed"||!!s.last_touched&&s.last_touched<=addDays(today,-30))).map(s=>{
     const p=pmap.get(s.problem_id)!,sPlan=createSReviewPlan(s.state);return {problem_id:s.problem_id,title:p.display_label||p.title,theme:p.theme,kind:"S点検",reason:s.state==="forgotten"||s.state==="collapsed"?"忘却状態から復旧":"30日以上未確認",mode:sPlan.mode,minutes:sPlan.estimated_minutes||5,load:s.state==="collapsed"?.4:.2,...planFields(sPlan)};
   });
   let load=[...dueReviews,...staleS].reduce((sum,x)=>sum+x.load,0);
+  let plannedMinutes=[...dueReviews,...staleS].reduce((sum,x)=>sum+x.minutes,0);
   const seen=new Set(attempts.map(a=>a.problem_id));
   const occupied=new Set([...dueReviews,...staleS].map(task=>task.problem_id));
   const mixedProblem=selectMixedPractice(problems,attempts,occupied,today);
   const mixedReserve=mixedProblem ? .5 : 0;
+  const mixedMinutes=mixedProblem?12:0;
   const newTasks=[];
   for(const r of roadmap.filter(r=>r.is_active&&!seen.has(r.problem_id))){
-    if(newTasks.length>=3||load+r.load_score+mixedReserve>4) break;
-    newTasks.push({...r,title:pmap.get(r.problem_id)!.display_label||pmap.get(r.problem_id)!.title,theme:pmap.get(r.problem_id)!.theme,kind:"新規A",reason:`ロードマップ ${r.order_index}番`,mode:r.expected_mode,minutes:r.expected_mode==="full"?35:20,load:r.load_score});load+=r.load_score;
+    const minutes=r.expected_mode==="full"?35:r.expected_mode==="main_calc"?20:15;
+    if(newTasks.length>=4||plannedMinutes>=settings.daily_study_minutes*.9) break;
+    if(newTasks.length>0&&plannedMinutes+minutes+mixedMinutes>settings.daily_study_minutes+15) break;
+    newTasks.push({...r,title:pmap.get(r.problem_id)!.display_label||pmap.get(r.problem_id)!.title,theme:pmap.get(r.problem_id)!.theme,kind:"新規A",reason:`ロードマップ ${r.order_index}番`,mode:r.expected_mode,minutes,load:r.load_score});
+    load+=r.load_score;plannedMinutes+=minutes;
   }
-  const mixedTasks=mixedProblem&&load+.5<=4?[{problem_id:mixedProblem.problem_id,title:mixedProblem.display_label||mixedProblem.title,
+  const mixedTasks=mixedProblem&&plannedMinutes+mixedMinutes<=settings.daily_study_minutes+15?[{problem_id:mixedProblem.problem_id,title:mixedProblem.display_label||mixedProblem.title,
     theme:mixedProblem.theme,kind:"混合確認",reason:"既習テーマから型を見分ける混合演習",mode:"skeleton",minutes:12,load:.5}]:[];
-  if(mixedTasks.length) load+=.5;
+  if(mixedTasks.length){load+=.5;plannedMinutes+=mixedMinutes}
   const checkedKeys=new Set(metaEntries.filter(entry=>entry.key.startsWith(`today-check:${today}:`)&&entry.value==="1").map(entry=>entry.key));
   const tasks=[...dueReviews,...staleS,...newTasks,...mixedTasks].map(task=>({
     ...task,checked:checkedKeys.has(`today-check:${today}:${task.problem_id}:${task.kind}`)
   }));
   const totalLoad=Math.round(tasks.filter(task=>!task.checked).reduce((sum,x)=>sum+x.load,0)*10)/10;
-  const settings={exam_date:metaEntries.find(entry=>entry.key==="exam_date")?.value||""};
-  return {problems:problems.sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.category.localeCompare(b.category)||a.problem_number-b.problem_number),attempts,reviews,roadmap,weakNotes,pastSessions,dashboard,settings,today:{tasks,totalLoad,warning:totalLoad>4?"今日は負荷が4.0を超えています。1問を骨格モードに落とすか、翌日に回してください。":""}} as Bootstrap;
+  const remainingMinutes=tasks.filter(task=>!task.checked).reduce((sum,task)=>sum+task.minutes,0);
+  const actualMinutes=attempts.filter(attempt=>attempt.date===today).reduce((sum,attempt)=>sum+Math.max(0,Number(attempt.time_minutes||0)),0);
+  const capacityPercent=Math.round(plannedMinutes/settings.daily_study_minutes*100);
+  const warning=plannedMinutes>settings.daily_study_minutes+30
+    ?`予定は${plannedMinutes}分です。目標${settings.daily_study_minutes}分を30分以上超えるため、期限の低い課題を翌日に回してください。`:"";
+  const guidance=plannedMinutes<settings.daily_study_minutes-15
+    ?`アプリ内予定は${plannedMinutes}分です。残り${settings.daily_study_minutes-plannedMinutes}分は弱点クイズ、解説確認、または既習A問題の混合確認に使えます。`
+    :`目標${settings.daily_study_minutes}分に対して、無理のない範囲の学習計画です。`;
+  return {problems:problems.sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.category.localeCompare(b.category)||a.problem_number-b.problem_number),attempts,reviews,roadmap,weakNotes,pastSessions,dashboard,settings,
+    today:{tasks,totalLoad,plannedMinutes,remainingMinutes,actualMinutes,targetMinutes:settings.daily_study_minutes,capacityPercent,warning,guidance}} as Bootstrap;
 }
 
 export async function localGet<T>(path:string):Promise<T>{
@@ -638,8 +678,10 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     if(body.checked) await db.meta.put({key,value:"1"}); else await db.meta.delete(key);
   } else if(path==="/api/settings") {
     const examDate=String(body.exam_date||"");
+    const dailyMinutes=Math.max(30,Math.min(600,Number(body.daily_study_minutes||150)));
     await db.transaction("rw",db.meta,db.reviews,async()=>{
       await db.meta.put({key:"exam_date",value:examDate});
+      await db.meta.put({key:"daily_study_minutes",value:String(dailyMinutes)});
       if(examDate&&examDate>todayString()){
         const cap=addDays(examDate,-3),minimum=addDays(todayString(),1);
         const due=cap>minimum?cap:minimum;

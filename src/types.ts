@@ -36,10 +36,12 @@ export type Roadmap = {
 export type PastSession = Record<string, string|number> & { id:number; year:number; session_type:string; date:string };
 export type Task = {
   id?:number; problem_id:string; title:string; kind:string; reason:string; mode:string;
-  minutes:number; load:number; status?:string; error_type?:string;
+  minutes:number; load:number; status?:string; error_type?:string; theme?:string;
   due_date?:string; review_reason?:string; review_method?:string; review_instruction?:string;
   review_steps?:string[]; estimated_minutes?:number; requires_full_answer?:boolean;
   requires_s_check?:boolean; linked_s_problem_ids?:string[]; checked?:boolean;
+  previous_date?:string; previous_score?:string; previous_errors?:string[];
+  previous_error_point?:string; previous_next_action?:string;
 };
 export type WeaknessInsight = {
   theme:string; score:number; level:"重点"|"注意"|"観察"; confidence:"参考"|"暫定"|"分析可能";
@@ -53,13 +55,16 @@ export type Dashboard = {
   dangerChapters:{chapter:number;count:number}[]; nextTheme:string;
   analysisConfidence:"参考"|"暫定"|"分析可能"; analysisAttemptCount:number;
   weaknessInsights:WeaknessInsight[];
-  pace:{label:string;checks:boolean[];a14:number;pastSkeleton:number;kRepeat:number;skeletonRate:number;weakUpdates:number;delayed3:number;suggestion:string};
+  pace:{label:string;checks:boolean[];items:{label:string;detail:string;status:"ok"|"warning"|"pending"}[];
+    a14:number;pastSkeleton:number;kRepeat:number;skeletonRate:number;weakUpdates:number;delayed3:number;
+    suggestion:string;phase:string;phaseLabel:string;summary:string;nextPhase:string;daysRemaining:number;examDateIsEstimate:boolean};
 };
 export type Bootstrap = {
   problems:Problem[]; attempts:Attempt[]; reviews:Review[]; roadmap:Roadmap[];
   weakNotes:WeakNote[]; pastSessions:PastSession[]; dashboard:Dashboard;
-  settings:{exam_date:string};
-  today:{tasks:Task[];totalLoad:number;warning:string};
+  settings:{exam_date:string;daily_study_minutes:number};
+  today:{tasks:Task[];totalLoad:number;plannedMinutes:number;remainingMinutes:number;actualMinutes:number;
+    targetMinutes:number;capacityPercent:number;warning:string;guidance:string};
 };
 export type StudyUpdate = {
   problem_id:string; date:string; mode:string; time_minutes?:number|string; mark:string; score_label:string;
@@ -75,5 +80,6 @@ export type StudyUpdate = {
   weak_notes?:Array<{theme:string;error_type:string;mistake:string;correction_rule:string}>;
   source_text?:string; auto_imported?:boolean; import_confidence?:number;
   grading_confidence?:number|null; rubric_version?:string; uncertain_points?:string[];
+  generated_from_review_id?:number; review_outcome?:"success"|"partial"|"failed"; hint_used?:boolean;
   master_matched?:boolean; status?:string; math_localized?:boolean;
 };

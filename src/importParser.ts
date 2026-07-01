@@ -195,7 +195,7 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
   const gradingConfidence=gradingConfidenceRaw==null?null:Math.min(1,Number(gradingConfidenceRaw)>1?Number(gradingConfidenceRaw)/100:Number(gradingConfidenceRaw));
   return {
     problem_id:candidate,date:scalar(raw.date)==="auto_today"||!raw.date?todayString():scalar(raw.date),
-    mode,mark,score_label:scoreLabel(scoreText,scoreNumeric),error_type:primary,error_point:errorPoint,next_action:nextAction,
+    mode,time_minutes:raw.time_minutes==null?undefined:Number(raw.time_minutes),mark,score_label:scoreLabel(scoreText,scoreNumeric),error_type:primary,error_point:errorPoint,next_action:nextAction,
     display_label:scalar(raw.display_label)||display,source_type:master?.source_type||(candidate.startsWith("PY-")?"past_exam":"whitebook"),
     category,chapter,problem_number:problemNumber,difficulty,themes,theme:themes.join(" / "),
     related_s_problem_ids:related,linked_s_problems:related,linked_s_problem:related.join(";"),
@@ -206,6 +206,10 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
     weak_note:localizedWeakNotes[0],weak_notes:localizedWeakNotes,correction_rule:localizedWeakNotes[0]?.correction_rule,source_text:text,auto_imported:true,
     grading_confidence:Number.isFinite(gradingConfidence)?gradingConfidence:null,
     rubric_version:scalar(raw.rubric_version),uncertain_points:stringArray(raw.uncertain_points),
+    generated_from_review_id:raw.generated_from_review_id==null?undefined:Number(raw.generated_from_review_id),
+    review_outcome:["success","partial","failed"].includes(scalar(raw.review_outcome))
+      ?scalar(raw.review_outcome) as StudyUpdate["review_outcome"]:undefined,
+    hint_used:raw.hint_used==null?undefined:/^(true|yes|1|はい)$/i.test(scalar(raw.hint_used)),
     import_confidence:Math.round(confidence*100)/100,master_matched:!!master,status:"review_required",
     math_localized:rawResultSummary!==resultSummary||rawErrorPoint!==errorPoint||rawNextAction!==nextAction||
       weakNotes.some((note,index)=>note.mistake!==localizedWeakNotes[index]?.mistake||note.correction_rule!==localizedWeakNotes[index]?.correction_rule)

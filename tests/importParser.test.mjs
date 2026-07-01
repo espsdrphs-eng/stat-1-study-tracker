@@ -99,6 +99,31 @@ error_types:
   assert.deepEqual(update.themes, [problems[0].theme]);
 });
 
+test("復習採点YAMLの時間と復習結果を読み取る",()=>{
+  const result=parseStudyText(`study_update:
+  problem_id: "WB-2-S-06"
+  date: "2026-07-02"
+  mode: "skeleton"
+  time_minutes: 14
+  mark: "○"
+  score_label: "A"
+  score_numeric: 82
+  error_types:
+    - "none"
+  primary_error_type: "none"
+  error_point: ""
+  next_action: "14日後に骨格確認"
+  generated_from_review_id: 12
+  review_outcome: "success"
+  hint_used: false
+`,problems);
+  const update=result.updates[0];
+  assert.equal(update.time_minutes,14);
+  assert.equal(update.generated_from_review_id,12);
+  assert.equal(update.review_outcome,"success");
+  assert.equal(update.hint_used,false);
+});
+
 test("accepts fenced YAML, lowercase category, and Unicode dashes", () => {
   const text = `\`\`\`yaml
 study_update:

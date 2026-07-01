@@ -19,6 +19,7 @@ const missingRequiredFields=(update:StudyUpdate)=>{
   const hasError=errors.length>0||(update.primary_error_type||update.error_type)!=="none";
   return [
     !update.master_matched||!update.problem_id?"問題マスター":"",
+    !Number(update.time_minutes)?"学習時間":"",
     !update.score_text&&update.score_numeric==null?"段階評価または点数":"",
     !update.themes?.length?"主テーマ":"",
     hasError&&!update.error_point.trim()?"ミス内容":"",
@@ -98,7 +99,7 @@ export default function AdvancedImportView({problems,run,busy}:{
           const reviewPlan=createAttemptReviewPlan(update,related);
           const missing=missingRequiredFields(update);
           return <article className={`import-card detailed ${!update.master_matched?"unmatched":""}`} key={index}>
-            <div className="import-card-head"><div><strong>{update.display_label||update.problem_id||"問題未特定"}</strong><small>{update.problem_id} ・ {update.rubric_version||"採点基準未記録"} ・ 採点確信度 {update.grading_confidence==null?"未記載":`${Math.round(update.grading_confidence*100)}%`}</small></div>
+            <div className="import-card-head"><div><strong>{update.display_label||update.problem_id||"問題未特定"}</strong><small>{update.problem_id} ・ {update.generated_from_review_id?`復習採点 #${update.generated_from_review_id}`:update.rubric_version||"採点基準未記録"} ・ 採点確信度 {update.grading_confidence==null?"未記載":`${Math.round(update.grading_confidence*100)}%`}</small></div>
               <button onClick={()=>remove(index)} aria-label="候補を削除"><X size={16}/></button></div>
             {!update.master_matched&&<div className="match-warning"><AlertTriangle size={17}/><div><strong>問題マスターに未照合です</strong><span>保存前に登録済み問題を選択してください。</span></div></div>}
             {missing.length>0&&<div className="match-warning"><AlertTriangle size={17}/><div><strong>復習計画に必要な項目が不足しています</strong><span>{missing.join(" / ")}を確認・修正してください。</span></div></div>}
@@ -110,6 +111,7 @@ export default function AdvancedImportView({problems,run,busy}:{
               </select></Field>
               <Field label="モード"><select disabled={!editing} value={update.mode} onChange={event=>change(index,"mode",event.target.value)}>{Object.entries(modes).map(([key,label])=><option value={key} key={key}>{label}</option>)}</select></Field>
               <Field label="学習日"><input readOnly={!editing} type="date" value={update.date} onChange={event=>change(index,"date",event.target.value)}/></Field>
+              <Field label="学習時間（分）"><input readOnly={!editing} placeholder="要確認" type="number" value={update.time_minutes??""} onChange={event=>change(index,"time_minutes",event.target.value===""?undefined:Number(event.target.value))}/></Field>
               <Field label="段階評価"><input readOnly={!editing} placeholder="要確認" value={update.score_text||(update.score_numeric!=null?update.score_label:"")} onChange={event=>change(index,"score_text",event.target.value)}/></Field>
               <Field label="点数"><input readOnly={!editing} placeholder="要確認" type="number" value={update.score_numeric??""} onChange={event=>change(index,"score_numeric",event.target.value===""?null:Number(event.target.value))}/></Field>
               <Field label="mark"><select disabled={!editing} value={update.mark} onChange={event=>change(index,"mark",event.target.value)}>{["◎","○","△","×"].map(mark=><option key={mark}>{mark}</option>)}</select></Field>
