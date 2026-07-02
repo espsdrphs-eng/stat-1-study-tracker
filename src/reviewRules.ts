@@ -51,6 +51,22 @@ export function normalizedErrors(input:Pick<StudyUpdate,"error_types"|"primary_e
   return [...new Set(values.map(String).filter(value=>priority.includes(value)))].sort((a,b)=>priority.indexOf(a)-priority.indexOf(b));
 }
 
+export function enforceReviewEvidence(input:StudyUpdate,previousErrors:string[],strictVersion:string):StudyUpdate{
+  if(!input.generated_from_review_id||input.rubric_version!==strictVersion||input.review_outcome!=="success") return input;
+  const targetError=previousErrors.find(error=>priority.includes(error));
+  if(!targetError) return input;
+  const evidence=String(input.resolution_evidence||"").trim();
+  const changed=String(input.answer_change_summary||"").trim();
+  const shown=input.required_work_shown||[];
+  const proofIsValid=input.target_issue_resolved===true&&input.minimum_pass_condition_met===true&&
+    evidence.length>=8&&shown.length>0&&!/(変更なし|前回と同じ|同一答案|未修正)/.test(changed);
+  if(proofIsValid) return input;
+  const reason="前回課題を改善した答案中の具体的な式・説明を確認できないため、successをpartialへ変更した。";
+  return {...input,review_outcome:"partial",mark:"△",error_type:targetError,primary_error_type:targetError,
+    error_types:[targetError],error_point:String(input.error_point||reason),target_issue_resolved:false,
+    minimum_pass_condition_met:false,result_summary:`${String(input.result_summary||"")} ${reason}`.trim()};
+}
+
 export function createAttemptReviewPlan(
   input:StudyUpdate|Attempt,linkedS:string[]=[],consecutivePerfect=0
 ):ReviewPlan{
@@ -61,17 +77,29 @@ export function createAttemptReviewPlan(
   const days=stable?30:interval[selected];
   const definition=definitions[selected];
   const errorPoint=String(input.error_point||"").trim();
-  const requiresS=(selected==="K"||selected==="N")&&linkedS.length>0;
+  const localizedOmission=selected==="N"&&/(途中|式|省略|変形|展開|計算|導出|根拠)/.test(errorPoint);
+  const requiresS=(selected==="K"||selected==="N"&&!localizedOmission)&&linkedS.length>0;
   const reason=stable
     ?"かなり安定しているため、短期復習の優先度は低い。得意問題に時間を使いすぎないよう、月1回の軽メンテに回す。"
     :`${errors.length?`${errors.join("＋")}が含まれるため。`:""}${definition.reason}`;
+  const method=localizedOmission?"省略部分の局所再現":stable?"月1回の軽い骨格確認":definition.method;
+  const instruction=localizedOmission
+    ?`骨格全体やフル答案の書き直しは不要。前回省略した「${errorPoint}」だけを、直前の式から結果が導ける途中式付きで自力再現する。答や方針だけでは完了にしない。`
+    :`${stable?"フル答案は不要。型・出発式・結論の形だけを短時間で確認する。":definition.instruction}${errorPoint?` 今回見るポイント：${errorPoint}`:""}`;
+  const localSteps=[
+    `前回省略した箇所「${errorPoint}」の直前の式を書く`,
+    "使用する条件・添字・範囲を明記する",
+    "結果へ至る式変形を1行ずつ書く",
+    "各行の変形が成り立つ理由を短く説明する",
+    "答を隠し、同じ局所計算をもう一度再現する"
+  ];
   return {
-    review_reason:reason,review_method:stable?"月1回の軽い骨格確認":definition.method,
-    review_instruction:`${stable?"フル答案は不要。型・出発式・結論の形だけを短時間で確認する。":definition.instruction}${errorPoint?` 今回見るポイント：${errorPoint}`:""}`,
-    review_steps:errorPoint?[`今回のミス「${errorPoint}」を確認する`,...definition.steps]:definition.steps,estimated_minutes:stable?5:definition.minutes,requires_full_answer:false,
+    review_reason:localizedOmission?`N判定の原因が局所的な式・説明の省略であるため、できている骨格は繰り返さず、省略箇所だけを短時間で補修する。`:reason,
+    review_method:method,review_instruction:instruction,
+    review_steps:localizedOmission?localSteps:errorPoint?[`今回のミス「${errorPoint}」を確認する`,...definition.steps]:definition.steps,estimated_minutes:localizedOmission?12:stable?5:definition.minutes,requires_full_answer:false,
     requires_s_check:requiresS,linked_s_problem_ids:requiresS?linkedS:[],interval_days:days,
-    review_type:selected==="W"?"main_calc_retry":selected==="K"||selected==="N"?"skeleton_retry":selected==="C"?"careless_check":"skeleton_retry",
-    mode:stable?"scan":definition.mode,completion_candidate:perfectStreak>=3&&selected==="none"
+    review_type:selected==="W"||localizedOmission?"main_calc_retry":selected==="K"||selected==="N"?"skeleton_retry":selected==="C"?"careless_check":"skeleton_retry",
+    mode:localizedOmission?"main_calc":stable?"scan":definition.mode,completion_candidate:perfectStreak>=3&&selected==="none"
   };
 }
 

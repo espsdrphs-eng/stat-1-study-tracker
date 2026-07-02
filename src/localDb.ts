@@ -2,11 +2,12 @@ import Dexie, { type EntityTable } from "dexie";
 import type { Attempt, Bootstrap, PastSession, Problem, Review, Roadmap, StudyUpdate, WeakNote } from "./types";
 import { japaneseizeMathText } from "./mathJapanese.ts";
 import { analyzeWeaknesses } from "./weaknessAnalytics.ts";
-import { createAdaptiveReviewPlan, createAttemptReviewPlan, createPastReviewPlan, createSReviewPlan, type ReviewOutcome, type ReviewPlan, type SState } from "./reviewRules.ts";
+import { createAdaptiveReviewPlan, createAttemptReviewPlan, createPastReviewPlan, createSReviewPlan, enforceReviewEvidence, normalizedErrors, type ReviewOutcome, type ReviewPlan, type SState } from "./reviewRules.ts";
 import { applyWeakNoteQuizResult } from "./weakNoteQuiz.ts";
 import { selectMixedPractice } from "./studyScheduler.ts";
 import { buildProgressPlan, daysUntilExam } from "./studyProgress.ts";
 import { CHAPTER_META, officialProblemEntries, PAST_EXAM_YEAR_ORDER, STRATEGY_A_PLUS_ORDER, STRATEGY_S_ORDER, strategyRankFor } from "./officialMaster.ts";
+import { REVIEW_RUBRIC_VERSION } from "./gradingPrompt.ts";
 
 type SMemory = { problem_id:string; state:"stable"|"check"|"forgotten"|"collapsed"; last_touched?:string; k_trigger_count:number };
 type StoredAttempt = Attempt;
@@ -364,6 +365,12 @@ async function addOrReplaceReview(review:ReviewInsert){
 async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
   const problem=await db.problems.get(input.problem_id);
   if(!problem) throw new Error(`未登録の問題IDです: ${input.problem_id}`);
+  if(input.generated_from_review_id&&input.rubric_version===REVIEW_RUBRIC_VERSION){
+    const review=await db.reviews.get(input.generated_from_review_id);
+    const source=review?await db.attempts.get(review.generated_from_attempt_id):undefined;
+    const previousErrors=source?normalizedErrors(source):[];
+    input=enforceReviewEvidence(input,previousErrors,REVIEW_RUBRIC_VERSION) as StudyUpdate&Record<string,unknown>;
+  }
   const date=input.date||todayString();
   const localizedErrorPoint=japaneseizeMathText(input.error_point||"");
   const localizedNextAction=japaneseizeMathText(input.next_action||"");
@@ -380,6 +387,10 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
     score_text:input.score_text||"",score_numeric:input.score_numeric??null,score_max:input.score_max??null,
     result_summary:japaneseizeMathText(input.result_summary||""),exam_selection_rank:input.exam_selection_rank||"",
     improvement_guidance:improvementGuidance,required_derivation:requiredDerivation,corrected_answer:correctedAnswer,
+    target_issue_resolved:input.target_issue_resolved,minimum_pass_condition_met:input.minimum_pass_condition_met,
+    resolution_evidence:japaneseizeMathText(input.resolution_evidence||""),
+    answer_change_summary:japaneseizeMathText(input.answer_change_summary||""),
+    required_work_shown:(input.required_work_shown||[]).map(japaneseizeMathText),
     error_types:errors,primary_error_type:primary,
     secondary_error_type:input.secondary_error_type||"",ignored_parts:input.ignored_parts||[],
     auto_imported:!!input.auto_imported,import_confidence:input.import_confidence??(input.auto_imported?.8:1),

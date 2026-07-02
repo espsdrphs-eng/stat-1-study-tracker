@@ -84,7 +84,7 @@ export default function App() {
         page==="today"?<TodayView data={data} busy={busy} run={run} go={go}/>:
         page==="problems"?<ProblemsView data={data} select={setSelected} run={run} busy={busy}/>:
         page==="attempt"?<AttemptView problems={data.problems} run={run} busy={busy}/>:
-        page==="import"?<AdvancedImportView problems={data.problems} run={run} busy={busy}/>:
+        page==="import"?<AdvancedImportView problems={data.problems} attempts={data.attempts} reviews={data.reviews} run={run} busy={busy}/>:
         page==="reviews"?<ReviewsView data={data} run={run} busy={busy}/>:
         page==="weak"?<WeakView data={data} run={run} busy={busy}/>:
         page==="past"?<PastView data={data} go={go}/>:

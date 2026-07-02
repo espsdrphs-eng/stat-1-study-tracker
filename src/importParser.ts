@@ -177,6 +177,11 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
   const improvementGuidance=japaneseizeMathText(rawImprovementGuidance);
   const requiredDerivation=japaneseizeMathText(rawRequiredDerivation);
   const correctedAnswer=japaneseizeMathText(rawCorrectedAnswer);
+  const targetIssueResolved=raw.target_issue_resolved==null?undefined:/^(true|yes|1|はい)$/i.test(scalar(raw.target_issue_resolved));
+  const minimumPassConditionMet=raw.minimum_pass_condition_met==null?undefined:/^(true|yes|1|はい)$/i.test(scalar(raw.minimum_pass_condition_met));
+  const resolutionEvidence=japaneseizeMathText(scalar(raw.resolution_evidence));
+  const answerChangeSummary=japaneseizeMathText(scalar(raw.answer_change_summary));
+  const requiredWorkShown=stringArray(raw.required_work_shown).map(japaneseizeMathText);
   const weak=raw.weak_note&&typeof raw.weak_note==="object"
     ? raw.weak_note as StudyUpdate["weak_note"]
     : weakNoteFromText(text,candidate,primary,themes);
@@ -208,6 +213,8 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
     linked_past_exams:stringArray(raw.linked_past_exams),ignored_parts:ignored,score_text:scoreText,
     score_numeric:scoreNumeric,score_max:scoreMax,result_summary:resultSummary,exam_selection_rank:examRank,
     improvement_guidance:improvementGuidance,required_derivation:requiredDerivation,corrected_answer:correctedAnswer,
+    target_issue_resolved:targetIssueResolved,minimum_pass_condition_met:minimumPassConditionMet,
+    resolution_evidence:resolutionEvidence,answer_change_summary:answerChangeSummary,required_work_shown:requiredWorkShown,
     error_types:errors,primary_error_type:primary,secondary_error_type:secondary,
     review_after_days:days,review_reason:shortestError==="none"?"ミス分類なしのため14日後":`${shortestError}が含まれるため${days}日後`,
     weak_note:localizedWeakNotes[0],weak_notes:localizedWeakNotes,correction_rule:localizedWeakNotes[0]?.correction_rule,source_text:text,auto_imported:true,

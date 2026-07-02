@@ -12,6 +12,8 @@ export type Attempt = {
   score_label:string; error_type:string; error_point:string; next_action:string; memo:string;
   score_text?:string; score_numeric?:number|null; score_max?:number|null; result_summary?:string;
   improvement_guidance?:string; required_derivation?:string; corrected_answer?:string;
+  target_issue_resolved?:boolean; minimum_pass_condition_met?:boolean;
+  resolution_evidence?:string; answer_change_summary?:string; required_work_shown?:string[];
   exam_selection_rank?:string; error_types?:string[]; primary_error_type?:string;
   secondary_error_type?:string; ignored_parts?:string[]; auto_imported?:boolean;
   import_confidence?:number; grading_confidence?:number|null; rubric_version?:string;
@@ -79,6 +81,8 @@ export type StudyUpdate = {
   ignored_parts?:string[]; score_text?:string; score_numeric?:number|null; score_max?:number|null;
   result_summary?:string; exam_selection_rank?:string; error_types?:string[];
   improvement_guidance?:string; required_derivation?:string; corrected_answer?:string;
+  target_issue_resolved?:boolean; minimum_pass_condition_met?:boolean;
+  resolution_evidence?:string; answer_change_summary?:string; required_work_shown?:string[];
   primary_error_type?:string; secondary_error_type?:string; review_reason?:string;
   weak_note?:{theme:string;error_type:string;mistake:string;correction_rule:string};
   weak_notes?:Array<{theme:string;error_type:string;mistake:string;correction_rule:string}>;

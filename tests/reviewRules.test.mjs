@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createAdaptiveReviewPlan, createAttemptReviewPlan, createPastReviewPlan, createSReviewPlan } from "../src/reviewRules.ts";
+import { createAdaptiveReviewPlan, createAttemptReviewPlan, createPastReviewPlan, createSReviewPlan, enforceReviewEvidence } from "../src/reviewRules.ts";
 
 const update=(errors,mark="△")=>({
   problem_id:"WB-2-A-20",date:"2026-06-29",mode:"full",mark,score_label:"B",
@@ -30,6 +30,40 @@ test("複数分類では最短間隔を採用する",()=>{
   assert.equal(createAttemptReviewPlan(update(["W","N"])).interval_days,2);
   assert.equal(createAttemptReviewPlan(update(["N","C"])).interval_days,2);
   assert.equal(createAttemptReviewPlan(update(["W","C"])).interval_days,3);
+});
+
+test("Nが途中式の省略なら、できている骨格を繰り返さず局所計算だけ復習する",()=>{
+  const plan=createAttemptReviewPlan({...update(["N"]),error_type:"N",error_types:["N"],
+    error_point:"尤度微分から推定量までの式変形を省略した"},["WB-6-S-04"]);
+  assert.equal(plan.review_method,"省略部分の局所再現");
+  assert.equal(plan.mode,"main_calc");
+  assert.equal(plan.review_type,"main_calc_retry");
+  assert.equal(plan.requires_full_answer,false);
+  assert.equal(plan.requires_s_check,false);
+  assert.match(plan.review_instruction,/答や方針だけでは完了にしない/);
+  assert.ok(plan.review_steps.some(step=>step.includes("変形が成り立つ理由")));
+});
+
+test("前回Nなのに改善根拠がないsuccessはpartialへ下げる",()=>{
+  const result=enforceReviewEvidence({...update([],"○"),generated_from_review_id:12,
+    rubric_version:"STAT1-REVIEW-v3",review_outcome:"success",
+    target_issue_resolved:true,minimum_pass_condition_met:true,
+    resolution_evidence:"骨格は正しい",answer_change_summary:"前回と同じ答案",
+    required_work_shown:[]} ,["N"],"STAT1-REVIEW-v3");
+  assert.equal(result.review_outcome,"partial");
+  assert.equal(result.error_type,"N");
+  assert.equal(result.mark,"△");
+});
+
+test("前回Nの省略部分を途中式で改善した場合だけsuccessを維持する",()=>{
+  const result=enforceReviewEvidence({...update([],"○"),generated_from_review_id:12,
+    rubric_version:"STAT1-REVIEW-v3",review_outcome:"success",
+    target_issue_resolved:true,minimum_pass_condition_met:true,
+    resolution_evidence:"答案にスコア方程式から推定量までの3行がある",
+    answer_change_summary:"前回省略した式変形を3行追加した",
+    required_work_shown:["対数尤度の微分","分母の通分","未知量について解く"]},["N"],"STAT1-REVIEW-v3");
+  assert.equal(result.review_outcome,"success");
+  assert.equal(result.error_type,"none");
 });
 
 test("関連S確認はK/Nかつ関連問題がある場合だけ必要になる",()=>{

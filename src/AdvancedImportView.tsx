@@ -4,7 +4,7 @@ import { post } from "./api";
 import { applyProblemMaster, parseStudyText, problemDisplayLabel, todayString } from "./importParser";
 import { createAttemptReviewPlan } from "./reviewRules";
 import { buildGradingPrompt, GRADING_RUBRIC_VERSION, REVIEW_RUBRIC_VERSION } from "./gradingPrompt";
-import type { Problem, StudyUpdate } from "./types";
+import type { Attempt, Problem, Review, StudyUpdate } from "./types";
 
 const modes:Record<string,string>={skeleton:"骨格",main_calc:"主要計算",full:"フル答案",scan:"スキャン",exam_90min:"90分演習"};
 const intervals:Record<string,number>={K:1,N:2,W:3,C:7,none:14};
@@ -14,10 +14,16 @@ const reviewDate=(update:StudyUpdate,days:number)=>{
   date.setDate(date.getDate()+days);
   return new Intl.DateTimeFormat("sv-SE").format(date);
 };
-const missingRequiredFields=(update:StudyUpdate)=>{
+const missingRequiredFields=(update:StudyUpdate,hasPreviousTarget=false)=>{
   const errors=update.error_types||[];
   const hasError=errors.length>0||(update.primary_error_type||update.error_type)!=="none";
   const usesDetailedFeedback=[GRADING_RUBRIC_VERSION,REVIEW_RUBRIC_VERSION].includes(update.rubric_version||"");
+  const strictReview=update.rubric_version===REVIEW_RUBRIC_VERSION;
+  const invalidSuccessProof=hasPreviousTarget&&update.review_outcome==="success"&&(
+    update.target_issue_resolved!==true||update.minimum_pass_condition_met!==true||
+    !update.resolution_evidence?.trim()||!update.required_work_shown?.length||
+    /(変更なし|前回と同じ|同一答案|未修正)/.test(update.answer_change_summary||"")
+  );
   return [
     !update.master_matched||!update.problem_id?"問題マスター":"",
     !Number(update.time_minutes)?"今回の所要時間":"",
@@ -27,7 +33,12 @@ const missingRequiredFields=(update:StudyUpdate)=>{
     hasError&&!update.next_action.trim()?"次回課題":"",
     usesDetailedFeedback&&!update.improvement_guidance?.trim()?"次回の直し方":"",
     usesDetailedFeedback&&!update.required_derivation?.trim()?"必要な途中計算":"",
-    usesDetailedFeedback&&!update.corrected_answer?.trim()?"修正版答案":""
+    usesDetailedFeedback&&!update.corrected_answer?.trim()?"修正版答案":"",
+    strictReview&&update.target_issue_resolved==null?"前回課題の解消判定":"",
+    strictReview&&update.minimum_pass_condition_met==null?"最低クリア条件":"",
+    strictReview&&!update.resolution_evidence?.trim()?"改善の答案内根拠":"",
+    strictReview&&!update.required_work_shown?.length?"実際に書けた途中式":"",
+    invalidSuccessProof?"successに必要な実質的改善の証拠":""
   ].filter(Boolean);
 };
 
@@ -38,8 +49,8 @@ function Pill({children,tone=""}:{children:React.ReactNode;tone?:string}){
   return <span className={`badge ${tone}`}>{children}</span>;
 }
 
-export default function AdvancedImportView({problems,run,busy}:{
-  problems:Problem[];run:(action:()=>Promise<unknown>,success:string)=>void;busy:boolean;
+export default function AdvancedImportView({problems,attempts,reviews,run,busy}:{
+  problems:Problem[];attempts:Attempt[];reviews:Review[];run:(action:()=>Promise<unknown>,success:string)=>void;busy:boolean;
 }){
   const [text,setText]=useState("");
   const [updates,setUpdates]=useState<StudyUpdate[]>([]);
@@ -74,7 +85,13 @@ export default function AdvancedImportView({problems,run,busy}:{
       review_reason:primary==="none"?"ミス分類なしのため14日後":`${primary}が含まれるため${days}日後`}:row));
   };
   const remove=(index:number)=>setUpdates(rows=>rows.filter((_,i)=>i!==index));
-  const canSave=updates.length>0&&updates.every(row=>missingRequiredFields(row).length===0);
+  const hasPreviousTarget=(update:StudyUpdate)=>{
+    if(!update.generated_from_review_id) return false;
+    const review=reviews.find(item=>item.id===update.generated_from_review_id);
+    const source=review&&attempts.find(item=>item.id===review.generated_from_attempt_id);
+    return !!source&&(source.error_types||[source.error_type]).some(error=>["K","W","N","C"].includes(error));
+  };
+  const canSave=updates.length>0&&updates.every(row=>missingRequiredFields(row,hasPreviousTarget(row)).length===0);
 
   return <div className="import-layout advanced-import">
     <section className="panel">
@@ -101,7 +118,7 @@ export default function AdvancedImportView({problems,run,busy}:{
           const related=update.related_s_problem_ids||[];
           const errors=update.error_types||[];
           const reviewPlan=createAttemptReviewPlan(update,related);
-          const missing=missingRequiredFields(update);
+          const missing=missingRequiredFields(update,hasPreviousTarget(update));
           const isReviewImport=!!update.generated_from_review_id||update.rubric_version===REVIEW_RUBRIC_VERSION;
           const expectedRubric=isReviewImport?REVIEW_RUBRIC_VERSION:GRADING_RUBRIC_VERSION;
           return <article className={`import-card detailed ${!update.master_matched?"unmatched":""}`} key={index}>
@@ -132,6 +149,12 @@ export default function AdvancedImportView({problems,run,busy}:{
               <Field label="今回の答案に沿った修正版答案" wide><textarea readOnly={!editing} value={update.corrected_answer||""} onChange={event=>change(index,"corrected_answer",event.target.value)} placeholder="今回の答案の正しい部分を残した修正版"/></Field>
               <Field label="省略してはいけない途中計算" wide><textarea readOnly={!editing} value={update.required_derivation||""} onChange={event=>change(index,"required_derivation",event.target.value)} placeholder="結論を自力で導くために必要な式変形"/></Field>
               <Field label="次回の直し方" wide><textarea readOnly={!editing} value={update.improvement_guidance||""} onChange={event=>change(index,"improvement_guidance",event.target.value)} placeholder="残す部分・置き換える部分・何も見ずに書く部分"/></Field>
+              {isReviewImport&&<div className="resolution-proof">
+                <div><span>前回課題</span><strong>{update.target_issue_resolved?"解消":"未解消または未確認"}</strong></div>
+                <div><span>最低クリア条件</span><strong>{update.minimum_pass_condition_met?"達成":"未達または未確認"}</strong></div>
+                <div className="wide"><span>今回答案中の改善根拠</span><p>{update.resolution_evidence||"根拠未記載"}</p></div>
+                <div className="wide"><span>実際に確認できた途中式・作業</span><ul>{update.required_work_shown?.map((item,n)=><li key={n}>{item}</li>)}{!update.required_work_shown?.length&&<li>記載なし</li>}</ul></div>
+              </div>}
             </div>
 
             <div className="candidate-grid">

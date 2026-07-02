@@ -116,6 +116,13 @@ test("復習採点YAMLの時間と復習結果を読み取る",()=>{
   improvement_guidance: "残す部分：出発式。置き換える部分：添字。次回何も見ずに書く部分：和の交換。"
   required_derivation: "0以上n以下を、kがn+1以上へ変換する途中式を書く。"
   corrected_answer: "期待値を二重和に直し、和の順序を交換して尾確率へ接続する。"
+  target_issue_resolved: true
+  minimum_pass_condition_met: true
+  resolution_evidence: "和の範囲をnが0以上、kがn+1以上へ書き換えた。"
+  answer_change_summary: "前回省略した和の範囲変換を2行追加した。"
+  required_work_shown:
+    - "二重和の範囲変換"
+    - "内側の和と尾確率の接続"
   generated_from_review_id: 12
   review_outcome: "success"
   hint_used: false
@@ -128,6 +135,9 @@ test("復習採点YAMLの時間と復習結果を読み取る",()=>{
   assert.match(update.improvement_guidance,/残す部分/);
   assert.match(update.required_derivation,/途中式/);
   assert.match(update.corrected_answer,/尾確率/);
+  assert.equal(update.target_issue_resolved,true);
+  assert.equal(update.minimum_pass_condition_met,true);
+  assert.equal(update.required_work_shown.length,2);
 });
 
 test("accepts fenced YAML, lowercase category, and Unicode dashes", () => {

@@ -1,5 +1,5 @@
 export const GRADING_RUBRIC_VERSION="STAT1-GRADE-v3";
-export const REVIEW_RUBRIC_VERSION="STAT1-REVIEW-v2";
+export const REVIEW_RUBRIC_VERSION="STAT1-REVIEW-v3";
 
 export type ReviewPromptContext={
   reviewId?:number;problemId:string;title?:string;theme?:string;date:string;mode:string;
@@ -89,6 +89,13 @@ exam_selection_rank や「本番で選ぶか」の判定は出力しないでく
 
 export function buildReviewGradingPrompt(context:ReviewPromptContext){
   const steps=(context.reviewSteps||[]).map((step,index)=>`  ${index+1}. ${step}`).join("\n")||"  前回の課題に対応する部分を自力で再現する";
+  const previousErrors=context.previousErrors||[];
+  const minimumConditions=[
+    previousErrors.includes("K")?"K：前回崩れた型・出発式・主役の統計量・条件・定理を答案上で再現する。":"",
+    previousErrors.includes("N")?"N：前回省略した式・説明を答案上に追加し、各式変形が成り立つ理由も短く説明する。正しい骨格や暗記した式だけの再掲では未達。":"",
+    previousErrors.includes("W")?"W：前回失敗した計算・積分・和・式変形を、途中式付きで正しく完了する。答だけ一致しても未達。":"",
+    previousErrors.includes("C")?"C：前回の符号・係数・条件ミスを再発させず、該当箇所を正しく書く。":""
+  ].filter(Boolean).join("\n")||"前回指定された課題を答案上で自力再現する。";
   return `あなたは統計検定1級・統計数理の復習答案採点者です。
 今回は初見答案の採点ではありません。前回の反省点が修正されたかを比較して判定してください。
 
@@ -125,19 +132,26 @@ ${steps}
 
 【比較採点ルール】
 1. 前回の反省点が今回修正されたかを、答案中の根拠を示して判定する。
-2. 復習指示の対象外は採点しない。フル答案不要の場合、答案全体がないことをN判定にしない。
+2. 復習指示の対象外は採点しない。フル答案不要の場合、対象外の省略は減点しない。ただし、前回の失敗箇所は復習対象なので省略を認めない。
 3. 前回と同じミス、改善した点、新たに発生したミスを分けて書く。
 4. review_outcome は次で判定する。
-   success：前回の課題をヒントなしで自力再現できた
-   partial：一部改善したが、再現不足またはヒント使用があった
-   failed：前回の主要課題が再びできなかった
+   success：下記の最低クリア条件をすべて満たし、前回の課題をヒントなしで答案上に再現できた
+   partial：前回より実質的に改善したが、必要な式・説明の一部がまだ不足した
+   failed：前回と同じ答案・同じ省略のまま、または前回の主要課題を答案上で改善できなかった
 5. K/W/N/Cは今回残ったミスだけを複数選択する。修正済みなら none とする。
 6. grading_confidenceは0〜100。答案から確認できない部分はuncertain_pointsへ入れる。
 7. 今回の答案の正しい部分を残し、まだ不足する部分を補った「今回の答案に沿った修正版答案」を示す。
 8. 結論に必要な途中計算は省略しない。「整理すると」で飛ばさず、前回の課題が直ったと確認できる式変形をすべて書く。
 9. 次回の直し方を「今回改善したので残す部分」「まだ置き換える部分」「次回何も見ずに書く部分」に分ける。
 10. 説明は【比較採点】【修正版答案】【省略してはいけない途中計算】【次回の直し方】の順にする。
-11. 最後に次のYAMLをコードブロックで出力する。LaTeXは避け、できるだけ日本語で書く。
+11. 骨格が正しいことは、前回N/Wだった箇所を省略してよい理由にはならない。前回と全く同じ答案で省略も同じならsuccessは禁止する。
+12. resolution_evidenceには、改善を示す今回答案の式または文章をそのまま引用する。一般的な評価文は禁止する。
+13. required_work_shownには、今回答案で実際に確認できた途中式・作業を1項目ずつ入れる。
+14. N/Wの復習では、式を暗記して並べただけかを確認するため、範囲・条件・変形理由の説明があるかを見る。説明できなければsuccessにしない。
+15. 最後に次のYAMLをコードブロックで出力する。LaTeXは避け、できるだけ日本語で書く。
+
+【今回の最低クリア条件】
+${minimumConditions}
 
 study_update:
   problem_id: "${context.problemId}"
@@ -171,6 +185,14 @@ study_update:
   generated_from_review_id: ${context.reviewId||0}
   review_outcome: "success"
   hint_used: false
+  target_issue_resolved: true
+  minimum_pass_condition_met: true
+  resolution_evidence: |
+    改善を示す今回答案中の式または文章をそのまま引用
+  answer_change_summary: "前回答案から実際に追加・変更された内容"
+  required_work_shown:
+    - "今回答案で確認できた途中式または作業1"
+    - "今回答案で確認できた途中式または作業2"
   weak_notes: []
 
 一般的な模範解答ではなく、今回貼り付けた答案の記号と流れに対応させてください。
