@@ -3,7 +3,7 @@ import { AlertTriangle, BookOpen, CalendarCheck, Check, ClipboardPaste, Copy, Da
 import { post } from "./api";
 import { applyProblemMaster, parseStudyText, problemDisplayLabel, todayString } from "./importParser";
 import { createAttemptReviewPlan } from "./reviewRules";
-import { buildGradingPrompt, GRADING_RUBRIC_VERSION } from "./gradingPrompt";
+import { buildGradingPrompt, GRADING_RUBRIC_VERSION, REVIEW_RUBRIC_VERSION } from "./gradingPrompt";
 import type { Problem, StudyUpdate } from "./types";
 
 const modes:Record<string,string>={skeleton:"骨格",main_calc:"主要計算",full:"フル答案",scan:"スキャン",exam_90min:"90分演習"};
@@ -19,7 +19,7 @@ const missingRequiredFields=(update:StudyUpdate)=>{
   const hasError=errors.length>0||(update.primary_error_type||update.error_type)!=="none";
   return [
     !update.master_matched||!update.problem_id?"問題マスター":"",
-    !Number(update.time_minutes)?"学習時間":"",
+    !Number(update.time_minutes)?"今回の所要時間":"",
     !update.score_text&&update.score_numeric==null?"段階評価または点数":"",
     !update.themes?.length?"主テーマ":"",
     hasError&&!update.error_point.trim()?"ミス内容":"",
@@ -98,12 +98,14 @@ export default function AdvancedImportView({problems,run,busy}:{
           const errors=update.error_types||[];
           const reviewPlan=createAttemptReviewPlan(update,related);
           const missing=missingRequiredFields(update);
+          const isReviewImport=!!update.generated_from_review_id||update.rubric_version===REVIEW_RUBRIC_VERSION;
+          const expectedRubric=isReviewImport?REVIEW_RUBRIC_VERSION:GRADING_RUBRIC_VERSION;
           return <article className={`import-card detailed ${!update.master_matched?"unmatched":""}`} key={index}>
-            <div className="import-card-head"><div><strong>{update.display_label||update.problem_id||"問題未特定"}</strong><small>{update.problem_id} ・ {update.generated_from_review_id?`復習採点 #${update.generated_from_review_id}`:update.rubric_version||"採点基準未記録"} ・ 採点確信度 {update.grading_confidence==null?"未記載":`${Math.round(update.grading_confidence*100)}%`}</small></div>
+            <div className="import-card-head"><div><strong>{update.display_label||update.problem_id||"問題未特定"}</strong><small>{update.problem_id} ・ {isReviewImport?`復習採点${update.generated_from_review_id?` #${update.generated_from_review_id}`:""}`:"初回採点"} ・ {update.rubric_version||"採点基準未記録"} ・ 採点確信度 {update.grading_confidence==null?"未記載":`${Math.round(update.grading_confidence*100)}%`}</small></div>
               <button onClick={()=>remove(index)} aria-label="候補を削除"><X size={16}/></button></div>
             {!update.master_matched&&<div className="match-warning"><AlertTriangle size={17}/><div><strong>問題マスターに未照合です</strong><span>保存前に登録済み問題を選択してください。</span></div></div>}
             {missing.length>0&&<div className="match-warning"><AlertTriangle size={17}/><div><strong>復習計画に必要な項目が不足しています</strong><span>{missing.join(" / ")}を確認・修正してください。</span></div></div>}
-            {update.rubric_version!==GRADING_RUBRIC_VERSION&&<div className="match-warning"><AlertTriangle size={17}/><div><strong>採点基準を確認してください</strong><span>{GRADING_RUBRIC_VERSION}の採点プロンプトによる結果を推奨します。</span></div></div>}
+            {update.rubric_version!==expectedRubric&&<div className="match-warning"><AlertTriangle size={17}/><div><strong>採点基準を確認してください</strong><span>{expectedRubric}の{isReviewImport?"復習":"初回"}採点プロンプトによる結果を推奨します。</span></div></div>}
             {update.grading_confidence!=null&&update.grading_confidence<.7&&<div className="match-warning"><AlertTriangle size={17}/><div><strong>採点確信度が低い結果です</strong><span>{update.uncertain_points?.join(" / ")||"根拠を確認してから保存してください。"}</span></div></div>}
             <div className="import-fields expanded">
               <Field label="問題マスター"><select disabled={!editing&&!!update.master_matched} value={update.master_matched?update.problem_id:""} onChange={event=>selectProblem(index,event.target.value)}>
@@ -111,7 +113,7 @@ export default function AdvancedImportView({problems,run,busy}:{
               </select></Field>
               <Field label="モード"><select disabled={!editing} value={update.mode} onChange={event=>change(index,"mode",event.target.value)}>{Object.entries(modes).map(([key,label])=><option value={key} key={key}>{label}</option>)}</select></Field>
               <Field label="学習日"><input readOnly={!editing} type="date" value={update.date} onChange={event=>change(index,"date",event.target.value)}/></Field>
-              <Field label="学習時間（分）"><input readOnly={!editing} placeholder="要確認" type="number" value={update.time_minutes??""} onChange={event=>change(index,"time_minutes",event.target.value===""?undefined:Number(event.target.value))}/></Field>
+              <Field label="今回の所要時間（分）"><input readOnly={!editing} placeholder="要確認" type="number" value={update.time_minutes??""} onChange={event=>change(index,"time_minutes",event.target.value===""?undefined:Number(event.target.value))}/></Field>
               <Field label="段階評価"><input readOnly={!editing} placeholder="要確認" value={update.score_text||(update.score_numeric!=null?update.score_label:"")} onChange={event=>change(index,"score_text",event.target.value)}/></Field>
               <Field label="点数"><input readOnly={!editing} placeholder="要確認" type="number" value={update.score_numeric??""} onChange={event=>change(index,"score_numeric",event.target.value===""?null:Number(event.target.value))}/></Field>
               <Field label="mark"><select disabled={!editing} value={update.mark} onChange={event=>change(index,"mark",event.target.value)}>{["◎","○","△","×"].map(mark=><option key={mark}>{mark}</option>)}</select></Field>

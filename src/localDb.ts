@@ -6,6 +6,7 @@ import { createAdaptiveReviewPlan, createAttemptReviewPlan, createPastReviewPlan
 import { applyWeakNoteQuizResult } from "./weakNoteQuiz.ts";
 import { selectMixedPractice } from "./studyScheduler.ts";
 import { buildProgressPlan, daysUntilExam } from "./studyProgress.ts";
+import { CHAPTER_META, officialProblemEntries, PAST_EXAM_YEAR_ORDER, STRATEGY_A_PLUS_ORDER, STRATEGY_S_ORDER, strategyRankFor } from "./officialMaster.ts";
 
 type SMemory = { problem_id:string; state:"stable"|"check"|"forgotten"|"collapsed"; last_touched?:string; k_trigger_count:number };
 type StoredAttempt = Attempt;
@@ -180,6 +181,85 @@ class StudyDatabase extends Dexie {
         await tx.table("reviews").put(keep);
         await tx.table("reviews").bulkDelete(sorted.slice(1).map(review=>review.id));
       }
+    });
+    this.version(9).stores({
+      problems:"&problem_id,category,chapter,priority,completion_status,normalized_label",
+      attempts:"++id,problem_id,date,error_type,mark,primary_error_type,[problem_id+date]",
+      reviews:"++id,problem_id,due_date,status,review_type",
+      roadmap:"&order_index,problem_id,is_active",
+      weakNotes:"++id,problem_id,date,error_type,is_resolved,auto_generated,last_quizzed_at",
+      pastSessions:"++id,year,date,session_type,selection_result",
+      sMemory:"&problem_id,state,last_touched",
+      meta:"&key"
+    }).upgrade(async tx=>{
+      const migrateProblemId=async(oldId:string,newId:string,category:"S"|"A",chapter:number,number:number)=>{
+        const oldProblem=await tx.table("problems").get(oldId) as Problem|undefined;
+        if(!oldProblem) return;
+        const current=await tx.table("problems").get(newId) as Problem|undefined;
+        const display=labelFor(chapter,category,number,null);
+        await tx.table("problems").put({...oldProblem,...current,problem_id:newId,category,chapter,problem_number:number,
+          title:current?.title||display,display_label:current?.display_label||display,normalized_label:display.replace(/\s/g,"")});
+        await tx.table("attempts").where("problem_id").equals(oldId).modify({problem_id:newId});
+        await tx.table("reviews").where("problem_id").equals(oldId).modify({problem_id:newId});
+        await tx.table("weakNotes").where("problem_id").equals(oldId).modify({problem_id:newId});
+        await tx.table("roadmap").where("problem_id").equals(oldId).modify({problem_id:newId});
+        await tx.table("problems").delete(oldId);
+      };
+      await migrateProblemId("WB-6-A-21","WB-6-S-21","S",6,21);
+      await migrateProblemId("WB-6-A-22","WB-6-S-22","S",6,22);
+
+      for(const entry of officialProblemEntries()){
+        const current=await tx.table("problems").get(entry.problem_id) as Problem|undefined;
+        const display=labelFor(entry.chapter,entry.category,entry.problem_number,null);
+        const base:Problem=current||{
+          id:Date.now()+entry.chapter*100+entry.problem_number,problem_id:entry.problem_id,source_type:"whitebook",
+          category:entry.category,chapter:entry.chapter,problem_number:entry.problem_number,title:display,
+          theme:CHAPTER_META[entry.chapter]?.short||"",priority:"semi_core",role:entry.category==="S"?"foundation":"training",
+          recommended_mode:entry.category==="S"?"skeleton":"full",linked_past_exams:"",linked_s_problems:"",
+          linked_a_problems:"",notes:"",completion_status:"active",display_label:display,difficulty:null,
+          roadmap_label:display,normalized_label:display.replace(/\s/g,""),related_s_problem_ids:[],linked_past_exam_ids:[]
+        };
+        await tx.table("problems").put({...base,category:entry.category,strategy_rank:entry.strategy_rank,
+          priority:["SS","A+"].includes(entry.strategy_rank)?"core":entry.strategy_rank==="S"?"core":"semi_core",
+          role:entry.category==="S"?"foundation":"training"});
+        if(entry.category==="S"&&!await tx.table("sMemory").get(entry.problem_id)){
+          await tx.table("sMemory").put({problem_id:entry.problem_id,state:"check",k_trigger_count:0});
+        }
+      }
+      await tx.table("problems").toCollection().modify((problem:Problem)=>{
+        if(problem.source_type==="whitebook"&&(problem.category==="S"||problem.category==="A")){
+          problem.strategy_rank=problem.strategy_rank||strategyRankFor(problem.problem_id,problem.category);
+        }
+      });
+      for(const year of PAST_EXAM_YEAR_ORDER){
+        for(let question=1;question<=5;question++){
+          const problem_id=`PY-${year}-Q${question}`,current=await tx.table("problems").get(problem_id) as Problem|undefined;
+          if(current) continue;
+          await tx.table("problems").put({
+            id:Date.now()+year*10+question,problem_id,source_type:"past_exam",category:"past_exam",chapter:null,
+            problem_number:question,title:`${year}年問${question}`,theme:"過去問・テーマ未登録",priority:"core",role:"exam",
+            recommended_mode:"scan",linked_past_exams:"",linked_s_problems:"",linked_a_problems:"",notes:"",
+            completion_status:"active",display_label:`${year}年問${question}`,difficulty:null,roadmap_label:`${year}年問${question}`,
+            normalized_label:`${year}年問${question}`,related_s_problem_ids:[],linked_past_exam_ids:[]
+          });
+        }
+      }
+      const allProblems=await tx.table("problems").toArray() as Problem[];
+      const aPlusSet=new Set(STRATEGY_A_PLUS_ORDER);
+      const aRemainder=allProblems.filter(problem=>problem.category==="A"&&!aPlusSet.has(problem.problem_id))
+        .sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.problem_number-b.problem_number).map(problem=>problem.problem_id);
+      const order=[...STRATEGY_A_PLUS_ORDER,...aRemainder];
+      await tx.table("roadmap").clear();
+      await tx.table("roadmap").bulkPut(order.map((problem_id,index)=>{
+        const problem=allProblems.find(item=>item.problem_id===problem_id)!;
+        const phase=index<STRATEGY_A_PLUS_ORDER.length
+          ?[6,4,2].includes(problem.chapter||0)?"フェーズ1：第6章→第4章→第2章 A+":"フェーズ2：第5章→第7章→第3章 A+"
+          :"余力枠：ランクA";
+        return {id:index+1,order_index:index+1,problem_id,block_name:phase,
+          expected_mode:problem.recommended_mode||"full",
+          load_score:({skeleton:.5,main_calc:.8,full:1.2,scan:.6,exam_90min:3} as Record<string,number>)[problem.recommended_mode||"full"]??.5,
+          is_active:1};
+      }));
     });
   }
 }
@@ -558,8 +638,14 @@ async function bootstrap():Promise<Bootstrap>{
   const scans=pastSessions.filter(s=>s.session_type==="scan_5_questions"),exams=pastSessions.filter(s=>s.session_type==="exam_90min");
   const studyDays14=new Set(attempts.filter(a=>a.date>=fortnight).map(a=>a.date)).size;
   const actualMinutes14=attempts.filter(a=>a.date>=fortnight).reduce((sum,a)=>sum+Math.max(0,Number(a.time_minutes||0)),0);
+  const sCore14=new Set(attempts.filter(a=>a.date>=fortnight&&["SS","S"].includes(pmap.get(a.problem_id)?.strategy_rank||"")).map(a=>a.problem_id)).size;
+  const aPlus14=new Set(attempts.filter(a=>a.date>=fortnight&&pmap.get(a.problem_id)?.strategy_rank==="A+").map(a=>a.problem_id)).size;
+  const criticalS=["WB-6-S-21","WB-6-S-22"].map(problemId=>attempts.find(attempt=>attempt.problem_id===problemId)).filter(Boolean) as Attempt[];
+  const past14Attempts=attempts.filter(a=>a.date>=fortnight&&pmap.get(a.problem_id)?.category==="past_exam");
   const progress=buildProgressPlan(daysUntilExam(today,settings.exam_date),{
-    a14,past14:pastSkeleton,scan14:scans.filter(s=>String(s.date)>=fortnight).length,
+    a14,sCore14,aPlus14,criticalSStable:criticalS.filter(attempt=>["◎","○"].includes(attempt.mark)).length,criticalSTotal:criticalS.length,
+    past14:pastSkeleton,pastFull14:past14Attempts.filter(attempt=>attempt.mode==="full"||attempt.mode==="exam_90min").length,
+    pastSkeleton14:past14Attempts.filter(attempt=>attempt.mode==="skeleton").length,scan14:scans.filter(s=>String(s.date)>=fortnight).length,
     exam14:exams.filter(s=>String(s.date)>=fortnight).length,kRepeat,
     skeletonCount:skeleton.length,skeletonRate:skeleton.length?Math.round(skeletonGood/skeleton.length*100):0,
     studyDays14,actualMinutes14,delayed3,dailyTargetMinutes:settings.daily_study_minutes
@@ -586,7 +672,8 @@ async function bootstrap():Promise<Bootstrap>{
     pace:{label:progress.label,checks,items:progress.checks,a14,pastSkeleton,kRepeat,
       skeletonRate:skeleton.length?Math.round(skeletonGood/skeleton.length*100):0,weakUpdates,delayed3,
       suggestion:progress.suggestion,phase:progress.phase,phaseLabel:progress.phaseLabel,summary:progress.summary,
-      nextPhase:progress.nextPhase,daysRemaining:progress.daysRemaining,examDateIsEstimate:!settings.exam_date}
+      allocation:progress.allocation,nextPhase:progress.nextPhase,dangerCriteria:progress.dangerCriteria,
+      daysRemaining:progress.daysRemaining,examDateIsEstimate:!settings.exam_date}
   };
   const dueReviews=reviews.filter(r=>r.status!=="done"&&r.due_date<=today).map(r=>{
     const p=pmap.get(r.problem_id)!;const source=attempts.find(a=>a.id===r.generated_from_attempt_id);
@@ -607,22 +694,65 @@ async function bootstrap():Promise<Bootstrap>{
   let plannedMinutes=[...dueReviews,...staleS].reduce((sum,x)=>sum+x.minutes,0);
   const seen=new Set(attempts.map(a=>a.problem_id));
   const occupied=new Set([...dueReviews,...staleS].map(task=>task.problem_id));
-  const mixedProblem=selectMixedPractice(problems,attempts,occupied,today);
-  const mixedReserve=mixedProblem ? .5 : 0;
+  const strategySTasks:any[]=[];
+  const sLimit=progress.phase==="foundation"?4:progress.phase==="integration"?3:2;
+  for(const problemId of STRATEGY_S_ORDER){
+    if(strategySTasks.length>=sLimit||plannedMinutes>=settings.daily_study_minutes*.55) break;
+    const problem=pmap.get(problemId);
+    const latest=attempts.find(attempt=>attempt.problem_id===problemId);
+    if(!problem||occupied.has(problemId)||(latest&&latest.date>addDays(today,-21))) continue;
+    const minutes=problemId==="WB-6-S-21"||problemId==="WB-6-S-22"?15:10;
+    strategySTasks.push({problem_id:problemId,title:problem.display_label||problem.title,theme:problem.theme,
+      kind:"S再固定",reason:`戦略${problem.strategy_rank||"S"}・${progress.phaseLabel}`,mode:"skeleton",minutes,load:.4});
+    occupied.add(problemId);load+=.4;plannedMinutes+=minutes;
+  }
+  const mixedProblem=progress.phase==="foundation"||progress.phase==="integration"
+    ?selectMixedPractice(problems,attempts,occupied,today):undefined;
   const mixedMinutes=mixedProblem?12:0;
-  const newTasks=[];
-  for(const r of roadmap.filter(r=>r.is_active&&!seen.has(r.problem_id))){
+  const newTasks:any[]=[];
+  if(progress.phase==="foundation"||progress.phase==="integration") for(const r of roadmap.filter(r=>r.is_active&&!seen.has(r.problem_id))){
+    const problem=pmap.get(r.problem_id);
+    if(!problem||occupied.has(r.problem_id)) continue;
+    const expectedChapters=progress.phase==="foundation"?[6,4,2]:[5,7,3];
+    if(problem.strategy_rank!=="A+"||!expectedChapters.includes(problem.chapter||0)) continue;
     const minutes=r.expected_mode==="full"?35:r.expected_mode==="main_calc"?20:15;
-    if(newTasks.length>=4||plannedMinutes>=settings.daily_study_minutes*.9) break;
+    if(newTasks.length>=3||plannedMinutes>=settings.daily_study_minutes*.9) break;
     if(newTasks.length>0&&plannedMinutes+minutes+mixedMinutes>settings.daily_study_minutes+15) break;
-    newTasks.push({...r,title:pmap.get(r.problem_id)!.display_label||pmap.get(r.problem_id)!.title,theme:pmap.get(r.problem_id)!.theme,kind:"新規A",reason:`ロードマップ ${r.order_index}番`,mode:r.expected_mode,minutes,load:r.load_score});
+    newTasks.push({...r,title:problem.display_label||problem.title,theme:problem.theme,kind:"A+演習",
+      reason:`${progress.phaseLabel}・ロードマップ ${r.order_index}番`,mode:r.expected_mode,minutes,load:r.load_score});
+    occupied.add(r.problem_id);
     load+=r.load_score;plannedMinutes+=minutes;
+  }
+  const pastTasks:any[]=[];
+  if(progress.phase==="past_practice"){
+    const orderedPast=PAST_EXAM_YEAR_ORDER.flatMap(year=>[1,2,3,4,5].map(question=>`PY-${year}-Q${question}`));
+    for(const problemId of orderedPast){
+      if(pastTasks.length>=3||plannedMinutes>=settings.daily_study_minutes*.95) break;
+      const problem=pmap.get(problemId);
+      if(!problem||seen.has(problemId)||occupied.has(problemId)) continue;
+      const question=problem.problem_number;
+      const mode=question<=3?"full":"skeleton";
+      const minutes=mode==="full"?35:20;
+      if(pastTasks.length&&plannedMinutes+minutes>settings.daily_study_minutes+15) break;
+      pastTasks.push({problem_id:problemId,title:problem.display_label||problem.title,theme:problem.theme,
+        kind:"過去問",reason:`${progress.phaseLabel}・3問フル＋2問骨格`,mode,minutes,load:mode==="full"?1.5:.8});
+      occupied.add(problemId);load+=mode==="full"?1.5:.8;plannedMinutes+=minutes;
+    }
+  }
+  const simulationTasks:any[]=[];
+  const weekday=new Date(`${today}T12:00:00`).getDay();
+  if(progress.phase==="final"&&(weekday===0||weekday===3)&&plannedMinutes+90<=settings.daily_study_minutes+30){
+    const completedSimulations=pastSessions.filter(session=>session.session_type==="exam_90min").length;
+    const year=PAST_EXAM_YEAR_ORDER[completedSimulations%PAST_EXAM_YEAR_ORDER.length];
+    simulationTasks.push({problem_id:`PY-${year}-Q1`,title:`${year}年 3問90分`,theme:"本番シミュレーション",
+      kind:"本番シミュ",reason:"最終24日・最低3回の本番演習",mode:"exam_90min",minutes:90,load:3});
+    load+=3;plannedMinutes+=90;
   }
   const mixedTasks=mixedProblem&&plannedMinutes+mixedMinutes<=settings.daily_study_minutes+15?[{problem_id:mixedProblem.problem_id,title:mixedProblem.display_label||mixedProblem.title,
     theme:mixedProblem.theme,kind:"混合確認",reason:"既習テーマから型を見分ける混合演習",mode:"skeleton",minutes:12,load:.5}]:[];
   if(mixedTasks.length){load+=.5;plannedMinutes+=mixedMinutes}
   const checkedKeys=new Set(metaEntries.filter(entry=>entry.key.startsWith(`today-check:${today}:`)&&entry.value==="1").map(entry=>entry.key));
-  const tasks=[...dueReviews,...staleS,...newTasks,...mixedTasks].map(task=>({
+  const tasks=[...dueReviews,...staleS,...strategySTasks,...newTasks,...pastTasks,...simulationTasks,...mixedTasks].map(task=>({
     ...task,checked:checkedKeys.has(`today-check:${today}:${task.problem_id}:${task.kind}`)
   }));
   const totalLoad=Math.round(tasks.filter(task=>!task.checked).reduce((sum,x)=>sum+x.load,0)*10)/10;

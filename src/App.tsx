@@ -13,6 +13,7 @@ import { createAttemptReviewPlan } from "./reviewRules";
 import { analyzeWeakTrends, buildQuizPrompt } from "./weakTrend";
 import { buildReviewGradingPrompt } from "./gradingPrompt";
 import { EXAM_PHASES } from "./studyProgress";
+import { CHAPTER_META } from "./officialMaster";
 import type { Attempt, Bootstrap, Problem, Review, StudyUpdate, Task } from "./types";
 
 type Page = "dashboard"|"today"|"problems"|"attempt"|"import"|"reviews"|"weak"|"past"|"sheets"|"settings";
@@ -58,7 +59,7 @@ export default function App() {
   return <div className="app-shell">
     <aside className={`sidebar ${menu?"open":""}`}>
       <div className="brand"><div className="brand-mark">1</div><div><strong>統計一級</strong><span>STUDY TRACKER</span></div><button className="mobile-close" onClick={()=>setMenu(false)}><X/></button></div>
-      <div className="today-mini"><span>今日の学習計画</span><strong>{data.today.plannedMinutes}分</strong><div className="load-track"><i style={{width:`${Math.min(100,data.today.capacityPercent)}%`}}/></div><small>目標 {data.today.targetMinutes}分・記録済み {data.today.actualMinutes}分</small></div>
+      <div className="today-mini"><span>今日の予定合計</span><strong>{data.today.plannedMinutes}分</strong><div className="load-track"><i style={{width:`${Math.min(100,data.today.capacityPercent)}%`}}/></div><small>目標 {data.today.targetMinutes}分・記録済み {data.today.actualMinutes}分</small></div>
       <nav>{nav.map(([key,Icon])=><button key={key} className={page===key?"active":""} onClick={()=>go(key)}><Icon size={19}/><span>{pageTitles[key]}</span>{key==="reviews"&&data.dashboard.pending>0&&<b>{data.dashboard.pending}</b>}</button>)}</nav>
       <div className="sidebar-foot"><Gauge size={17}/><div><span>2週間ペース</span><strong className={`pace-${data.dashboard.pace.label}`}>{data.dashboard.pace.label}</strong></div></div>
     </aside>
@@ -98,7 +99,7 @@ function DashboardView({data,go}:{data:Bootstrap;go:(p:Page)=>void}) {
     {data.today.warning&&<div className="warning"><AlertTriangle/><div><strong>予定時間を調整してください</strong><p>{data.today.warning}</p></div></div>}
     <section className="section-head"><div><span className="eyebrow">OVERVIEW</span><h2>今週の学習状況</h2></div><span className="muted">直近7日間</span></section>
     <div className="metrics-grid">
-      <Metric label="今日の学習計画" value={data.today.plannedMinutes} unit="分" hint={`目標${data.today.targetMinutes}分・記録済み${data.today.actualMinutes}分`} tone={data.today.plannedMinutes>data.today.targetMinutes+30?"red":""}/>
+      <Metric label="今日の予定合計" value={data.today.plannedMinutes} unit="分" hint={`目標${data.today.targetMinutes}分・記録済み${data.today.actualMinutes}分`} tone={data.today.plannedMinutes>data.today.targetMinutes+30?"red":""}/>
       <Metric label="A問題進捗" value={d.weekA} unit="題" hint="今週の新規・復習"/>
       <Metric label={d.pace.phase==="foundation"?"過去問（任意）":"過去問GPT採点"} value={d.weekPast} unit="件" hint={d.pace.phase==="foundation"?"基礎期は未実施でも可":"今週の取り込み"}/>
       <Metric label="K再発" value={d.kRecurrence} unit="題" hint="直近2週間" tone={d.kRecurrence>2?"red":""}/>
@@ -107,7 +108,7 @@ function DashboardView({data,go}:{data:Bootstrap;go:(p:Page)=>void}) {
     </div>
     <section className="progress-phase">
       <div className="days-remaining"><strong>{d.pace.daysRemaining}</strong><span>日</span><small>{d.pace.examDateIsEstimate?"試験日未設定のため概算":"本番まで"}</small></div>
-      <div><span className="eyebrow">CURRENT PHASE</span><h2>{d.pace.phaseLabel}</h2><p>{d.pace.summary}</p><b>次の切替：{d.pace.nextPhase}</b></div>
+      <div><span className="eyebrow">CURRENT PHASE</span><h2>{d.pace.phaseLabel}</h2><p>{d.pace.summary}</p><strong className="phase-allocation">{d.pace.allocation}</strong><b>次の切替：{d.pace.nextPhase}</b></div>
     </section>
     <div className="two-col">
       <section className="panel">
@@ -116,14 +117,15 @@ function DashboardView({data,go}:{data:Bootstrap;go:(p:Page)=>void}) {
         {!data.today.tasks.length&&<Empty>今日が期限の課題はありません</Empty>}
       </section>
       <section className="panel pace-panel">
-        <div className="panel-title"><div><span className="eyebrow">14 DAY CHECK</span><h3>合格ペース判定</h3></div><Badge tone={d.pace.label==="合格ペース"?"green":d.pace.label==="注意"?"orange":"red"}>{d.pace.label}</Badge></div>
+        <div className="panel-title"><div><span className="eyebrow">14 DAY CHECK</span><h3>合格ペース判定</h3></div><Badge tone={d.pace.label==="合格ペース"?"green":d.pace.label==="注意"?"orange":d.pace.label==="危険"?"red":""}>{d.pace.label}</Badge></div>
         <div className="pace-score"><strong>{d.pace.items.filter(item=>item.status==="ok").length}</strong><span>/ {d.pace.items.filter(item=>item.status!=="pending").length} 判定可能項目を達成</span></div>
         <div className="check-grid">{d.pace.items.map(item=><div key={item.label} className={item.status==="ok"?"ok":item.status==="pending"?"pending":""}>{item.status==="ok"?<Check size={15}/>:item.status==="pending"?<Clock3 size={15}/>:<X size={15}/>}<span><strong>{item.label}</strong><small>{item.detail}</small></span></div>)}</div>
         {d.pace.suggestion&&<p className="pace-advice">{d.pace.suggestion}</p>}
+        <details className="danger-criteria"><summary>「危険」の判定基準</summary><ul>{d.pace.dangerCriteria.map(item=><li key={item}>{item}</li>)}</ul><small>危険は不合格確定ではなく、今週の配分を復習・復旧優先へ切り替えるサインです。</small></details>
       </section>
     </div>
     <section className="panel exam-roadmap"><div className="panel-title"><div><span className="eyebrow">140 DAY ROADMAP</span><h3>本番までの過去問導入計画</h3></div><Badge>{d.pace.phaseLabel}</Badge></div>
-      <div>{EXAM_PHASES.map(phase=><article className={d.pace.daysRemaining>=phase.from&&d.pace.daysRemaining<=phase.to?"active":""} key={phase.title}><strong>{phase.to===999?"残り140〜121日":`残り${phase.to}〜${phase.from}日`}</strong><span>{phase.title}</span><p>{phase.summary}</p></article>)}</div>
+      <div>{EXAM_PHASES.map(phase=><article className={d.pace.daysRemaining>=phase.from&&d.pace.daysRemaining<=phase.to?"active":""} key={phase.title}><strong>{phase.to===999?"残り140〜100日":`残り${phase.to}〜${phase.from}日`}</strong><span>{phase.title}</span><small>{phase.allocation}</small><p>{phase.summary}</p></article>)}</div>
     </section>
     <section className="section-head weakness-heading">
       <div><span className="eyebrow">WEAKNESS ANALYSIS</span><h2>苦手分析と対策</h2></div>
@@ -213,7 +215,7 @@ function TodayView({data,busy,run,go}:{data:Bootstrap;busy:boolean;run:(a:()=>Pr
   const saveReview=(body:Record<string,unknown>)=>{if(!reviewTask?.id)return;const id=reviewTask.id;setReviewTask(null);
     run(()=>post(`/api/reviews/${id}/complete`,body),"復習結果を保存し、次回間隔を再計算しました")};
   return <>
-    <div className="page-intro"><div><p>課題を終えたらチェックを付け、GPTの採点結果を取り込んでください。</p><button className="text-btn" onClick={()=>go("import")}><ClipboardPaste size={15}/>GPT採点結果を取り込む</button></div><div className={`load-pill ${data.today.plannedMinutes>data.today.targetMinutes+30?"over":""}`}><Gauge/><div><span>予定／目標</span><strong>{data.today.plannedMinutes} / {data.today.targetMinutes}分</strong><small>記録済み {data.today.actualMinutes}分・未完了 {data.today.remainingMinutes}分</small></div></div></div>
+    <div className="page-intro"><div><p>課題を終えたらチェックを付け、GPTの採点結果を取り込んでください。</p><button className="text-btn" onClick={()=>go("import")}><ClipboardPaste size={15}/>GPT採点結果を取り込む</button></div><div className={`load-pill ${data.today.plannedMinutes>data.today.targetMinutes+30?"over":""}`}><Gauge/><div><span>予定合計／目標</span><strong>{data.today.plannedMinutes} / {data.today.targetMinutes}分</strong><small>記録済み {data.today.actualMinutes}分・未完了 {data.today.remainingMinutes}分</small></div></div></div>
     {data.today.warning&&<div className="warning"><AlertTriangle/><div><strong>詰め込みすぎです</strong><p>{data.today.warning}</p></div></div>}
     {!data.today.warning&&<div className="time-guidance"><Clock3 size={16}/><span>{data.today.guidance}</span></div>}
     <section className="panel">
@@ -225,7 +227,7 @@ function TodayView({data,busy,run,go}:{data:Bootstrap;busy:boolean;run:(a:()=>Pr
   </>
 }
 function TodayTaskRows({task:t,busy,run,date,onReview}:{task:Task;busy:boolean;run:(a:()=>Promise<unknown>,s:string)=>void;date:string;onReview:(task:Task)=>void}) {
-  const isReview=!!t.id&&t.kind!=="新規A"&&t.kind!=="混合確認";
+  const isReview=!!t.id&&!!t.review_type;
   const toggle=()=>isReview
     ?onReview(t)
     :run(()=>post("/api/today-check",{date,problem_id:t.problem_id,kind:t.kind,checked:!t.checked}),t.checked?"チェックを外しました":"解答済み・採点待ちにしました");
@@ -233,22 +235,57 @@ function TodayTaskRows({task:t,busy,run,date,onReview}:{task:Task;busy:boolean;r
     {(t.review_method||t.review_reason)&&<tr className="task-plan-row"><td colSpan={6}><ReviewPlanDetails item={t} compact/></td></tr>}</>;
 }
 
+function ProblemChip({problem,latest,rank,select}:{problem:Problem;latest?:Attempt;rank:string;select:(problem:Problem)=>void}){
+  const rankClass=rank.replace("+","plus").replace("過去問","past");
+  return <button className={`problem-chip rank-${rankClass} ${latest?"attempted":""} ${problem.completion_status==="review_pending"?"review-pending":""}`} onClick={()=>select(problem)}>
+    <span>{rank}</span><strong>{problem.category==="past_exam"?`問${problem.problem_number}`:`${problem.category}${problem.problem_number}`}</strong>
+    <small>{latest?`${latest.mark} ${latest.error_type!=="none"?latest.error_type:""}`:"未"}</small>
+  </button>;
+}
+
 function ProblemsView({data,select,run,busy}:{data:Bootstrap;select:(p:Problem)=>void;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean}) {
   const [filter,setFilter]=useState("all"),[query,setQuery]=useState(""),[adding,setAdding]=useState(false);
-  const [form,setForm]=useState<Record<string,string>>({problem_id:"",source_type:"whitebook",category:"A",chapter:"",problem_number:"",title:"",theme:"",priority:"semi_core",role:"training",recommended_mode:"full",linked_past_exams:"",linked_s_problems:"",linked_a_problems:"",notes:""});
-  const shown=data.problems.filter(p=>(filter==="all"||p.category===filter)&&(`${p.problem_id} ${p.title} ${p.theme}`.toLowerCase().includes(query.toLowerCase())));
+  const [form,setForm]=useState<Record<string,string>>({problem_id:"",source_type:"whitebook",category:"A",chapter:"",problem_number:"",title:"",theme:"",priority:"semi_core",strategy_rank:"A",role:"training",recommended_mode:"full",linked_past_exams:"",linked_s_problems:"",linked_a_problems:"",notes:""});
+  const rankOf=(problem:Problem)=>problem.strategy_rank||(problem.category==="S"?"S":problem.category==="A"?"A":"過去問");
+  const latestMap=new Map<string,Attempt>();
+  data.attempts.forEach(attempt=>{if(!latestMap.has(attempt.problem_id))latestMap.set(attempt.problem_id,attempt)});
+  const matchesFilter=(problem:Problem)=>filter==="all"||(filter==="past_exam"?problem.category==="past_exam":rankOf(problem)===filter);
+  const shown=data.problems.filter(p=>matchesFilter(p)&&(`${p.problem_id} ${p.title} ${p.theme}`.toLowerCase().includes(query.toLowerCase())));
+  const whitebook=data.problems.filter(problem=>problem.category==="S"||problem.category==="A");
+  const rankCounts=["SS","S","A+","A"].map(rank=>{
+    const rows=whitebook.filter(problem=>rankOf(problem)===rank);
+    return {rank,total:rows.length,done:rows.filter(problem=>latestMap.has(problem.problem_id)).length};
+  });
+  const chapters=[1,2,3,4,5,6,7,8].map(chapter=>{
+    const all=data.problems.filter(problem=>problem.chapter===chapter&&(problem.category==="S"||problem.category==="A"));
+    return {chapter,all,shown:shown.filter(problem=>problem.chapter===chapter)};
+  }).filter(group=>group.shown.length);
+  const pastShown=shown.filter(problem=>problem.category==="past_exam");
   return <>
-    <div className="toolbar"><div className="segmented">{["all","A","S","past_exam"].map(x=><button className={filter===x?"active":""} onClick={()=>setFilter(x)} key={x}>{x==="all"?"すべて":x==="past_exam"?"過去問":`${x}問題`}</button>)}</div><label className="search"><Search size={17}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="問題ID・テーマで検索"/></label><button className="primary" onClick={()=>setAdding(true)}><Plus size={17}/>問題を追加</button></div>
-    <section className="panel flush"><div className="table-wrap"><table><thead><tr><th>問題ID</th><th>区分</th><th>問題名</th><th>テーマ</th><th>優先度</th><th>推奨</th><th>状態</th><th/></tr></thead><tbody>
-      {shown.map(p=><tr key={p.problem_id} className="clickable" onClick={()=>select(p)}><td><strong>{p.problem_id}</strong></td><td><Badge tone={p.category==="S"?"blue":p.category==="A"?"":"orange"}>{p.category==="past_exam"?"過去問":p.category}</Badge></td><td>{problemDisplayLabel(p)}</td><td>{p.theme||"—"}</td><td>{p.priority}</td><td>{modes[p.recommended_mode]}</td><td><Badge tone={["completed","completion_candidate"].includes(p.completion_status)?"green":p.completion_status==="review_pending"?"orange":""}>{p.completion_status==="completed"?"完了":p.completion_status==="completion_candidate"?"完了候補":p.completion_status==="review_pending"?"復習待ち":"進行中"}</Badge></td><td><ChevronRight size={17}/></td></tr>)}
-    </tbody></table></div></section>
+    <section className="master-flow"><div><strong>SS / S</strong><span>型・出発式を固定する土台</span></div><ChevronRight/><div><strong>A+</strong><span>Sを崩された問題への耐性</span></div><ChevronRight/><div><strong>過去問</strong><span>5問から3問を選び答案化</span></div></section>
+    <div className="rank-overview">{rankCounts.map(item=><section className={`rank-stat rank-${item.rank.replace("+","plus")}`} key={item.rank}><span>実戦ランク {item.rank}</span><strong>{item.done}<small> / {item.total}題着手</small></strong><div><i style={{width:`${item.total?item.done/item.total*100:0}%`}}/></div></section>)}</div>
+    <div className="toolbar problem-toolbar"><div className="segmented">{["all","SS","S","A+","A","past_exam"].map(x=><button className={filter===x?"active":""} onClick={()=>setFilter(x)} key={x}>{x==="all"?"全体":x==="past_exam"?"過去問":x}</button>)}</div><label className="search"><Search size={17}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="問題ID・テーマで検索"/></label><button className="primary" onClick={()=>setAdding(true)}><Plus size={17}/>問題を追加</button></div>
+    <div className="chapter-master-grid">{chapters.map(group=>{
+      const attempted=group.all.filter(problem=>latestMap.has(problem.problem_id)).length;
+      const sRows=group.shown.filter(problem=>problem.category==="S"),aRows=group.shown.filter(problem=>problem.category==="A");
+      return <section className={`panel chapter-master ${group.chapter===6?"priority-chapter":""}`} key={group.chapter}>
+        <div className="chapter-master-head"><div><span>第{group.chapter}章</span><h3>{CHAPTER_META[group.chapter]?.short}</h3></div><div><strong>{attempted}/{group.all.length}</strong><small>着手</small></div></div>
+        <div className="chapter-progress"><i style={{width:`${group.all.length?attempted/group.all.length*100:0}%`}}/></div>
+        {!!sRows.length&&<div className="problem-lane"><span>S・土台</span><div>{sRows.sort((a,b)=>a.problem_number-b.problem_number).map(problem=><ProblemChip key={problem.problem_id} problem={problem} latest={latestMap.get(problem.problem_id)} rank={rankOf(problem)} select={select}/>)}</div></div>}
+        {!!aRows.length&&<div className="problem-lane"><span>A・補強</span><div>{aRows.sort((a,b)=>a.problem_number-b.problem_number).map(problem=><ProblemChip key={problem.problem_id} problem={problem} latest={latestMap.get(problem.problem_id)} rank={rankOf(problem)} select={select}/>)}</div></div>}
+      </section>})}</div>
+    {!!pastShown.length&&<section className="panel past-problem-master"><div className="panel-title"><div><span className="eyebrow">PAST EXAMS</span><h3>過去問・実施順 2024 → 2025 → 2022 → 2023</h3></div></div><div>{[2024,2025,2022,2023].map(year=><div className="past-year-row" key={year}><strong>{year}</strong>{pastShown.filter(problem=>problem.problem_id.startsWith(`PY-${year}-`)).map(problem=><ProblemChip key={problem.problem_id} problem={problem} latest={latestMap.get(problem.problem_id)} rank="過去問" select={select}/>)}</div>)}</div></section>}
+    <details className="panel master-detail-table"><summary>問題マスターを表で確認する</summary><div className="table-wrap"><table><thead><tr><th>問題ID</th><th>原典</th><th>実戦ランク</th><th>テーマ</th><th>最新</th><th>状態</th></tr></thead><tbody>
+      {shown.map(p=>{const latest=latestMap.get(p.problem_id);return <tr key={p.problem_id} className="clickable" onClick={()=>select(p)}><td><strong>{p.problem_id}</strong></td><td>{p.category==="past_exam"?"過去問":p.category}</td><td><Badge tone={p.strategy_rank==="SS"?"red":p.strategy_rank==="A+"?"orange":p.category==="S"?"blue":""}>{rankOf(p)}</Badge></td><td>{p.theme||"—"}</td><td>{latest?`${latest.mark} ${latest.score_text||latest.score_label}`:"未着手"}</td><td>{p.completion_status==="review_pending"?"復習待ち":p.completion_status==="completed"?"完了":"進行中"}</td></tr>})}
+    </tbody></table></div></details>
     {adding&&<Modal title="問題マスターに追加" close={()=>setAdding(false)}><form onSubmit={e=>{e.preventDefault();run(()=>post("/api/problems",form),"問題を追加しました");setAdding(false)}} className="form-grid">
       <Field label="問題ID"><input required value={form.problem_id} onChange={e=>setForm({...form,problem_id:e.target.value.toUpperCase()})} placeholder="WB-6-A-05"/></Field>
-      <Field label="区分"><select value={form.category} onChange={e=>{const c=e.target.value;setForm({...form,category:c,source_type:c==="past_exam"?"past_exam":"whitebook",role:c==="S"?"foundation":c==="A"?"training":"exam"})}}><option>A</option><option>S</option><option value="past_exam">過去問</option></select></Field>
+      <Field label="区分"><select value={form.category} onChange={e=>{const c=e.target.value;setForm({...form,category:c,source_type:c==="past_exam"?"past_exam":"whitebook",strategy_rank:c==="S"?"S":c==="A"?"A":"",role:c==="S"?"foundation":c==="A"?"training":"exam"})}}><option>A</option><option>S</option><option value="past_exam">過去問</option></select></Field>
       <Field label="章"><input type="number" value={form.chapter} onChange={e=>setForm({...form,chapter:e.target.value})}/></Field>
       <Field label="問題番号"><input required type="number" value={form.problem_number} onChange={e=>setForm({...form,problem_number:e.target.value})}/></Field>
       <Field label="問題名" wide><input required value={form.title} onChange={e=>setForm({...form,title:e.target.value})}/></Field>
       <Field label="テーマ" wide><input value={form.theme} onChange={e=>setForm({...form,theme:e.target.value})}/></Field>
+      <Field label="実戦ランク"><select value={form.strategy_rank} onChange={e=>setForm({...form,strategy_rank:e.target.value})}>{["SS","S","A+","A"].map(rank=><option key={rank}>{rank}</option>)}</select></Field>
       <Field label="優先度"><select value={form.priority} onChange={e=>setForm({...form,priority:e.target.value})}><option value="core">core</option><option value="semi_core">semi_core</option><option value="repair">repair</option></select></Field>
       <Field label="推奨モード"><select value={form.recommended_mode} onChange={e=>setForm({...form,recommended_mode:e.target.value})}>{Object.entries(modes).slice(0,4).map(([k,v])=><option value={k} key={k}>{v}</option>)}</select></Field>
       <Field label="関連S問題" wide><input value={form.linked_s_problems} onChange={e=>setForm({...form,linked_s_problems:e.target.value})} placeholder="セミコロン区切り"/></Field>
@@ -262,7 +299,7 @@ function ProblemDetail({problem,data,onBack,onImport}:{problem:Problem;data:Boot
   const reviews=data.reviews.filter(a=>a.problem_id===problem.problem_id);
   const latest=attempts[0],nextReview=reviews.filter(r=>r.status!=="done").sort((a,b)=>a.due_date.localeCompare(b.due_date))[0];
   const related=problem.related_s_problem_ids?.length?problem.related_s_problem_ids:String(problem.linked_s_problems||"").split(";").filter(Boolean);
-  return <><button className="back" onClick={onBack}>← 問題一覧へ</button><div className="detail-hero"><div><div className="detail-badges"><Badge tone={problem.category==="S"?"blue":""}>{problem.category}</Badge><Badge>{problem.priority}</Badge></div><h2>{problemDisplayLabel(problem)}</h2><p>{problem.problem_id} ・ {problem.theme}</p></div><button className="primary" onClick={onImport}><ClipboardPaste size={17}/>GPT採点結果を取り込む</button></div>
+  return <><button className="back" onClick={onBack}>← 問題一覧へ</button><div className="detail-hero"><div><div className="detail-badges"><Badge tone={problem.category==="S"?"blue":""}>原典 {problem.category}</Badge>{problem.strategy_rank&&<Badge tone={problem.strategy_rank==="SS"?"red":problem.strategy_rank==="A+"?"orange":""}>実戦 {problem.strategy_rank}</Badge>}</div><h2>{problemDisplayLabel(problem)}</h2><p>{problem.problem_id} ・ {problem.theme}</p></div><button className="primary" onClick={onImport}><ClipboardPaste size={17}/>GPT採点結果を取り込む</button></div>
     {latest&&<section className="panel latest-result"><div><span>最新評価</span><strong>{latest.score_text||latest.score_label} {latest.score_numeric!=null?`/ ${latest.score_numeric}点`:""} / {latest.mark}</strong></div><div><span>K/W/N/C</span><strong>{latest.error_types?.join(" + ")||latest.error_type}</strong></div><div><span>次回復習</span><strong>{nextReview?.due_date||"—"}</strong></div></section>}
     <div className="detail-grid"><section className="panel"><h3>問題情報</h3><dl><dt>役割</dt><dd>{problem.role}</dd><dt>難易度</dt><dd>{problem.difficulty!=null?`難${problem.difficulty}`:"—"}</dd><dt>推奨モード</dt><dd>{modes[problem.recommended_mode]}</dd><dt>関連S問題</dt><dd>{related.join(" / ")||"—"}</dd><dt>関連A問題</dt><dd>{problem.linked_a_problems||"—"}</dd><dt>関連過去問</dt><dd>{problem.linked_past_exams||"—"}</dd><dt>次回課題</dt><dd>{latest?.next_action||"—"}</dd><dt>メモ</dt><dd>{problem.notes||"—"}</dd></dl></section>
     <section className="panel"><h3>復習予定</h3>{nextReview?<><div className="history"><CalendarCheck/><div><strong>{nextReview.due_date}</strong><span>{reviewNames[nextReview.review_type]||nextReview.review_method}・{nextReview.status}</span></div></div><ReviewPlanDetails item={nextReview}/></>:<Empty>復習予定はありません</Empty>}</section></div>

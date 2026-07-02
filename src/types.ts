@@ -3,6 +3,7 @@ export type Problem = {
   chapter:number|null; problem_number:number; title:string; theme:string; priority:string; role:string;
   recommended_mode:string; linked_past_exams:string; linked_s_problems:string; linked_a_problems:string;
   notes:string; completion_status:string;
+  strategy_rank?:"SS"|"S"|"A+"|"A";
   display_label?:string; difficulty?:number|null; roadmap_label?:string; normalized_label?:string;
   related_s_problem_ids?:string[]; linked_past_exam_ids?:string[];
 };
@@ -37,7 +38,7 @@ export type PastSession = Record<string, string|number> & { id:number; year:numb
 export type Task = {
   id?:number; problem_id:string; title:string; kind:string; reason:string; mode:string;
   minutes:number; load:number; status?:string; error_type?:string; theme?:string;
-  due_date?:string; review_reason?:string; review_method?:string; review_instruction?:string;
+  due_date?:string; review_type?:string; review_reason?:string; review_method?:string; review_instruction?:string;
   review_steps?:string[]; estimated_minutes?:number; requires_full_answer?:boolean;
   requires_s_check?:boolean; linked_s_problem_ids?:string[]; checked?:boolean;
   previous_date?:string; previous_score?:string; previous_errors?:string[];
@@ -57,7 +58,7 @@ export type Dashboard = {
   weaknessInsights:WeaknessInsight[];
   pace:{label:string;checks:boolean[];items:{label:string;detail:string;status:"ok"|"warning"|"pending"}[];
     a14:number;pastSkeleton:number;kRepeat:number;skeletonRate:number;weakUpdates:number;delayed3:number;
-    suggestion:string;phase:string;phaseLabel:string;summary:string;nextPhase:string;daysRemaining:number;examDateIsEstimate:boolean};
+    suggestion:string;dangerCriteria:string[];phase:string;phaseLabel:string;summary:string;allocation:string;nextPhase:string;daysRemaining:number;examDateIsEstimate:boolean};
 };
 export type Bootstrap = {
   problems:Problem[]; attempts:Attempt[]; reviews:Review[]; roadmap:Roadmap[];

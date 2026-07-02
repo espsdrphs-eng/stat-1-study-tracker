@@ -1,17 +1,17 @@
-export type ProgressPhase="foundation"|"integration"|"past_practice"|"answer_training"|"final";
+export type ProgressPhase="foundation"|"integration"|"past_practice"|"final";
 export type ProgressCheck={label:string;detail:string;status:"ok"|"warning"|"pending"};
 export type ProgressMetrics={
-  a14:number;past14:number;scan14:number;exam14:number;kRepeat:number;
+  a14:number;sCore14:number;aPlus14:number;criticalSStable:number;criticalSTotal:number;
+  past14:number;pastFull14:number;pastSkeleton14:number;scan14:number;exam14:number;kRepeat:number;
   skeletonCount:number;skeletonRate:number;studyDays14:number;actualMinutes14:number;
   delayed3:number;dailyTargetMinutes:number;
 };
 
 export const EXAM_PHASES=[
-  {from:121,to:999,title:"基礎・A問題定着期",summary:"A問題とK/N復旧が主役。過去問は未着手でも問題なく、月1回の5問スキャンは任意です。"},
-  {from:91,to:120,title:"A問題統合・過去問導入期",summary:"A問題を進めながら、2週間に1問だけ過去問の骨格を確認します。"},
-  {from:61,to:90,title:"過去問骨格期",summary:"2週間に過去問2問以上。5問スキャンを週1回入れ、落とした型をA/Sへ戻します。"},
-  {from:31,to:60,title:"答案化・時間配分期",summary:"90分演習を2週間に1回以上行い、完走数と時間配分を測ります。"},
-  {from:0,to:30,title:"本番シミュレーション期",summary:"90分演習を週1回以上。新規範囲を広げず、K問題と選題ミスを優先補修します。"}
+  {from:100,to:999,title:"S再固定＋A+着手",allocation:"S 35%・A+ 40%・過去問 25%",summary:"第6章→第4章→第2章。SS/Sの型を再固定し、第6章S21・S22を白紙から答案化できる状態にします。"},
+  {from:60,to:99,title:"A+補強期",allocation:"S 35%・A+ 40%・過去問 25%",summary:"第5章→第7章→第3章。順序統計、exact・MP検定、対数正規・パレートを補強します。"},
+  {from:25,to:59,title:"過去問主軸期",allocation:"S 20%・A+補修 30%・過去問 50%",summary:"2024→2025→2022→2023の順。各年3問をフル答案、2問を骨格で回します。"},
+  {from:0,to:24,title:"弱点補修＋本番シミュレーション",allocation:"S 20%・A+補修 30%・過去問 50%",summary:"新規範囲を広げず、章別A+へ戻って補修します。本番90分シミュレーションを最低3回行います。"}
 ] as const;
 
 export function daysUntilExam(today:string,examDate:string,fallback=140){
@@ -22,10 +22,9 @@ export function daysUntilExam(today:string,examDate:string,fallback=140){
 }
 
 export function phaseForDays(days:number):ProgressPhase{
-  if(days>120) return "foundation";
-  if(days>90) return "integration";
-  if(days>60) return "past_practice";
-  if(days>30) return "answer_training";
+  if(days>99) return "foundation";
+  if(days>59) return "integration";
+  if(days>24) return "past_practice";
   return "final";
 }
 
@@ -36,32 +35,47 @@ export function buildProgressPlan(days:number,metrics:ProgressMetrics){
   const expectedMinutes=metrics.dailyTargetMinutes*14;
   const timeStatus=metrics.actualMinutes14===0?"pending":metrics.actualMinutes14>=expectedMinutes*.9&&metrics.studyDays14>=12?"ok":"warning";
   const common:ProgressCheck[]=[
-    {label:"A問題進捗",detail:`2週間 ${metrics.a14}題／目安10〜14題`,status:metrics.a14>=10&&metrics.a14<=16?"ok":"warning"},
     {label:"復習遅延",detail:metrics.delayed3===0?"3日超の遅延なし":`${metrics.delayed3}件が3日超過`,status:metrics.delayed3===0?"ok":"warning"},
     {label:"K再発",detail:`同一問題での再発 ${metrics.kRepeat}題／目安2題以内`,status:metrics.kRepeat<=2?"ok":"warning"},
-    {label:"骨格再現率",detail:metrics.skeletonCount?`${metrics.skeletonRate}%／目安80%以上`:"骨格モードの採点待ち",status:skeletonStatus},
     {label:"学習時間の記録",detail:metrics.actualMinutes14?`2週間 ${metrics.actualMinutes14}分・${metrics.studyDays14}日／目安${expectedMinutes}分`:"採点YAMLのtime_minutes蓄積待ち",status:timeStatus}
   ];
-  const pastCheck:ProgressCheck=phase==="foundation"
-    ?{label:"過去問",detail:"この段階では必須にしない（月1回の5問スキャンは任意）",status:"ok"}
-    :phase==="integration"
-      ?{label:"過去問導入",detail:`2週間 ${metrics.past14}問／目安1問`,status:metrics.past14>=1?"ok":"warning"}
-      :phase==="past_practice"
-        ?{label:"過去問骨格",detail:`2週間 ${metrics.past14}問・スキャン${metrics.scan14}回`,status:metrics.past14>=2&&metrics.scan14>=1?"ok":"warning"}
-        :phase==="answer_training"
-          ?{label:"90分答案",detail:`2週間 ${metrics.exam14}回／目安1回以上`,status:metrics.exam14>=1?"ok":"warning"}
-          :{label:"本番シミュレーション",detail:`2週間 ${metrics.exam14}回／目安2回以上`,status:metrics.exam14>=2?"ok":"warning"};
-  const checks=[...common,pastCheck];
+  const phaseChecks:ProgressCheck[]=phase==="foundation"?[
+    {label:"SS/S再固定",detail:`2週間 ${metrics.sCore14}題／目安8題以上`,status:metrics.sCore14===0?"pending":metrics.sCore14>=8?"ok":"warning"},
+    {label:"A+着手",detail:`2週間 ${metrics.aPlus14}題／目安5題以上`,status:metrics.aPlus14===0?"pending":metrics.aPlus14>=5?"ok":"warning"},
+    {label:"第6章S21・S22",detail:metrics.criticalSTotal?`${metrics.criticalSStable}/${metrics.criticalSTotal}題が○以上`:"採点記録待ち",
+      status:metrics.criticalSTotal===0?"pending":metrics.criticalSStable===2?"ok":"warning"},
+    {label:"過去問の軽い接続",detail:metrics.past14?`2週間 ${metrics.past14}問（現段階では必須にしない）`:"残り59日までは未実施でも減点せず、必須にしない",
+      status:metrics.past14?"ok":"pending"}
+  ]:phase==="integration"?[
+    {label:"S維持",detail:`2週間 ${metrics.sCore14}題／目安5題以上`,status:metrics.sCore14===0?"pending":metrics.sCore14>=5?"ok":"warning"},
+    {label:"A+補強",detail:`2週間 ${metrics.aPlus14}題／目安8題以上`,status:metrics.aPlus14===0?"pending":metrics.aPlus14>=8?"ok":"warning"},
+    {label:"骨格再現率",detail:metrics.skeletonCount?`${metrics.skeletonRate}%／目安80%以上`:"骨格モードの採点待ち",status:skeletonStatus}
+  ]:phase==="past_practice"?[
+    {label:"過去問主軸",detail:`2週間 ${metrics.past14}問／目安5問以上`,status:metrics.past14>=5?"ok":"warning"},
+    {label:"答案配分",detail:`フル${metrics.pastFull14}問・骨格${metrics.pastSkeleton14}問／目安3＋2`,status:metrics.pastFull14>=3&&metrics.pastSkeleton14>=2?"ok":"warning"},
+    {label:"A+/Sへの戻り",detail:`A+補修${metrics.aPlus14}題・S確認${metrics.sCore14}題`,status:metrics.aPlus14>=2&&metrics.sCore14>=2?"ok":"warning"}
+  ]:[
+    {label:"本番シミュレーション",detail:`2週間 ${metrics.exam14}回／目安2回以上`,status:metrics.exam14>=2?"ok":"warning"},
+    {label:"新規より弱点補修",detail:`A+補修${metrics.aPlus14}題・S確認${metrics.sCore14}題`,status:metrics.aPlus14>=2&&metrics.sCore14>=2?"ok":"warning"},
+    {label:"骨格再現率",detail:metrics.skeletonCount?`${metrics.skeletonRate}%／目安80%以上`:"骨格モードの採点待ち",status:skeletonStatus}
+  ];
+  const checks=[...phaseChecks,...common];
   const evaluated=checks.filter(item=>item.status!=="pending");
-  const rate=evaluated.length?evaluated.filter(item=>item.status==="ok").length/evaluated.length:0;
-  const label=rate>=.8?"合格ペース":rate>=.55?"注意":"危険";
-  const nextPhase=phase==="foundation"?"残り120日から過去問を2週間に1問導入":
-    phase==="integration"?"残り90日から過去問骨格を2週間に2問":
-    phase==="past_practice"?"残り60日から90分答案を開始":
-    phase==="answer_training"?"残り30日から週1回の本番シミュレーション":
-    "本番まで新規範囲を広げず、失点型を補修";
-  const suggestion=label==="危険"
+  const warningCount=evaluated.filter(item=>item.status==="warning").length;
+  const insufficientEvidence=metrics.studyDays14<3&&(metrics.sCore14+metrics.aPlus14+metrics.past14)<3;
+  const label=insufficientEvidence?"判定保留":metrics.delayed3>=2||metrics.kRepeat>2||warningCount>=3?"危険":warningCount>=1?"注意":"合格ペース";
+  const nextPhase=phase==="foundation"?"残り99日から第5章→第7章→第3章A+へ":
+    phase==="integration"?"残り59日から2024→2025→2022→2023の過去問主軸へ":
+    phase==="past_practice"?"残り24日から新規を止め、弱点補修と本番シミュへ":
+    "本番まで新規範囲を広げず、最低3回の90分演習";
+  const suggestion=label==="判定保留"?"採点記録が3日分ほど集まると、現在フェーズに対する進み方を判定できます。"
+    :label==="危険"
     ?"新規A問題を減らし、期限切れ復習とK/Nの復旧を先に処理してください。"
     :label==="注意"?"未達項目を1つだけ今週の重点にしてください。":"現在の配分を維持してください。";
-  return {phase,phaseLabel:phaseDefinition.title,summary:phaseDefinition.summary,nextPhase,checks,label,suggestion,daysRemaining:days};
+  const dangerCriteria=[
+    "3日超の復習遅延が2件以上",
+    "同一問題でKが再発した問題が3題以上",
+    "現在フェーズの判定可能項目で未達が3項目以上"
+  ];
+  return {phase,phaseLabel:phaseDefinition.title,summary:phaseDefinition.summary,allocation:phaseDefinition.allocation,nextPhase,checks,label,suggestion,dangerCriteria,daysRemaining:days};
 }
