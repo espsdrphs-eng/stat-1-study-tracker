@@ -367,6 +367,9 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
   const date=input.date||todayString();
   const localizedErrorPoint=japaneseizeMathText(input.error_point||"");
   const localizedNextAction=japaneseizeMathText(input.next_action||"");
+  const improvementGuidance=japaneseizeMathText(input.improvement_guidance||"");
+  const requiredDerivation=japaneseizeMathText(input.required_derivation||"");
+  const correctedAnswer=japaneseizeMathText(input.corrected_answer||"");
   const primary=input.primary_error_type||input.error_type||"none";
   const errors=input.error_types?.length?input.error_types:[primary];
   const related=[...new Set([...(input.related_s_problem_ids||input.linked_s_problems||[]),...list(input.linked_s_problem),...list(problem.linked_s_problems)])];
@@ -376,6 +379,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
     error_type:primary,error_point:localizedErrorPoint,next_action:localizedNextAction,memo:String(input.memo||""),
     score_text:input.score_text||"",score_numeric:input.score_numeric??null,score_max:input.score_max??null,
     result_summary:japaneseizeMathText(input.result_summary||""),exam_selection_rank:input.exam_selection_rank||"",
+    improvement_guidance:improvementGuidance,required_derivation:requiredDerivation,corrected_answer:correctedAnswer,
     error_types:errors,primary_error_type:primary,
     secondary_error_type:input.secondary_error_type||"",ignored_parts:input.ignored_parts||[],
     auto_imported:!!input.auto_imported,import_confidence:input.import_confidence??(input.auto_imported?.8:1),
@@ -682,6 +686,7 @@ async function bootstrap():Promise<Bootstrap>{
     return {...r,title:p?.display_label||p?.title||(r.generated_from_past_session_id?`${r.problem_id.replace("-SESSION","")} 過去問演習`:r.problem_id),theme:p?.theme||"",error_type:source?.error_type,
       previous_date:source?.date,previous_score:source?`${source.score_text||source.score_label}${source.score_numeric!=null?` ${source.score_numeric}点`:""}`:"",
       previous_errors:source?.error_types||[source?.error_type||"none"],previous_error_point:source?.error_point||"",previous_next_action:source?.next_action||"",
+      previous_improvement_guidance:source?.improvement_guidance||"",previous_required_derivation:source?.required_derivation||"",
       kind:r.review_type==="s_check"?"S確認":r.generated_from_past_session_id?"過去問復習":"復習",reason:r.status==="overdue"?`期限切れ（${r.due_date}）`:"本日が復習日",
       mode:r.requires_full_answer?"exam_90min":r.review_type==="s_check"?"skeleton":r.review_type==="main_calc_retry"?"main_calc":r.review_type==="careless_check"?"scan":"skeleton",
       minutes,estimated_minutes:minutes,load:loadFor(r.requires_full_answer?"exam_90min":r.review_type==="main_calc_retry"?"main_calc":r.review_type==="careless_check"?"scan":"skeleton")};

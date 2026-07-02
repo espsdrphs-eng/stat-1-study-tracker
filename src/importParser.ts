@@ -171,6 +171,12 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
   const rawNextAction=scalar(raw.next_action)||(/E\[\|X\|\]/.test(text)?"E[|X|]の発散計算を再演習し、平均の存在条件をノート化する。":"抽出内容を確認し、誤りの根拠を再演習する。");
   const errorPoint=japaneseizeMathText(rawErrorPoint);
   const nextAction=japaneseizeMathText(rawNextAction);
+  const rawImprovementGuidance=scalar(raw.improvement_guidance);
+  const rawRequiredDerivation=scalar(raw.required_derivation);
+  const rawCorrectedAnswer=scalar(raw.corrected_answer);
+  const improvementGuidance=japaneseizeMathText(rawImprovementGuidance);
+  const requiredDerivation=japaneseizeMathText(rawRequiredDerivation);
+  const correctedAnswer=japaneseizeMathText(rawCorrectedAnswer);
   const weak=raw.weak_note&&typeof raw.weak_note==="object"
     ? raw.weak_note as StudyUpdate["weak_note"]
     : weakNoteFromText(text,candidate,primary,themes);
@@ -201,6 +207,7 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
     related_s_problem_ids:related,linked_s_problems:related,linked_s_problem:related.join(";"),
     linked_past_exams:stringArray(raw.linked_past_exams),ignored_parts:ignored,score_text:scoreText,
     score_numeric:scoreNumeric,score_max:scoreMax,result_summary:resultSummary,exam_selection_rank:examRank,
+    improvement_guidance:improvementGuidance,required_derivation:requiredDerivation,corrected_answer:correctedAnswer,
     error_types:errors,primary_error_type:primary,secondary_error_type:secondary,
     review_after_days:days,review_reason:shortestError==="none"?"ミス分類なしのため14日後":`${shortestError}が含まれるため${days}日後`,
     weak_note:localizedWeakNotes[0],weak_notes:localizedWeakNotes,correction_rule:localizedWeakNotes[0]?.correction_rule,source_text:text,auto_imported:true,
@@ -212,6 +219,7 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
     hint_used:raw.hint_used==null?undefined:/^(true|yes|1|はい)$/i.test(scalar(raw.hint_used)),
     import_confidence:Math.round(confidence*100)/100,master_matched:!!master,status:"review_required",
     math_localized:rawResultSummary!==resultSummary||rawErrorPoint!==errorPoint||rawNextAction!==nextAction||
+      rawImprovementGuidance!==improvementGuidance||rawRequiredDerivation!==requiredDerivation||rawCorrectedAnswer!==correctedAnswer||
       weakNotes.some((note,index)=>note.mistake!==localizedWeakNotes[index]?.mistake||note.correction_rule!==localizedWeakNotes[index]?.correction_rule)
   };
 }

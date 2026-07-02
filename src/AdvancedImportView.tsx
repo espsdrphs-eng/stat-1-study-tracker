@@ -17,13 +17,17 @@ const reviewDate=(update:StudyUpdate,days:number)=>{
 const missingRequiredFields=(update:StudyUpdate)=>{
   const errors=update.error_types||[];
   const hasError=errors.length>0||(update.primary_error_type||update.error_type)!=="none";
+  const usesDetailedFeedback=[GRADING_RUBRIC_VERSION,REVIEW_RUBRIC_VERSION].includes(update.rubric_version||"");
   return [
     !update.master_matched||!update.problem_id?"問題マスター":"",
     !Number(update.time_minutes)?"今回の所要時間":"",
     !update.score_text&&update.score_numeric==null?"段階評価または点数":"",
     !update.themes?.length?"主テーマ":"",
     hasError&&!update.error_point.trim()?"ミス内容":"",
-    hasError&&!update.next_action.trim()?"次回課題":""
+    hasError&&!update.next_action.trim()?"次回課題":"",
+    usesDetailedFeedback&&!update.improvement_guidance?.trim()?"次回の直し方":"",
+    usesDetailedFeedback&&!update.required_derivation?.trim()?"必要な途中計算":"",
+    usesDetailedFeedback&&!update.corrected_answer?.trim()?"修正版答案":""
   ].filter(Boolean);
 };
 
@@ -124,6 +128,11 @@ export default function AdvancedImportView({problems,run,busy}:{
             <div className="extracted-block"><span>主テーマ</span><div>{(update.themes||[]).map(theme=><Pill key={theme}>{theme}</Pill>)}{!update.themes?.length&&"—"}</div></div>
             <Field label="ミス内容" wide><textarea readOnly={!editing} value={update.error_point} onChange={event=>change(index,"error_point",event.target.value)}/></Field>
             <Field label="次回課題" wide><textarea readOnly={!editing} value={update.next_action} onChange={event=>change(index,"next_action",event.target.value)}/></Field>
+            <div className="detailed-feedback">
+              <Field label="今回の答案に沿った修正版答案" wide><textarea readOnly={!editing} value={update.corrected_answer||""} onChange={event=>change(index,"corrected_answer",event.target.value)} placeholder="今回の答案の正しい部分を残した修正版"/></Field>
+              <Field label="省略してはいけない途中計算" wide><textarea readOnly={!editing} value={update.required_derivation||""} onChange={event=>change(index,"required_derivation",event.target.value)} placeholder="結論を自力で導くために必要な式変形"/></Field>
+              <Field label="次回の直し方" wide><textarea readOnly={!editing} value={update.improvement_guidance||""} onChange={event=>change(index,"improvement_guidance",event.target.value)} placeholder="残す部分・置き換える部分・何も見ずに書く部分"/></Field>
+            </div>
 
             <div className="candidate-grid">
               <div className="candidate-box weak"><div><NotebookPen size={16}/><strong>弱点傾向データ</strong></div>

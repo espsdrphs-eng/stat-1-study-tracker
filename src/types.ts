@@ -11,6 +11,7 @@ export type Attempt = {
   id:number; problem_id:string; date:string; mode:string; time_minutes:number; mark:string;
   score_label:string; error_type:string; error_point:string; next_action:string; memo:string;
   score_text?:string; score_numeric?:number|null; score_max?:number|null; result_summary?:string;
+  improvement_guidance?:string; required_derivation?:string; corrected_answer?:string;
   exam_selection_rank?:string; error_types?:string[]; primary_error_type?:string;
   secondary_error_type?:string; ignored_parts?:string[]; auto_imported?:boolean;
   import_confidence?:number; grading_confidence?:number|null; rubric_version?:string;
@@ -43,6 +44,7 @@ export type Task = {
   requires_s_check?:boolean; linked_s_problem_ids?:string[]; checked?:boolean;
   previous_date?:string; previous_score?:string; previous_errors?:string[];
   previous_error_point?:string; previous_next_action?:string;
+  previous_improvement_guidance?:string; previous_required_derivation?:string;
 };
 export type WeaknessInsight = {
   theme:string; score:number; level:"重点"|"注意"|"観察"; confidence:"参考"|"暫定"|"分析可能";
@@ -76,6 +78,7 @@ export type StudyUpdate = {
   related_s_problem_ids?:string[]; linked_s_problems?:string[]; linked_past_exams?:string[];
   ignored_parts?:string[]; score_text?:string; score_numeric?:number|null; score_max?:number|null;
   result_summary?:string; exam_selection_rank?:string; error_types?:string[];
+  improvement_guidance?:string; required_derivation?:string; corrected_answer?:string;
   primary_error_type?:string; secondary_error_type?:string; review_reason?:string;
   weak_note?:{theme:string;error_type:string;mistake:string;correction_rule:string};
   weak_notes?:Array<{theme:string;error_type:string;mistake:string;correction_rule:string}>;

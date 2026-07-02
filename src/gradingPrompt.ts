@@ -1,10 +1,11 @@
-export const GRADING_RUBRIC_VERSION="STAT1-GRADE-v2";
-export const REVIEW_RUBRIC_VERSION="STAT1-REVIEW-v1";
+export const GRADING_RUBRIC_VERSION="STAT1-GRADE-v3";
+export const REVIEW_RUBRIC_VERSION="STAT1-REVIEW-v2";
 
 export type ReviewPromptContext={
   reviewId?:number;problemId:string;title?:string;theme?:string;date:string;mode:string;
   previousDate?:string;previousScore?:string;previousErrors?:string[];
   previousErrorPoint?:string;previousNextAction?:string;
+  previousImprovementGuidance?:string;previousRequiredDerivation?:string;
   reviewMethod?:string;reviewInstruction?:string;reviewSteps?:string[];
   requiresFullAnswer?:boolean;linkedSProblemIds?:string[];
 };
@@ -33,7 +34,16 @@ rubric_version: ${GRADING_RUBRIC_VERSION}
    C：符号・係数・条件確認などのケアレスミス
 5. grading_confidence は0〜100。根拠不足なら80以上にしない。
 6. 修正は、次回に自力で実行できる短い規則にする。
-7. 出力末尾に必ず次のYAMLを付ける。YAML内ではLaTeXを避け、できるだけ日本語で書く。
+7. 私の答案の正しい部分は残し、誤った箇所だけを置き換えた「今回の答案に沿った修正版答案」を作る。
+8. 修正版答案では、結論に必要な途中計算を省略しない。「整理すると」「計算により」だけで飛ばさず、積分範囲、添字変換、微分、式変形、場合分け、定理の条件が追えるように書く。
+9. 単純な四則演算以外は、直前の式から必要な結果を自力で導ける段階まで途中式を書く。
+10. 次回の直し方は、今回の答案を引用または要約して「残す部分」「置き換える部分」「次回何も見ずに書く部分」に分ける。
+11. 採点説明は次の順で出力する。
+   【採点と根拠】
+   【今回の答案に沿った修正版答案】
+   【省略してはいけない途中計算】
+   【次回の直し方】
+12. 出力末尾に必ず次のYAMLを付ける。YAML内ではLaTeXを避け、できるだけ日本語で書く。
 
 study_update:
   problem_id: "入力された問題ID"
@@ -50,6 +60,14 @@ study_update:
   primary_error_type: "K"
   error_point: "最重要の失点箇所"
   next_action: "次回に行う具体的な復習"
+  improvement_guidance: |
+    残す部分：
+    置き換える部分：
+    次回何も見ずに書く部分：
+  required_derivation: |
+    結論を導くため、省略せずに書く途中計算
+  corrected_answer: |
+    今回の答案の正しい部分を活かした修正版答案
   review_after_days: 1
   themes:
     - "主テーマ"
@@ -65,7 +83,8 @@ study_update:
       correction_rule: "次回の修正ルール"
 
 exam_selection_rank や「本番で選ぶか」の判定は出力しないでください。
-まず採点結果と根拠を説明し、最後にYAMLだけをコードブロックで出力してください。`;
+修正版答案は一般論ではなく、貼り付けられた私の答案の順序・記号・誤りに対応させてください。
+まず4つの見出しで説明し、最後にYAMLだけをコードブロックで出力してください。`;
 }
 
 export function buildReviewGradingPrompt(context:ReviewPromptContext){
@@ -88,6 +107,8 @@ rubric_version: ${REVIEW_RUBRIC_VERSION}
 前回K/W/N/C：${context.previousErrors?.join(" + ")||"不明"}
 前回の反省点：${context.previousErrorPoint||"記録なし"}
 前回決めた次回課題：${context.previousNextAction||"記録なし"}
+前回提示された直し方：${context.previousImprovementGuidance||"記録なし"}
+前回、省略せずに書くべきとされた途中計算：${context.previousRequiredDerivation||"記録なし"}
 
 【今回の復習指示】
 方法：${context.reviewMethod||"必要部分の再現"}
@@ -112,7 +133,11 @@ ${steps}
    failed：前回の主要課題が再びできなかった
 5. K/W/N/Cは今回残ったミスだけを複数選択する。修正済みなら none とする。
 6. grading_confidenceは0〜100。答案から確認できない部分はuncertain_pointsへ入れる。
-7. 最後に次のYAMLをコードブロックで出力する。LaTeXは避け、できるだけ日本語で書く。
+7. 今回の答案の正しい部分を残し、まだ不足する部分を補った「今回の答案に沿った修正版答案」を示す。
+8. 結論に必要な途中計算は省略しない。「整理すると」で飛ばさず、前回の課題が直ったと確認できる式変形をすべて書く。
+9. 次回の直し方を「今回改善したので残す部分」「まだ置き換える部分」「次回何も見ずに書く部分」に分ける。
+10. 説明は【比較採点】【修正版答案】【省略してはいけない途中計算】【次回の直し方】の順にする。
+11. 最後に次のYAMLをコードブロックで出力する。LaTeXは避け、できるだけ日本語で書く。
 
 study_update:
   problem_id: "${context.problemId}"
@@ -128,6 +153,14 @@ study_update:
   primary_error_type: "none"
   error_point: "今回まだ残った課題。なければ空文字"
   next_action: "次回確認する内容。定着なら軽い骨格確認"
+  improvement_guidance: |
+    今回改善したので残す部分：
+    まだ置き換える部分：
+    次回何も見ずに書く部分：
+  required_derivation: |
+    前回課題の修正を確認するため、省略せずに書く途中計算
+  corrected_answer: |
+    今回の答案を基にした修正版答案
   review_after_days: 14
   themes:
     - "${context.theme||"主テーマ"}"
@@ -140,5 +173,6 @@ study_update:
   hint_used: false
   weak_notes: []
 
-まず比較結果を短く説明し、最後にYAMLだけを出力してください。`;
+一般的な模範解答ではなく、今回貼り付けた答案の記号と流れに対応させてください。
+まず4つの見出しで説明し、最後にYAMLだけを出力してください。`;
 }
