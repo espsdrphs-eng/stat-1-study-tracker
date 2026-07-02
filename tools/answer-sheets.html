@@ -46,6 +46,21 @@
   .clock p { height: .48in; border-bottom: 1px solid #d5dfdb; margin: .06in 0 0; }
   .mode-note { position: absolute; right: .46in; top: .88in; color: #71867d; font-size: 8px; }
   .light { background: #f8faf7; }
+  .exam-plan .qtable { table-layout: fixed; height: auto; }
+  .exam-plan .qtable th, .exam-plan .qtable td { height: .27in; padding: .025in .04in; overflow: hidden; }
+  .exam-plan .qtable th:first-child, .exam-plan .qtable td:first-child { width: .5in; }
+  .exam-plan .qtable th:nth-child(2) { width: 2.5in; }
+  .exam-plan .qtable th:nth-child(3) { width: 3.1in; }
+  .exam-plan .qtable th:nth-child(4) { width: 2.25in; }
+  .exam-plan .qtable th:nth-child(5) { width: .62in; }
+  .sample { font: 10px/1.65 "Yu Gothic UI","Hiragino Sans",sans-serif; color: #29463c; white-space: pre-line; }
+  .sample strong { color: #173d32; }
+  .sample-formula { font-family: "Cambria Math","Times New Roman",serif; font-size: 12px; line-height: 1.8; }
+  .sample-table { width: 100%; border-collapse: collapse; font-size: 8px; }
+  .sample-table th,.sample-table td { border: 1px solid #b9c8c3; padding: .055in; vertical-align: top; }
+  .sample-table th { background: #edf3ef; color: #315c4e; }
+  .sample-good { color: #276c4e; font-weight: 700; }
+  .sample-skip { color: #a55b45; font-weight: 700; }
 </style>
 </head>
 <body>
@@ -104,10 +119,10 @@
   <div class="foot"><span class="checks"><span><i></i>入口</span><span><i></i>小問回収</span><span><i></i>計算量</span><span><i></i>事故リスク</span><span><i></i>撤退基準</span></span><span>統計一級 STUDY TRACKER</span></div>
 </section>
 
-<section class="sheet" data-mode="exam_90min">
+<section class="sheet exam-plan" data-mode="exam_90min">
   <header class="head"><div class="title"><h1>90分演習・作戦シート</h1><b>EXAM 90 MIN / PLAN</b></div><div class="meta"><span class="id"></span><span class="date"></span><span class="time"></span></div></header>
-  <main class="body" style="grid-template-rows:1.25in 1.08in 1.55in 2.14in;">
-    <div class="box"><h2>5問スキャン</h2><table class="qtable"><thead><tr><th>問題</th><th>型・テーマ</th><th>入口</th><th>リスク</th><th>選択</th></tr></thead><tbody><tr><td>問1</td><td></td><td></td><td></td><td></td></tr><tr><td>問2</td><td></td><td></td><td></td><td></td></tr><tr><td>問3</td><td></td><td></td><td></td><td></td></tr><tr><td>問4</td><td></td><td></td><td></td><td></td></tr><tr><td>問5</td><td></td><td></td><td></td><td></td></tr></tbody></table></div>
+  <main class="body" style="grid-template-rows:2.12in 1.08in 1.25in 1.55in;">
+    <div class="box"><h2>5問スキャン <span class="hint">最初の8〜10分。式を展開せず、入口と事故リスクだけを書く</span></h2><table class="qtable"><thead><tr><th>問題</th><th>型・テーマ</th><th>最初の一手</th><th>最大リスク</th><th>選択</th></tr></thead><tbody><tr><td>問1</td><td></td><td></td><td></td><td></td></tr><tr><td>問2</td><td></td><td></td><td></td><td></td></tr><tr><td>問3</td><td></td><td></td><td></td><td></td></tr><tr><td>問4</td><td></td><td></td><td></td><td></td></tr><tr><td>問5</td><td></td><td></td><td></td><td></td></tr></tbody></table></div>
     <div class="box"><h2>選択3問・着手順・予定時間</h2><div class="clock"><div><b>1番手：問　／　分</b><p></p></div><div><b>2番手：問　／　分</b><p></p></div><div><b>3番手：問　／　分</b><p></p></div></div></div>
     <div class="three"><div class="box"><h2>開始時刻・終了目標</h2><div class="write"></div></div><div class="box"><h2>撤退基準</h2><div class="write"></div></div><div class="box"><h2>回収優先の小問</h2><div class="write"></div></div></div>
     <div class="two"><div class="box"><h2>終了後：最大失点要因</h2><div class="write"></div></div><div class="box"><h2>戻るA問題・S問題</h2><div class="write"></div></div></div>
@@ -133,10 +148,111 @@
   <div class="foot"><span class="checks"><span><i></i>条件</span><span><i></i>根拠</span><span><i></i>小問回収</span><span><i></i>結論</span></span><span>統計一級 STUDY TRACKER</span></div>
 </section>
 
+<section class="sheet" data-example="true">
+  <header class="head"><div class="title"><h1>模範記入例 1：骨格答案</h1><b>SAMPLE / SKELETON</b></div><div class="meta"><span class="id">EX-NORMAL-MLE</span><span class="date">記入例</span><span class="time">8分</span></div></header>
+  <main class="body" style="grid-template-rows:.72in .9in .82in 1.18in 1.12in .72in;">
+    <div class="two"><div class="box light"><h2>問題の型</h2><div class="sample">正規母平均の最尤推定</div></div><div class="box light"><h2>求めるもの・結論の形</h2><div class="sample">μ の最尤推定量　μ̂ = 標本平均</div></div></div>
+    <div class="box"><h2>出発式</h2><div class="sample sample-formula">L(μ)=∏ f(xᵢ;μ),　ℓ(μ)=定数 − (1/2σ²)Σ(xᵢ−μ)²</div></div>
+    <div class="three"><div class="box"><h2>主役</h2><div class="sample">対数尤度 ℓ(μ)<br>標本平均 x̄</div></div><div class="box"><h2>条件・仮定</h2><div class="sample">Xᵢ は独立同分布<br>N(μ,σ²)、σ²既知</div></div><div class="box"><h2>使う根拠</h2><div class="sample">スコア方程式<br>二階微分が負</div></div></div>
+    <div class="box"><h2>解答の流れ</h2><div class="steps sample"><div>尤度を書く</div><div>対数を取る</div><div>μで微分</div><div>0と置く</div><div>最大を確認</div></div></div>
+    <div class="box"><h2>主要計算の入口</h2><div class="sample sample-formula">dℓ/dμ = (1/σ²)Σ(xᵢ−μ)=0　⇒　μ̂=(1/n)Σxᵢ=x̄</div></div>
+    <div class="box light"><h2>最終結論</h2><div class="sample">d²ℓ/dμ²=−n/σ²&lt;0 より、最尤推定量は μ̂=x̄ である。</div></div>
+  </main>
+  <div class="foot"><span>骨格では「入口・主役・根拠・結論」が再現できればよい。長い計算は省略する。</span><span>統計一級 STUDY TRACKER</span></div>
+</section>
+
+<section class="sheet" data-example="true">
+  <header class="head"><div class="title"><h1>模範記入例 2：主要計算</h1><b>SAMPLE / MAIN CALCULATION</b></div><div class="meta"><span class="id">EX-BERNOULLI-MLE</span><span class="date">記入例</span><span class="time">12分</span></div></header>
+  <main class="body" style="grid-template-rows:.72in .72in 3.88in .78in;">
+    <div class="three"><div class="box light"><h2>問題の型</h2><div class="sample">ベルヌーイ分布のMLE</div></div><div class="box light"><h2>出発式</h2><div class="sample">S=ΣXᵢ と置く</div></div><div class="box light"><h2>今回練習する計算</h2><div class="sample">尤度微分→推定量</div></div></div>
+    <div class="box light"><h2>計算前に固定するもの</h2><div class="sample">0&lt;θ&lt;1、0&lt;S&lt;n。端点 S=0,n は最後に別確認する。</div></div>
+    <div class="box"><h2>主要計算</h2><div class="sample sample-formula">L(θ)=θ^S(1−θ)^(n−S)
+ℓ(θ)=S log θ+(n−S)log(1−θ)
+
+dℓ/dθ = S/θ − (n−S)/(1−θ)
+　　　 = {S(1−θ)−(n−S)θ}/{θ(1−θ)}
+　　　 = (S−nθ)/{θ(1−θ)}
+
+dℓ/dθ=0　⇒　θ̂=S/n=x̄
+
+d²ℓ/dθ²=−S/θ²−(n−S)/(1−θ)²&lt;0</div></div>
+    <div class="two"><div class="box light"><h2>計算結果</h2><div class="sample">θ̂=x̄</div></div><div class="box light"><h2>結論への接続</h2><div class="sample">二階微分が負なので最大。端点でも同じ式になる。</div></div></div>
+  </main>
+  <div class="foot"><span>主要計算では、落としやすい微分・整理・範囲確認だけを丁寧に書く。</span><span>統計一級 STUDY TRACKER</span></div>
+</section>
+
+<section class="sheet" data-example="true">
+  <header class="head"><div class="title"><h1>模範記入例 3：フル答案</h1><b>SAMPLE / FULL ANSWER</b></div><div class="meta"><span class="id">EX-BERNOULLI-MLE</span><span class="date">記入例</span><span class="time">25分</span></div></header>
+  <main class="body" style="grid-template-rows:.72in 5.42in;">
+    <div class="two"><div class="box light"><h2>方針</h2><div class="sample">尤度をθについて最大化する。</div></div><div class="box light"><h2>条件</h2><div class="sample">Xᵢ∼Bernoulli(θ), 独立、0≤θ≤1</div></div></div>
+    <div class="box"><h2>答案例</h2><div class="sample sample-formula">S=Σᵢ₌₁ⁿXᵢ とおく。観測値 x₁,…,xₙ に対する尤度は
+L(θ)=∏ᵢ₌₁ⁿ θˣⁱ(1−θ)¹⁻ˣⁱ=θ^S(1−θ)^(n−S)
+である。
+
+0&lt;S&lt;n のとき、対数尤度
+ℓ(θ)=S log θ+(n−S)log(1−θ)
+を微分すると
+dℓ/dθ=S/θ−(n−S)/(1−θ)=(S−nθ)/{θ(1−θ)}
+となる。したがってスコア方程式 dℓ/dθ=0 の解は θ=S/n である。
+
+さらに
+d²ℓ/dθ²=−S/θ²−(n−S)/(1−θ)²&lt;0
+より、この点で尤度は最大となる。S=0 のときは θ=0、S=n のときは θ=1 で最大となり、いずれも同じ式に含まれる。
+
+以上より、θ の最尤推定量は
+　　　　　　　　　<strong>θ̂=S/n=x̄</strong>
+である。</div></div>
+  </main>
+  <div class="foot"><span>フル答案では、記号の定義・条件・最大である根拠・端点・結論まで書く。</span><span>統計一級 STUDY TRACKER</span></div>
+</section>
+
+<section class="sheet" data-example="true">
+  <header class="head"><div class="title"><h1>模範記入例 4：5問スキャン</h1><b>SAMPLE / SELECT 3</b></div><div class="meta"><span class="id">EX-2024</span><span class="date">記入例</span><span class="time">8分</span></div></header>
+  <main class="body" style="grid-template-rows:3.08in 1.38in 1.5in;">
+    <div class="box"><h2>5問比較</h2><table class="sample-table"><thead><tr><th>問題</th><th>テーマ</th><th>最初の一手</th><th>完走</th><th>目安</th><th>リスク</th><th>判断</th></tr></thead><tbody>
+      <tr><td>問1</td><td>MLE・AIC</td><td>尤度→パラメータ数確認</td><td>高</td><td>28分</td><td>自由度</td><td class="sample-good">選ぶ1</td></tr>
+      <tr><td>問2</td><td>順序統計量</td><td>P(X(1)&gt;x)から入る</td><td>高</td><td>25分</td><td>最大最小の混同</td><td class="sample-good">選ぶ2</td></tr>
+      <tr><td>問3</td><td>exact検定</td><td>帰無分布とサイズ</td><td>中</td><td>27分</td><td>場合分け</td><td class="sample-good">選ぶ3</td></tr>
+      <tr><td>問4</td><td>変数変換</td><td>逆変換とヤコビアン</td><td>低</td><td>35分</td><td>領域が複雑</td><td class="sample-skip">捨て</td></tr>
+      <tr><td>問5</td><td>漸近分布</td><td>CLT候補を確認</td><td>低</td><td>不明</td><td>入口が未確定</td><td class="sample-skip">捨て</td></tr>
+    </tbody></table></div>
+    <div class="two"><div class="box"><h2>選ぶ3問と理由</h2><div class="sample">1位 問1：入口が確実、小問回収可
+2位 問2：型が安定、計算量を読める
+3位 問3：完走は不確実だが前半を回収</div></div><div class="box"><h2>捨てる2問と理由</h2><div class="sample">問4：領域設定の事故リスクが高い
+問5：最初の一手を1分で確定できない</div></div></div>
+    <div class="two"><div class="box"><h2>90分の配分</h2><div class="sample">選題 8分 → 問1 27分 → 問2 25分 → 問3 25分 → 見直し 5分</div></div><div class="box light"><h2>次回の判断ルール</h2><div class="sample">入口が1分で出ない問題は順位を下げる。難易度より「小問を確実に回収できるか」で選ぶ。</div></div></div>
+  </main>
+  <div class="foot"><span>内容は架空の記入例。実際の問題では、正解できるかより事故なく点を回収できるかで判断する。</span><span>統計一級 STUDY TRACKER</span></div>
+</section>
+
+<section class="sheet exam-plan" data-example="true">
+  <header class="head"><div class="title"><h1>模範記入例 5：90分作戦</h1><b>SAMPLE / EXAM PLAN</b></div><div class="meta"><span class="id">EX-2024</span><span class="date">記入例</span><span class="time">90分</span></div></header>
+  <main class="body" style="grid-template-rows:2.12in 1.08in 1.25in 1.55in;">
+    <div class="box"><h2>5問スキャン</h2><table class="sample-table"><thead><tr><th>問題</th><th>型・テーマ</th><th>最初の一手</th><th>最大リスク</th><th>選択</th></tr></thead><tbody>
+      <tr><td>問1</td><td>MLE・AIC</td><td>尤度、制約、自由パラメータ数</td><td>AICのkを誤る</td><td class="sample-good">1</td></tr>
+      <tr><td>問2</td><td>順序統計</td><td>最小値の生存関数</td><td>最大値式との混同</td><td class="sample-good">2</td></tr>
+      <tr><td>問3</td><td>exact検定</td><td>帰無分布から棄却域</td><td>端の乱択</td><td class="sample-good">3</td></tr>
+      <tr><td>問4</td><td>変数変換</td><td>逆変換</td><td>領域が複雑</td><td class="sample-skip">捨</td></tr>
+      <tr><td>問5</td><td>漸近</td><td>未確定</td><td>時間を失う</td><td class="sample-skip">捨</td></tr>
+    </tbody></table></div>
+    <div class="box"><h2>選択3問・着手順・予定時間</h2><div class="clock sample"><div><b>1番手：問1／27分</b><p>確実に完走</p></div><div><b>2番手：問2／25分</b><p>型が安定</p></div><div><b>3番手：問3／25分</b><p>前半回収優先</p></div></div></div>
+    <div class="three"><div class="box"><h2>開始・終了目標</h2><div class="sample">選題終了 0:08
+問1終了 0:35
+問2終了 1:00
+問3終了 1:25</div></div><div class="box"><h2>撤退基準</h2><div class="sample">3分止まったら次の小問へ。問3後半は残り8分で撤退。</div></div><div class="box"><h2>回収優先</h2><div class="sample">定義、尤度、帰無分布、途中式、結論だけでも残す。</div></div></div>
+    <div class="two"><div class="box"><h2>終了後：最大失点要因</h2><div class="sample">問3の境界で迷い7分超過。途中式を残したので部分点は期待できる。</div></div><div class="box"><h2>戻るA/S</h2><div class="sample">WB-7-A-04 exact検定
+WB-7-S-09 サイズと検出力</div></div></div>
+  </main>
+  <div class="foot"><span>作戦欄は答案を書く前に埋め、終了後は失点要因と戻り先だけ追記する。</span><span>統計一級 STUDY TRACKER</span></div>
+</section>
+
 <script>
   const mode = new URLSearchParams(location.search).get("mode") || "all";
-  if (mode !== "all") document.querySelectorAll(".sheet").forEach(sheet => {
-    if (sheet.dataset.mode !== mode) sheet.remove();
+  const examples = new URLSearchParams(location.search).get("examples") === "1";
+  document.querySelectorAll(".sheet").forEach(sheet => {
+    if (examples && sheet.dataset.example !== "true") sheet.remove();
+    if (!examples && sheet.dataset.example === "true") sheet.remove();
+    if (!examples && mode !== "all" && sheet.dataset.mode !== mode) sheet.remove();
   });
 </script>
 </body>

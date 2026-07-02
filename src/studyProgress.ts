@@ -14,7 +14,7 @@ export const EXAM_PHASES=[
   {from:0,to:24,title:"弱点補修＋本番シミュレーション",allocation:"S 20%・A+補修 30%・過去問 50%",summary:"新規範囲を広げず、章別A+へ戻って補修します。本番90分シミュレーションを最低3回行います。"}
 ] as const;
 
-export function daysUntilExam(today:string,examDate:string,fallback=140){
+export function daysUntilExam(today:string,examDate:string,fallback=136){
   if(!examDate) return fallback;
   const start=new Date(`${today}T12:00:00`).getTime(),end=new Date(`${examDate}T12:00:00`).getTime();
   if(!Number.isFinite(start)||!Number.isFinite(end)) return fallback;

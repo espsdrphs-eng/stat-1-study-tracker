@@ -42,6 +42,17 @@ function Metric({label,value,unit="",hint,tone=""}:{label:string;value:string|nu
   return <div className={`metric ${tone}`}><div className="metric-label">{label}</div><div className="metric-value">{value}<small>{unit}</small></div>{hint&&<div className="metric-hint">{hint}</div>}</div>
 }
 function Empty({children}:{children:React.ReactNode}) { return <div className="empty"><Archive size={30}/><p>{children}</p></div> }
+function SheetLink({href,label="シートを見る",primary=false}:{href:string;label?:string;primary?:boolean}){
+  const [open,setOpen]=useState(false);
+  return <><button type="button" className={`${primary?"primary":"ghost"} sheet-trigger`} onClick={()=>setOpen(true)}><Download size={15}/>{label}</button>
+    {open&&<div className="sheet-modal-backdrop" role="presentation" onClick={()=>setOpen(false)}>
+      <section className="sheet-modal" role="dialog" aria-modal="true" aria-label={label} onClick={event=>event.stopPropagation()}>
+        <header><div><strong>{label}</strong><span>右上の閉じるボタンでアプリに戻れます</span></div><button type="button" className="sheet-modal-close" onClick={()=>setOpen(false)} aria-label="シートを閉じる"><X size={21}/>閉じる</button></header>
+        <iframe src={href} title={label}/>
+        <footer><button type="button" className="ghost" onClick={()=>setOpen(false)}><X size={15}/>閉じて戻る</button><a className="primary" href={href} target="_blank" rel="noreferrer"><Download size={15}/>GoodNotes用に開く</a></footer>
+      </section>
+    </div>}</>;
+}
 
 export default function App() {
   const [data,setData]=useState<Bootstrap|null>(null);
@@ -124,8 +135,8 @@ function DashboardView({data,go}:{data:Bootstrap;go:(p:Page)=>void}) {
         <details className="danger-criteria"><summary>「危険」の判定基準</summary><ul>{d.pace.dangerCriteria.map(item=><li key={item}>{item}</li>)}</ul><small>危険は不合格確定ではなく、今週の配分を復習・復旧優先へ切り替えるサインです。</small></details>
       </section>
     </div>
-    <section className="panel exam-roadmap"><div className="panel-title"><div><span className="eyebrow">140 DAY ROADMAP</span><h3>本番までの過去問導入計画</h3></div><Badge>{d.pace.phaseLabel}</Badge></div>
-      <div>{EXAM_PHASES.map(phase=><article className={d.pace.daysRemaining>=phase.from&&d.pace.daysRemaining<=phase.to?"active":""} key={phase.title}><strong>{phase.to===999?"残り140〜100日":`残り${phase.to}〜${phase.from}日`}</strong><span>{phase.title}</span><small>{phase.allocation}</small><p>{phase.summary}</p></article>)}</div>
+    <section className="panel exam-roadmap"><div className="panel-title"><div><span className="eyebrow">136 DAY ROADMAP</span><h3>本番までの過去問導入計画</h3></div><Badge>{d.pace.phaseLabel}</Badge></div>
+      <div>{EXAM_PHASES.map(phase=><article className={d.pace.daysRemaining>=phase.from&&d.pace.daysRemaining<=phase.to?"active":""} key={phase.title}><strong>{phase.to===999?"残り136〜100日":`残り${phase.to}〜${phase.from}日`}</strong><span>{phase.title}</span><small>{phase.allocation}</small><p>{phase.summary}</p></article>)}</div>
     </section>
     <section className="section-head weakness-heading">
       <div><span className="eyebrow">WEAKNESS ANALYSIS</span><h2>苦手分析と対策</h2></div>
@@ -231,7 +242,7 @@ function TodayTaskRows({task:t,busy,run,date,onReview}:{task:Task;busy:boolean;r
   const toggle=()=>isReview
     ?onReview(t)
     :run(()=>post("/api/today-check",{date,problem_id:t.problem_id,kind:t.kind,checked:!t.checked}),t.checked?"チェックを外しました":"解答済み・採点待ちにしました");
-  return <><tr className={t.checked?"task-checked":""}><td><Badge tone={t.kind==="S確認"?"blue":t.error_type==="K"?"red":""}>{t.kind}</Badge></td><td><strong>{t.problem_id}</strong><small>{t.title}{t.checked&&<em className="grading-wait">採点待ち</em>}</small></td><td>{modes[t.mode]||t.mode}</td><td>{t.minutes}分</td><td>{t.reason}</td><td><div className="task-actions"><a className="sheet-link" href={sheetHref(t.mode)} target="_blank" rel="noreferrer"><Download size={13}/>シート</a><label className="task-check"><input type="checkbox" checked={!!t.checked} disabled={busy} onChange={toggle}/><span>{isReview?"復習結果を記録":"解答済み"}</span></label></div></td></tr>
+  return <><tr className={t.checked?"task-checked":""}><td><Badge tone={t.kind==="S確認"?"blue":t.error_type==="K"?"red":""}>{t.kind}</Badge></td><td><strong>{t.problem_id}</strong><small>{t.title}{t.checked&&<em className="grading-wait">採点待ち</em>}</small></td><td>{modes[t.mode]||t.mode}</td><td>{t.minutes}分</td><td>{t.reason}</td><td><div className="task-actions"><SheetLink href={sheetHref(t.mode)} label="シート"/><label className="task-check"><input type="checkbox" checked={!!t.checked} disabled={busy} onChange={toggle}/><span>{isReview?"復習結果を記録":"解答済み"}</span></label></div></td></tr>
     {(t.review_method||t.review_reason)&&<tr className="task-plan-row"><td colSpan={6}><ReviewPlanDetails item={t} compact/></td></tr>}</>;
 }
 
@@ -503,17 +514,19 @@ function AnswerSheetsView(){
     {mode:"exam_90min",title:"90分演習",pages:"4ページ",time:"90分",description:"選題・時間配分の作戦ページと、選択した3問それぞれの答案ページです。"}
   ];
   const allHref="./answer-sheets/00-all-answer-sheets.pdf";
+  const examplesHref="./answer-sheets/06-filled-examples.pdf";
   return <>
     <section className="answer-sheet-hero">
       <div><span className="eyebrow">GOODNOTES / IPAD LANDSCAPE</span><h2>解答方式に合わせて、書く場所を先に決める</h2><p>すべてiPad横画面と同じ4:3比率です。PDFを開いてGoodNotesへ共有し、原本を複製してから使ってください。</p></div>
-      <a className="primary" href={allHref} target="_blank" rel="noreferrer"><Download size={17}/>全シートをまとめて開く</a>
+      <div className="answer-sheet-hero-actions"><SheetLink href={examplesHref} label="模範記入例を見る"/><SheetLink href={allHref} label="全シートを見る" primary/></div>
     </section>
     <div className="answer-sheet-grid">{sheets.map(sheet=><section className={`panel answer-sheet-card mode-${sheet.mode}`} key={sheet.mode}>
       <div className="sheet-preview"><NotebookPen size={24}/><span>{sheet.pages}</span></div>
       <div className="sheet-card-body"><div><Badge>{modes[sheet.mode]}</Badge><h3>{sheet.title}シート</h3></div><p>{sheet.description}</p><small>目安 {sheet.time}・{sheet.pages}</small></div>
-      <a className="ghost" href={sheetHref(sheet.mode)} target="_blank" rel="noreferrer"><Download size={15}/>PDFを開く</a>
+      <SheetLink href={sheetHref(sheet.mode)} label="PDFを見る"/>
     </section>)}</div>
-    <section className="panel goodnotes-guide"><div><span className="eyebrow">HOW TO USE</span><h3>GoodNotesへの入れ方</h3></div><ol><li>使うモードの「PDFを開く」を押す</li><li>iPadの共有ボタンから「Goodnotesで開く」を選ぶ</li><li>「新規書類として読み込む」で保存する</li><li>毎回、原本ページを複製してから答案を書く</li><li>書き終えたページを画像またはPDFでGPTへ送る</li></ol></section>
+    <section className="panel sheet-example-note"><Sparkles size={22}/><div><h3>模範記入例</h3><p>骨格・主要計算・フル答案・5問スキャン・90分作戦の5種類について、「どの程度まで書けばよいか」を記入済みPDFで確認できます。</p></div><SheetLink href={examplesHref} label="5種類の記入例を見る"/></section>
+    <section className="panel goodnotes-guide"><div><span className="eyebrow">HOW TO USE</span><h3>GoodNotesへの入れ方</h3></div><ol><li>使うモードの「PDFを見る」を押す</li><li>「GoodNotes用に開く」を押して共有する</li><li>「新規書類として読み込む」で保存する</li><li>毎回、原本ページを複製してから答案を書く</li><li>書き終えたページを画像またはPDFでGPTへ送る</li></ol></section>
   </>;
 }
 

@@ -8,7 +8,8 @@ const expectedPages={
   "02-main-calculation.pdf":1,
   "03-full-answer.pdf":2,
   "04-five-question-scan.pdf":1,
-  "05-exam-90min.pdf":4
+  "05-exam-90min.pdf":4,
+  "06-filled-examples.pdf":5
 };
 
 test("GoodNotes解答シートPDFが方式別のページ数で生成されている",()=>{
@@ -27,4 +28,7 @@ test("解答シートはiPad横画面の4対3で定義されている",()=>{
   assert.match(html,/主要計算シート/);
   assert.match(html,/5問スキャン・選題シート/);
   assert.match(html,/90分演習・作戦シート/);
+  assert.match(html,/class="sheet exam-plan"/);
+  assert.match(html,/模範記入例 5：90分作戦/);
+  assert.match(html,/examples.*===\s*"1"/);
 });

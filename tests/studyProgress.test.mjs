@@ -8,8 +8,8 @@ const metrics={
   studyDays14:14,actualMinutes14:2100,delayed3:0,dailyTargetMinutes:150
 };
 
-test("残り140日は基礎期として過去問未実施を減点しない",()=>{
-  const plan=buildProgressPlan(140,metrics);
+test("残り136日は基礎期として過去問未実施を減点しない",()=>{
+  const plan=buildProgressPlan(136,metrics);
   assert.equal(plan.phase,"foundation");
   const pastCheck=plan.checks.find(item=>item.label==="過去問の軽い接続");
   assert.equal(pastCheck.status,"pending");
@@ -25,13 +25,13 @@ test("残り日数に応じて正式4フェーズへ切り替える",()=>{
   assert.equal(buildProgressPlan(20,{...metrics,exam14:2}).checks[0].status,"ok");
 });
 
-test("試験日未設定時は140日を概算値として使う",()=>{
-  assert.equal(daysUntilExam("2026-07-02",""),140);
+test("試験日未設定時は136日を概算値として使う",()=>{
+  assert.equal(daysUntilExam("2026-07-02",""),136);
   assert.equal(daysUntilExam("2026-07-02","2026-07-12"),10);
 });
 
 test("正式問題追加直後は記録不足だけで危険判定にしない",()=>{
-  const plan=buildProgressPlan(140,{...metrics,sCore14:0,aPlus14:0,criticalSStable:0,criticalSTotal:0,
+  const plan=buildProgressPlan(136,{...metrics,sCore14:0,aPlus14:0,criticalSStable:0,criticalSTotal:0,
     studyDays14:1,actualMinutes14:25});
   assert.equal(plan.label,"判定保留");
 });
