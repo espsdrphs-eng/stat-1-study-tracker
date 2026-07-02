@@ -18,6 +18,8 @@ export type Attempt = {
   secondary_error_type?:string; ignored_parts?:string[]; auto_imported?:boolean;
   import_confidence?:number; grading_confidence?:number|null; rubric_version?:string;
   uncertain_points?:string[]; generated_from_review_id?:number; is_review_attempt?:boolean;
+  evaluation_scope?:string; graded_parts?:string[]; assumed_correct_parts?:string[];
+  unresolved_carryover?:string[];
 };
 export type Review = {
   id:number; problem_id:string; due_date:string; review_type:string; status:string; generated_from_attempt_id:number;
@@ -89,5 +91,7 @@ export type StudyUpdate = {
   source_text?:string; auto_imported?:boolean; import_confidence?:number;
   grading_confidence?:number|null; rubric_version?:string; uncertain_points?:string[];
   generated_from_review_id?:number; review_outcome?:"success"|"partial"|"failed"; hint_used?:boolean;
+  evaluation_scope?:string; graded_parts?:string[]; assumed_correct_parts?:string[];
+  unresolved_carryover?:string[];
   master_matched?:boolean; status?:string; math_localized?:boolean;
 };

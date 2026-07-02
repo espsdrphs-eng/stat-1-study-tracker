@@ -79,7 +79,7 @@ export default function App() {
       <header><button className="menu-btn" onClick={()=>setMenu(true)}><Menu/></button><div><span className="eyebrow">{data.dashboard.today.replaceAll("-",".")}</span><h1>{selected?selected.problem_id:pageTitles[page]}</h1></div><button className="icon-btn" onClick={load} title="更新"><RefreshCw size={19}/></button></header>
       {(message||error)&&<div className={`toast ${error?"danger":""}`} onClick={()=>{setMessage("");setError("")}}>{error||message}<X size={16}/></div>}
       <div className="content">
-        {selected?<ProblemDetail problem={selected} data={data} onBack={()=>setSelected(null)} onImport={()=>{setSelected(null);setPage("import")}}/>:
+        {selected?<ProblemDetail problem={selected} data={data} run={run} busy={busy} onBack={()=>setSelected(null)} onImport={()=>{setSelected(null);setPage("import")}}/>:
         page==="dashboard"?<DashboardView data={data} go={go}/>:
         page==="today"?<TodayView data={data} busy={busy} run={run} go={go}/>:
         page==="problems"?<ProblemsView data={data} select={setSelected} run={run} busy={busy}/>:
@@ -306,21 +306,55 @@ function ProblemsView({data,select,run,busy}:{data:Bootstrap;select:(p:Problem)=
   </>
 }
 
-function ProblemDetail({problem,data,onBack,onImport}:{problem:Problem;data:Bootstrap;onBack:()=>void;onImport:()=>void}) {
+function ProblemDetail({problem,data,run,busy,onBack,onImport}:{problem:Problem;data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean;onBack:()=>void;onImport:()=>void}) {
+  const [editing,setEditing]=useState<Attempt|null>(null);
+  const [form,setForm]=useState<Record<string,string>>({});
   const attempts=data.attempts.filter(a=>a.problem_id===problem.problem_id);
   const reviews=data.reviews.filter(a=>a.problem_id===problem.problem_id);
   const latest=attempts[0],nextReview=reviews.filter(r=>r.status!=="done").sort((a,b)=>a.due_date.localeCompare(b.due_date))[0];
   const related=problem.related_s_problem_ids?.length?problem.related_s_problem_ids:String(problem.linked_s_problems||"").split(";").filter(Boolean);
+  const editAttempt=(attempt:Attempt)=>{
+    setEditing(attempt);
+    setForm({date:attempt.date,mode:attempt.mode,time_minutes:String(attempt.time_minutes||""),
+      mark:attempt.mark,score_label:attempt.score_label,score_numeric:attempt.score_numeric==null?"":String(attempt.score_numeric),
+      error_types:(attempt.error_types||[attempt.error_type]).filter(error=>error!=="none").join(" + "),
+      error_point:attempt.error_point||"",next_action:attempt.next_action||""});
+  };
+  const saveEdit=(event:React.FormEvent)=>{
+    event.preventDefault();
+    if(!editing)return;
+    const target=editing;
+    setEditing(null);
+    run(()=>post(`/api/attempts/${target.id}/update`,form),"解答履歴を更新し、復習予定と苦手分析を再計算しました");
+  };
+  const removeAttempt=(attempt:Attempt)=>{
+    if(!window.confirm(`${attempt.problem_id}（${attempt.date}）の解答履歴を削除します。関連する復習予定と苦手分析データも削除されます。`))return;
+    run(()=>post(`/api/attempts/${attempt.id}/delete`,{}),"解答履歴と関連する復習予定・苦手分析データを削除しました");
+  };
   return <><button className="back" onClick={onBack}>← 問題一覧へ</button><div className="detail-hero"><div><div className="detail-badges"><Badge tone={problem.category==="S"?"blue":""}>原典 {problem.category}</Badge>{problem.strategy_rank&&<Badge tone={problem.strategy_rank==="SS"?"red":problem.strategy_rank==="A+"?"orange":""}>実戦 {problem.strategy_rank}</Badge>}</div><h2>{problemDisplayLabel(problem)}</h2><p>{problem.problem_id} ・ {problem.theme}</p></div><button className="primary" onClick={onImport}><ClipboardPaste size={17}/>GPT採点結果を取り込む</button></div>
     {latest&&<section className="panel latest-result"><div><span>最新評価</span><strong>{latest.score_text||latest.score_label} {latest.score_numeric!=null?`/ ${latest.score_numeric}点`:""} / {latest.mark}</strong></div><div><span>K/W/N/C</span><strong>{latest.error_types?.join(" + ")||latest.error_type}</strong></div><div><span>次回復習</span><strong>{nextReview?.due_date||"—"}</strong></div></section>}
-    {(latest?.corrected_answer||latest?.required_derivation||latest?.improvement_guidance)&&<section className="panel answer-feedback"><div className="panel-title"><div><span className="eyebrow">GPT FEEDBACK</span><h3>今回の答案に沿った修正</h3></div></div>
+    {(latest?.corrected_answer||latest?.required_derivation||latest?.improvement_guidance)&&<details className="panel answer-feedback compact-feedback"><summary>GPTの修正版答案・途中計算を確認</summary><div className="feedback-body">
       {latest.corrected_answer&&<div><span>修正版答案</span><p>{latest.corrected_answer}</p></div>}
       {latest.required_derivation&&<div><span>省略してはいけない途中計算</span><p>{latest.required_derivation}</p></div>}
       {latest.improvement_guidance&&<div><span>次回の直し方</span><p>{latest.improvement_guidance}</p></div>}
-    </section>}
+    </div></details>}
     <div className="detail-grid"><section className="panel"><h3>問題情報</h3><dl><dt>役割</dt><dd>{problem.role}</dd><dt>難易度</dt><dd>{problem.difficulty!=null?`難${problem.difficulty}`:"—"}</dd><dt>推奨モード</dt><dd>{modes[problem.recommended_mode]}</dd><dt>関連S問題</dt><dd>{related.join(" / ")||"—"}</dd><dt>関連A問題</dt><dd>{problem.linked_a_problems||"—"}</dd><dt>関連過去問</dt><dd>{problem.linked_past_exams||"—"}</dd><dt>次回課題</dt><dd>{latest?.next_action||"—"}</dd><dt>メモ</dt><dd>{problem.notes||"—"}</dd></dl></section>
     <section className="panel"><h3>復習予定</h3>{nextReview?<><div className="history"><CalendarCheck/><div><strong>{nextReview.due_date}</strong><span>{reviewNames[nextReview.review_type]||nextReview.review_method}・{nextReview.status}</span></div></div><ReviewPlanDetails item={nextReview}/></>:<Empty>復習予定はありません</Empty>}</section></div>
-    <section className="panel"><div className="panel-title"><h3>解答履歴</h3><span className="muted">{attempts.length}回</span></div>{attempts.length?<div className="table-wrap"><table><thead><tr><th>日付</th><th>モード</th><th>評価</th><th>K/W/N/C</th><th>ミス</th><th>次の行動</th></tr></thead><tbody>{attempts.map(a=><tr key={a.id}><td>{a.date}</td><td>{modes[a.mode]}</td><td>{a.mark} / {a.score_label}</td><td><ErrorBadge value={a.error_type}/></td><td>{a.error_point||"—"}</td><td>{a.next_action||"—"}</td></tr>)}</tbody></table></div>:<Empty>まだ学習記録がありません</Empty>}</section>
+    <section className="panel"><div className="panel-title"><h3>解答履歴</h3><span className="muted">{attempts.length}回</span></div>{attempts.length?<div className="table-wrap"><table><thead><tr><th>日付</th><th>モード</th><th>評価</th><th>K/W/N/C</th><th>ミス</th><th>次の行動</th><th>操作</th></tr></thead><tbody>{attempts.map(a=><tr key={a.id}><td>{a.date}</td><td>{modes[a.mode]||a.mode}</td><td>{a.mark} / {a.score_label}{a.score_numeric!=null?` ${a.score_numeric}点`:""}</td><td>{(a.error_types||[a.error_type]).filter(error=>error!=="none").map(error=><ErrorBadge key={error} value={error}/>)}{!(a.error_types||[a.error_type]).some(error=>error!=="none")&&<ErrorBadge value="none"/>}</td><td>{a.error_point||"—"}</td><td>{a.next_action||"—"}</td><td><div className="history-actions"><button className="small ghost" onClick={()=>editAttempt(a)}><Pencil size={13}/>編集</button><button className="small danger-button" disabled={busy} onClick={()=>removeAttempt(a)}><Trash2 size={13}/>削除</button></div></td></tr>)}</tbody></table></div>:<Empty>まだ学習記録がありません</Empty>}</section>
+    {editing&&<Modal title="解答履歴を編集" close={()=>setEditing(null)}><form className="form-grid analysis-edit-form" onSubmit={saveEdit}>
+      <Field label="問題"><input value={editing.problem_id} readOnly/></Field>
+      <Field label="学習日"><input type="date" value={form.date} onChange={event=>setForm({...form,date:event.target.value})}/></Field>
+      <Field label="モード"><select value={form.mode} onChange={event=>setForm({...form,mode:event.target.value})}>{Object.entries(modes).map(([key,label])=><option value={key} key={key}>{label}</option>)}</select></Field>
+      <Field label="学習時間（分）"><input type="number" min="0" value={form.time_minutes} onChange={event=>setForm({...form,time_minutes:event.target.value})}/></Field>
+      <Field label="mark"><select value={form.mark} onChange={event=>setForm({...form,mark:event.target.value})}>{["◎","○","△","×"].map(mark=><option key={mark}>{mark}</option>)}</select></Field>
+      <Field label="評価"><select value={form.score_label} onChange={event=>setForm({...form,score_label:event.target.value})}>{["S","A","B","C"].map(score=><option key={score}>{score}</option>)}</select></Field>
+      <Field label="点数"><input type="number" min="0" max="100" value={form.score_numeric} onChange={event=>setForm({...form,score_numeric:event.target.value})}/></Field>
+      <Field label="K/W/N/C（複数可・空欄でなし）"><input value={form.error_types} onChange={event=>setForm({...form,error_types:event.target.value.toUpperCase()})} placeholder="N + W"/></Field>
+      <Field label="ミス内容" wide><textarea value={form.error_point} onChange={event=>setForm({...form,error_point:event.target.value})}/></Field>
+      <Field label="次の行動" wide><textarea value={form.next_action} onChange={event=>setForm({...form,next_action:event.target.value})}/></Field>
+      <div className="analysis-edit-note wide"><AlertTriangle size={16}/><span>更新すると、この履歴から作られた復習予定と苦手分析が新しい内容で再計算されます。</span></div>
+      <div className="form-actions wide"><button type="button" className="ghost" onClick={()=>setEditing(null)}>キャンセル</button><button className="primary" disabled={busy}>更新する</button></div>
+    </form></Modal>}
   </>
 }
 

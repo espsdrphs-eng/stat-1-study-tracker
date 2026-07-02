@@ -22,6 +22,8 @@ const missingRequiredFields=(update:StudyUpdate,hasPreviousTarget=false)=>{
   const invalidSuccessProof=hasPreviousTarget&&update.review_outcome==="success"&&(
     update.target_issue_resolved!==true||update.minimum_pass_condition_met!==true||
     !update.resolution_evidence?.trim()||!update.required_work_shown?.length||
+    !["full","conditional_full"].includes(update.evaluation_scope||"")||!update.graded_parts?.length||
+    !!update.unresolved_carryover?.length||
     /(変更なし|前回と同じ|同一答案|未修正)/.test(update.answer_change_summary||"")
   );
   return [
@@ -34,6 +36,8 @@ const missingRequiredFields=(update:StudyUpdate,hasPreviousTarget=false)=>{
     usesDetailedFeedback&&!update.improvement_guidance?.trim()?"次回の直し方":"",
     usesDetailedFeedback&&!update.required_derivation?.trim()?"必要な途中計算":"",
     usesDetailedFeedback&&!update.corrected_answer?.trim()?"修正版答案":"",
+    usesDetailedFeedback&&!["full","conditional_full"].includes(update.evaluation_scope||"")?"採点範囲":"",
+    usesDetailedFeedback&&!update.graded_parts?.length?"実際に採点した部分":"",
     strictReview&&update.target_issue_resolved==null?"前回課題の解消判定":"",
     strictReview&&update.minimum_pass_condition_met==null?"最低クリア条件":"",
     strictReview&&!update.resolution_evidence?.trim()?"改善の答案内根拠":"",
@@ -145,7 +149,14 @@ export default function AdvancedImportView({problems,attempts,reviews,run,busy}:
             <div className="extracted-block"><span>主テーマ</span><div>{(update.themes||[]).map(theme=><Pill key={theme}>{theme}</Pill>)}{!update.themes?.length&&"—"}</div></div>
             <Field label="ミス内容" wide><textarea readOnly={!editing} value={update.error_point} onChange={event=>change(index,"error_point",event.target.value)}/></Field>
             <Field label="次回課題" wide><textarea readOnly={!editing} value={update.next_action} onChange={event=>change(index,"next_action",event.target.value)}/></Field>
-            <div className="detailed-feedback">
+            {(update.evaluation_scope||update.graded_parts?.length||update.assumed_correct_parts?.length)&&<div className="grading-scope-summary">
+              <span>採点範囲 <strong>{update.evaluation_scope==="full"?"フル答案":"条件付きフル評価"}</strong></span>
+              <span>実際に確認 <strong>{update.graded_parts?.join(" / ")||"記載なし"}</strong></span>
+              {update.assumed_correct_parts?.length?<span>正しいと仮定 <strong>{update.assumed_correct_parts.join(" / ")}</strong></span>:null}
+            </div>}
+            <details className="detailed-feedback">
+              <summary>修正版答案・途中計算・判定根拠を確認</summary>
+              <div className="detailed-feedback-body">
               <Field label="今回の答案に沿った修正版答案" wide><textarea readOnly={!editing} value={update.corrected_answer||""} onChange={event=>change(index,"corrected_answer",event.target.value)} placeholder="今回の答案の正しい部分を残した修正版"/></Field>
               <Field label="省略してはいけない途中計算" wide><textarea readOnly={!editing} value={update.required_derivation||""} onChange={event=>change(index,"required_derivation",event.target.value)} placeholder="結論を自力で導くために必要な式変形"/></Field>
               <Field label="次回の直し方" wide><textarea readOnly={!editing} value={update.improvement_guidance||""} onChange={event=>change(index,"improvement_guidance",event.target.value)} placeholder="残す部分・置き換える部分・何も見ずに書く部分"/></Field>
@@ -155,7 +166,8 @@ export default function AdvancedImportView({problems,attempts,reviews,run,busy}:
                 <div className="wide"><span>今回答案中の改善根拠</span><p>{update.resolution_evidence||"根拠未記載"}</p></div>
                 <div className="wide"><span>実際に確認できた途中式・作業</span><ul>{update.required_work_shown?.map((item,n)=><li key={n}>{item}</li>)}{!update.required_work_shown?.length&&<li>記載なし</li>}</ul></div>
               </div>}
-            </div>
+              </div>
+            </details>
 
             <div className="candidate-grid">
               <div className="candidate-box weak"><div><NotebookPen size={16}/><strong>弱点傾向データ</strong></div>

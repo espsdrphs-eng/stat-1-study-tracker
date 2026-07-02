@@ -396,7 +396,9 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
     auto_imported:!!input.auto_imported,import_confidence:input.import_confidence??(input.auto_imported?.8:1),
     grading_confidence:input.grading_confidence??null,rubric_version:input.rubric_version||"",
     uncertain_points:input.uncertain_points||[],generated_from_review_id:input.generated_from_review_id,
-    is_review_attempt:!!input.generated_from_review_id
+    is_review_attempt:!!input.generated_from_review_id,evaluation_scope:input.evaluation_scope||"",
+    graded_parts:input.graded_parts||[],assumed_correct_parts:input.assumed_correct_parts||[],
+    unresolved_carryover:input.unresolved_carryover||[]
   }));
   if(input.generated_from_review_id){
     await db.reviews.update(input.generated_from_review_id,{
@@ -503,7 +505,9 @@ async function updateAttemptAnalysis(id:number,body:Record<string,unknown>){
   const date=String(body.date||attempt.date),errorPoint=japaneseizeMathText(String(body.error_point??attempt.error_point)),
     nextAction=japaneseizeMathText(String(body.next_action??attempt.next_action));
   const scoreValue=body.score_numeric??attempt.score_numeric;
-  const updated:Attempt={...attempt,date,mark:String(body.mark||attempt.mark),score_label:String(body.score_label||attempt.score_label),
+  const updated:Attempt={...attempt,date,mode:String(body.mode||attempt.mode),
+    time_minutes:body.time_minutes===""||body.time_minutes==null?attempt.time_minutes:Number(body.time_minutes),
+    mark:String(body.mark||attempt.mark),score_label:String(body.score_label||attempt.score_label),
     score_numeric:scoreValue===""||scoreValue==null?null:Number(scoreValue),
     error_type:primary,primary_error_type:primary,error_types:errors,error_point:errorPoint,next_action:nextAction};
   await db.attempts.put(updated);
@@ -551,6 +555,15 @@ async function deleteAttemptAnalysis(id:number){
   await refreshLinkedSMemory(related);
   const remaining=await db.attempts.where("problem_id").equals(attempt.problem_id).toArray();
   const stillWeak=remaining.some(item=>(item.error_types||[item.error_type]).some(error=>error!=="none"));
+  const latest=[...remaining].sort((a,b)=>b.date.localeCompare(a.date)||b.id-a.id)[0];
+  if(latest&&problem){
+    const plan=problem.category==="S"
+      ?createSReviewPlan(latest.mark==="◎"||latest.mark==="○"?"stable":latest.mark==="×"?"forgotten":"check")
+      :createAttemptReviewPlan(latest,related,0);
+    await addOrReplaceReview({problem_id:latest.problem_id,due_date:await reviewDueDate(latest.date,plan.interval_days||14),
+      review_type:plan.review_type,status:"pending",generated_from_attempt_id:latest.id,duration_minutes:plan.estimated_minutes,
+      reason:plan.review_reason,...planFields(plan)});
+  }
   await db.problems.update(attempt.problem_id,{completion_status:stillWeak?"review_pending":"active"});
 }
 

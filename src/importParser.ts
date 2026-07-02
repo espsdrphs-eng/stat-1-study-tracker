@@ -182,6 +182,10 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
   const resolutionEvidence=japaneseizeMathText(scalar(raw.resolution_evidence));
   const answerChangeSummary=japaneseizeMathText(scalar(raw.answer_change_summary));
   const requiredWorkShown=stringArray(raw.required_work_shown).map(japaneseizeMathText);
+  const evaluationScope=scalar(raw.evaluation_scope);
+  const gradedParts=stringArray(raw.graded_parts).map(japaneseizeMathText);
+  const assumedCorrectParts=stringArray(raw.assumed_correct_parts).map(japaneseizeMathText);
+  const unresolvedCarryover=stringArray(raw.unresolved_carryover).map(japaneseizeMathText);
   const weak=raw.weak_note&&typeof raw.weak_note==="object"
     ? raw.weak_note as StudyUpdate["weak_note"]
     : weakNoteFromText(text,candidate,primary,themes);
@@ -215,6 +219,8 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
     improvement_guidance:improvementGuidance,required_derivation:requiredDerivation,corrected_answer:correctedAnswer,
     target_issue_resolved:targetIssueResolved,minimum_pass_condition_met:minimumPassConditionMet,
     resolution_evidence:resolutionEvidence,answer_change_summary:answerChangeSummary,required_work_shown:requiredWorkShown,
+    evaluation_scope:evaluationScope,graded_parts:gradedParts,assumed_correct_parts:assumedCorrectParts,
+    unresolved_carryover:unresolvedCarryover,
     error_types:errors,primary_error_type:primary,secondary_error_type:secondary,
     review_after_days:days,review_reason:shortestError==="none"?"ミス分類なしのため14日後":`${shortestError}が含まれるため${days}日後`,
     weak_note:localizedWeakNotes[0],weak_notes:localizedWeakNotes,correction_rule:localizedWeakNotes[0]?.correction_rule,source_text:text,auto_imported:true,

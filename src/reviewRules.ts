@@ -58,8 +58,12 @@ export function enforceReviewEvidence(input:StudyUpdate,previousErrors:string[],
   const evidence=String(input.resolution_evidence||"").trim();
   const changed=String(input.answer_change_summary||"").trim();
   const shown=input.required_work_shown||[];
+  const scopeIsValid=["full","conditional_full"].includes(String(input.evaluation_scope||""));
+  const gradedParts=input.graded_parts||[];
+  const unresolved=input.unresolved_carryover||[];
   const proofIsValid=input.target_issue_resolved===true&&input.minimum_pass_condition_met===true&&
-    evidence.length>=8&&shown.length>0&&!/(変更なし|前回と同じ|同一答案|未修正)/.test(changed);
+    evidence.length>=8&&shown.length>0&&scopeIsValid&&gradedParts.length>0&&unresolved.length===0&&
+    !/(変更なし|前回と同じ|同一答案|未修正)/.test(changed);
   if(proofIsValid) return input;
   const reason="前回課題を改善した答案中の具体的な式・説明を確認できないため、successをpartialへ変更した。";
   return {...input,review_outcome:"partial",mark:"△",error_type:targetError,primary_error_type:targetError,
@@ -87,11 +91,9 @@ export function createAttemptReviewPlan(
     ?`骨格全体やフル答案の書き直しは不要。前回省略した「${errorPoint}」だけを、直前の式から結果が導ける途中式付きで自力再現する。答や方針だけでは完了にしない。`
     :`${stable?"フル答案は不要。型・出発式・結論の形だけを短時間で確認する。":definition.instruction}${errorPoint?` 今回見るポイント：${errorPoint}`:""}`;
   const localSteps=[
-    `前回省略した箇所「${errorPoint}」の直前の式を書く`,
-    "使用する条件・添字・範囲を明記する",
-    "結果へ至る式変形を1行ずつ書く",
-    "各行の変形が成り立つ理由を短く説明する",
-    "答を隠し、同じ局所計算をもう一度再現する"
+    `「${errorPoint}」の直前の式と必要な条件を書く`,
+    "省略した式変形を、結果まで理由付きで再現する",
+    "答を隠し、その部分だけをもう一度書く"
   ];
   return {
     review_reason:localizedOmission?`N判定の原因が局所的な式・説明の省略であるため、できている骨格は繰り返さず、省略箇所だけを短時間で補修する。`:reason,
