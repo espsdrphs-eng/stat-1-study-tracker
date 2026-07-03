@@ -5,7 +5,7 @@ export type ErrorTrend={error:string;count:number;score:number};
 export type WeekTrend={label:string;score:number;count:number};
 export type WeakTrend={
   themes:TrendRow[];errors:ErrorTrend[];chapters:TrendRow[];weeks:WeekTrend[];
-  attemptCount:number;topTheme:string;kRate:number;
+  attemptCount:number;totalAttemptCount:number;noErrorCount:number;topTheme:string;kRate:number;
 };
 
 const weights:Record<string,number>={K:5,N:3,W:2,C:1};
@@ -65,7 +65,8 @@ export function analyzeWeakTrends(
   return {
     themes,errors:[...errorMap.values()],chapters:sortRows([...chapterMap.values()]),
     weeks:[...weekMap.values()].sort((a,b)=>a.label.localeCompare(b.label)).slice(-8),
-    attemptCount:classified,topTheme:themes[0]?.label||"まだ判定できません",
+    attemptCount:classified,totalAttemptCount:filteredAttempts.length,noErrorCount:filteredAttempts.length-classified,
+    topTheme:themes[0]?.label||"まだ判定できません",
     kRate:classified?Math.round(kCount/classified*100):0
   };
 }

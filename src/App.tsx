@@ -64,7 +64,7 @@ export default function App() {
   const [error,setError]=useState("");
   const load=async()=>{setError("");try{setData(await api<Bootstrap>("/api/bootstrap"));}catch(e){setError((e as Error).message)}};
   useEffect(()=>{load()},[]);
-  const run=async(action:()=>Promise<unknown>,success:string)=>{setBusy(true);setError("");try{await action();setMessage(success);await load()}catch(e){setError((e as Error).message)}finally{setBusy(false)}};
+  const run=async(action:()=>Promise<unknown>,success:string)=>{setBusy(true);setError("");try{await action();setMessage(success);await load();return true}catch(e){setError((e as Error).message);return false}finally{setBusy(false)}};
   const go=(next:Page)=>{setPage(next);setMenu(false);setSelected(null)};
   if(!data) return <div className="boot"><div className="spinner"/><strong>学習データを準備しています</strong>{error&&<p>{error}</p>}</div>;
   return <div className="app-shell">
@@ -445,7 +445,7 @@ function WeakView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:
   const errorColors:Record<string,string>={K:"#b33c36",W:"#d17a35",N:"#487da9",C:"#8b9290"};
   let stop=0;
   const donutParts=["K","W","N","C"].map(error=>{const start=stop;stop+=errorTotal?errorCounts[error]/errorTotal*100:0;return `${errorColors[error]} ${start}% ${stop}%`});
-  const weekly=trend.weeks,maxWeek=Math.max(1,...weekly.map(week=>week.score));
+  const weekly=trend.weeks,maxWeek=Math.max(1,...weekly.map(week=>week.count));
   const quizPrompt=buildQuizPrompt(selected,data.problems,data.attempts,data.weakNotes,5);
   const copyPrompt=async()=>{await navigator.clipboard.writeText(quizPrompt);setCopied(true);setTimeout(()=>setCopied(false),1800)};
   const dominantError=[...trend.errors].sort((a,b)=>b.score-a.score)[0]?.error||"—";
@@ -466,10 +466,11 @@ function WeakView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:
     if(!window.confirm(`${attempt.problem_id}（${attempt.date}）の採点データを削除します。関連する復習予定と弱点傾向データも削除されます。`))return;
     run(()=>post(`/api/attempts/${attempt.id}/delete`,{}),"採点データと関連する分析・復習予定を削除しました");
   };
-  if(!trend.attemptCount) return <><section className="weak-trend-hero"><div><span className="eyebrow">WEAKNESS TRENDS</span><h2>GPT採点が集まると、苦手の傾向が見えてきます</h2><p>弱点ノートは自分で管理する一覧ではなく、採点結果から傾向を作るための分析データとして使います。</p></div></section><section className="panel"><Empty>まだ分析データがありません。GPT採点結果を取り込むと自動で蓄積されます</Empty></section></>;
+  if(!trend.attemptCount) return <><section className="weak-trend-hero"><div><span className="eyebrow">WEAKNESS TRENDS</span><h2>GPT採点が集まると、苦手の傾向が見えてきます</h2><p>この画面はK/W/N/Cが付いた採点だけから、繰り返すミスを探します。ミスなしの採点は学習履歴には残りますが、弱点グラフには加算しません。</p></div></section><section className="panel weak-empty-explanation">{trend.totalAttemptCount?<><Check size={28}/><h3>採点は{trend.totalAttemptCount}件ありますが、弱点として数えるミスは0件です</h3><p>現在の採点はすべて「none（ミスなし）」です。K/W/N/Cが付いた結果を保存すると、テーマ別・分類別・週別のグラフが表示されます。</p></>:<Empty>まだ採点記録がありません。GPT採点結果を取り込むと自動で蓄積されます</Empty>}</section></>;
   return <>
     <section className="weak-trend-hero"><div><span className="eyebrow">WEAKNESS TRENDS</span><h2>採点結果から見える苦手傾向</h2><p>ここは復習タスクの一覧ではありません。問題とGPT採点結果から、繰り返し落としているテーマとミスの型を俯瞰する場所です。</p></div><div className="trend-summary"><strong>{trend.themes.length}</strong><span>検出テーマ</span><small>最多 {trend.topTheme}</small></div></section>
-    <div className="trend-metrics"><Metric label="分析した採点" value={trend.attemptCount} unit="件" hint="K/W/N/Cがある結果"/><Metric label="最多テーマ" value={topThemes[0]?.score||0} unit="点" hint={trend.topTheme}/><Metric label="主なミス型" value={dominantError} hint={`${errorCounts[dominantError]||0}件`}/><Metric label="K発生率" value={trend.kRate} unit="%" hint="骨格崩れの割合"/></div>
+    <div className="trend-metrics"><Metric label="保存済みの全採点" value={trend.totalAttemptCount} unit="件" hint={`ミスなし ${trend.noErrorCount}件`}/><Metric label="ミスあり採点" value={trend.attemptCount} unit="件" hint="K/W/N/Cが1つ以上"/><Metric label="主なミス型" value={dominantError} hint={`${errorCounts[dominantError]||0}件`}/><Metric label="K発生率" value={trend.kRate} unit="%" hint="ミスあり採点に占める割合"/></div>
+    <section className="weak-reading-guide"><strong>この画面の数え方</strong><span>1回の採点にK/W/N/Cが1つでもあれば「ミスあり採点」1件です。テーマの点数は重要度（K=5、N=3、W=2、C=1）の合計で、点数が高いほど先に復習します。ミスなしの結果は弱点には加算しません。</span></section>
     <div className="trend-grid">
       <section className="panel theme-chart"><div className="panel-title"><div><span className="eyebrow">BY THEME</span><h3>苦手テーマ上位</h3></div><BarChart3 size={19}/></div>
         {topThemes.map(theme=><div className="theme-bar-row" key={theme.label}><div><strong>{theme.label}</strong><span>採点 {theme.count}件</span></div><div className="theme-bar"><i style={{width:`${theme.score/maxTheme*100}%`}}/></div><b>{theme.score}</b></div>)}
@@ -478,8 +479,8 @@ function WeakView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:
         <div className="donut-wrap"><div className="error-donut" style={{background:errorTotal?`conic-gradient(${donutParts.join(",")})`:"#e8ece8"}}><strong>{errorTotal}</strong><span>分類済み</span></div>
           <div className="error-legend">{["K","W","N","C"].map(error=><div key={error}><i style={{background:errorColors[error]}}/><strong>{error}</strong><span>{errorCounts[error]}件</span></div>)}</div></div>
       </section>
-      <section className="panel weekly-chart"><div className="panel-title"><div><span className="eyebrow">6 WEEK TREND</span><h3>ミス検出数の推移</h3></div></div>
-        <div className="week-bars">{weekly.map(week=><div key={week.label}><span>{week.score}</span><i style={{height:`${Math.max(4,week.score/maxWeek*100)}%`}}/><small>{week.label.slice(5)}</small></div>)}</div>
+      <section className="panel weekly-chart"><div className="panel-title"><div><span className="eyebrow">WEEKLY DETECTION</span><h3>週別・ミスあり採点件数</h3><p>記録した週に加算されます。増加は悪化ではなく、採点記録が増えた意味です。</p></div></div>
+        <div className="week-bars">{weekly.map(week=><div key={week.label}><span>{week.count}件</span><i style={{height:`${Math.max(4,week.count/maxWeek*100)}%`}}/><small>{week.label.slice(5)}<b>重要度 {week.score}</b></small></div>)}</div>
       </section>
     </div>
     <section className="panel quiz-builder"><div className="quiz-builder-head"><div><span className="eyebrow">QUIZ WITH GPT</span><h2>苦手テーマをGPTでクイズ復習</h2><p>復習したいテーマを選び、プロンプトをコピーして普段使っているGPTへ貼り付けます。アプリから外部へ自動送信はしません。</p></div><Sparkles size={25}/></div>

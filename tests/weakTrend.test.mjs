@@ -18,10 +18,21 @@ const notes=[
 test("問題と採点結果から重み付きの弱点傾向を集計する",()=>{
   const trend=analyzeWeakTrends(problems,attempts,notes);
   assert.equal(trend.attemptCount,3);
+  assert.equal(trend.totalAttemptCount,3);
+  assert.equal(trend.noErrorCount,0);
   assert.equal(trend.topTheme,"AIC・自由度");
   assert.equal(trend.themes[0].score,7);
   assert.equal(trend.errors.find(row=>row.error==="K").score,5);
   assert.equal(trend.kRate,33);
+});
+
+test("ミスなし採点は保存件数には含めるが弱点グラフには加算しない",()=>{
+  const withSuccess=[...attempts,{id:4,problem_id:"WB-6-A-05",date:"2026-06-29",error_type:"none",error_types:[]}];
+  const trend=analyzeWeakTrends(problems,withSuccess,notes);
+  assert.equal(trend.totalAttemptCount,4);
+  assert.equal(trend.attemptCount,3);
+  assert.equal(trend.noErrorCount,1);
+  assert.equal(trend.weeks.reduce((sum,week)=>sum+week.count,0),3);
 });
 
 test("選択テーマから1問ずつ進むGPTクイズ用プロンプトを作る",()=>{

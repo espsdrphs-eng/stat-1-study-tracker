@@ -54,7 +54,7 @@ function Pill({children,tone=""}:{children:React.ReactNode;tone?:string}){
 }
 
 export default function AdvancedImportView({problems,attempts,reviews,run,busy}:{
-  problems:Problem[];attempts:Attempt[];reviews:Review[];run:(action:()=>Promise<unknown>,success:string)=>void;busy:boolean;
+  problems:Problem[];attempts:Attempt[];reviews:Review[];run:(action:()=>Promise<unknown>,success:string)=>Promise<boolean>;busy:boolean;
 }){
   const [text,setText]=useState("");
   const [updates,setUpdates]=useState<StudyUpdate[]>([]);
@@ -62,10 +62,12 @@ export default function AdvancedImportView({problems,attempts,reviews,run,busy}:
   const [editing,setEditing]=useState(false);
   const [error,setError]=useState("");
   const [gradingCopied,setGradingCopied]=useState(false);
+  const [saved,setSaved]=useState<{count:number;ids:string[];at:string}|null>(null);
   const gradingPrompt=buildGradingPrompt(todayString());
 
   const parse=()=>{
     setError("");
+    setSaved(null);
     try{
       const result=parseStudyText(text,problems);
       setStructured(result.structured);
@@ -96,12 +98,23 @@ export default function AdvancedImportView({problems,attempts,reviews,run,busy}:
     return !!source&&(source.error_types||[source.error_type]).some(error=>["K","W","N","C"].includes(error));
   };
   const canSave=updates.length>0&&updates.every(row=>missingRequiredFields(row,hasPreviousTarget(row)).length===0);
+  const saveUpdates=async()=>{
+    const snapshot=[...updates];
+    const ok=await run(()=>post("/api/import",{updates:snapshot}),`${snapshot.length}件を保存しました`);
+    if(!ok)return;
+    setText("");
+    setUpdates([]);
+    setStructured(false);
+    setEditing(false);
+    setError("");
+    setSaved({count:snapshot.length,ids:[...new Set(snapshot.map(row=>row.problem_id))],at:new Intl.DateTimeFormat("ja-JP",{hour:"2-digit",minute:"2-digit"}).format(new Date())});
+  };
 
   return <div className="import-layout advanced-import">
     <section className="panel">
       <div className="panel-title"><div><span className="eyebrow">PASTE FROM GPT</span><h3>GPT回答を貼り付け</h3></div><Pill>API不使用</Pill></div>
       <p className="muted">YAMLがあれば最優先し、なければ通常文章の見出しと本文から抽出します。</p>
-      <textarea className="paste-area" value={text} onChange={event=>setText(event.target.value)}
+      <textarea className="paste-area" value={text} onChange={event=>{setText(event.target.value);setSaved(null)}}
         placeholder={"ChatGPTの解答・添削結果を全文貼り付けてください。\n\n問題表記、評価、点数、K/W/N/C、関連S、弱点ノートを抽出します。"}/>
       <button className="primary wide-btn" onClick={parse}><ClipboardPaste size={17}/>内容を解析する</button>
       {error&&<p className="field-error">{error}</p>}
@@ -114,7 +127,14 @@ export default function AdvancedImportView({problems,attempts,reviews,run,busy}:
       <div className="panel-title"><div><span className="eyebrow">CONFIRM BEFORE SAVE</span><h3>取り込み確認</h3></div>
         {updates.length>0&&<Pill tone={structured?"green":"orange"}>{structured?"YAML":"文章抽出"}・{updates.length}件</Pill>}
       </div>
-      {!updates.length?<div className="empty"><ClipboardPaste size={30}/><p>解析結果がここに表示されます</p></div>:<>
+      {!updates.length?(saved?<div className="import-saved">
+        <div className="import-saved-icon"><Check size={30}/></div>
+        <span>保存完了</span>
+        <h3>{saved.count}件の採点結果を登録しました</h3>
+        <p>{saved.ids.join(" / ")}</p>
+        <small>{saved.at} ・ 入力欄と確認内容をクリアしました。問題詳細・復習予定・弱点傾向へ反映されています。</small>
+        <button className="ghost" onClick={()=>setSaved(null)}><ClipboardPaste size={15}/>次の取り込みを始める</button>
+      </div>:<div className="empty"><ClipboardPaste size={30}/><p>解析結果がここに表示されます</p></div>):<>
         <div className="confirm-toolbar"><p>保存するまで端末内データは更新されません。</p>
           <button className="ghost small" onClick={()=>setEditing(value=>!value)}><Pencil size={14}/>{editing?"確認表示に戻る":"修正"}</button>
         </div>
@@ -186,7 +206,7 @@ export default function AdvancedImportView({problems,attempts,reviews,run,busy}:
             </div>
           </article>;
         })}</div>
-        <button disabled={busy||!canSave} className="primary wide-btn" onClick={()=>run(()=>post("/api/import",{updates}),`${updates.length}件を保存しました`)}>
+        <button disabled={busy||!canSave} className="primary wide-btn" onClick={saveUpdates}>
           <Database size={17}/>{updates.length}件を保存する
         </button>
         {!canSave&&<p className="save-blocked">復習計画に必要な項目が不足しています。「修正」から不足項目を入力してください。</p>}
