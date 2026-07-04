@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import {
-  AlertTriangle, Archive, BarChart3, BookOpen, CalendarCheck, Check, ChevronRight, ClipboardPaste,
+  AlertTriangle, Archive, ArrowDown, BarChart3, BookOpen, CalendarCheck, CalendarClock, Check, ChevronRight, ClipboardPaste,
   Clock3, Copy, Database, Download, Gauge, LayoutDashboard, ListChecks, Menu, NotebookPen,
   Pencil, Play, Plus, RefreshCw, Search, Settings, Sparkles, Target, Trash2, X
 } from "lucide-react";
@@ -12,6 +12,7 @@ import { problemDisplayLabel } from "./importParser";
 import { createAttemptReviewPlan } from "./reviewRules";
 import { analyzeWeakTrends, buildQuizPrompt } from "./weakTrend";
 import { buildReviewGradingPrompt } from "./gradingPrompt";
+import { reviewMode, reviewTemplate } from "./reviewPresentation";
 import { EXAM_PHASES } from "./studyProgress";
 import { CHAPTER_META } from "./officialMaster";
 import type { Attempt, Bootstrap, Problem, Review, StudyUpdate, Task } from "./types";
@@ -186,8 +187,9 @@ function ReviewPlanDetails({item,compact=false}:{item:Partial<Review&Task>;compa
   const [promptCopied,setPromptCopied]=useState(false);
   if(!item.review_method&&!item.review_reason) return null;
   const actions=shortReviewActions(item).filter(Boolean).slice(0,2);
+  const template=reviewTemplate(item);
   const reviewPrompt=item.id&&item.problem_id?buildReviewGradingPrompt({
-    reviewId:item.id,problemId:item.problem_id,title:item.title,theme:item.theme,date:todayString(),mode:item.mode||"skeleton",
+    reviewId:item.id,problemId:item.problem_id,title:item.title,theme:item.theme,date:todayString(),mode:reviewMode(item),
     previousDate:item.previous_date,previousScore:item.previous_score,previousErrors:item.previous_errors,
     previousErrorPoint:item.previous_error_point,previousNextAction:item.previous_next_action,
     previousImprovementGuidance:item.previous_improvement_guidance,previousRequiredDerivation:item.previous_required_derivation,
@@ -204,6 +206,10 @@ function ReviewPlanDetails({item,compact=false}:{item:Partial<Review&Task>;compa
     </div>
     {(item.previous_error_point||item.previous_next_action)&&<div className="previous-feedback"><span>前回から引き継ぐ点</span>{item.previous_error_point&&<p><b>反省：</b>{item.previous_error_point}</p>}{item.previous_next_action&&<p><b>課題：</b>{item.previous_next_action}</p>}</div>}
     <div className="next-actions"><span>今回やること</span><ol>{actions.map((action,index)=><li key={`${index}-${action}`}>{action}</li>)}</ol></div>
+    <div className="review-template">
+      <div className="review-template-head"><div><span>復習内容の型</span><strong>{template.title}</strong></div><SheetLink href={sheetHref(template.sheetMode)} label={template.sheetLabel}/></div>
+      <div className="review-template-fields">{template.fields.map(field=><div key={field.label}><strong>{field.label}</strong><span>{field.hint}</span></div>)}</div>
+    </div>
     {reviewPrompt&&<button className="ghost small review-prompt-copy" onClick={async()=>{await navigator.clipboard.writeText(reviewPrompt);setPromptCopied(true);setTimeout(()=>setPromptCopied(false),1800)}}>{promptCopied?<Check size={14}/>:<Copy size={14}/>} {promptCopied?"復習採点プロンプトをコピーしました":"前回の反省を含むGPT採点プロンプト"}</button>}
     <details><summary>理由と詳しい手順を見る</summary><div className="review-explanation"><span>なぜ復習するか</span><p>{item.review_reason}</p><span>復習時に見るポイント</span><p>{item.review_instruction}</p></div>
       {!!item.review_steps?.length&&<ol>{item.review_steps.map((step,index)=><li key={`${index}-${step}`}>{step}</li>)}</ol>}</details>
@@ -222,28 +228,47 @@ function ReviewOutcomeModal({item,busy,close,save}:{item:Partial<Review&Task>;bu
     <div className="form-actions"><button className="ghost" onClick={close}>キャンセル</button><button className="primary" disabled={busy} onClick={()=>save({result,hint_used:hint,time_minutes:Number(minutes||0)})}>結果を保存</button></div>
   </div></Modal>;
 }
+function PostponeReviewModal({item,busy,close,save}:{item:Partial<Review&Task>;busy:boolean;close:()=>void;save:(body:Record<string,unknown>,label:string)=>void}) {
+  const tomorrow=(()=>{const date=new Date(`${todayString()}T12:00:00`);date.setDate(date.getDate()+1);return new Intl.DateTimeFormat("sv-SE").format(date)})();
+  const [date,setDate]=useState(tomorrow);
+  return <Modal title="復習を後ろへ送る" close={close}><div className="postpone-review">
+    <p><strong>{item.problem_id}</strong> は未完了のまま、表示順または復習日だけを変更します。採点結果や復習間隔の履歴は変わりません。</p>
+    <div className="postpone-quick">
+      <button disabled={busy} onClick={()=>save({days:0},"今日の最後")}>今日の最後</button>
+      <button disabled={busy} onClick={()=>save({days:1},"明日")}>明日</button>
+      <button disabled={busy} onClick={()=>save({days:3},"3日後")}>3日後</button>
+      <button disabled={busy} onClick={()=>save({days:7},"7日後")}>7日後</button>
+    </div>
+    <div className="postpone-date"><Field label="指定日に送る"><input type="date" min={todayString()} value={date} onChange={event=>setDate(event.target.value)}/></Field><button className="primary" disabled={busy||!date} onClick={()=>save({due_date:date},date)}>この日に変更</button></div>
+    <small>延期回数は表示しますが、学習成績の失敗には数えません。無理に当日へ詰め込まず、実行可能な日に移してください。</small>
+  </div></Modal>;
+}
 function TodayView({data,busy,run,go}:{data:Bootstrap;busy:boolean;run:(a:()=>Promise<unknown>,s:string)=>void;go:(p:Page)=>void}) {
   const [reviewTask,setReviewTask]=useState<Task|null>(null);
+  const [postponeTask,setPostponeTask]=useState<Task|null>(null);
   const saveReview=(body:Record<string,unknown>)=>{if(!reviewTask?.id)return;const id=reviewTask.id;setReviewTask(null);
     run(()=>post(`/api/reviews/${id}/complete`,body),"復習結果を保存し、次回間隔を再計算しました")};
+  const postponeReview=(body:Record<string,unknown>,label:string)=>{if(!postponeTask?.id)return;const id=postponeTask.id;setPostponeTask(null);
+    run(()=>post(`/api/reviews/${id}/postpone`,body),`復習を${label}へ送りました`)};
   return <>
     <div className="page-intro"><div><p>課題を終えたらチェックを付け、GPTの採点結果を取り込んでください。</p><button className="text-btn" onClick={()=>go("import")}><ClipboardPaste size={15}/>GPT採点結果を取り込む</button></div><div className={`load-pill ${data.today.plannedMinutes>data.today.targetMinutes+30?"over":""}`}><Gauge/><div><span>予定合計／目標</span><strong>{data.today.plannedMinutes} / {data.today.targetMinutes}分</strong><small>記録済み {data.today.actualMinutes}分・未完了 {data.today.remainingMinutes}分</small></div></div></div>
     {data.today.warning&&<div className="warning"><AlertTriangle/><div><strong>詰め込みすぎです</strong><p>{data.today.warning}</p></div></div>}
     {!data.today.warning&&<div className="time-guidance"><Clock3 size={16}/><span>{data.today.guidance}</span></div>}
     <section className="panel">
       <div className="table-wrap"><table><thead><tr><th>種類</th><th>問題</th><th>推奨モード</th><th>予定時間</th><th>理由</th><th/></tr></thead>
-      <tbody>{data.today.tasks.map((t,i)=><TodayTaskRows key={`${t.problem_id}-${i}`} task={t} busy={busy} run={run} date={data.dashboard.today} onReview={setReviewTask}/>)}</tbody></table></div>
+      <tbody>{data.today.tasks.map((t,i)=><TodayTaskRows key={`${t.problem_id}-${i}`} task={t} busy={busy} run={run} date={data.dashboard.today} onReview={setReviewTask} onPostpone={setPostponeTask}/>)}</tbody></table></div>
       {!data.today.tasks.length&&<Empty>今日の課題は完了しました</Empty>}
     </section>
     {reviewTask&&<ReviewOutcomeModal item={reviewTask} busy={busy} close={()=>setReviewTask(null)} save={saveReview}/>}
+    {postponeTask&&<PostponeReviewModal item={postponeTask} busy={busy} close={()=>setPostponeTask(null)} save={postponeReview}/>}
   </>
 }
-function TodayTaskRows({task:t,busy,run,date,onReview}:{task:Task;busy:boolean;run:(a:()=>Promise<unknown>,s:string)=>void;date:string;onReview:(task:Task)=>void}) {
+function TodayTaskRows({task:t,busy,run,date,onReview,onPostpone}:{task:Task;busy:boolean;run:(a:()=>Promise<unknown>,s:string)=>void;date:string;onReview:(task:Task)=>void;onPostpone:(task:Task)=>void}) {
   const isReview=!!t.id&&!!t.review_type;
   const toggle=()=>isReview
     ?onReview(t)
     :run(()=>post("/api/today-check",{date,problem_id:t.problem_id,kind:t.kind,checked:!t.checked}),t.checked?"チェックを外しました":"解答済み・採点待ちにしました");
-  return <><tr className={t.checked?"task-checked":""}><td><Badge tone={t.kind==="S確認"?"blue":t.error_type==="K"?"red":""}>{t.kind}</Badge></td><td><strong>{t.problem_id}</strong><small>{t.title}{t.checked&&<em className="grading-wait">採点待ち</em>}</small></td><td>{modes[t.mode]||t.mode}</td><td>{t.minutes}分</td><td>{t.reason}</td><td><div className="task-actions"><SheetLink href={sheetHref(t.mode)} label="シート"/><label className="task-check"><input type="checkbox" checked={!!t.checked} disabled={busy} onChange={toggle}/><span>{isReview?"復習結果を記録":"解答済み"}</span></label></div></td></tr>
+  return <><tr className={t.checked?"task-checked":""}><td><Badge tone={t.kind==="S確認"?"blue":t.error_type==="K"?"red":""}>{t.kind}</Badge></td><td><strong>{t.problem_id}</strong><small>{t.title}{t.checked&&<em className="grading-wait">採点待ち</em>}</small></td><td>{modes[t.mode]||t.mode}</td><td>{t.minutes}分</td><td>{t.reason}</td><td><div className="task-actions"><SheetLink href={sheetHref(t.mode)} label="シート"/>{isReview&&<button className="ghost small postpone-button" disabled={busy} onClick={()=>onPostpone(t)}><ArrowDown size={13}/>後ろへ</button>}<label className="task-check"><input type="checkbox" checked={!!t.checked} disabled={busy} onChange={toggle}/><span>{isReview?"復習結果を記録":"解答済み"}</span></label></div></td></tr>
     {(t.review_method||t.review_reason)&&<tr className="task-plan-row"><td colSpan={6}><ReviewPlanDetails item={t} compact/></td></tr>}</>;
 }
 
@@ -420,7 +445,9 @@ function ImportView({problems,run,busy}:{problems:Problem[];run:(a:()=>Promise<u
 function ReviewsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean}) {
   const [filter,setFilter]=useState("open"); const pmap=Object.fromEntries(data.problems.map(p=>[p.problem_id,p]));
   const [selectedReview,setSelectedReview]=useState<Review|null>(null);
-  const rows=data.reviews.filter(r=>filter==="all"||(filter==="open"?["pending","overdue"].includes(r.status):r.status===filter));
+  const [postponeReviewItem,setPostponeReviewItem]=useState<Review|null>(null);
+  const rows=data.reviews.filter(r=>filter==="all"||(filter==="open"?["pending","overdue"].includes(r.status):r.status===filter))
+    .sort((a,b)=>a.due_date.localeCompare(b.due_date)||Number(a.manual_order||0)-Number(b.manual_order||0)||a.id-b.id);
   const reviewPromptItem=(review:Review)=>{
     const source=data.attempts.find(attempt=>attempt.id===review.generated_from_attempt_id),problem=pmap[review.problem_id];
     return {...review,title:problem?.display_label||problem?.title||review.problem_id,theme:problem?.theme||"",mode:review.requires_full_answer?"exam_90min":review.review_type==="main_calc_retry"?"main_calc":"skeleton",
@@ -429,7 +456,9 @@ function ReviewsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>
       previous_improvement_guidance:source?.improvement_guidance||"",previous_required_derivation:source?.required_derivation||""};
   };
   const saveReview=(body:Record<string,unknown>)=>{if(!selectedReview)return;const id=selectedReview.id;setSelectedReview(null);run(()=>post(`/api/reviews/${id}/complete`,body),"復習結果を保存し、次回間隔を再計算しました")};
-  return <><div className="toolbar"><div className="segmented">{[["open","未完了"],["overdue","期限切れ"],["done","完了"],["all","すべて"]].map(([k,v])=><button key={k} className={filter===k?"active":""} onClick={()=>setFilter(k)}>{v}</button>)}</div></div><div className="review-list">{rows.map(r=><article className="panel review-card" key={r.id}><div className="review-card-head"><div><Badge tone={r.status==="overdue"?"red":r.status==="done"?"green":""}>{r.status==="overdue"?"期限切れ":r.status==="done"?"完了":"予定"}</Badge><h3>{pmap[r.problem_id]?.display_label||pmap[r.problem_id]?.title||r.problem_id}</h3><span>{r.problem_id} ・ 次回復習 {r.due_date}{r.completion_result?` ・ 結果 ${r.completion_result}`:""}</span></div>{r.status==="done"?(r.completion_result?<Badge tone="green">結果記録済み</Badge>:<button disabled={busy} className="small ghost" onClick={()=>run(()=>post(`/api/reviews/${r.id}/pending`,{}),"未完了に戻しました")}>未完了に戻す</button>):<button disabled={busy} className="small primary" onClick={()=>setSelectedReview(r)}><Check size={14}/>復習結果を記録</button>}</div><ReviewPlanDetails item={reviewPromptItem(r)}/></article>)}</div>{!rows.length&&<section className="panel"><Empty>該当する復習予定はありません</Empty></section>}{selectedReview&&<ReviewOutcomeModal item={selectedReview} busy={busy} close={()=>setSelectedReview(null)} save={saveReview}/>}</>
+  const postpone=(body:Record<string,unknown>,label:string)=>{if(!postponeReviewItem)return;const id=postponeReviewItem.id;setPostponeReviewItem(null);
+    run(()=>post(`/api/reviews/${id}/postpone`,body),`復習を${label}へ送りました`)};
+  return <><div className="toolbar"><div className="segmented">{[["open","未完了"],["overdue","期限切れ"],["done","完了"],["all","すべて"]].map(([k,v])=><button key={k} className={filter===k?"active":""} onClick={()=>setFilter(k)}>{v}</button>)}</div></div><div className="review-list">{rows.map(r=><article className="panel review-card" key={r.id}><div className="review-card-head"><div><Badge tone={r.status==="overdue"?"red":r.status==="done"?"green":""}>{r.status==="overdue"?"期限切れ":r.status==="done"?"完了":"予定"}</Badge><h3>{pmap[r.problem_id]?.display_label||pmap[r.problem_id]?.title||r.problem_id}</h3><span>{r.problem_id} ・ 次回復習 {r.due_date}{r.postponed_count?` ・ 後ろへ送った回数 ${r.postponed_count}`:""}{r.completion_result?` ・ 結果 ${r.completion_result}`:""}</span></div>{r.status==="done"?(r.completion_result?<Badge tone="green">結果記録済み</Badge>:<button disabled={busy} className="small ghost" onClick={()=>run(()=>post(`/api/reviews/${r.id}/pending`,{}),"未完了に戻しました")}>未完了に戻す</button>):<div className="review-card-actions"><button disabled={busy} className="small ghost" onClick={()=>setPostponeReviewItem(r)}><CalendarClock size={14}/>後ろへ送る</button><button disabled={busy} className="small primary" onClick={()=>setSelectedReview(r)}><Check size={14}/>復習結果を記録</button></div>}</div><ReviewPlanDetails item={reviewPromptItem(r)}/></article>)}</div>{!rows.length&&<section className="panel"><Empty>該当する復習予定はありません</Empty></section>}{selectedReview&&<ReviewOutcomeModal item={selectedReview} busy={busy} close={()=>setSelectedReview(null)} save={saveReview}/>} {postponeReviewItem&&<PostponeReviewModal item={postponeReviewItem} busy={busy} close={()=>setPostponeReviewItem(null)} save={postpone}/>}</>
 }
 function WeakView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean}) {
   const [selected,setSelected]=useState<string[]>([]);

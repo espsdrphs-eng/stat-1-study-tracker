@@ -3,6 +3,7 @@ import type { Attempt, Bootstrap, PastSession, Problem, Review, Roadmap, StudyUp
 import { japaneseizeMathText } from "./mathJapanese.ts";
 import { analyzeWeaknesses } from "./weaknessAnalytics.ts";
 import { createAdaptiveReviewPlan, createAttemptReviewPlan, createPastReviewPlan, createSReviewPlan, enforceReviewEvidence, normalizedErrors, type ReviewOutcome, type ReviewPlan, type SState } from "./reviewRules.ts";
+import { postponedDueDate } from "./reviewScheduling.ts";
 import { applyWeakNoteQuizResult } from "./weakNoteQuiz.ts";
 import { selectMixedPractice } from "./studyScheduler.ts";
 import { buildProgressPlan, daysUntilExam } from "./studyProgress.ts";
@@ -624,6 +625,18 @@ async function completeReview(id:number,body:Record<string,unknown>){
   await db.problems.update(review.problem_id,{completion_status:successful?"active":"review_pending"});
 }
 
+async function postponeReview(id:number,body:Record<string,unknown>){
+  const review=await db.reviews.get(id);
+  if(!review) throw new Error("移動する復習予定が見つかりません");
+  if(review.status==="done") throw new Error("完了済みの復習予定は移動できません");
+  const today=todayString();
+  const dueDate=postponedDueDate(today,body);
+  await db.reviews.update(id,{
+    due_date:dueDate,status:"pending",manual_order:Date.now(),
+    postponed_count:Number(review.postponed_count||0)+1,last_postponed_at:new Date().toISOString()
+  });
+}
+
 function suggest(theme=""){
   return repairRules.filter(([trigger])=>theme.includes(trigger)||trigger.includes(theme))
     .flatMap(([trigger,a,s])=>[...a,...s].map(problem_id=>({trigger,problem_id})));
@@ -653,7 +666,7 @@ async function bootstrap():Promise<Bootstrap>{
       ?createSReviewPlan((smap.get(review.problem_id)?.state||"check") as SState)
       :source?createAttemptReviewPlan(source,linked,0):null;
     return legacyPlan?{...review,status,duration_minutes:legacyPlan.estimated_minutes,reason:legacyPlan.review_reason,...planFields(legacyPlan)}:{...review,status};
-  });
+  }).sort((a,b)=>a.due_date.localeCompare(b.due_date)||Number(a.manual_order||0)-Number(b.manual_order||0)||a.id-b.id);
   const a14=new Set(attempts.filter(a=>a.date>=fortnight&&pmap.get(a.problem_id)?.category==="A").map(a=>a.problem_id)).size;
   const skeleton=attempts.filter(a=>a.date>=fortnight&&a.mode==="skeleton");
   const skeletonGood=skeleton.filter(a=>["◎","○"].includes(a.mark)).length;
@@ -714,7 +727,8 @@ async function bootstrap():Promise<Bootstrap>{
       kind:r.review_type==="s_check"?"S確認":r.generated_from_past_session_id?"過去問復習":"復習",reason:r.status==="overdue"?`期限切れ（${r.due_date}）`:"本日が復習日",
       mode:r.requires_full_answer?"exam_90min":r.review_type==="s_check"?"skeleton":r.review_type==="main_calc_retry"?"main_calc":r.review_type==="careless_check"?"scan":"skeleton",
       minutes,estimated_minutes:minutes,load:loadFor(r.requires_full_answer?"exam_90min":r.review_type==="main_calc_retry"?"main_calc":r.review_type==="careless_check"?"scan":"skeleton")};
-  }).sort((a,b)=>(a.status==="overdue"&&a.error_type==="K"?0:1)-(b.status==="overdue"&&b.error_type==="K"?0:1));
+  }).sort((a,b)=>(a.status==="overdue"&&a.error_type==="K"?0:1)-(b.status==="overdue"&&b.error_type==="K"?0:1)||
+    Number(a.manual_order||0)-Number(b.manual_order||0));
   const activeS=new Set(dueReviews.filter(r=>r.review_type==="s_check").map(r=>r.problem_id));
   const staleS=sMemory.filter(s=>!activeS.has(s.problem_id)&&(s.state==="forgotten"||s.state==="collapsed"||!!s.last_touched&&s.last_touched<=addDays(today,-30))).map(s=>{
     const p=pmap.get(s.problem_id)!,sPlan=createSReviewPlan(s.state);return {problem_id:s.problem_id,title:p.display_label||p.title,theme:p.theme,kind:"S点検",reason:s.state==="forgotten"||s.state==="collapsed"?"忘却状態から復旧":"30日以上未確認",mode:sPlan.mode,minutes:sPlan.estimated_minutes||5,load:s.state==="collapsed"?.4:.2,...planFields(sPlan)};
@@ -781,7 +795,9 @@ async function bootstrap():Promise<Bootstrap>{
     theme:mixedProblem.theme,kind:"混合確認",reason:"既習テーマから型を見分ける混合演習",mode:"skeleton",minutes:12,load:.5}]:[];
   if(mixedTasks.length){load+=.5;plannedMinutes+=mixedMinutes}
   const checkedKeys=new Set(metaEntries.filter(entry=>entry.key.startsWith(`today-check:${today}:`)&&entry.value==="1").map(entry=>entry.key));
-  const tasks=[...dueReviews,...staleS,...strategySTasks,...newTasks,...pastTasks,...simulationTasks,...mixedTasks].map(task=>({
+  const regularReviews=dueReviews.filter(review=>!review.manual_order);
+  const movedBackReviews=dueReviews.filter(review=>!!review.manual_order);
+  const tasks=[...regularReviews,...staleS,...strategySTasks,...newTasks,...pastTasks,...simulationTasks,...mixedTasks,...movedBackReviews].map(task=>({
     ...task,checked:checkedKeys.has(`today-check:${today}:${task.problem_id}:${task.kind}`)
   }));
   const totalLoad=Math.round(tasks.filter(task=>!task.checked).reduce((sum,x)=>sum+x.load,0)*10)/10;
@@ -828,6 +844,8 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
   } else if(/^\/api\/reviews\/\d+\/complete$/.test(path)) {
     await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta],
       ()=>completeReview(Number(path.split("/")[3]),body));
+  } else if(/^\/api\/reviews\/\d+\/postpone$/.test(path)) {
+    await db.transaction("rw",[db.reviews],()=>postponeReview(Number(path.split("/")[3]),body));
   } else if(/^\/api\/reviews\/\d+\/done$/.test(path)) {
     await db.reviews.update(Number(path.split("/")[3]),{status:"done"});
   } else if(/^\/api\/reviews\/\d+\/pending$/.test(path)) {

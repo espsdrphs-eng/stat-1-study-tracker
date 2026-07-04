@@ -29,6 +29,7 @@ export type Review = {
   linked_s_problem_ids?:string[]; interval_days?:number; generated_from_past_session_id?:number;
   completion_result?:"success"|"partial"|"failed"; hint_used?:boolean;
   completion_time_minutes?:number; completed_at?:string;
+  manual_order?:number; postponed_count?:number; last_postponed_at?:string;
 };
 export type WeakNote = {
   id:number; date:string; problem_id:string; error_type:string; theme:string; mistake:string;
