@@ -6,7 +6,7 @@ export type ReviewPlan=Pick<Review,
   "requires_full_answer"|"requires_s_check"|"linked_s_problem_ids"|"interval_days"> & {
   review_type:string; mode:string; completion_candidate?:boolean;
 };
-export type ReviewOutcome={result:"success"|"partial"|"failed";hint_used:boolean;time_minutes:number};
+export type ReviewOutcome={result:"success"|"partial"|"failed";hint_used:boolean;after_hint_reproduced?:boolean;time_minutes:number};
 
 const priority=["K","N","W","C"];
 const interval:Record<string,number>={K:1,N:2,W:3,C:7,none:14};
@@ -61,8 +61,9 @@ export function enforceReviewEvidence(input:StudyUpdate,previousErrors:string[],
   const scopeIsValid=["full","conditional_full"].includes(String(input.evaluation_scope||""));
   const gradedParts=input.graded_parts||[];
   const unresolved=input.unresolved_carryover||[];
+  const assistanceIsValid=!input.hint_used||input.after_hint_reproduced===true;
   const proofIsValid=input.target_issue_resolved===true&&input.minimum_pass_condition_met===true&&
-    evidence.length>=8&&shown.length>0&&scopeIsValid&&gradedParts.length>0&&unresolved.length===0&&
+    evidence.length>=8&&shown.length>0&&scopeIsValid&&gradedParts.length>0&&unresolved.length===0&&assistanceIsValid&&
     !/(変更なし|前回と同じ|同一答案|未修正)/.test(changed);
   if(proofIsValid) return input;
   const reason="前回課題を改善した答案中の具体的な式・説明を確認できないため、successをpartialへ変更した。";

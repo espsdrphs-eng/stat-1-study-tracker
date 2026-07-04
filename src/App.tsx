@@ -185,6 +185,9 @@ function shortReviewActions(item:Partial<Review&Task>){
 }
 function ReviewPlanDetails({item,compact=false}:{item:Partial<Review&Task>;compact?:boolean}) {
   const [promptCopied,setPromptCopied]=useState(false);
+  const [reviewMinutes,setReviewMinutes]=useState(String(item.estimated_minutes||item.minutes||""));
+  const [hintLevel,setHintLevel]=useState<"none"|"minimal_hint"|"previous_feedback"|"solution">("none");
+  const [afterHintReproduced,setAfterHintReproduced]=useState(false);
   if(!item.review_method&&!item.review_reason) return null;
   const actions=shortReviewActions(item).filter(Boolean).slice(0,2);
   const template=reviewTemplate(item);
@@ -194,7 +197,8 @@ function ReviewPlanDetails({item,compact=false}:{item:Partial<Review&Task>;compa
     previousErrorPoint:item.previous_error_point,previousNextAction:item.previous_next_action,
     previousImprovementGuidance:item.previous_improvement_guidance,previousRequiredDerivation:item.previous_required_derivation,
     reviewMethod:item.review_method,reviewInstruction:item.review_instruction,reviewSteps:item.review_steps,
-    requiresFullAnswer:item.requires_full_answer,linkedSProblemIds:item.linked_s_problem_ids
+    requiresFullAnswer:item.requires_full_answer,linkedSProblemIds:item.linked_s_problem_ids,
+    timeMinutes:Number(reviewMinutes||0),hintLevel,afterHintReproduced
   }):"";
   return <div className={`review-plan ${compact?"compact":""}`}>
     <div className="review-plan-summary">
@@ -210,7 +214,18 @@ function ReviewPlanDetails({item,compact=false}:{item:Partial<Review&Task>;compa
       <div className="review-template-head"><div><span>復習内容の型</span><strong>{template.title}</strong></div><SheetLink href={sheetHref(template.sheetMode)} label={template.sheetLabel}/></div>
       <div className="review-template-fields">{template.fields.map(field=><div key={field.label}><strong>{field.label}</strong><span>{field.hint}</span></div>)}</div>
     </div>
-    {reviewPrompt&&<button className="ghost small review-prompt-copy" onClick={async()=>{await navigator.clipboard.writeText(reviewPrompt);setPromptCopied(true);setTimeout(()=>setPromptCopied(false),1800)}}>{promptCopied?<Check size={14}/>:<Copy size={14}/>} {promptCopied?"復習採点プロンプトをコピーしました":"前回の反省を含むGPT採点プロンプト"}</button>}
+    {reviewPrompt&&<div className="review-prompt-prep">
+      <div className="review-prompt-prep-head"><div><span>GPT採点前に入力</span><strong>時間と参照状況をプロンプトへ反映</strong></div></div>
+      <div className="review-prompt-inputs">
+        <Field label="今回かかった時間（分）"><input type="number" min="0" value={reviewMinutes} onChange={event=>setReviewMinutes(event.target.value)}/></Field>
+        <Field label="参照した内容"><select value={hintLevel} onChange={event=>{setHintLevel(event.target.value as typeof hintLevel);if(event.target.value==="none")setAfterHintReproduced(false)}}>
+          <option value="none">見ていない</option><option value="minimal_hint">1行ヒントのみ</option><option value="previous_feedback">前回フィードバック</option><option value="solution">解答・模範答案</option>
+        </select></Field>
+      </div>
+      {hintLevel!=="none"&&<label className="after-hint-check"><input type="checkbox" checked={afterHintReproduced} onChange={event=>setAfterHintReproduced(event.target.checked)}/><span>参照内容を閉じた後、該当部分を白紙から再現した</span></label>}
+      <div className="hint-policy"><strong>参照の基準</strong><span>{item.requires_full_answer?"フル答案・90分演習は制限時間終了まで見ない。点数は参照前の答案で決めます。":"まず3〜5分は何も見ずに試し、止まった場合だけ1行ヒントまで。解答を見るのは答案を一度確定した後です。"}</span></div>
+      <button className="ghost small review-prompt-copy" onClick={async()=>{await navigator.clipboard.writeText(reviewPrompt);setPromptCopied(true);setTimeout(()=>setPromptCopied(false),1800)}}>{promptCopied?<Check size={14}/>:<Copy size={14}/>} {promptCopied?"復習採点プロンプトをコピーしました":"入力内容を含むGPT採点プロンプトをコピー"}</button>
+    </div>}
     <details><summary>理由と詳しい手順を見る</summary><div className="review-explanation"><span>なぜ復習するか</span><p>{item.review_reason}</p><span>復習時に見るポイント</span><p>{item.review_instruction}</p></div>
       {!!item.review_steps?.length&&<ol>{item.review_steps.map((step,index)=><li key={`${index}-${step}`}>{step}</li>)}</ol>}</details>
   </div>;
@@ -218,14 +233,17 @@ function ReviewPlanDetails({item,compact=false}:{item:Partial<Review&Task>;compa
 function ReviewOutcomeModal({item,busy,close,save}:{item:Partial<Review&Task>;busy:boolean;close:()=>void;save:(body:Record<string,unknown>)=>void}) {
   const [result,setResult]=useState<"success"|"partial"|"failed">("success");
   const [hint,setHint]=useState(false);
+  const [afterHint,setAfterHint]=useState(false);
   const [minutes,setMinutes]=useState(String(item.estimated_minutes||item.minutes||5));
   return <Modal title="復習結果を記録" close={close}><div className="review-outcome">
     <p>実際にどこまで自力で再現できたかを記録します。この結果で次回の復習間隔が変わります。</p>
     <div className="outcome-choices">{[["success","自力で再現できた"],["partial","一部だけできた"],["failed","できなかった"]].map(([key,label])=><button type="button" key={key} className={result===key?`selected ${key}`:""} onClick={()=>setResult(key as typeof result)}>{label}</button>)}</div>
-    <label className="outcome-check"><input type="checkbox" checked={hint} onChange={event=>setHint(event.target.checked)}/><span>解説・ノート・ヒントを見た</span></label>
+    <label className="outcome-check"><input type="checkbox" checked={hint} onChange={event=>{setHint(event.target.checked);if(!event.target.checked)setAfterHint(false)}}/><span>解説・ノート・ヒントを見た</span></label>
+    {hint&&<label className="outcome-check"><input type="checkbox" checked={afterHint} onChange={event=>setAfterHint(event.target.checked)}/><span>閉じた後に該当部分を白紙から再現した</span></label>}
     <Field label="実際にかかった時間（分）"><input type="number" min="0" value={minutes} onChange={event=>setMinutes(event.target.value)}/></Field>
     <div className="outcome-preview"><strong>次回間隔</strong><span>{result==="failed"?"翌日に戻す":result==="partial"?"前回間隔を短縮":hint?"緩やかに延長":"自力成功として大きく延長"}</span></div>
-    <div className="form-actions"><button className="ghost" onClick={close}>キャンセル</button><button className="primary" disabled={busy} onClick={()=>save({result,hint_used:hint,time_minutes:Number(minutes||0)})}>結果を保存</button></div>
+    {hint&&result==="success"&&!afterHint&&<p className="outcome-hint-warning">ヒントあり成功には、閉じた後の白紙再現が必要です。未実施なら「一部だけできた」を選んでください。</p>}
+    <div className="form-actions"><button className="ghost" onClick={close}>キャンセル</button><button className="primary" disabled={busy||hint&&result==="success"&&!afterHint} onClick={()=>save({result,hint_used:hint,after_hint_reproduced:afterHint,time_minutes:Number(minutes||0)})}>結果を保存</button></div>
   </div></Modal>;
 }
 function PostponeReviewModal({item,busy,close,save}:{item:Partial<Review&Task>;busy:boolean;close:()=>void;save:(body:Record<string,unknown>,label:string)=>void}) {

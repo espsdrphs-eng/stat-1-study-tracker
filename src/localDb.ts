@@ -366,11 +366,11 @@ async function addOrReplaceReview(review:ReviewInsert){
 async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
   const problem=await db.problems.get(input.problem_id);
   if(!problem) throw new Error(`未登録の問題IDです: ${input.problem_id}`);
-  if(input.generated_from_review_id&&input.rubric_version===REVIEW_RUBRIC_VERSION){
+  if(input.generated_from_review_id&&[REVIEW_RUBRIC_VERSION,"STAT1-REVIEW-v4"].includes(input.rubric_version||"")){
     const review=await db.reviews.get(input.generated_from_review_id);
     const source=review?await db.attempts.get(review.generated_from_attempt_id):undefined;
     const previousErrors=source?normalizedErrors(source):[];
-    input=enforceReviewEvidence(input,previousErrors,REVIEW_RUBRIC_VERSION) as StudyUpdate&Record<string,unknown>;
+    input=enforceReviewEvidence(input,previousErrors,input.rubric_version||REVIEW_RUBRIC_VERSION) as StudyUpdate&Record<string,unknown>;
   }
   const date=input.date||todayString();
   const localizedErrorPoint=japaneseizeMathText(input.error_point||"");
@@ -399,12 +399,15 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
     uncertain_points:input.uncertain_points||[],generated_from_review_id:input.generated_from_review_id,
     is_review_attempt:!!input.generated_from_review_id,evaluation_scope:input.evaluation_scope||"",
     graded_parts:input.graded_parts||[],assumed_correct_parts:input.assumed_correct_parts||[],
-    unresolved_carryover:input.unresolved_carryover||[]
+    unresolved_carryover:input.unresolved_carryover||[],hint_used:!!input.hint_used,
+    hint_level:input.hint_level||"none",after_hint_reproduced:!!input.after_hint_reproduced
   }));
   if(input.generated_from_review_id){
     await db.reviews.update(input.generated_from_review_id,{
       status:"done",completion_result:input.review_outcome||(["◎","○"].includes(input.mark)?"success":input.mark==="△"?"partial":"failed"),
-      hint_used:!!input.hint_used,completion_time_minutes:Number(input.time_minutes||0),completed_at:date
+      hint_used:!!input.hint_used,hint_level:input.hint_level||"none",
+      after_hint_reproduced:!!input.after_hint_reproduced,
+      completion_time_minutes:Number(input.time_minutes||0),completed_at:date
     });
   }
   const attempts=(await db.attempts.where("problem_id").equals(input.problem_id).sortBy("date")).filter(x=>x.id!==id);
@@ -574,9 +577,11 @@ async function completeReview(id:number,body:Record<string,unknown>){
   const source=await db.attempts.get(review.generated_from_attempt_id);
   const problem=await db.problems.get(review.problem_id);
   if(!source||!problem) throw new Error("復習元の採点データが見つかりません");
+  const requestedResult=["success","partial","failed"].includes(String(body.result))?String(body.result) as ReviewOutcome["result"]:"partial";
+  const hintUsed=!!body.hint_used,afterHintReproduced=!!body.after_hint_reproduced;
   const outcome:ReviewOutcome={
-    result:["success","partial","failed"].includes(String(body.result))?String(body.result) as ReviewOutcome["result"]:"partial",
-    hint_used:!!body.hint_used,time_minutes:Number(body.time_minutes||0)
+    result:requestedResult==="success"&&hintUsed&&!afterHintReproduced?"partial":requestedResult,
+    hint_used:hintUsed,after_hint_reproduced:afterHintReproduced,time_minutes:Number(body.time_minutes||0)
   };
   const related=[...(problem.related_s_problem_ids||[]),...list(problem.linked_s_problems)];
   const plan=createAdaptiveReviewPlan(source,review,outcome,related);
@@ -591,9 +596,11 @@ async function completeReview(id:number,body:Record<string,unknown>){
     next_action:plan.review_instruction||"",memo:"復習結果から自動記録",
     score_text:"",score_numeric:null,score_max:null,result_summary:`復習結果：${outcome.result}${outcome.hint_used?"・ヒント使用":""}`,
     auto_imported:false,import_confidence:1,grading_confidence:1,rubric_version:"REVIEW-SELF-v1",
-    uncertain_points:[],generated_from_review_id:id,is_review_attempt:true
+    uncertain_points:[],generated_from_review_id:id,is_review_attempt:true,hint_used:outcome.hint_used,
+    hint_level:outcome.hint_used?"unspecified":"none",after_hint_reproduced:!!outcome.after_hint_reproduced
   }));
   await db.reviews.update(id,{status:"done",completion_result:outcome.result,hint_used:outcome.hint_used,
+    hint_level:outcome.hint_used?"unspecified":"none",after_hint_reproduced:!!outcome.after_hint_reproduced,
     completion_time_minutes:outcome.time_minutes,completed_at:new Date().toISOString()});
   await addOrReplaceReview({problem_id:review.problem_id,due_date:await reviewDueDate(date,plan.interval_days||14),
     review_type:plan.review_type,status:"pending",generated_from_attempt_id:attemptId,duration_minutes:plan.estimated_minutes,

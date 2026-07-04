@@ -125,13 +125,17 @@ test("復習採点YAMLの時間と復習結果を読み取る",()=>{
     - "内側の和と尾確率の接続"
   generated_from_review_id: 12
   review_outcome: "success"
-  hint_used: false
+  hint_used: true
+  hint_level: "minimal_hint"
+  after_hint_reproduced: true
 `,problems);
   const update=result.updates[0];
   assert.equal(update.time_minutes,14);
   assert.equal(update.generated_from_review_id,12);
   assert.equal(update.review_outcome,"success");
-  assert.equal(update.hint_used,false);
+  assert.equal(update.hint_used,true);
+  assert.equal(update.hint_level,"minimal_hint");
+  assert.equal(update.after_hint_reproduced,true);
   assert.match(update.improvement_guidance,/残す部分/);
   assert.match(update.required_derivation,/途中式/);
   assert.match(update.corrected_answer,/尾確率/);

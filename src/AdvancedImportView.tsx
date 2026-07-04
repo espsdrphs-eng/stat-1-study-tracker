@@ -24,6 +24,7 @@ const missingRequiredFields=(update:StudyUpdate,hasPreviousTarget=false)=>{
     !update.resolution_evidence?.trim()||!update.required_work_shown?.length||
     !["full","conditional_full"].includes(update.evaluation_scope||"")||!update.graded_parts?.length||
     !!update.unresolved_carryover?.length||
+    (!!update.hint_used&&update.after_hint_reproduced!==true)||
     /(変更なし|前回と同じ|同一答案|未修正)/.test(update.answer_change_summary||"")
   );
   return [
@@ -173,6 +174,7 @@ export default function AdvancedImportView({problems,attempts,reviews,run,busy}:
               <span>採点範囲 <strong>{update.evaluation_scope==="full"?"フル答案":"条件付きフル評価"}</strong></span>
               <span>実際に確認 <strong>{update.graded_parts?.join(" / ")||"記載なし"}</strong></span>
               {update.assumed_correct_parts?.length?<span>正しいと仮定 <strong>{update.assumed_correct_parts.join(" / ")}</strong></span>:null}
+              {isReviewImport&&<span>参照状況 <strong>{update.hint_used?`${update.hint_level||"ヒントあり"}・白紙再現 ${update.after_hint_reproduced?"済":"未確認"}`:"ヒントなし"}</strong></span>}
             </div>}
             <details className="detailed-feedback">
               <summary>修正版答案・途中計算・判定根拠を確認</summary>

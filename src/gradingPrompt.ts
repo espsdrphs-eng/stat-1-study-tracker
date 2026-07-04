@@ -1,5 +1,5 @@
 export const GRADING_RUBRIC_VERSION="STAT1-GRADE-v4";
-export const REVIEW_RUBRIC_VERSION="STAT1-REVIEW-v4";
+export const REVIEW_RUBRIC_VERSION="STAT1-REVIEW-v5";
 
 export type ReviewPromptContext={
   reviewId?:number;problemId:string;title?:string;theme?:string;date:string;mode:string;
@@ -8,6 +8,8 @@ export type ReviewPromptContext={
   previousImprovementGuidance?:string;previousRequiredDerivation?:string;
   reviewMethod?:string;reviewInstruction?:string;reviewSteps?:string[];
   requiresFullAnswer?:boolean;linkedSProblemIds?:string[];
+  timeMinutes?:number;hintLevel?:"none"|"minimal_hint"|"previous_feedback"|"solution";
+  afterHintReproduced?:boolean;
 };
 
 export function buildGradingPrompt(date:string){
@@ -109,6 +111,11 @@ export function buildReviewGradingPrompt(context:ReviewPromptContext){
     previousErrors.includes("C")?"C：前回の符号・係数・条件ミスを再発させず、該当箇所を正しく書く。":""
   ].filter(Boolean).join("\n")||"前回指定された課題を答案上で自力再現する。";
   const fullScope=context.requiresFullAnswer||context.mode==="full"||context.mode==="exam_90min";
+  const hintLevel=context.hintLevel||"none";
+  const hintUsed=hintLevel!=="none";
+  const hintLabels:Record<string,string>={
+    none:"見ていない",minimal_hint:"1行ヒントのみ",previous_feedback:"前回フィードバックを確認",solution:"解答・模範答案を確認"
+  };
   const modeScope=fullScope
     ?"フル答案：全範囲を答案から採点する。未提出部分を正しいと仮定しない。"
     :context.mode==="main_calc"
@@ -146,10 +153,19 @@ ${steps}
 関連S問題：${context.linkedSProblemIds?.join(" / ")||"なし"}
 
 【入力】
-今回かかった時間（分）：
-ヒント・解説を見たか：はい／いいえ
+今回かかった時間（分）：${context.timeMinutes||""}
+参照した内容：${hintLabels[hintLevel]}
+ヒント・解答を見た後に、閉じて白紙から再現したか：${hintUsed?(context.afterHintReproduced?"はい":"いいえ"):"該当なし"}
 今回の答案：
 模範解答・参考解答（あれば）：
+
+【ヒント・解答の利用ルール】
+1. 最初は必ず何も見ずに取り組む。骨格は3分、主要計算は5分、フル答案・90分演習は制限時間終了まで参照しない。
+2. 1行ヒントは、上記時間考えても出発式または次の一手が出ない場合に限る。見るのは定義・使う定理・次の一手のうち1つだけとする。
+3. 前回フィードバックは、自分の答案を一度書き切った後に、前回課題の確認目的で見てよい。見ながら答案を完成させない。
+4. 解答・模範答案は、自分の答案と採点対象時間を確定した後にだけ見る。見た後の書き写しを今回の得点に含めない。
+5. 何か参照した場合は、一度閉じてから該当部分を白紙で再現する。これを行わなければsuccessは禁止する。
+6. フル答案・90分演習の点数は参照前の答案だけで決める。参照後の再現は別の補修結果として扱う。
 
 【比較採点ルール】
 1. 初回採点と同じフル答案ルーブリックを使う。モードによって変えるのは答案に要求する証拠範囲だけで、正しさの基準は変えない。
@@ -159,7 +175,7 @@ ${steps}
 5. 復習指示の対象外は減点しない。ただし、前回未解決のK/W/N/Cは必ず採点対象に含め、正しいと仮定してはならない。
 6. 前回と同じミス、改善した点、新たに発生したミスを分けて書く。
 7. review_outcome は次で判定する。
-   success：下記の最低クリア条件をすべて満たし、前回の課題をヒントなしで答案上に再現できた
+   success：最低クリア条件を満たした。ヒントなしなら自力成功。ヒントありなら、ヒントを閉じた後に白紙から再現できた場合だけ補助あり成功
    partial：前回より実質的に改善したが、必要な式・説明の一部がまだ不足した
    failed：前回と同じ答案・同じ省略のまま、または前回の主要課題を答案上で改善できなかった
 8. K/W/N/Cは今回残ったミスだけを複数選択する。修正済みなら none とする。
@@ -174,7 +190,8 @@ ${steps}
 17. N/Wの復習では、前回要求された範囲・条件・式変形が今回も未提示なら基準を緩めない。暗記した結果だけの再掲はsuccessにしない。一方、確認済みの骨格や無関係な計算の再提出は要求しない。
 18. result_summary、error_point、next_actionは各1〜2文で簡潔にする。細かな判定根拠はresolution_evidenceとrequired_work_shownへ分離する。
 19. unresolved_carryoverには前回から残った課題だけを入れ、すべて解消した場合だけ空配列にする。
-20. 最後に次のYAMLをコードブロックで出力する。LaTeXは避け、できるだけ日本語で書く。
+20. ヒントありで白紙再現できたsuccessはmarkを○とする。ヒントなしの自力成功だけ◎候補にする。ヒントありで白紙再現していなければreview_outcomeはpartial以下とする。
+21. 最後に次のYAMLをコードブロックで出力する。LaTeXは避け、できるだけ日本語で書く。
 
 【今回の最低クリア条件】
 ${minimumConditions}
@@ -183,7 +200,7 @@ study_update:
   problem_id: "${context.problemId}"
   date: "${context.date}"
   mode: "${context.mode}"
-  time_minutes: 15
+  time_minutes: ${context.timeMinutes||15}
   mark: "○"
   score_label: "A"
   score_numeric: 82
@@ -215,7 +232,9 @@ ${fullScope?"  assumed_correct_parts: []":"  assumed_correct_parts:\n    - \"提
   uncertain_points: []
   generated_from_review_id: ${context.reviewId||0}
   review_outcome: "success"
-  hint_used: false
+  hint_used: ${hintUsed}
+  hint_level: "${hintLevel}"
+  after_hint_reproduced: ${hintUsed?!!context.afterHintReproduced:false}
   target_issue_resolved: true
   minimum_pass_condition_met: true
   resolution_evidence: |

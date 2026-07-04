@@ -230,6 +230,8 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
     review_outcome:["success","partial","failed"].includes(scalar(raw.review_outcome))
       ?scalar(raw.review_outcome) as StudyUpdate["review_outcome"]:undefined,
     hint_used:raw.hint_used==null?undefined:/^(true|yes|1|はい)$/i.test(scalar(raw.hint_used)),
+    hint_level:scalar(raw.hint_level)||undefined,
+    after_hint_reproduced:raw.after_hint_reproduced==null?undefined:/^(true|yes|1|はい)$/i.test(scalar(raw.after_hint_reproduced)),
     import_confidence:Math.round(confidence*100)/100,master_matched:!!master,status:"review_required",
     math_localized:rawResultSummary!==resultSummary||rawErrorPoint!==errorPoint||rawNextAction!==nextAction||
       rawImprovementGuidance!==improvementGuidance||rawRequiredDerivation!==requiredDerivation||rawCorrectedAnswer!==correctedAnswer||

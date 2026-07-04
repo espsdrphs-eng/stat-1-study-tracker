@@ -20,6 +20,7 @@ export type Attempt = {
   uncertain_points?:string[]; generated_from_review_id?:number; is_review_attempt?:boolean;
   evaluation_scope?:string; graded_parts?:string[]; assumed_correct_parts?:string[];
   unresolved_carryover?:string[];
+  hint_used?:boolean; hint_level?:string; after_hint_reproduced?:boolean;
 };
 export type Review = {
   id:number; problem_id:string; due_date:string; review_type:string; status:string; generated_from_attempt_id:number;
@@ -27,7 +28,7 @@ export type Review = {
   review_reason?:string; review_method?:string; review_instruction?:string; review_steps?:string[];
   estimated_minutes?:number; requires_full_answer?:boolean; requires_s_check?:boolean;
   linked_s_problem_ids?:string[]; interval_days?:number; generated_from_past_session_id?:number;
-  completion_result?:"success"|"partial"|"failed"; hint_used?:boolean;
+  completion_result?:"success"|"partial"|"failed"; hint_used?:boolean; hint_level?:string; after_hint_reproduced?:boolean;
   completion_time_minutes?:number; completed_at?:string;
   manual_order?:number; postponed_count?:number; last_postponed_at?:string;
 };
@@ -92,6 +93,7 @@ export type StudyUpdate = {
   source_text?:string; auto_imported?:boolean; import_confidence?:number;
   grading_confidence?:number|null; rubric_version?:string; uncertain_points?:string[];
   generated_from_review_id?:number; review_outcome?:"success"|"partial"|"failed"; hint_used?:boolean;
+  hint_level?:string; after_hint_reproduced?:boolean;
   evaluation_scope?:string; graded_parts?:string[]; assumed_correct_parts?:string[];
   unresolved_carryover?:string[];
   master_matched?:boolean; status?:string; math_localized?:boolean;
