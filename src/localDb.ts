@@ -1,11 +1,12 @@
 import Dexie, { type EntityTable } from "dexie";
-import type { Attempt, Bootstrap, PastSession, Problem, Review, Roadmap, StudyUpdate, WeakNote } from "./types";
+import type { Attempt, Bootstrap, PastSession, Problem, Review, Roadmap, StudyUpdate, Task, WeakNote } from "./types";
 import { japaneseizeMathText } from "./mathJapanese.ts";
 import { analyzeWeaknesses } from "./weaknessAnalytics.ts";
 import { createAdaptiveReviewPlan, createAttemptReviewPlan, createPastReviewPlan, createSReviewPlan, enforceReviewEvidence, normalizedErrors, type ReviewOutcome, type ReviewPlan, type SState } from "./reviewRules.ts";
 import { postponedDueDate } from "./reviewScheduling.ts";
 import { applyWeakNoteQuizResult } from "./weakNoteQuiz.ts";
 import { selectMixedPractice } from "./studyScheduler.ts";
+import { triageTodayTasks } from "./studyTriage.ts";
 import { buildProgressPlan, daysUntilExam } from "./studyProgress.ts";
 import { CHAPTER_META, officialProblemEntries, PAST_EXAM_YEAR_ORDER, STRATEGY_A_PLUS_ORDER, STRATEGY_S_ORDER, strategyRankFor } from "./officialMaster.ts";
 import { REVIEW_RUBRIC_VERSION } from "./gradingPrompt.ts";
@@ -366,7 +367,7 @@ async function addOrReplaceReview(review:ReviewInsert){
 async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
   const problem=await db.problems.get(input.problem_id);
   if(!problem) throw new Error(`未登録の問題IDです: ${input.problem_id}`);
-  if(input.generated_from_review_id&&[REVIEW_RUBRIC_VERSION,"STAT1-REVIEW-v4"].includes(input.rubric_version||"")){
+  if(input.generated_from_review_id&&[REVIEW_RUBRIC_VERSION,"STAT1-REVIEW-v5","STAT1-REVIEW-v4"].includes(input.rubric_version||"")){
     const review=await db.reviews.get(input.generated_from_review_id);
     const source=review?await db.attempts.get(review.generated_from_attempt_id):undefined;
     const previousErrors=source?normalizedErrors(source):[];
@@ -400,13 +401,19 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
     is_review_attempt:!!input.generated_from_review_id,evaluation_scope:input.evaluation_scope||"",
     graded_parts:input.graded_parts||[],assumed_correct_parts:input.assumed_correct_parts||[],
     unresolved_carryover:input.unresolved_carryover||[],hint_used:!!input.hint_used,
-    hint_level:input.hint_level||"none",after_hint_reproduced:!!input.after_hint_reproduced
+    hint_level:input.hint_level||"none",after_hint_reproduced:!!input.after_hint_reproduced,
+    reference_level:Number(input.reference_level||1),no_hint:input.no_hint??!input.hint_used,
+    one_line_hint:!!input.one_line_hint,previous_mistake:!!input.previous_mistake,
+    official_answer:!!input.official_answer,gpt_explanation:!!input.gpt_explanation
   }));
   if(input.generated_from_review_id){
     await db.reviews.update(input.generated_from_review_id,{
       status:"done",completion_result:input.review_outcome||(["◎","○"].includes(input.mark)?"success":input.mark==="△"?"partial":"failed"),
       hint_used:!!input.hint_used,hint_level:input.hint_level||"none",
       after_hint_reproduced:!!input.after_hint_reproduced,
+      reference_level:Number(input.reference_level||1),no_hint:input.no_hint??!input.hint_used,
+      one_line_hint:!!input.one_line_hint,previous_mistake:!!input.previous_mistake,
+      official_answer:!!input.official_answer,gpt_explanation:!!input.gpt_explanation,
       completion_time_minutes:Number(input.time_minutes||0),completed_at:date
     });
   }
@@ -415,7 +422,13 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
   let consecutivePerfect=0;
   for(const attempt of [...attempts].reverse()){if(attempt.mark==="◎") consecutivePerfect++;else break}
   const sState:SState=input.mark==="◎"||input.mark==="○"?"stable":input.mark==="×"?"forgotten":"check";
-  const plan=problem.category==="S"?createSReviewPlan(sState):createAttemptReviewPlan(input,related,consecutivePerfect);
+  const basePlan=problem.category==="S"?createSReviewPlan(sState):createAttemptReviewPlan(input,related,consecutivePerfect);
+  const importedReferenceLevel=Number(input.reference_level||1);
+  const plan=input.generated_from_review_id&&importedReferenceLevel>=4
+    ?{...basePlan,interval_days:3,review_reason:"公式解答またはGPT解説を参照したため、完了扱いにせず3日後に再確認する。"}
+    :input.generated_from_review_id&&importedReferenceLevel===3
+      ?{...basePlan,interval_days:2,review_reason:"前回ミスを参照して補修したため、完了扱いにせず2日後に再確認する。"}
+      :basePlan;
   await addOrReplaceReview({
     problem_id:input.problem_id,due_date:await reviewDueDate(date,plan.interval_days||14),
     review_type:plan.review_type,status:"pending",generated_from_attempt_id:id,duration_minutes:plan.estimated_minutes,
@@ -578,10 +591,15 @@ async function completeReview(id:number,body:Record<string,unknown>){
   const problem=await db.problems.get(review.problem_id);
   if(!source||!problem) throw new Error("復習元の採点データが見つかりません");
   const requestedResult=["success","partial","failed"].includes(String(body.result))?String(body.result) as ReviewOutcome["result"]:"partial";
-  const hintUsed=!!body.hint_used,afterHintReproduced=!!body.after_hint_reproduced;
+  const referenceLevel=Math.min(5,Math.max(1,Number(body.reference_level||1)));
+  const hintUsed=referenceLevel>1||!!body.hint_used,afterHintReproduced=!!body.after_hint_reproduced;
+  const assistedBeyondHint=referenceLevel>=3;
   const outcome:ReviewOutcome={
-    result:requestedResult==="success"&&hintUsed&&!afterHintReproduced?"partial":requestedResult,
-    hint_used:hintUsed,after_hint_reproduced:afterHintReproduced,time_minutes:Number(body.time_minutes||0)
+    result:requestedResult==="success"&&(assistedBeyondHint||hintUsed&&!afterHintReproduced)?"partial":requestedResult,
+    hint_used:hintUsed,after_hint_reproduced:afterHintReproduced,time_minutes:Number(body.time_minutes||0),
+    reference_level:referenceLevel,no_hint:referenceLevel===1,one_line_hint:!!body.one_line_hint,
+    previous_mistake:!!body.previous_mistake,official_answer:!!body.official_answer,
+    gpt_explanation:!!body.gpt_explanation
   };
   const related=[...(problem.related_s_problem_ids||[]),...list(problem.linked_s_problems)];
   const plan=createAdaptiveReviewPlan(source,review,outcome,related);
@@ -597,10 +615,16 @@ async function completeReview(id:number,body:Record<string,unknown>){
     score_text:"",score_numeric:null,score_max:null,result_summary:`復習結果：${outcome.result}${outcome.hint_used?"・ヒント使用":""}`,
     auto_imported:false,import_confidence:1,grading_confidence:1,rubric_version:"REVIEW-SELF-v1",
     uncertain_points:[],generated_from_review_id:id,is_review_attempt:true,hint_used:outcome.hint_used,
-    hint_level:outcome.hint_used?"unspecified":"none",after_hint_reproduced:!!outcome.after_hint_reproduced
+    hint_level:String(body.hint_level|| (outcome.hint_used?"unspecified":"none")),
+    after_hint_reproduced:!!outcome.after_hint_reproduced,reference_level:referenceLevel,
+    no_hint:referenceLevel===1,one_line_hint:!!body.one_line_hint,previous_mistake:!!body.previous_mistake,
+    official_answer:!!body.official_answer,gpt_explanation:!!body.gpt_explanation
   }));
   await db.reviews.update(id,{status:"done",completion_result:outcome.result,hint_used:outcome.hint_used,
-    hint_level:outcome.hint_used?"unspecified":"none",after_hint_reproduced:!!outcome.after_hint_reproduced,
+    hint_level:String(body.hint_level|| (outcome.hint_used?"unspecified":"none")),after_hint_reproduced:!!outcome.after_hint_reproduced,
+    reference_level:referenceLevel,no_hint:referenceLevel===1,one_line_hint:!!body.one_line_hint,
+    previous_mistake:!!body.previous_mistake,official_answer:!!body.official_answer,
+    gpt_explanation:!!body.gpt_explanation,
     completion_time_minutes:outcome.time_minutes,completed_at:new Date().toISOString()});
   await addOrReplaceReview({problem_id:review.problem_id,due_date:await reviewDueDate(date,plan.interval_days||14),
     review_type:plan.review_type,status:"pending",generated_from_attempt_id:attemptId,duration_minutes:plan.estimated_minutes,
@@ -804,20 +828,23 @@ async function bootstrap():Promise<Bootstrap>{
   const checkedKeys=new Set(metaEntries.filter(entry=>entry.key.startsWith(`today-check:${today}:`)&&entry.value==="1").map(entry=>entry.key));
   const regularReviews=dueReviews.filter(review=>!review.manual_order);
   const movedBackReviews=dueReviews.filter(review=>!!review.manual_order);
-  const tasks=[...regularReviews,...staleS,...strategySTasks,...newTasks,...pastTasks,...simulationTasks,...mixedTasks,...movedBackReviews].map(task=>({
+  const baseTasks=[...regularReviews,...staleS,...strategySTasks,...newTasks,...pastTasks,...simulationTasks,...mixedTasks,...movedBackReviews].map(task=>({
     ...task,checked:checkedKeys.has(`today-check:${today}:${task.problem_id}:${task.kind}`)
-  }));
+  })) as Task[];
+  const triage=triageTodayTasks(baseTasks,settings.daily_study_minutes,problems);
+  const tasks=triage.tasks;
   const totalLoad=Math.round(tasks.filter(task=>!task.checked).reduce((sum,x)=>sum+x.load,0)*10)/10;
   const remainingMinutes=tasks.filter(task=>!task.checked).reduce((sum,task)=>sum+task.minutes,0);
   const actualMinutes=attempts.filter(attempt=>attempt.date===today).reduce((sum,attempt)=>sum+Math.max(0,Number(attempt.time_minutes||0)),0);
   const capacityPercent=Math.round(plannedMinutes/settings.daily_study_minutes*100);
-  const warning=plannedMinutes>settings.daily_study_minutes+30
-    ?`予定は${plannedMinutes}分です。目標${settings.daily_study_minutes}分を30分以上超えるため、期限の低い課題を翌日に回してください。`:"";
+  const warning=plannedMinutes>settings.daily_study_minutes
+    ?`予定超過：${plannedMinutes}分 / ${settings.daily_study_minutes}分。優先度に基づいて「今日必ず」「余裕があれば」「明日に送る」へ仕分けました。`:"";
   const guidance=plannedMinutes<settings.daily_study_minutes-15
     ?`アプリ内予定は${plannedMinutes}分です。残り${settings.daily_study_minutes-plannedMinutes}分は弱点クイズ、解説確認、または既習A問題の混合確認に使えます。`
     :`目標${settings.daily_study_minutes}分に対して、無理のない範囲の学習計画です。`;
   return {problems:problems.sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.category.localeCompare(b.category)||a.problem_number-b.problem_number),attempts,reviews,roadmap,weakNotes,pastSessions,dashboard,settings,
-    today:{tasks,totalLoad,plannedMinutes,remainingMinutes,actualMinutes,targetMinutes:settings.daily_study_minutes,capacityPercent,warning,guidance}} as Bootstrap;
+    today:{tasks,totalLoad,plannedMinutes,remainingMinutes,actualMinutes,targetMinutes:settings.daily_study_minutes,capacityPercent,warning,guidance,
+      triageMinutes:triage.minutes}} as Bootstrap;
 }
 
 export async function localGet<T>(path:string):Promise<T>{

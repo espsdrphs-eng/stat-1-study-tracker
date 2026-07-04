@@ -6,7 +6,11 @@ export type ReviewPlan=Pick<Review,
   "requires_full_answer"|"requires_s_check"|"linked_s_problem_ids"|"interval_days"> & {
   review_type:string; mode:string; completion_candidate?:boolean;
 };
-export type ReviewOutcome={result:"success"|"partial"|"failed";hint_used:boolean;after_hint_reproduced?:boolean;time_minutes:number};
+export type ReviewOutcome={
+  result:"success"|"partial"|"failed";hint_used:boolean;after_hint_reproduced?:boolean;time_minutes:number;
+  reference_level?:number;no_hint?:boolean;one_line_hint?:boolean;previous_mistake?:boolean;
+  official_answer?:boolean;gpt_explanation?:boolean;
+};
 
 const priority=["K","N","W","C"];
 const interval:Record<string,number>={K:1,N:2,W:3,C:7,none:14};
@@ -61,7 +65,10 @@ export function enforceReviewEvidence(input:StudyUpdate,previousErrors:string[],
   const scopeIsValid=["full","conditional_full"].includes(String(input.evaluation_scope||""));
   const gradedParts=input.graded_parts||[];
   const unresolved=input.unresolved_carryover||[];
-  const assistanceIsValid=!input.hint_used||input.after_hint_reproduced===true;
+  const referenceLevel=Number(input.reference_level||(
+    input.gpt_explanation?5:input.official_answer?4:input.previous_mistake?3:input.one_line_hint?2:1
+  ));
+  const assistanceIsValid=referenceLevel<=2&&(!input.hint_used||input.after_hint_reproduced===true);
   const proofIsValid=input.target_issue_resolved===true&&input.minimum_pass_condition_met===true&&
     evidence.length>=8&&shown.length>0&&scopeIsValid&&gradedParts.length>0&&unresolved.length===0&&assistanceIsValid&&
     !/(変更なし|前回と同じ|同一答案|未修正)/.test(changed);
@@ -112,6 +119,7 @@ export function createAdaptiveReviewPlan(
   const previous=Math.max(1,Number(review.interval_days||14));
   const sourceErrors=normalizedErrors(source);
   const successful=outcome.result==="success";
+  const referenceLevel=Math.min(5,Math.max(1,Number(outcome.reference_level||1)));
   const attemptLike:Attempt={...source,
     mark:successful?(outcome.hint_used?"○":"◎"):outcome.result==="partial"?"△":"×",
     error_type:successful?"none":sourceErrors[0]||"K",
@@ -119,13 +127,13 @@ export function createAdaptiveReviewPlan(
     error_types:successful?[]:sourceErrors.length?sourceErrors:["K"]
   };
   const plan=createAttemptReviewPlan(attemptLike,linkedS,0);
-  const days=outcome.result==="failed"?1:
+  const days=referenceLevel>=4?3:referenceLevel===3?2:outcome.result==="failed"?1:
     outcome.result==="partial"?Math.min(7,Math.max(2,Math.round(previous*.6))):
     outcome.hint_used?Math.min(30,Math.max(7,Math.round(previous*1.7))):
     Math.min(30,Math.max(14,Math.round(previous*2.5)));
   const outcomeLabel=outcome.result==="success"?"自力再現できた":outcome.result==="partial"?"一部のみ再現できた":"再現できなかった";
   return {...plan,interval_days:days,
-    review_reason:`前回復習は「${outcomeLabel}」${outcome.hint_used?"（ヒント使用）":""}だったため、${days}日後に再確認する。`,
+    review_reason:`前回復習は「${outcomeLabel}」${outcome.hint_used?`（参照段階${referenceLevel}）`:""}だったため、${days}日後に再確認する。`,
     review_instruction:successful
       ?"次回も答えを見る前に型・出発式・結論を自力で想起し、別の問題でも同じ型を選べるか確認する。"
       :plan.review_instruction,

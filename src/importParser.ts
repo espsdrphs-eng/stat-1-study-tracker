@@ -232,6 +232,12 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
     hint_used:raw.hint_used==null?undefined:/^(true|yes|1|はい)$/i.test(scalar(raw.hint_used)),
     hint_level:scalar(raw.hint_level)||undefined,
     after_hint_reproduced:raw.after_hint_reproduced==null?undefined:/^(true|yes|1|はい)$/i.test(scalar(raw.after_hint_reproduced)),
+    reference_level:raw.reference_level==null?undefined:Number(raw.reference_level),
+    no_hint:raw.no_hint==null?undefined:/^(true|yes|1|はい)$/i.test(scalar(raw.no_hint)),
+    one_line_hint:raw.one_line_hint==null?undefined:/^(true|yes|1|はい)$/i.test(scalar(raw.one_line_hint)),
+    previous_mistake:raw.previous_mistake==null?undefined:/^(true|yes|1|はい)$/i.test(scalar(raw.previous_mistake)),
+    official_answer:raw.official_answer==null?undefined:/^(true|yes|1|はい)$/i.test(scalar(raw.official_answer)),
+    gpt_explanation:raw.gpt_explanation==null?undefined:/^(true|yes|1|はい)$/i.test(scalar(raw.gpt_explanation)),
     import_confidence:Math.round(confidence*100)/100,master_matched:!!master,status:"review_required",
     math_localized:rawResultSummary!==resultSummary||rawErrorPoint!==errorPoint||rawNextAction!==nextAction||
       rawImprovementGuidance!==improvementGuidance||rawRequiredDerivation!==requiredDerivation||rawCorrectedAnswer!==correctedAnswer||

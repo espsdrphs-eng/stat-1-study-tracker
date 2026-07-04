@@ -81,7 +81,7 @@ export function reviewTemplate(item:ReviewItem):ReviewTemplate{
     sheetMode:mode,sheetLabel:mode==="main_calc"?"主要計算シート":"骨格シート",title:"今回の確認欄",
     fields:[
       {label:"出発式",hint:"最初に使う式を書く"},
-      {label:"見るポイント",hint:item.review_instruction||"指定された部分だけ確認する"},
+      {label:"見るポイント",hint:"今回の狙いに対応する部分だけ確認する"},
       {label:"確認結果",hint:"自力で再現できたか記録する"}
     ]
   };

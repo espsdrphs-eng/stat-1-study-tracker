@@ -25,6 +25,7 @@ const missingRequiredFields=(update:StudyUpdate,hasPreviousTarget=false)=>{
     !["full","conditional_full"].includes(update.evaluation_scope||"")||!update.graded_parts?.length||
     !!update.unresolved_carryover?.length||
     (!!update.hint_used&&update.after_hint_reproduced!==true)||
+    Number(update.reference_level||1)>=3||
     /(変更なし|前回と同じ|同一答案|未修正)/.test(update.answer_change_summary||"")
   );
   return [

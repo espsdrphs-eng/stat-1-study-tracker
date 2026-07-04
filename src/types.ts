@@ -21,6 +21,8 @@ export type Attempt = {
   evaluation_scope?:string; graded_parts?:string[]; assumed_correct_parts?:string[];
   unresolved_carryover?:string[];
   hint_used?:boolean; hint_level?:string; after_hint_reproduced?:boolean;
+  reference_level?:number; no_hint?:boolean; one_line_hint?:boolean; previous_mistake?:boolean;
+  official_answer?:boolean; gpt_explanation?:boolean;
 };
 export type Review = {
   id:number; problem_id:string; due_date:string; review_type:string; status:string; generated_from_attempt_id:number;
@@ -29,6 +31,8 @@ export type Review = {
   estimated_minutes?:number; requires_full_answer?:boolean; requires_s_check?:boolean;
   linked_s_problem_ids?:string[]; interval_days?:number; generated_from_past_session_id?:number;
   completion_result?:"success"|"partial"|"failed"; hint_used?:boolean; hint_level?:string; after_hint_reproduced?:boolean;
+  reference_level?:number; no_hint?:boolean; one_line_hint?:boolean; previous_mistake?:boolean;
+  official_answer?:boolean; gpt_explanation?:boolean;
   completion_time_minutes?:number; completed_at?:string;
   manual_order?:number; postponed_count?:number; last_postponed_at?:string;
 };
@@ -51,6 +55,7 @@ export type Task = {
   previous_date?:string; previous_score?:string; previous_errors?:string[];
   previous_error_point?:string; previous_next_action?:string;
   previous_improvement_guidance?:string; previous_required_derivation?:string;
+  previous_corrected_answer?:string; triage?:"must"|"if_time"|"tomorrow";
 };
 export type WeaknessInsight = {
   theme:string; score:number; level:"重点"|"注意"|"観察"; confidence:"参考"|"暫定"|"分析可能";
@@ -73,7 +78,8 @@ export type Bootstrap = {
   weakNotes:WeakNote[]; pastSessions:PastSession[]; dashboard:Dashboard;
   settings:{exam_date:string;daily_study_minutes:number};
   today:{tasks:Task[];totalLoad:number;plannedMinutes:number;remainingMinutes:number;actualMinutes:number;
-    targetMinutes:number;capacityPercent:number;warning:string;guidance:string};
+    targetMinutes:number;capacityPercent:number;warning:string;guidance:string;
+    triageMinutes?:{must:number;if_time:number;tomorrow:number}};
 };
 export type StudyUpdate = {
   problem_id:string; date:string; mode:string; time_minutes?:number|string; mark:string; score_label:string;
@@ -94,6 +100,8 @@ export type StudyUpdate = {
   grading_confidence?:number|null; rubric_version?:string; uncertain_points?:string[];
   generated_from_review_id?:number; review_outcome?:"success"|"partial"|"failed"; hint_used?:boolean;
   hint_level?:string; after_hint_reproduced?:boolean;
+  reference_level?:number; no_hint?:boolean; one_line_hint?:boolean; previous_mistake?:boolean;
+  official_answer?:boolean; gpt_explanation?:boolean;
   evaluation_scope?:string; graded_parts?:string[]; assumed_correct_parts?:string[];
   unresolved_carryover?:string[];
   master_matched?:boolean; status?:string; math_localized?:boolean;

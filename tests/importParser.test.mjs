@@ -128,6 +128,12 @@ test("復習採点YAMLの時間と復習結果を読み取る",()=>{
   hint_used: true
   hint_level: "minimal_hint"
   after_hint_reproduced: true
+  reference_level: 2
+  no_hint: false
+  one_line_hint: true
+  previous_mistake: false
+  official_answer: false
+  gpt_explanation: false
 `,problems);
   const update=result.updates[0];
   assert.equal(update.time_minutes,14);
@@ -136,6 +142,10 @@ test("復習採点YAMLの時間と復習結果を読み取る",()=>{
   assert.equal(update.hint_used,true);
   assert.equal(update.hint_level,"minimal_hint");
   assert.equal(update.after_hint_reproduced,true);
+  assert.equal(update.reference_level,2);
+  assert.equal(update.no_hint,false);
+  assert.equal(update.one_line_hint,true);
+  assert.equal(update.official_answer,false);
   assert.match(update.improvement_guidance,/残す部分/);
   assert.match(update.required_derivation,/途中式/);
   assert.match(update.corrected_answer,/尾確率/);

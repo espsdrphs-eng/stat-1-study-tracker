@@ -1,5 +1,5 @@
 export const GRADING_RUBRIC_VERSION="STAT1-GRADE-v4";
-export const REVIEW_RUBRIC_VERSION="STAT1-REVIEW-v5";
+export const REVIEW_RUBRIC_VERSION="STAT1-REVIEW-v6";
 
 export type ReviewPromptContext={
   reviewId?:number;problemId:string;title?:string;theme?:string;date:string;mode:string;
@@ -8,8 +8,10 @@ export type ReviewPromptContext={
   previousImprovementGuidance?:string;previousRequiredDerivation?:string;
   reviewMethod?:string;reviewInstruction?:string;reviewSteps?:string[];
   requiresFullAnswer?:boolean;linkedSProblemIds?:string[];
-  timeMinutes?:number;hintLevel?:"none"|"minimal_hint"|"previous_feedback"|"solution";
+  timeMinutes?:number;hintLevel?:"none"|"minimal_hint"|"previous_mistake"|"official_answer"|"gpt_explanation";
   afterHintReproduced?:boolean;
+  referenceLevel?:number;noHint?:boolean;oneLineHint?:boolean;previousMistake?:boolean;
+  officialAnswer?:boolean;gptExplanation?:boolean;
 };
 
 export function buildGradingPrompt(date:string){
@@ -114,8 +116,11 @@ export function buildReviewGradingPrompt(context:ReviewPromptContext){
   const hintLevel=context.hintLevel||"none";
   const hintUsed=hintLevel!=="none";
   const hintLabels:Record<string,string>={
-    none:"見ていない",minimal_hint:"1行ヒントのみ",previous_feedback:"前回フィードバックを確認",solution:"解答・模範答案を確認"
+    none:"ヒントなし",minimal_hint:"1行ヒントのみ",previous_mistake:"前回ミスを確認",
+    official_answer:"公式解答を確認",gpt_explanation:"GPT解説を確認"
   };
+  const inferredReferenceLevel:Record<string,number>={none:1,minimal_hint:2,previous_mistake:3,official_answer:4,gpt_explanation:5};
+  const referenceLevel=Math.min(5,Math.max(1,Number(context.referenceLevel||inferredReferenceLevel[hintLevel]||1)));
   const modeScope=fullScope
     ?"フル答案：全範囲を答案から採点する。未提出部分を正しいと仮定しない。"
     :context.mode==="main_calc"
@@ -191,7 +196,8 @@ ${steps}
 18. result_summary、error_point、next_actionは各1〜2文で簡潔にする。細かな判定根拠はresolution_evidenceとrequired_work_shownへ分離する。
 19. unresolved_carryoverには前回から残った課題だけを入れ、すべて解消した場合だけ空配列にする。
 20. ヒントありで白紙再現できたsuccessはmarkを○とする。ヒントなしの自力成功だけ◎候補にする。ヒントありで白紙再現していなければreview_outcomeはpartial以下とする。
-21. 最後に次のYAMLをコードブロックで出力する。LaTeXは避け、できるだけ日本語で書く。
+21. reference_levelが3以上（前回ミス・公式解答・GPT解説を確認）の場合、白紙再現できてもreview_outcomeをsuccessにしない。公式解答またはGPT解説を見た場合はreview_after_daysを3とする。
+22. 最後に次のYAMLをコードブロックで出力する。LaTeXは避け、できるだけ日本語で書く。
 
 【今回の最低クリア条件】
 ${minimumConditions}
@@ -235,6 +241,12 @@ ${fullScope?"  assumed_correct_parts: []":"  assumed_correct_parts:\n    - \"提
   hint_used: ${hintUsed}
   hint_level: "${hintLevel}"
   after_hint_reproduced: ${hintUsed?!!context.afterHintReproduced:false}
+  reference_level: ${referenceLevel}
+  no_hint: ${referenceLevel===1}
+  one_line_hint: ${context.oneLineHint??hintLevel==="minimal_hint"}
+  previous_mistake: ${context.previousMistake??hintLevel==="previous_mistake"}
+  official_answer: ${context.officialAnswer??hintLevel==="official_answer"}
+  gpt_explanation: ${context.gptExplanation??hintLevel==="gpt_explanation"}
   target_issue_resolved: true
   minimum_pass_condition_met: true
   resolution_evidence: |

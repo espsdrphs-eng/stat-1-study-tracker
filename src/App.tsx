@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   AlertTriangle, Archive, ArrowDown, BarChart3, BookOpen, CalendarCheck, CalendarClock, Check, ChevronRight, ClipboardPaste,
-  Clock3, Copy, Database, Download, Gauge, LayoutDashboard, ListChecks, Menu, NotebookPen,
+  Clock3, Copy, Database, Download, Eye, Gauge, LayoutDashboard, ListChecks, Menu, NotebookPen,
   Pencil, Play, Plus, RefreshCw, Search, Settings, Sparkles, Target, Trash2, X
 } from "lucide-react";
 import yaml from "js-yaml";
@@ -13,6 +13,11 @@ import { createAttemptReviewPlan } from "./reviewRules";
 import { analyzeWeakTrends, buildQuizPrompt } from "./weakTrend";
 import { buildReviewGradingPrompt } from "./gradingPrompt";
 import { reviewMode, reviewTemplate } from "./reviewPresentation";
+import {
+  completionChecklist, emptyReferenceState, normalizeReferenceState, oneLineHint, referenceCompletion,
+  referenceLabels, referenceStateAtLevel, revealReference, reviewAim, reviewFormat, safeReviewActions,
+  todayMove, type ReferenceLevel, type ReferenceState
+} from "./reviewExperience";
 import { EXAM_PHASES } from "./studyProgress";
 import { CHAPTER_META } from "./officialMaster";
 import type { Attempt, Bootstrap, Problem, Review, StudyUpdate, Task } from "./types";
@@ -71,7 +76,7 @@ export default function App() {
   return <div className="app-shell">
     <aside className={`sidebar ${menu?"open":""}`}>
       <div className="brand"><div className="brand-mark">1</div><div><strong>統計一級</strong><span>STUDY TRACKER</span></div><button className="mobile-close" onClick={()=>setMenu(false)}><X/></button></div>
-      <div className="today-mini"><span>今日の予定合計</span><strong>{data.today.plannedMinutes}分</strong><div className="load-track"><i style={{width:`${Math.min(100,data.today.capacityPercent)}%`}}/></div><small>目標 {data.today.targetMinutes}分・記録済み {data.today.actualMinutes}分</small></div>
+      <div className={`today-mini ${data.today.plannedMinutes>data.today.targetMinutes?"over":""}`}><span>{data.today.plannedMinutes>data.today.targetMinutes?"予定超過":"今日の予定合計"}</span><strong>{data.today.plannedMinutes} / {data.today.targetMinutes}分</strong><div className="load-track"><i style={{width:`${Math.min(100,data.today.capacityPercent)}%`}}/></div><small>記録済み {data.today.actualMinutes}分{data.today.plannedMinutes>data.today.targetMinutes?`・明日候補 ${data.today.triageMinutes?.tomorrow||0}分`:""}</small></div>
       <nav>{nav.map(([key,Icon])=><button key={key} className={page===key?"active":""} onClick={()=>go(key)}><Icon size={19}/><span>{pageTitles[key]}</span>{key==="reviews"&&data.dashboard.pending>0&&<b>{data.dashboard.pending}</b>}</button>)}</nav>
       <div className="sidebar-foot"><Gauge size={17}/><div><span>2週間ペース</span><strong className={`pace-${data.dashboard.pace.label}`}>{data.dashboard.pace.label}</strong></div></div>
     </aside>
@@ -170,27 +175,31 @@ function DashboardView({data,go}:{data:Bootstrap;go:(p:Page)=>void}) {
 function TaskRow({task}:{task:Task}) {
   return <div className={`task-row ${task.checked?"task-checked":""}`}><div className={`task-icon ${task.kind==="S確認"?"s":task.error_type==="K"?"k":""}`}>{task.checked?<Check size={15}/>:task.kind.slice(0,1)}</div><div className="task-main"><strong>{task.problem_id}</strong><span>{task.title}</span></div><div className="task-meta"><Badge>{modes[task.mode]||task.mode}</Badge><span><Clock3 size={14}/>{task.minutes}分</span></div></div>
 }
-function shortReviewActions(item:Partial<Review&Task>){
-  const method=item.review_method||"";
-  const linked=item.linked_s_problem_ids?.join(" / ");
-  if(method.includes("骨格再現＋")) return [linked?`${linked}を5〜10分確認する`:"型・出発式・主役の統計量を書く","同じ問題の骨格だけを何も見ずに書く"];
-  if(method.includes("ノート補修")) return ["弱点ノートに修正ルールを1行追加する","途中式を省略せず、同じ問題の骨格を書く"];
-  if(method.includes("該当作業")) return ["落とした計算・積分・和の変形だけを書き直す","同じ作業を何も見ずにもう一度行う"];
-  if(method.includes("チェックリスト")) return ["再発防止のチェック項目を1つ作る","ミスした箇所だけを見直す"];
-  if(method.includes("3分")) return ["型・出発式・主役の統計量だけを確認する"];
-  if(method.includes("骨格確認")||method.includes("骨格再構築")) return ["出発式と使う定理を自力で書く","見ずに骨格を再現する"];
-  if(method.includes("復旧")) return ["関連S問題で出発式と条件を復旧する","元のA問題の骨格へ戻る"];
-  if(method.includes("過去問")) return ["最大失点要因に対応するA/S問題を補修する","時間配分または答案化を1点だけ修正する"];
-  return item.review_steps?.slice(0,2)||[item.review_instruction||"問題の必要部分だけを確認する"];
+const referenceStorageKey=(id?:number)=>`review-reference:${id||"preview"}`;
+function readReferenceState(id?:number){
+  if(!id) return emptyReferenceState();
+  try{return normalizeReferenceState(JSON.parse(sessionStorage.getItem(referenceStorageKey(id))||"null")||undefined)}
+  catch{return emptyReferenceState()}
+}
+function rememberReferenceState(id:number|undefined,state:ReferenceState){
+  if(id) sessionStorage.setItem(referenceStorageKey(id),JSON.stringify(state));
+}
+function promptHintLevel(level:ReferenceLevel){
+  return level===1?"none":level===2?"minimal_hint":level===3?"previous_mistake":level===4?"official_answer":"gpt_explanation";
 }
 function ReviewPlanDetails({item,compact=false}:{item:Partial<Review&Task>;compact?:boolean}) {
   const [promptCopied,setPromptCopied]=useState(false);
   const [reviewMinutes,setReviewMinutes]=useState(String(item.estimated_minutes||item.minutes||""));
-  const [hintLevel,setHintLevel]=useState<"none"|"minimal_hint"|"previous_feedback"|"solution">("none");
+  const [reference,setReference]=useState<ReferenceState>(()=>readReferenceState(item.id));
   const [afterHintReproduced,setAfterHintReproduced]=useState(false);
   if(!item.review_method&&!item.review_reason) return null;
-  const actions=shortReviewActions(item).filter(Boolean).slice(0,2);
+  const actions=safeReviewActions(item);
   const template=reviewTemplate(item);
+  const reveal=(level:Exclude<ReferenceLevel,1>)=>{
+    const next=revealReference(reference,level);
+    setReference(next);rememberReferenceState(item.id,next);setAfterHintReproduced(false);
+  };
+  const usedReference=reference.reference_level>1;
   const reviewPrompt=item.id&&item.problem_id?buildReviewGradingPrompt({
     reviewId:item.id,problemId:item.problem_id,title:item.title,theme:item.theme,date:todayString(),mode:reviewMode(item),
     previousDate:item.previous_date,previousScore:item.previous_score,previousErrors:item.previous_errors,
@@ -198,52 +207,81 @@ function ReviewPlanDetails({item,compact=false}:{item:Partial<Review&Task>;compa
     previousImprovementGuidance:item.previous_improvement_guidance,previousRequiredDerivation:item.previous_required_derivation,
     reviewMethod:item.review_method,reviewInstruction:item.review_instruction,reviewSteps:item.review_steps,
     requiresFullAnswer:item.requires_full_answer,linkedSProblemIds:item.linked_s_problem_ids,
-    timeMinutes:Number(reviewMinutes||0),hintLevel,afterHintReproduced
+    timeMinutes:Number(reviewMinutes||0),hintLevel:promptHintLevel(reference.reference_level),afterHintReproduced,
+    referenceLevel:reference.reference_level,noHint:reference.no_hint,oneLineHint:reference.one_line_hint,
+    previousMistake:reference.previous_mistake,officialAnswer:reference.official_answer,
+    gptExplanation:reference.gpt_explanation
   }):"";
   return <div className={`review-plan ${compact?"compact":""}`}>
+    <div className="today-move"><span>今日の一手</span><strong>{todayMove(item)}</strong></div>
     <div className="review-plan-summary">
       {item.due_date&&<div><span>復習日</span><strong>{item.due_date}</strong></div>}
       <div><span>復習方法</span><strong>{item.review_method||"—"}</strong></div>
       <div><span>必要時間</span><strong>{item.estimated_minutes||item.minutes||"—"}分</strong></div>
-      <div><span>答案</span><strong>{item.requires_full_answer?"フル答案が必要":"骨格・必要部分だけ"}</strong></div>
-      <div><span>関連S</span><strong>{item.requires_s_check?`確認する${item.linked_s_problem_ids?.length?`（${item.linked_s_problem_ids.join(" / ")}）`:""}`:"確認不要"}</strong></div>
+      <div><span>使用シート</span><strong>{template.sheetLabel}</strong></div>
     </div>
-    {(item.previous_error_point||item.previous_next_action)&&<div className="previous-feedback"><span>前回から引き継ぐ点</span>{item.previous_error_point&&<p><b>反省：</b>{item.previous_error_point}</p>}{item.previous_next_action&&<p><b>課題：</b>{item.previous_next_action}</p>}</div>}
+    <div className="review-aim"><span>今回の狙い</span><strong>{reviewAim(item)}</strong></div>
+    <div className="review-format"><strong>{reviewFormat(item)}</strong></div>
     <div className="next-actions"><span>今回やること</span><ol>{actions.map((action,index)=><li key={`${index}-${action}`}>{action}</li>)}</ol></div>
     <div className="review-template">
       <div className="review-template-head"><div><span>復習内容の型</span><strong>{template.title}</strong></div><SheetLink href={sheetHref(template.sheetMode)} label={template.sheetLabel}/></div>
       <div className="review-template-fields">{template.fields.map(field=><div key={field.label}><strong>{field.label}</strong><span>{field.hint}</span></div>)}</div>
     </div>
+    <div className="completion-checklist"><span>完了条件</span>{completionChecklist(item).map(condition=><label key={condition}><input type="checkbox"/><b>{condition}</b></label>)}</div>
+    <div className="reference-gate">
+      <div className="reference-gate-head"><div><span>参照状況</span><strong>{referenceLabels[reference.reference_level]}</strong></div><small>見た段階は復習結果に保存されます</small></div>
+      <div className="hint-policy"><strong>参照ルール</strong><span>{item.requires_full_answer?"制限時間終了まで見ない。点数は参照前の答案で決め、参照後は補修として扱います。":"骨格は3分、主要計算は5分まで何も見ずに試します。止まった場合だけ1行ヒントへ進みます。"}</span></div>
+      <div className="reference-buttons">
+        <button type="button" className={reference.one_line_hint?"viewed":""} onClick={()=>reveal(2)}><Eye size={14}/>1行ヒントを見る</button>
+        <button type="button" className={reference.previous_mistake?"viewed":""} onClick={()=>reveal(3)}><Eye size={14}/>前回ミスを見る</button>
+        <button type="button" className={reference.official_answer?"viewed":""} onClick={()=>reveal(4)}><Eye size={14}/>公式解答を見る</button>
+        <button type="button" className={reference.gpt_explanation?"viewed":""} onClick={()=>reveal(5)}><Eye size={14}/>GPT解説を見る</button>
+      </div>
+      {reference.one_line_hint&&<div className="revealed-reference hint"><span>1行ヒント</span><p>{oneLineHint(item)}</p></div>}
+      {reference.previous_mistake&&<div className="revealed-reference mistake"><span>前回ミスの詳細</span>{item.previous_error_point&&<p><b>反省：</b>{item.previous_error_point}</p>}{item.previous_next_action&&<p><b>課題：</b>{item.previous_next_action}</p>}{!item.previous_error_point&&!item.previous_next_action&&<p>前回ミスの詳細記録はありません。</p>}</div>}
+      {reference.official_answer&&<div className="revealed-reference answer"><span>公式解答</span><p>白本・公式解答の該当箇所を確認してください。答案と時間を確定してから必要部分だけ見て、閉じた後に白紙から再現します。</p></div>}
+      {reference.gpt_explanation&&<div className="revealed-reference explanation"><span>GPT解説</span><p>{item.previous_improvement_guidance||item.previous_required_derivation||item.previous_next_action||"保存されたGPT解説はありません。採点プロンプトで今回の答案に沿った解説を取得してください。"}</p></div>}
+    </div>
     {reviewPrompt&&<div className="review-prompt-prep">
       <div className="review-prompt-prep-head"><div><span>GPT採点前に入力</span><strong>時間と参照状況をプロンプトへ反映</strong></div></div>
       <div className="review-prompt-inputs">
         <Field label="今回かかった時間（分）"><input type="number" min="0" value={reviewMinutes} onChange={event=>setReviewMinutes(event.target.value)}/></Field>
-        <Field label="参照した内容"><select value={hintLevel} onChange={event=>{setHintLevel(event.target.value as typeof hintLevel);if(event.target.value==="none")setAfterHintReproduced(false)}}>
-          <option value="none">見ていない</option><option value="minimal_hint">1行ヒントのみ</option><option value="previous_feedback">前回フィードバック</option><option value="solution">解答・模範答案</option>
-        </select></Field>
+        <Field label="最も深い参照段階"><input value={`${reference.reference_level}. ${referenceLabels[reference.reference_level]}`} readOnly/></Field>
       </div>
-      {hintLevel!=="none"&&<label className="after-hint-check"><input type="checkbox" checked={afterHintReproduced} onChange={event=>setAfterHintReproduced(event.target.checked)}/><span>参照内容を閉じた後、該当部分を白紙から再現した</span></label>}
-      <div className="hint-policy"><strong>参照の基準</strong><span>{item.requires_full_answer?"フル答案・90分演習は制限時間終了まで見ない。点数は参照前の答案で決めます。":"まず3〜5分は何も見ずに試し、止まった場合だけ1行ヒントまで。解答を見るのは答案を一度確定した後です。"}</span></div>
+      {usedReference&&<label className="after-hint-check"><input type="checkbox" checked={afterHintReproduced} onChange={event=>setAfterHintReproduced(event.target.checked)}/><span>参照内容を閉じた後、該当部分を白紙から再現した</span></label>}
       <button className="ghost small review-prompt-copy" onClick={async()=>{await navigator.clipboard.writeText(reviewPrompt);setPromptCopied(true);setTimeout(()=>setPromptCopied(false),1800)}}>{promptCopied?<Check size={14}/>:<Copy size={14}/>} {promptCopied?"復習採点プロンプトをコピーしました":"入力内容を含むGPT採点プロンプトをコピー"}</button>
     </div>}
-    <details><summary>理由と詳しい手順を見る</summary><div className="review-explanation"><span>なぜ復習するか</span><p>{item.review_reason}</p><span>復習時に見るポイント</span><p>{item.review_instruction}</p></div>
-      {!!item.review_steps?.length&&<ol>{item.review_steps.map((step,index)=><li key={`${index}-${step}`}>{step}</li>)}</ol>}</details>
+    <details><summary>詳細を見る</summary><div className="review-explanation"><span>なぜ復習するか</span><p>{item.review_reason}</p><span>詳しい手順</span><p>{item.review_instruction}</p></div>
+      {!!item.review_steps?.length&&<ol>{item.review_steps.map((step,index)=><li key={`${index}-${step}`}>{step}</li>)}</ol>}
+      <div className="related-detail"><span>関連S/A・過去問対応</span><p>{item.requires_s_check&&item.linked_s_problem_ids?.length?`関連S：${item.linked_s_problem_ids.join(" / ")}`:"今回の関連問題確認は不要です。"}</p></div>
+    </details>
   </div>;
 }
 function ReviewOutcomeModal({item,busy,close,save}:{item:Partial<Review&Task>;busy:boolean;close:()=>void;save:(body:Record<string,unknown>)=>void}) {
   const [result,setResult]=useState<"success"|"partial"|"failed">("success");
-  const [hint,setHint]=useState(false);
+  const [reference,setReference]=useState<ReferenceState>(()=>readReferenceState(item.id));
   const [afterHint,setAfterHint]=useState(false);
   const [minutes,setMinutes]=useState(String(item.estimated_minutes||item.minutes||5));
+  const chooseReference=(level:ReferenceLevel)=>{
+    const next=referenceStateAtLevel(level);
+    setReference(next);rememberReferenceState(item.id,next);setAfterHint(false);
+    if(level>=3&&result==="success") setResult("partial");
+  };
+  const effectiveResult=referenceCompletion(result,reference,afterHint);
+  const hint=reference.reference_level>1;
   return <Modal title="復習結果を記録" close={close}><div className="review-outcome">
     <p>実際にどこまで自力で再現できたかを記録します。この結果で次回の復習間隔が変わります。</p>
     <div className="outcome-choices">{[["success","自力で再現できた"],["partial","一部だけできた"],["failed","できなかった"]].map(([key,label])=><button type="button" key={key} className={result===key?`selected ${key}`:""} onClick={()=>setResult(key as typeof result)}>{label}</button>)}</div>
-    <label className="outcome-check"><input type="checkbox" checked={hint} onChange={event=>{setHint(event.target.checked);if(!event.target.checked)setAfterHint(false)}}/><span>解説・ノート・ヒントを見た</span></label>
+    <div className="outcome-reference"><span>どこまで見たか</span><div>{([1,2,3,4,5] as ReferenceLevel[]).map(level=><button type="button" key={level} className={reference.reference_level===level?"selected":""} onClick={()=>chooseReference(level)}>{level}. {referenceLabels[level]}</button>)}</div></div>
     {hint&&<label className="outcome-check"><input type="checkbox" checked={afterHint} onChange={event=>setAfterHint(event.target.checked)}/><span>閉じた後に該当部分を白紙から再現した</span></label>}
     <Field label="実際にかかった時間（分）"><input type="number" min="0" value={minutes} onChange={event=>setMinutes(event.target.value)}/></Field>
-    <div className="outcome-preview"><strong>次回間隔</strong><span>{result==="failed"?"翌日に戻す":result==="partial"?"前回間隔を短縮":hint?"緩やかに延長":"自力成功として大きく延長"}</span></div>
-    {hint&&result==="success"&&!afterHint&&<p className="outcome-hint-warning">ヒントあり成功には、閉じた後の白紙再現が必要です。未実施なら「一部だけできた」を選んでください。</p>}
-    <div className="form-actions"><button className="ghost" onClick={close}>キャンセル</button><button className="primary" disabled={busy||hint&&result==="success"&&!afterHint} onClick={()=>save({result,hint_used:hint,after_hint_reproduced:afterHint,time_minutes:Number(minutes||0)})}>結果を保存</button></div>
+    <div className="outcome-preview"><strong>保存時の扱い</strong><span>{reference.reference_level>=4?"完了にせず、3日後に再確認":reference.reference_level===3?"完了にせず、短期再確認":effectiveResult==="failed"?"翌日に戻す":effectiveResult==="partial"?"前回間隔を短縮":reference.reference_level===2?"軽い補助ありで完了":"ヒントなし完了"}</span></div>
+    {reference.reference_level===2&&result==="success"&&!afterHint&&<p className="outcome-hint-warning">1行ヒントありで完了するには、閉じた後の白紙再現が必要です。</p>}
+    {reference.reference_level>=3&&<p className="outcome-hint-warning">前回ミス・公式解答・GPT解説を見た場合は完了扱いにしません。今回は補修として保存します。</p>}
+    <div className="form-actions"><button className="ghost" onClick={close}>キャンセル</button><button className="primary" disabled={busy||reference.reference_level===2&&result==="success"&&!afterHint} onClick={()=>save({
+      result:effectiveResult,hint_used:hint,hint_level:promptHintLevel(reference.reference_level),
+      after_hint_reproduced:afterHint,time_minutes:Number(minutes||0),...reference
+    })}>結果を保存</button></div>
   </div></Modal>;
 }
 function PostponeReviewModal({item,busy,close,save}:{item:Partial<Review&Task>;busy:boolean;close:()=>void;save:(body:Record<string,unknown>,label:string)=>void}) {
@@ -265,16 +303,27 @@ function TodayView({data,busy,run,go}:{data:Bootstrap;busy:boolean;run:(a:()=>Pr
   const [reviewTask,setReviewTask]=useState<Task|null>(null);
   const [postponeTask,setPostponeTask]=useState<Task|null>(null);
   const saveReview=(body:Record<string,unknown>)=>{if(!reviewTask?.id)return;const id=reviewTask.id;setReviewTask(null);
+    sessionStorage.removeItem(referenceStorageKey(id));
     run(()=>post(`/api/reviews/${id}/complete`,body),"復習結果を保存し、次回間隔を再計算しました")};
   const postponeReview=(body:Record<string,unknown>,label:string)=>{if(!postponeTask?.id)return;const id=postponeTask.id;setPostponeTask(null);
     run(()=>post(`/api/reviews/${id}/postpone`,body),`復習を${label}へ送りました`)};
+  const triageGroups=data.today.warning?[
+    {key:"must",label:"今日必ずやる",description:"K・N・過去問直結の必修Aを優先",tasks:data.today.tasks.filter(task=>task.triage==="must")},
+    {key:"if_time",label:"余裕があればやる",description:"目標時間内に収まるW・C・通常課題",tasks:data.today.tasks.filter(task=>task.triage==="if_time")},
+    {key:"tomorrow",label:"明日に送る",description:"C・none・Sメンテなど優先度が低い順",tasks:data.today.tasks.filter(task=>task.triage==="tomorrow")}
+  ].filter(group=>group.tasks.length):[{key:"today",label:"今日の課題",description:"",tasks:data.today.tasks}];
   return <>
-    <div className="page-intro"><div><p>課題を終えたらチェックを付け、GPTの採点結果を取り込んでください。</p><button className="text-btn" onClick={()=>go("import")}><ClipboardPaste size={15}/>GPT採点結果を取り込む</button></div><div className={`load-pill ${data.today.plannedMinutes>data.today.targetMinutes+30?"over":""}`}><Gauge/><div><span>予定合計／目標</span><strong>{data.today.plannedMinutes} / {data.today.targetMinutes}分</strong><small>記録済み {data.today.actualMinutes}分・未完了 {data.today.remainingMinutes}分</small></div></div></div>
+    <div className="page-intro"><div><p>課題を終えたらチェックを付け、GPTの採点結果を取り込んでください。</p><button className="text-btn" onClick={()=>go("import")}><ClipboardPaste size={15}/>GPT採点結果を取り込む</button></div><div className={`load-pill ${data.today.plannedMinutes>data.today.targetMinutes?"over":""}`}><Gauge/><div><span>予定合計／目標</span><strong>{data.today.plannedMinutes} / {data.today.targetMinutes}分</strong><small>記録済み {data.today.actualMinutes}分・未完了 {data.today.remainingMinutes}分</small></div></div></div>
     {data.today.warning&&<div className="warning"><AlertTriangle/><div><strong>詰め込みすぎです</strong><p>{data.today.warning}</p></div></div>}
+    {data.today.warning&&<div className="triage-summary">
+      <div className="must"><span>今日必ずやる</span><strong>{data.today.triageMinutes?.must||0}分</strong></div>
+      <div className="if-time"><span>余裕があれば</span><strong>{data.today.triageMinutes?.if_time||0}分</strong></div>
+      <div className="tomorrow"><span>明日に送る</span><strong>{data.today.triageMinutes?.tomorrow||0}分</strong></div>
+    </div>}
     {!data.today.warning&&<div className="time-guidance"><Clock3 size={16}/><span>{data.today.guidance}</span></div>}
     <section className="panel">
       <div className="table-wrap"><table><thead><tr><th>種類</th><th>問題</th><th>推奨モード</th><th>予定時間</th><th>理由</th><th/></tr></thead>
-      <tbody>{data.today.tasks.map((t,i)=><TodayTaskRows key={`${t.problem_id}-${i}`} task={t} busy={busy} run={run} date={data.dashboard.today} onReview={setReviewTask} onPostpone={setPostponeTask}/>)}</tbody></table></div>
+      {triageGroups.map(group=><tbody key={group.key} className={`triage-group ${group.key}`}><tr className="triage-heading"><td colSpan={6}><strong>{group.label}</strong>{group.description&&<span>{group.description}</span>}</td></tr>{group.tasks.map((t,i)=><TodayTaskRows key={`${t.problem_id}-${i}`} task={t} busy={busy} run={run} date={data.dashboard.today} onReview={setReviewTask} onPostpone={setPostponeTask}/>)}</tbody>)}</table></div>
       {!data.today.tasks.length&&<Empty>今日の課題は完了しました</Empty>}
     </section>
     {reviewTask&&<ReviewOutcomeModal item={reviewTask} busy={busy} close={()=>setReviewTask(null)} save={saveReview}/>}
@@ -473,7 +522,7 @@ function ReviewsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>
       previous_errors:source?.error_types||[source?.error_type||"none"],previous_error_point:source?.error_point||"",previous_next_action:source?.next_action||"",
       previous_improvement_guidance:source?.improvement_guidance||"",previous_required_derivation:source?.required_derivation||""};
   };
-  const saveReview=(body:Record<string,unknown>)=>{if(!selectedReview)return;const id=selectedReview.id;setSelectedReview(null);run(()=>post(`/api/reviews/${id}/complete`,body),"復習結果を保存し、次回間隔を再計算しました")};
+  const saveReview=(body:Record<string,unknown>)=>{if(!selectedReview)return;const id=selectedReview.id;setSelectedReview(null);sessionStorage.removeItem(referenceStorageKey(id));run(()=>post(`/api/reviews/${id}/complete`,body),"復習結果を保存し、次回間隔を再計算しました")};
   const postpone=(body:Record<string,unknown>,label:string)=>{if(!postponeReviewItem)return;const id=postponeReviewItem.id;setPostponeReviewItem(null);
     run(()=>post(`/api/reviews/${id}/postpone`,body),`復習を${label}へ送りました`)};
   return <><div className="toolbar"><div className="segmented">{[["open","未完了"],["overdue","期限切れ"],["done","完了"],["all","すべて"]].map(([k,v])=><button key={k} className={filter===k?"active":""} onClick={()=>setFilter(k)}>{v}</button>)}</div></div><div className="review-list">{rows.map(r=><article className="panel review-card" key={r.id}><div className="review-card-head"><div><Badge tone={r.status==="overdue"?"red":r.status==="done"?"green":""}>{r.status==="overdue"?"期限切れ":r.status==="done"?"完了":"予定"}</Badge><h3>{pmap[r.problem_id]?.display_label||pmap[r.problem_id]?.title||r.problem_id}</h3><span>{r.problem_id} ・ 次回復習 {r.due_date}{r.postponed_count?` ・ 後ろへ送った回数 ${r.postponed_count}`:""}{r.completion_result?` ・ 結果 ${r.completion_result}`:""}</span></div>{r.status==="done"?(r.completion_result?<Badge tone="green">結果記録済み</Badge>:<button disabled={busy} className="small ghost" onClick={()=>run(()=>post(`/api/reviews/${r.id}/pending`,{}),"未完了に戻しました")}>未完了に戻す</button>):<div className="review-card-actions"><button disabled={busy} className="small ghost" onClick={()=>setPostponeReviewItem(r)}><CalendarClock size={14}/>後ろへ送る</button><button disabled={busy} className="small primary" onClick={()=>setSelectedReview(r)}><Check size={14}/>復習結果を記録</button></div>}</div><ReviewPlanDetails item={reviewPromptItem(r)}/></article>)}</div>{!rows.length&&<section className="panel"><Empty>該当する復習予定はありません</Empty></section>}{selectedReview&&<ReviewOutcomeModal item={selectedReview} busy={busy} close={()=>setSelectedReview(null)} save={saveReview}/>} {postponeReviewItem&&<PostponeReviewModal item={postponeReviewItem} busy={busy} close={()=>setPostponeReviewItem(null)} save={postpone}/>}</>
