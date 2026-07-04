@@ -92,7 +92,7 @@ export function reviewAim(item:ReviewItem){
     case "N": return "前回不足した説明や途中式を、答えを見ずに答案として再現できるか確認する。";
     case "W": return "落とした作業を、範囲・条件・符号に注意して自力でやり直せるか確認する。";
     case "C": return "同じ型で確認項目を使い、ケアレスミスを防げるか確認する。";
-    default: return "型・出発式・結論の流れを短時間で自力確認する。";
+    default: return "型・初手・今見る量・注意点を短時間で自力確認する。";
   }
 }
 
@@ -114,7 +114,8 @@ export function safeReviewActions(item:ReviewItem){
   ];
   switch(primaryError(item)){
     case "K": return [
-      "問題文だけを見て、型・出発式・主役・条件・結論の枠を書く",
+      "問題文だけを見て、方針・出発式・今見る量・条件・道具・流れを書く",
+      "最後に示すことを種類・方向だけで書き、具体的な最終式は出さない",
       "詰まった場合も、最初は1行ヒントまでに留める"
     ];
     case "N": return [
@@ -130,7 +131,7 @@ export function safeReviewActions(item:ReviewItem){
       "問題全体ではなく、該当箇所だけを短時間で見直す"
     ];
     default: return [
-      "型・出発式・主役・結論だけを確認する",
+      "型・初手・今見る量・注意点だけを確認する",
       "問題なければフル答案には進まず終了する"
     ];
   }
@@ -145,7 +146,9 @@ export function completionChecklist(item:ReviewItem){
   ];
   switch(primaryError(item)){
     case "K": return [
-      "型・出発式・主役・条件・結論の枠を書いた",
+      "方針・出発式・今見る量・条件・道具・流れを書いた",
+      "最後に示すことを具体式なしで書いた",
+      "ここから先は計算と区切った",
       "必要部分を何も見ずに再現した",
       "GPT採点を実行した",
       "復習結果を保存した"
@@ -170,7 +173,7 @@ export function completionChecklist(item:ReviewItem){
       "結果を記録した"
     ];
     default: return [
-      "型・出発式・結論を自力で確認した",
+      "型・初手・今見る量・注意点を自力で確認した",
       "必要以上に解き直さなかった",
       "復習結果を保存した"
     ];

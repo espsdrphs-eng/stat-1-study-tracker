@@ -14,7 +14,7 @@ test("K/N/W/C/noneの間隔と復習方法を生成する",()=>{
     [["N"],2,"ノート補修＋骨格再現",18],
     [["W"],3,"該当作業だけ再演習",12],
     [["C"],7,"チェックリスト確認",7],
-    [[],14,"軽い骨格確認",5]
+    [[],14,"軽い想起チェック",5]
   ];
   for(const [errors,days,method,minutes] of cases){
     const plan=createAttemptReviewPlan(update(errors),["WB-2-S-06"]);
@@ -103,7 +103,7 @@ test("S問題は記憶状態ごとの間隔と方法になる",()=>{
     const plan=createSReviewPlan(state);
     return [plan.interval_days,plan.review_method,plan.estimated_minutes];
   }),[
-    [30,"3分チェック",3],[14,"5分骨格確認",5],
+    [30,"3分チェック",3],[14,"5分チェック",5],
     [3,"10分骨格再構築",10],[1,"10〜20分復旧",20]
   ]);
 });

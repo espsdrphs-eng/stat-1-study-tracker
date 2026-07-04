@@ -96,6 +96,8 @@ export type StudyUpdate = {
   primary_error_type?:string; secondary_error_type?:string; review_reason?:string;
   weak_note?:{theme:string;error_type:string;mistake:string;correction_rule:string};
   weak_notes?:Array<{theme:string;error_type:string;mistake:string;correction_rule:string}>;
+  s_check_suggestions?:Array<{problem_id?:string;reason?:string}>;
+  date_expression_warnings?:string[]; date_expressions_removed?:boolean;
   source_text?:string; auto_imported?:boolean; import_confidence?:number;
   grading_confidence?:number|null; rubric_version?:string; uncertain_points?:string[];
   generated_from_review_id?:number; review_outcome?:"success"|"partial"|"failed"; hint_used?:boolean;

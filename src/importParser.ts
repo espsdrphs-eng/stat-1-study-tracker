@@ -1,8 +1,8 @@
 import yaml from "js-yaml";
 import type { Problem, StudyUpdate } from "./types";
 import { japaneseizeMathText } from "./mathJapanese.ts";
+import { reviewDaysForErrors, sanitizeStudyUpdateTiming } from "./reviewTiming.ts";
 
-const errorIntervals:Record<string,number>={K:1,N:2,W:3,C:7,none:14};
 const errorPriority=["K","N","W","C"];
 
 export const todayString=()=>new Intl.DateTimeFormat("sv-SE",{
@@ -54,11 +54,12 @@ function normalizeErrors(values:unknown){
 }
 function normalizeMode(value:unknown,text:string){
   const raw=scalar(value).trim();
-  if(["skeleton","main_calc","full","scan","exam_90min"].includes(raw)) return raw;
+  if(["check","skeleton","main_calc","full","scan","exam_90min"].includes(raw)) return raw;
   if(/90分|3問答案/.test(raw)) return "exam_90min";
   if(/5問スキャン|選題|スキャン/.test(raw)) return "scan";
   if(/主要計算|途中式/.test(raw)) return "main_calc";
   if(/骨格/.test(raw)) return "skeleton";
+  if(/チェック|確認のみ|想起確認/.test(raw)) return "check";
   if(/詳細|総合|フル|答案/.test(raw)) return "full";
   return inferMode(text);
 }
@@ -68,6 +69,7 @@ function inferMode(text:string){
   if(/総合評価|点数|記述|本番で選ぶべきか/.test(text)) return "full";
   if(/主要計算|途中式/.test(text)) return "main_calc";
   if(/骨格答案|骨格/.test(text)) return "skeleton";
+  if(/チェックモード|確認のみ|想起確認/.test(text)) return "check";
   return "full";
 }
 function parseThemes(raw:string){
@@ -158,9 +160,9 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
   const diagnostic=extractLine(text,/該当/);
   const errors=normalizeErrors(raw.error_types??raw.primary_error_type??raw.error_type??diagnostic);
   const shortestError=[...errors].sort((a,b)=>errorPriority.indexOf(a)-errorPriority.indexOf(b))[0]||"none";
-  const primary=scalar(raw.primary_error_type)||shortestError;
+  const primary=shortestError;
   const secondary=scalar(raw.secondary_error_type)||errors.find(error=>error!==primary)||"";
-  const days=raw.review_after_days!=null?Number(raw.review_after_days):(errorIntervals[shortestError]??14);
+  const days=reviewDaysForErrors(errors);
   const mark=scalar(raw.mark)||markFromScore(scoreNumeric);
   const rawResultSummary=scalar(raw.result_summary)||extractLine(text,/最終結論/);
   const resultSummary=japaneseizeMathText(rawResultSummary);
@@ -202,13 +204,18 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
   const localizedWeakNotes=weakNotes.map(note=>({
     ...note,mistake:japaneseizeMathText(note.mistake),correction_rule:japaneseizeMathText(note.correction_rule)
   }));
+  const sCheckSuggestions=Array.isArray(raw.s_check_suggestions)?raw.s_check_suggestions.map(item=>{
+    if(!item||typeof item!=="object") return {reason:japaneseizeMathText(scalar(item))};
+    const suggestion=item as Record<string,unknown>;
+    return {problem_id:canonicalProblemId(scalar(suggestion.problem_id)),reason:japaneseizeMathText(scalar(suggestion.reason))};
+  }).filter(item=>item.problem_id||item.reason):[];
   const display=master?problemDisplayLabel({...master,difficulty}):candidate.startsWith("PY-")
     ? `${candidate.match(/PY-(\d{4})/)?.[1]}年問${problemNumber}`
     : chapter&&category?`第${chapter}章${category}問${problemNumber}${difficulty!=null?`（難${difficulty}）`:""}`:candidate;
   const confidence=[candidate,master,scoreText||scoreNumeric!=null,errors.length,themes.length].filter(Boolean).length/5;
   const gradingConfidenceRaw=raw.grading_confidence??raw.confidence;
   const gradingConfidence=gradingConfidenceRaw==null?null:Math.min(1,Number(gradingConfidenceRaw)>1?Number(gradingConfidenceRaw)/100:Number(gradingConfidenceRaw));
-  return {
+  const normalized:StudyUpdate={
     problem_id:candidate,date:scalar(raw.date)==="auto_today"||!raw.date?todayString():scalar(raw.date),
     mode,time_minutes:raw.time_minutes==null?undefined:Number(raw.time_minutes),mark,score_label:scoreLabel(scoreText,scoreNumeric),error_type:primary,error_point:errorPoint,next_action:nextAction,
     display_label:scalar(raw.display_label)||display,source_type:master?.source_type||(candidate.startsWith("PY-")?"past_exam":"whitebook"),
@@ -224,6 +231,7 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
     error_types:errors,primary_error_type:primary,secondary_error_type:secondary,
     review_after_days:days,review_reason:shortestError==="none"?"ミス分類なしのため14日後":`${shortestError}が含まれるため${days}日後`,
     weak_note:localizedWeakNotes[0],weak_notes:localizedWeakNotes,correction_rule:localizedWeakNotes[0]?.correction_rule,source_text:text,auto_imported:true,
+    s_check_suggestions:sCheckSuggestions,
     grading_confidence:Number.isFinite(gradingConfidence)?gradingConfidence:null,
     rubric_version:scalar(raw.rubric_version),uncertain_points:stringArray(raw.uncertain_points),
     generated_from_review_id:raw.generated_from_review_id==null?undefined:Number(raw.generated_from_review_id),
@@ -243,6 +251,7 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
       rawImprovementGuidance!==improvementGuidance||rawRequiredDerivation!==requiredDerivation||rawCorrectedAnswer!==correctedAnswer||
       weakNotes.some((note,index)=>note.mistake!==localizedWeakNotes[index]?.mistake||note.correction_rule!==localizedWeakNotes[index]?.correction_rule)
   };
+  return sanitizeStudyUpdateTiming(normalized);
 }
 
 function extractStructured(text:string){

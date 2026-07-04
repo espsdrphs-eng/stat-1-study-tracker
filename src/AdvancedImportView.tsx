@@ -4,10 +4,10 @@ import { post } from "./api";
 import { applyProblemMaster, parseStudyText, problemDisplayLabel, todayString } from "./importParser";
 import { createAttemptReviewPlan } from "./reviewRules";
 import { buildGradingPrompt, GRADING_RUBRIC_VERSION, REVIEW_RUBRIC_VERSION } from "./gradingPrompt";
+import { reviewDaysForErrors, sanitizeStudyUpdateTiming, timingWarningMessage, timingWarnings } from "./reviewTiming";
 import type { Attempt, Problem, Review, StudyUpdate } from "./types";
 
-const modes:Record<string,string>={skeleton:"骨格",main_calc:"主要計算",full:"フル答案",scan:"スキャン",exam_90min:"90分演習"};
-const intervals:Record<string,number>={K:1,N:2,W:3,C:7,none:14};
+const modes:Record<string,string>={check:"チェック",skeleton:"骨格",main_calc:"主要計算",full:"フル答案",scan:"スキャン",exam_90min:"90分演習"};
 const priority=["K","N","W","C"];
 const reviewDate=(update:StudyUpdate,days:number)=>{
   const date=new Date(`${update.date}T12:00:00`);
@@ -17,6 +17,7 @@ const reviewDate=(update:StudyUpdate,days:number)=>{
 const missingRequiredFields=(update:StudyUpdate,hasPreviousTarget=false)=>{
   const errors=update.error_types||[];
   const hasError=errors.length>0||(update.primary_error_type||update.error_type)!=="none";
+  const needsDerivation=["main_calc","full","exam_90min"].includes(update.mode)||errors.some(error=>["W","N"].includes(error));
   const usesDetailedFeedback=[GRADING_RUBRIC_VERSION,REVIEW_RUBRIC_VERSION].includes(update.rubric_version||"");
   const strictReview=update.rubric_version===REVIEW_RUBRIC_VERSION;
   const invalidSuccessProof=hasPreviousTarget&&update.review_outcome==="success"&&(
@@ -36,7 +37,7 @@ const missingRequiredFields=(update:StudyUpdate,hasPreviousTarget=false)=>{
     hasError&&!update.error_point.trim()?"ミス内容":"",
     hasError&&!update.next_action.trim()?"次回課題":"",
     usesDetailedFeedback&&!update.improvement_guidance?.trim()?"次回の直し方":"",
-    usesDetailedFeedback&&!update.required_derivation?.trim()?"必要な途中計算":"",
+    usesDetailedFeedback&&needsDerivation&&!update.required_derivation?.trim()?"採点対象に必要な途中計算":"",
     usesDetailedFeedback&&!update.corrected_answer?.trim()?"修正版答案":"",
     usesDetailedFeedback&&!["full","conditional_full"].includes(update.evaluation_scope||"")?"採点範囲":"",
     usesDetailedFeedback&&!update.graded_parts?.length?"実際に採点した部分":"",
@@ -87,7 +88,7 @@ export default function AdvancedImportView({problems,attempts,reviews,run,busy}:
   const changeErrors=(index:number,value:string)=>{
     const errors=[...new Set((value.toUpperCase().match(/\b[KWNC]\b/g)||[]))].sort((a,b)=>priority.indexOf(a)-priority.indexOf(b));
     const primary=errors[0]||"none",secondary=errors[1]||"";
-    const days=intervals[primary]||14;
+    const days=reviewDaysForErrors(errors);
     setUpdates(rows=>rows.map((row,i)=>i===index?{...row,error_types:errors,primary_error_type:primary,
       secondary_error_type:secondary,error_type:primary,review_after_days:days,
       review_reason:primary==="none"?"ミス分類なしのため14日後":`${primary}が含まれるため${days}日後`}:row));
@@ -101,7 +102,7 @@ export default function AdvancedImportView({problems,attempts,reviews,run,busy}:
   };
   const canSave=updates.length>0&&updates.every(row=>missingRequiredFields(row,hasPreviousTarget(row)).length===0);
   const saveUpdates=async()=>{
-    const snapshot=[...updates];
+    const snapshot=updates.map(sanitizeStudyUpdateTiming);
     const ok=await run(()=>post("/api/import",{updates:snapshot}),`${snapshot.length}件を保存しました`);
     if(!ok)return;
     setText("");
@@ -144,6 +145,7 @@ export default function AdvancedImportView({problems,attempts,reviews,run,busy}:
           const related=update.related_s_problem_ids||[];
           const errors=update.error_types||[];
           const reviewPlan=createAttemptReviewPlan(update,related);
+          const dateWarnings=[...new Set([...(update.date_expression_warnings||[]),...timingWarnings(update)])];
           const missing=missingRequiredFields(update,hasPreviousTarget(update));
           const isReviewImport=!!update.generated_from_review_id||update.rubric_version===REVIEW_RUBRIC_VERSION;
           const expectedRubric=isReviewImport?REVIEW_RUBRIC_VERSION:GRADING_RUBRIC_VERSION;
@@ -171,6 +173,7 @@ export default function AdvancedImportView({problems,attempts,reviews,run,busy}:
             <div className="extracted-block"><span>主テーマ</span><div>{(update.themes||[]).map(theme=><Pill key={theme}>{theme}</Pill>)}{!update.themes?.length&&"—"}</div></div>
             <Field label="ミス内容" wide><textarea readOnly={!editing} value={update.error_point} onChange={event=>change(index,"error_point",event.target.value)}/></Field>
             <Field label="次回課題" wide><textarea readOnly={!editing} value={update.next_action} onChange={event=>change(index,"next_action",event.target.value)}/></Field>
+            {!!dateWarnings.length&&<div className="timing-warning"><AlertTriangle size={17}/><div><strong>{timingWarningMessage}</strong><span>検出・自動除去：{dateWarnings.join(" / ")}</span></div></div>}
             {(update.evaluation_scope||update.graded_parts?.length||update.assumed_correct_parts?.length)&&<div className="grading-scope-summary">
               <span>採点範囲 <strong>{update.evaluation_scope==="full"?"フル答案":"条件付きフル評価"}</strong></span>
               <span>実際に確認 <strong>{update.graded_parts?.join(" / ")||"記載なし"}</strong></span>
@@ -181,7 +184,7 @@ export default function AdvancedImportView({problems,attempts,reviews,run,busy}:
               <summary>修正版答案・途中計算・判定根拠を確認</summary>
               <div className="detailed-feedback-body">
               <Field label="今回の答案に沿った修正版答案" wide><textarea readOnly={!editing} value={update.corrected_answer||""} onChange={event=>change(index,"corrected_answer",event.target.value)} placeholder="今回の答案の正しい部分を残した修正版"/></Field>
-              <Field label="省略してはいけない途中計算" wide><textarea readOnly={!editing} value={update.required_derivation||""} onChange={event=>change(index,"required_derivation",event.target.value)} placeholder="結論を自力で導くために必要な式変形"/></Field>
+              <Field label="採点対象に必要な途中計算" wide><textarea readOnly={!editing} value={update.required_derivation||""} onChange={event=>change(index,"required_derivation",event.target.value)} placeholder={update.mode==="skeleton"||update.mode==="check"?"このモードで計算が対象外なら空欄でよい":"結論を自力で導くために必要な式変形"}/></Field>
               <Field label="次回の直し方" wide><textarea readOnly={!editing} value={update.improvement_guidance||""} onChange={event=>change(index,"improvement_guidance",event.target.value)} placeholder="残す部分・置き換える部分・何も見ずに書く部分"/></Field>
               {isReviewImport&&<div className="resolution-proof">
                 <div><span>前回課題</span><strong>{update.target_issue_resolved?"解消":"未解消または未確認"}</strong></div>

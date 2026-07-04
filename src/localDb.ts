@@ -7,6 +7,7 @@ import { postponedDueDate } from "./reviewScheduling.ts";
 import { applyWeakNoteQuizResult } from "./weakNoteQuiz.ts";
 import { selectMixedPractice } from "./studyScheduler.ts";
 import { triageTodayTasks } from "./studyTriage.ts";
+import { removeTimingExpressions, sanitizeStudyUpdateTiming } from "./reviewTiming.ts";
 import { buildProgressPlan, daysUntilExam } from "./studyProgress.ts";
 import { CHAPTER_META, officialProblemEntries, PAST_EXAM_YEAR_ORDER, STRATEGY_A_PLUS_ORDER, STRATEGY_S_ORDER, strategyRankFor } from "./officialMaster.ts";
 import { REVIEW_RUBRIC_VERSION } from "./gradingPrompt.ts";
@@ -309,7 +310,7 @@ const repairRules:[string,string[],string[]][] = [
   ["回帰検定",["WB-7-A-22"],[]],["信頼区間",["WB-8-A-13","WB-8-A-14"],[]]
 ];
 
-const loadFor=(mode:string)=>({skeleton:.5,main_calc:.8,full:1.2,scan:.6,exam_90min:3}[mode]??.5);
+const loadFor=(mode:string)=>({check:.2,skeleton:.5,main_calc:.8,full:1.2,scan:.6,exam_90min:3}[mode]??.5);
 const todayString=()=>new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Tokyo",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
 const addDays=(date:string,days:number)=>{
   const d=new Date(`${date}T12:00:00`);d.setDate(d.getDate()+Number(days));
@@ -365,9 +366,10 @@ async function addOrReplaceReview(review:ReviewInsert){
 }
 
 async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
+  input={...input,...sanitizeStudyUpdateTiming(input)};
   const problem=await db.problems.get(input.problem_id);
   if(!problem) throw new Error(`未登録の問題IDです: ${input.problem_id}`);
-  if(input.generated_from_review_id&&[REVIEW_RUBRIC_VERSION,"STAT1-REVIEW-v5","STAT1-REVIEW-v4"].includes(input.rubric_version||"")){
+  if(input.generated_from_review_id&&[REVIEW_RUBRIC_VERSION,"STAT1-REVIEW-v6","STAT1-REVIEW-v5","STAT1-REVIEW-v4"].includes(input.rubric_version||"")){
     const review=await db.reviews.get(input.generated_from_review_id);
     const source=review?await db.attempts.get(review.generated_from_attempt_id):undefined;
     const previousErrors=source?normalizedErrors(source):[];
@@ -520,7 +522,7 @@ async function updateAttemptAnalysis(id:number,body:Record<string,unknown>){
     (!note.generated_from_attempt_id&&note.problem_id===attempt.problem_id&&note.date===attempt.date));
   const errors=editedErrors(body.error_types,attempt.error_type),primary=errors[0];
   const date=String(body.date||attempt.date),errorPoint=japaneseizeMathText(String(body.error_point??attempt.error_point)),
-    nextAction=japaneseizeMathText(String(body.next_action??attempt.next_action));
+    nextAction=removeTimingExpressions(japaneseizeMathText(String(body.next_action??attempt.next_action)));
   const scoreValue=body.score_numeric??attempt.score_numeric;
   const updated:Attempt={...attempt,date,mode:String(body.mode||attempt.mode),
     time_minutes:body.time_minutes===""||body.time_minutes==null?attempt.time_minutes:Number(body.time_minutes),
@@ -751,13 +753,15 @@ async function bootstrap():Promise<Bootstrap>{
     const p=pmap.get(r.problem_id)!;const source=attempts.find(a=>a.id===r.generated_from_attempt_id);
     const defaultMinutes=r.estimated_minutes||r.duration_minutes||20;
     const minutes=source?.is_review_attempt&&source.time_minutes>0?Math.max(3,Math.round((defaultMinutes+source.time_minutes)/2)):defaultMinutes;
+    const reviewMode=r.requires_full_answer?"exam_90min":r.review_type==="main_calc_retry"?"main_calc":
+      ["careless_check","light_check"].includes(r.review_type)||(/軽い骨格確認|軽い想起チェック|月1回の軽い/.test(r.review_method||""))||
+      r.review_type==="s_check"&&(/3分|5分チェック|5分骨格確認/.test(r.review_method||""))?"check":"skeleton";
     return {...r,title:p?.display_label||p?.title||(r.generated_from_past_session_id?`${r.problem_id.replace("-SESSION","")} 過去問演習`:r.problem_id),theme:p?.theme||"",error_type:source?.error_type,
       previous_date:source?.date,previous_score:source?`${source.score_text||source.score_label}${source.score_numeric!=null?` ${source.score_numeric}点`:""}`:"",
       previous_errors:source?.error_types||[source?.error_type||"none"],previous_error_point:source?.error_point||"",previous_next_action:source?.next_action||"",
       previous_improvement_guidance:source?.improvement_guidance||"",previous_required_derivation:source?.required_derivation||"",
       kind:r.review_type==="s_check"?"S確認":r.generated_from_past_session_id?"過去問復習":"復習",reason:r.status==="overdue"?`期限切れ（${r.due_date}）`:"本日が復習日",
-      mode:r.requires_full_answer?"exam_90min":r.review_type==="s_check"?"skeleton":r.review_type==="main_calc_retry"?"main_calc":r.review_type==="careless_check"?"scan":"skeleton",
-      minutes,estimated_minutes:minutes,load:loadFor(r.requires_full_answer?"exam_90min":r.review_type==="main_calc_retry"?"main_calc":r.review_type==="careless_check"?"scan":"skeleton")};
+      mode:reviewMode,minutes,estimated_minutes:minutes,load:loadFor(reviewMode)};
   }).sort((a,b)=>(a.status==="overdue"&&a.error_type==="K"?0:1)-(b.status==="overdue"&&b.error_type==="K"?0:1)||
     Number(a.manual_order||0)-Number(b.manual_order||0));
   const activeS=new Set(dueReviews.filter(r=>r.review_type==="s_check").map(r=>r.problem_id));

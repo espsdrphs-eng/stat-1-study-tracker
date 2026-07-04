@@ -65,18 +65,32 @@
 </head>
 <body>
 
+<section class="sheet" data-mode="check">
+  <header class="head"><div class="title"><h1>短時間チェックシート</h1><b>CHECK / 3–5 MIN</b></div><div class="meta"><span class="id"></span><span class="date"></span><span class="time"></span></div></header>
+  <div class="mode-note">思い出せるかだけを確認する。計算や完成答案は書かない。</div>
+  <main class="body" style="grid-template-rows:1.15in 1.15in 1.35in 1.35in 1.35in;">
+    <div class="box"><h2>型 <span class="hint">何の問題かを一言で</span></h2><div class="write"></div></div>
+    <div class="box"><h2>初手 <span class="hint">最初に置く式・考え方</span></h2><div class="write"></div></div>
+    <div class="box"><h2>今見る量 <span class="hint">主役の統計量・変数</span></h2><div class="write"></div></div>
+    <div class="box"><h2>注意点 <span class="hint">条件・符号・範囲など1点だけ</span></h2><div class="write"></div></div>
+    <div class="box light"><h2>自己確認</h2><div class="checks"><span><i></i>ヒントなしで言えた</span><span><i></i>1行ヒントで言えた</span><span><i></i>再確認が必要</span></div></div>
+  </main>
+  <div class="foot"><span>check は想起確認のみ。設計図は skeleton、計算は main_calc、完成答案は full を使う。</span><span>統計一級 STUDY TRACKER</span></div>
+</section>
+
 <section class="sheet" data-mode="skeleton">
   <header class="head"><div class="title"><h1>骨格答案シート</h1><b>SKELETON / 10–20 MIN</b></div><div class="meta"><span class="id"></span><span class="date"></span><span class="time"></span></div></header>
-  <div class="mode-note">フル計算はしない。答案の設計図を自力で再現する。</div>
-  <main class="body" style="grid-template-rows:.65in .95in .72in 1.04in 1.18in .78in;">
-    <div class="two"><div class="box"><h2>問題の型 <span class="hint">一言で分類</span></h2><div class="write"></div></div><div class="box"><h2>求めるもの・結論の形</h2><div class="write"></div></div></div>
+  <div class="mode-note">答案の設計図だけを書く。具体的な最終式・計算完了・完成答案は求めない。</div>
+  <main class="body" style="grid-template-rows:.64in .76in .68in .92in 1.05in .78in .62in;">
+    <div class="two"><div class="box"><h2>方針・入口 <span class="hint">何を使って進むか</span></h2><div class="write"></div></div><div class="box"><h2>最後に示すこと <span class="hint">結論の種類・方向だけ</span></h2><div class="write"></div></div></div>
     <div class="box"><h2>出発式</h2><div class="write"></div></div>
-    <div class="three"><div class="box"><h2>主役の統計量・変数</h2><div class="write"></div></div><div class="box"><h2>条件・仮定</h2><div class="write"></div></div><div class="box"><h2>使う定理・分布</h2><div class="write"></div></div></div>
-    <div class="box"><h2>解答の流れ <span class="hint">式または短文で5段階</span></h2><div class="steps"><div></div><div></div><div></div><div></div><div></div></div></div>
-    <div class="box"><h2>必要な式・主要計算の入口</h2><div class="grid"></div></div>
-    <div class="box light"><h2>最終結論</h2><div class="write"></div></div>
+    <div class="three"><div class="box"><h2>今見る量</h2><div class="write"></div></div><div class="box"><h2>先に確認すること</h2><div class="write"></div></div><div class="box"><h2>使う道具</h2><div class="write"></div></div></div>
+    <div class="box"><h2>解答の流れ <span class="hint">短文で5段階。計算結果は書かない</span></h2><div class="steps"><div></div><div></div><div></div><div></div><div></div></div></div>
+    <div class="box"><h2>ここから先は計算 <span class="hint">主要計算へ渡す入口だけを書く</span></h2><div class="grid"></div></div>
+    <div class="box light"><h2>ゴールの形 <span class="hint">具体的な最終式を書かず、示す対象だけ</span></h2><div class="write"></div></div>
+    <div class="box light"><h2>骨格の境界</h2><div class="checks"><span><i></i>最終式を出していない</span><span><i></i>積分・和を完了していない</span><span><i></i>完成答案を書いていない</span></div></div>
   </main>
-  <div class="foot"><span class="checks"><span><i></i>型</span><span><i></i>出発式</span><span><i></i>条件</span><span><i></i>統計量</span><span><i></i>定理</span><span><i></i>結論</span></span><span>統計一級 STUDY TRACKER</span></div>
+  <div class="foot"><span>具体的な最終式・計算完了は主要計算またはフル答案で扱う。</span><span>統計一級 STUDY TRACKER</span></div>
 </section>
 
 <section class="sheet" data-mode="main_calc">
@@ -151,14 +165,14 @@
 <section class="sheet" data-example="true">
   <header class="head"><div class="title"><h1>模範記入例 1：骨格答案</h1><b>SAMPLE / SKELETON</b></div><div class="meta"><span class="id">EX-NORMAL-MLE</span><span class="date">記入例</span><span class="time">8分</span></div></header>
   <main class="body" style="grid-template-rows:.72in .9in .82in 1.18in 1.12in .72in;">
-    <div class="two"><div class="box light"><h2>問題の型</h2><div class="sample">正規母平均の最尤推定</div></div><div class="box light"><h2>求めるもの・結論の形</h2><div class="sample">μ の最尤推定量　μ̂ = 標本平均</div></div></div>
+    <div class="two"><div class="box light"><h2>方針・入口</h2><div class="sample">尤度を作り、対数を取って母平均について最大化する。</div></div><div class="box light"><h2>最後に示すこと</h2><div class="sample">母平均の最尤推定量を示す。</div></div></div>
     <div class="box"><h2>出発式</h2><div class="sample sample-formula">L(μ)=∏ f(xᵢ;μ),　ℓ(μ)=定数 − (1/2σ²)Σ(xᵢ−μ)²</div></div>
-    <div class="three"><div class="box"><h2>主役</h2><div class="sample">対数尤度 ℓ(μ)<br>標本平均 x̄</div></div><div class="box"><h2>条件・仮定</h2><div class="sample">Xᵢ は独立同分布<br>N(μ,σ²)、σ²既知</div></div><div class="box"><h2>使う根拠</h2><div class="sample">スコア方程式<br>二階微分が負</div></div></div>
+    <div class="three"><div class="box"><h2>今見る量</h2><div class="sample">対数尤度 ℓ(μ)<br>母平均 μ</div></div><div class="box"><h2>先に確認すること</h2><div class="sample">Xᵢ は独立同分布<br>N(μ,σ²)、σ²既知</div></div><div class="box"><h2>使う道具</h2><div class="sample">スコア方程式<br>二階微分による最大確認</div></div></div>
     <div class="box"><h2>解答の流れ</h2><div class="steps sample"><div>尤度を書く</div><div>対数を取る</div><div>μで微分</div><div>0と置く</div><div>最大を確認</div></div></div>
-    <div class="box"><h2>主要計算の入口</h2><div class="sample sample-formula">dℓ/dμ = (1/σ²)Σ(xᵢ−μ)=0　⇒　μ̂=(1/n)Σxᵢ=x̄</div></div>
-    <div class="box light"><h2>最終結論</h2><div class="sample">d²ℓ/dμ²=−n/σ²&lt;0 より、最尤推定量は μ̂=x̄ である。</div></div>
+    <div class="box"><h2>ここから先は計算</h2><div class="sample">対数尤度を μ で微分し、スコア方程式を整理する。解を得た後、二階微分で最大を確認する。</div></div>
+    <div class="box light"><h2>ゴールの形</h2><div class="sample">MLEの種類を示し、それが尤度を最大にすることを確認する。具体的な最終式はここでは書かない。</div></div>
   </main>
-  <div class="foot"><span>骨格では「入口・主役・根拠・結論」が再現できればよい。長い計算は省略する。</span><span>統計一級 STUDY TRACKER</span></div>
+  <div class="foot"><span>骨格では設計図だけを再現する。計算結果や最終式は主要計算・フル答案へ分離する。</span><span>統計一級 STUDY TRACKER</span></div>
 </section>
 
 <section class="sheet" data-example="true">

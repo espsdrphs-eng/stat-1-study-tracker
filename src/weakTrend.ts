@@ -102,7 +102,7 @@ ${evidence}
 4. 回答後に「正誤・不足点・覚える1行」を簡潔に返してから次へ進んでください。
 5. K相当の崩れがあれば関連Sレベルへ戻り、W/N/Cなら該当部分だけを追加で1問出してください。
 6. 最後に、残った弱点、改善した点、次に戻る問題IDを一覧にしてください。
-7. 最後の一覧の後に、このアプリへ貼り戻せるYAMLを必ず付けてください。関連問題ごとに study_updates の配列を作り、problem_id、date、mode、mark、score_label、error_types、primary_error_type、error_point、next_action、review_after_days、themes、grading_confidence、rubric_version、uncertain_points、weak_notes を含めてください。rubric_version は "STAT1-QUIZ-v1" としてください。正確に判定できない項目は uncertain_points に入れ、推測で埋めないでください。
+7. 最後の一覧の後に、このアプリへ貼り戻せるYAMLを必ず付けてください。関連問題ごとに study_updates の配列を作り、problem_id、date、mode、mark、score_label、error_types、primary_error_type、error_point、next_action、review_after_days、themes、grading_confidence、rubric_version、uncertain_points、weak_notes を含めてください。next_action には日付や復習間隔を書かず、何をするかだけを書いてください。復習間隔は review_after_days にのみ入れてください。rubric_version は "STAT1-QUIZ-v1" としてください。正確に判定できない項目は uncertain_points に入れ、推測で埋めないでください。
 
 問題文そのものを知らない場合は、問題内容を推測せず、上記テーマの一般的な統計検定1級レベルの確認問題を作ってください。`;
 }

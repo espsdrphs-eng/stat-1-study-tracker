@@ -7,12 +7,22 @@ export type ReviewTemplate={
   title:string;
   fields:Array<{label:string;hint:string}>;
 };
+const skeletonFields=[
+  {label:"方針・入口",hint:"何を使って進めるかを一言で書く"},
+  {label:"出発式",hint:"最初に置く式を書く"},
+  {label:"今見る量",hint:"主役の統計量・変数を決める"},
+  {label:"先に確認すること",hint:"条件・定義域・仮定を確認する"},
+  {label:"使う道具",hint:"定理・分布・評価方法を書く"},
+  {label:"解答の流れ",hint:"計算前までの手順を短文で並べる"},
+  {label:"最後に示すこと",hint:"結論の種類・方向だけを書く。具体的な最終式は書かない"},
+  {label:"ここから先は計算",hint:"主要計算へ進む境界を明記する"}
+];
 
 export function reviewMode(item:ReviewItem){
   if(item.requires_full_answer) return "exam_90min";
   if(item.mode) return item.mode;
   if(item.review_type==="main_calc_retry") return "main_calc";
-  if(item.review_type==="careless_check") return "scan";
+  if(item.review_type==="careless_check") return "check";
   return "skeleton";
 }
 
@@ -28,21 +38,15 @@ export function reviewTemplate(item:ReviewItem):ReviewTemplate{
     ]
   };
   if(method.includes("骨格再現＋")) return {
-    sheetMode:"skeleton",sheetLabel:"骨格シート",title:"骨格の5項目",
-    fields:[
-      {label:"型",hint:"問題の型を一言で書く"},
-      {label:"出発式",hint:"最初に置く式を書く"},
-      {label:"主役",hint:"統計量・変数を決める"},
-      {label:"条件・定理",hint:"使う条件と定理を書く"},
-      {label:"結論",hint:"最後に示す形を書く"}
-    ]
+    sheetMode:"skeleton",sheetLabel:"骨格シート",title:"答案の設計図",
+    fields:skeletonFields
   };
   if(method.includes("ノート補修")) return {
     sheetMode:"skeleton",sheetLabel:"骨格シート",title:"ノート補修＋骨格",
     fields:[
       {label:"修正ルール1行",hint:"次回必ず書く規則を1行にする"},
       {label:"不足していた説明",hint:"前回省略した式または説明を補う"},
-      {label:"骨格",hint:"出発式から結論の形まで自力で書く"}
+      ...skeletonFields
     ]
   };
   if(method.includes("該当作業")) return {
@@ -54,20 +58,25 @@ export function reviewTemplate(item:ReviewItem):ReviewTemplate{
     ]
   };
   if(method.includes("チェックリスト")) return {
-    sheetMode:"scan",sheetLabel:"軽い確認",title:"再発防止欄",
+    sheetMode:"check",sheetLabel:"チェックシート",title:"再発防止欄",
     fields:[
       {label:"今回のミス",hint:"符号・係数・条件などを一言で書く"},
       {label:"確認項目",hint:"次回見るチェック項目を1つ作る"},
       {label:"該当箇所",hint:"問題の該当部分だけ見直す"}
     ]
   };
-  if(method.includes("3分")||method.includes("骨格確認")||method.includes("骨格再構築")||method.includes("復旧")) return {
-    sheetMode:"skeleton",sheetLabel:"骨格シート",title:"S問題の確認欄",
+  if(method.includes("3分")||method.includes("5分チェック")||method.includes("5分骨格確認")||method.includes("軽いチェック")||method.includes("想起チェック")||method.includes("軽い骨格確認")) return {
+    sheetMode:"check",sheetLabel:"チェックシート",title:"短時間チェック",
     fields:[
       {label:"型",hint:"何の型か一言で書く"},
-      {label:"出発式",hint:"最初の式を書く"},
-      {label:"主役・条件",hint:"統計量と必要条件を確認する"}
+      {label:"初手",hint:"最初の式または操作を書く"},
+      {label:"今見る量",hint:"主役の統計量・変数を確認する"},
+      {label:"注意点",hint:"符号・条件・定義域などを1つ確認する"}
     ]
+  };
+  if(method.includes("骨格再構築")||method.includes("復旧")) return {
+    sheetMode:"skeleton",sheetLabel:"骨格シート",title:"答案の設計図",
+    fields:skeletonFields
   };
   if(method.includes("過去問")||item.requires_full_answer) return {
     sheetMode:mode,sheetLabel:mode==="exam_90min"?"90分答案シート":"過去問シート",title:"過去問補修欄",

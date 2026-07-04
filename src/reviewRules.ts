@@ -20,15 +20,15 @@ const definitions:Record<string,{
 }>={
   K:{
     method:"骨格再現＋関連S確認",minutes:20,mode:"skeleton",
-    reason:"型・出発式・主役の統計量・使う定理が崩れているため、放置すると大問全体を落とす危険がある。翌日に骨格だけを再現して、正しい型を入れ直す。",
-    instruction:"フル答案は不要。まず、問題の型、出発式、主役の統計量、使う定理、結論の形だけを自力で書く。関連S問題があれば5〜10分確認してから、同じA問題の骨格を再現する。",
-    steps:["問題文を見て、型を一言で書く","出発式を書く","主役の統計量または変数を決める","使う定理・条件を書く","最後の結論の形を書く","関連S問題を5〜10分確認する","同じA問題の骨格をもう一度書く"]
+    reason:"方針・出発式・今見る量・条件・道具が崩れているため、放置すると大問全体を落とす危険がある。翌日に答案の設計図だけを再現して、正しい型を入れ直す。",
+    instruction:"フル答案と最終計算は不要。方針・入口、出発式、今見る量、先に確認すること、使う道具、解答の流れ、最後に示すことまでを書く。ゴールは種類や方向だけにし、具体的な最終式は書かない。関連S問題があれば確認してから同じA問題の設計図を再現する。",
+    steps:["方針・入口を一言で書く","出発式を書く","今見る量を決める","先に確認する条件を書く","使う道具を書く","解答の流れを書く","最後に示すことを種類・方向だけで書く","ここから先は計算と明記する","関連S問題を確認する"]
   },
   N:{
     method:"ノート補修＋骨格再現",minutes:18,mode:"skeleton",
     reason:"理解はあるが、答案として再現するためのノートや型が不足している。放置するとKに戻るため、短期でノート化と骨格再現を行う。",
-    instruction:"分かったつもりで止まっていた部分を、次に自力で書ける形にする。GPT採点で示された修正ルールを確認してから、骨格を再現する。",
-    steps:["GPT採点のミス内容を読む","次回答案で必ず書く修正ルールを1行で確認する","関連S問題があれば5分確認する","同じ問題の骨格を自力で書く","次回答案で必ず書く一文を決める"]
+    instruction:"分かったつもりで止まっていた部分を、次に自力で設計できる形にする。修正ルールを1行にしてから、方針・出発式・今見る量・条件・道具・流れ・最後に示すことを再現する。最終式や完成答案は求めない。",
+    steps:["修正ルールを1行で書く","方針・入口を書く","出発式と今見る量を書く","条件と使う道具を書く","解答の流れを書く","最後に示すことを具体式なしで書く","ここから先は計算と区切る"]
   },
   W:{
     method:"該当作業だけ再演習",minutes:12,mode:"main_calc",
@@ -37,16 +37,16 @@ const definitions:Record<string,{
     steps:["どの作業で落ちたか確認する","その作業部分だけを紙に書く","範囲、条件、添字、符号を確認する","同じ作業をもう一度何も見ずに書く","必要なら次回のGPT採点で再発を確認する"]
   },
   C:{
-    method:"チェックリスト確認",minutes:7,mode:"scan",
+    method:"チェックリスト確認",minutes:7,mode:"check",
     reason:"型や理解は大きく崩れていないが、符号・係数・条件確認などのケアレスミスがある。チェックリスト化し、少し間を空けて再発するか確認する。",
     instruction:"解き直しは最小限でよい。ミスが再発しないように、確認項目をチェックリスト化してから軽く見直す。",
     steps:["ケアレス内容を確認する","再発防止のチェック項目を1つ作る","問題の該当箇所だけ見直す","次回同じ型で確認する項目を決める"]
   },
   none:{
-    method:"軽い骨格確認",minutes:5,mode:"scan",
+    method:"軽い想起チェック",minutes:5,mode:"check",
     reason:"大きな問題はないため、短期復習よりも新規A問題や過去問に時間を回す。忘れる前に骨格だけ軽く確認する。",
-    instruction:"フル答案は不要。問題を見て、型・出発式・結論だけを短時間で確認する。",
-    steps:["型を一言で言う","出発式を確認する","主役の統計量を確認する","結論の形を確認する","問題なければ完了扱いに近づける"]
+    instruction:"フル答案は不要。型、初手、今見る量、注意点だけを短時間で確認する。",
+    steps:["型を一言で言う","初手を確認する","今見る量を確認する","注意点を1つ確認する","問題なければ完了扱いに近づける"]
   }
 };
 
@@ -94,10 +94,10 @@ export function createAttemptReviewPlan(
   const reason=stable
     ?"かなり安定しているため、短期復習の優先度は低い。得意問題に時間を使いすぎないよう、月1回の軽メンテに回す。"
     :`${errors.length?`${errors.join("＋")}が含まれるため。`:""}${definition.reason}`;
-  const method=localizedOmission?"省略部分の局所再現":stable?"月1回の軽い骨格確認":definition.method;
+  const method=localizedOmission?"省略部分の局所再現":stable?"月1回の軽いチェック":definition.method;
   const instruction=localizedOmission
     ?`骨格全体やフル答案の書き直しは不要。前回省略した「${errorPoint}」だけを、直前の式から結果が導ける途中式付きで自力再現する。答や方針だけでは完了にしない。`
-    :`${stable?"フル答案は不要。型・出発式・結論の形だけを短時間で確認する。":definition.instruction}${errorPoint?` 今回見るポイント：${errorPoint}`:""}`;
+    :`${stable?"フル答案は不要。型、初手、今見る量、注意点だけを短時間で確認する。":definition.instruction}${errorPoint?` 今回見るポイント：${errorPoint}`:""}`;
   const localSteps=[
     `「${errorPoint}」の直前の式と必要な条件を書く`,
     "省略した式変形を、結果まで理由付きで再現する",
@@ -108,8 +108,8 @@ export function createAttemptReviewPlan(
     review_method:method,review_instruction:instruction,
     review_steps:localizedOmission?localSteps:errorPoint?[`今回のミス「${errorPoint}」を確認する`,...definition.steps]:definition.steps,estimated_minutes:localizedOmission?12:stable?5:definition.minutes,requires_full_answer:false,
     requires_s_check:requiresS,linked_s_problem_ids:requiresS?linkedS:[],interval_days:days,
-    review_type:selected==="W"||localizedOmission?"main_calc_retry":selected==="K"||selected==="N"?"skeleton_retry":selected==="C"?"careless_check":"skeleton_retry",
-    mode:localizedOmission?"main_calc":stable?"scan":definition.mode,completion_candidate:perfectStreak>=3&&selected==="none"
+    review_type:selected==="W"||localizedOmission?"main_calc_retry":selected==="K"||selected==="N"?"skeleton_retry":selected==="C"?"careless_check":"light_check",
+    mode:localizedOmission?"main_calc":stable?"check":definition.mode,completion_candidate:perfectStreak>=3&&selected==="none"
   };
 }
 
@@ -135,7 +135,7 @@ export function createAdaptiveReviewPlan(
   return {...plan,interval_days:days,
     review_reason:`前回復習は「${outcomeLabel}」${outcome.hint_used?`（参照段階${referenceLevel}）`:""}だったため、${days}日後に再確認する。`,
     review_instruction:successful
-      ?"次回も答えを見る前に型・出発式・結論を自力で想起し、別の問題でも同じ型を選べるか確認する。"
+      ?"次も答えを見る前に、方針・出発式・今見る量・最後に示すことを自力で想起し、別の問題でも同じ型を選べるか確認する。"
       :plan.review_instruction,
     estimated_minutes:successful?5:plan.estimated_minutes,
     requires_s_check:!successful&&plan.requires_s_check,
@@ -143,21 +143,21 @@ export function createAdaptiveReviewPlan(
   };
 }
 
-const sDefinitions:Record<SState,{days:number;method:string;instruction:string;minutes:number}>={
-  stable:{days:30,method:"3分チェック",minutes:3,instruction:"型、出発式、主役の統計量だけ確認する。フル答案は不要。"},
-  check:{days:14,method:"5分骨格確認",minutes:5,instruction:"少し怪しいため、出発式と使う定理を確認する。必要なら関連A問題に戻る。"},
-  forgotten:{days:3,method:"10分骨格再構築",minutes:10,instruction:"出発式や条件が出ない状態。解説を見て終わらず、自力で骨格を再構築する。"},
-  collapsed:{days:1,method:"10〜20分復旧",minutes:20,instruction:"A問題または過去問で土台が崩れた可能性がある。関連S問題で型を復旧してから、元のA問題へ戻る。"}
+const sDefinitions:Record<SState,{days:number;method:string;instruction:string;minutes:number;mode:string}>={
+  stable:{days:30,method:"3分チェック",minutes:3,mode:"check",instruction:"型、初手、今見る量、注意点だけ確認する。フル答案は不要。"},
+  check:{days:14,method:"5分チェック",minutes:5,mode:"check",instruction:"少し怪しいため、型・初手・今見る量・注意点を確認する。設計図全体や最終式は書かない。"},
+  forgotten:{days:3,method:"10分骨格再構築",minutes:10,mode:"skeleton",instruction:"方針・出発式・今見る量・条件・道具・流れが出ない状態。解説を見て終わらず、計算前までの設計図を自力で再構築する。"},
+  collapsed:{days:1,method:"10〜20分復旧",minutes:20,mode:"skeleton",instruction:"A問題または過去問で土台が崩れた可能性がある。関連S問題で答案の設計図を復旧してから、元のA問題へ戻る。"}
 };
 export function createSReviewPlan(state:SState):ReviewPlan{
   const rule=sDefinitions[state];
   return {
     review_reason:`S問題の記憶状態が「${state}」のため、${rule.days}日後に土台を点検する。`,
     review_method:rule.method,review_instruction:rule.instruction,
-    review_steps:state==="stable"?["型を言う","出発式を書く","主役の統計量を確認する"]:
+    review_steps:state==="stable"||state==="check"?["型を言う","初手を言う","今見る量を確認する","注意点を1つ挙げる"]:
       ["出発式と条件を自力で書く","使う定理を確認する","骨格を見ずに再構築する","必要なら元のA問題へ戻る"],
     estimated_minutes:rule.minutes,requires_full_answer:false,requires_s_check:false,linked_s_problem_ids:[],
-    interval_days:rule.days,review_type:"s_check",mode:"skeleton"
+    interval_days:rule.days,review_type:"s_check",mode:rule.mode
   };
 }
 

@@ -69,8 +69,8 @@ test("imports smart-quoted, unindented study_update output", () => {
   assert.equal(update.score_numeric, 72);
   assert.equal(update.exam_selection_rank, "A");
   assert.deepEqual(update.error_types, ["W", "N"]);
-  assert.equal(update.primary_error_type, "W");
-  assert.equal(update.secondary_error_type, "N");
+  assert.equal(update.primary_error_type, "N");
+  assert.equal(update.secondary_error_type, "W");
   assert.equal(update.review_after_days, 2);
   assert.equal(update.review_reason, "Nが含まれるため2日後");
   assert.equal(update.grading_confidence, .85);
@@ -148,6 +148,10 @@ test("復習採点YAMLの時間と復習結果を読み取る",()=>{
   assert.equal(update.official_answer,false);
   assert.match(update.improvement_guidance,/残す部分/);
   assert.match(update.required_derivation,/途中式/);
+  assert.equal(update.next_action,"骨格確認");
+  assert.equal(update.review_after_days,14);
+  assert.equal(update.date_expressions_removed,true);
+  assert.match(update.date_expression_warnings?.join(" / ")||"",/next_action: 14日後/);
   assert.match(update.corrected_answer,/尾確率/);
   assert.equal(update.target_issue_resolved,true);
   assert.equal(update.minimum_pass_condition_met,true);

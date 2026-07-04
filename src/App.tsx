@@ -18,6 +18,7 @@ import {
   referenceLabels, referenceStateAtLevel, revealReference, reviewAim, reviewFormat, safeReviewActions,
   todayMove, type ReferenceLevel, type ReferenceState
 } from "./reviewExperience";
+import { removeTimingExpressions } from "./reviewTiming";
 import { EXAM_PHASES } from "./studyProgress";
 import { CHAPTER_META } from "./officialMaster";
 import type { Attempt, Bootstrap, Problem, Review, StudyUpdate, Task } from "./types";
@@ -31,10 +32,10 @@ const nav = [
   ["dashboard",LayoutDashboard],["today",ListChecks],["problems",BookOpen],["attempt",NotebookPen],
   ["import",ClipboardPaste],["reviews",CalendarCheck],["weak",AlertTriangle],["past",Target],["sheets",Download],["settings",Settings]
 ] as const;
-const modes:Record<string,string>={skeleton:"骨格",main_calc:"主要計算",full:"フル答案",scan:"スキャン",exam_90min:"90分演習"};
-const sheetFiles:Record<string,string>={skeleton:"01-skeleton.pdf",main_calc:"02-main-calculation.pdf",full:"03-full-answer.pdf",scan:"04-five-question-scan.pdf",exam_90min:"05-exam-90min.pdf"};
+const modes:Record<string,string>={check:"チェック",skeleton:"骨格",main_calc:"主要計算",full:"フル答案",scan:"スキャン",exam_90min:"90分演習"};
+const sheetFiles:Record<string,string>={check:"00-check.pdf",skeleton:"01-skeleton.pdf",main_calc:"02-main-calculation.pdf",full:"03-full-answer.pdf",scan:"04-five-question-scan.pdf",exam_90min:"05-exam-90min.pdf"};
 const sheetHref=(mode:string)=>`./answer-sheets/${sheetFiles[mode]||sheetFiles.skeleton}`;
-const reviewNames:Record<string,string>={skeleton_retry:"骨格再現",main_calc_retry:"主要計算",full_retry:"フル再演習",careless_check:"チェックリスト確認",s_check:"S確認",past_exam_link:"過去問連動",past_exam_selection:"選題確認",past_exam_retry:"過去問補修"};
+const reviewNames:Record<string,string>={skeleton_retry:"骨格再現",main_calc_retry:"主要計算",full_retry:"フル再演習",careless_check:"チェックリスト確認",light_check:"短時間チェック",s_check:"S確認",past_exam_link:"過去問連動",past_exam_selection:"選題確認",past_exam_retry:"過去問補修"};
 const todayString = () => new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Tokyo",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
 const blankUpdate = ():StudyUpdate => ({problem_id:"",date:todayString(),mode:"full",mark:"△",score_label:"B",error_type:"none",error_point:"",next_action:""});
 
@@ -215,7 +216,7 @@ function ReviewPlanDetails({item,compact=false}:{item:Partial<Review&Task>;compa
   return <div className={`review-plan ${compact?"compact":""}`}>
     <div className="today-move"><span>今日の一手</span><strong>{todayMove(item)}</strong></div>
     <div className="review-plan-summary">
-      {item.due_date&&<div><span>復習日</span><strong>{item.due_date}</strong></div>}
+      {item.due_date&&<div><span>次回復習</span><strong>{item.interval_days?`${item.interval_days}日後（${item.due_date}）`:item.due_date}</strong></div>}
       <div><span>復習方法</span><strong>{item.review_method||"—"}</strong></div>
       <div><span>必要時間</span><strong>{item.estimated_minutes||item.minutes||"—"}分</strong></div>
       <div><span>使用シート</span><strong>{template.sheetLabel}</strong></div>
@@ -238,9 +239,9 @@ function ReviewPlanDetails({item,compact=false}:{item:Partial<Review&Task>;compa
         <button type="button" className={reference.gpt_explanation?"viewed":""} onClick={()=>reveal(5)}><Eye size={14}/>GPT解説を見る</button>
       </div>
       {reference.one_line_hint&&<div className="revealed-reference hint"><span>1行ヒント</span><p>{oneLineHint(item)}</p></div>}
-      {reference.previous_mistake&&<div className="revealed-reference mistake"><span>前回ミスの詳細</span>{item.previous_error_point&&<p><b>反省：</b>{item.previous_error_point}</p>}{item.previous_next_action&&<p><b>課題：</b>{item.previous_next_action}</p>}{!item.previous_error_point&&!item.previous_next_action&&<p>前回ミスの詳細記録はありません。</p>}</div>}
+      {reference.previous_mistake&&<div className="revealed-reference mistake"><span>前回ミスの詳細</span>{item.previous_error_point&&<p><b>反省：</b>{item.previous_error_point}</p>}{item.previous_next_action&&<p><b>次回課題：</b>{removeTimingExpressions(item.previous_next_action)}</p>}{!item.previous_error_point&&!item.previous_next_action&&<p>前回ミスの詳細記録はありません。</p>}</div>}
       {reference.official_answer&&<div className="revealed-reference answer"><span>公式解答</span><p>白本・公式解答の該当箇所を確認してください。答案と時間を確定してから必要部分だけ見て、閉じた後に白紙から再現します。</p></div>}
-      {reference.gpt_explanation&&<div className="revealed-reference explanation"><span>GPT解説</span><p>{item.previous_improvement_guidance||item.previous_required_derivation||item.previous_next_action||"保存されたGPT解説はありません。採点プロンプトで今回の答案に沿った解説を取得してください。"}</p></div>}
+      {reference.gpt_explanation&&<div className="revealed-reference explanation"><span>GPT解説</span><p>{item.previous_improvement_guidance||item.previous_required_derivation||removeTimingExpressions(item.previous_next_action)||"保存されたGPT解説はありません。採点プロンプトで今回の答案に沿った解説を取得してください。"}</p></div>}
     </div>
     {reviewPrompt&&<div className="review-prompt-prep">
       <div className="review-prompt-prep-head"><div><span>GPT採点前に入力</span><strong>時間と参照状況をプロンプトへ反映</strong></div></div>
@@ -430,9 +431,9 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport}:{problem:Problem;
       {latest.required_derivation&&<div><span>省略してはいけない途中計算</span><p>{latest.required_derivation}</p></div>}
       {latest.improvement_guidance&&<div><span>次回の直し方</span><p>{latest.improvement_guidance}</p></div>}
     </div></details>}
-    <div className="detail-grid"><section className="panel"><h3>問題情報</h3><dl><dt>役割</dt><dd>{problem.role}</dd><dt>難易度</dt><dd>{problem.difficulty!=null?`難${problem.difficulty}`:"—"}</dd><dt>推奨モード</dt><dd>{modes[problem.recommended_mode]}</dd><dt>関連S問題</dt><dd>{related.join(" / ")||"—"}</dd><dt>関連A問題</dt><dd>{problem.linked_a_problems||"—"}</dd><dt>関連過去問</dt><dd>{problem.linked_past_exams||"—"}</dd><dt>次回課題</dt><dd>{latest?.next_action||"—"}</dd><dt>メモ</dt><dd>{problem.notes||"—"}</dd></dl></section>
+    <div className="detail-grid"><section className="panel"><h3>問題情報</h3><dl><dt>役割</dt><dd>{problem.role}</dd><dt>難易度</dt><dd>{problem.difficulty!=null?`難${problem.difficulty}`:"—"}</dd><dt>推奨モード</dt><dd>{modes[problem.recommended_mode]}</dd><dt>関連S問題</dt><dd>{related.join(" / ")||"—"}</dd><dt>関連A問題</dt><dd>{problem.linked_a_problems||"—"}</dd><dt>関連過去問</dt><dd>{problem.linked_past_exams||"—"}</dd><dt>次回課題</dt><dd>{removeTimingExpressions(latest?.next_action)||"—"}</dd><dt>メモ</dt><dd>{problem.notes||"—"}</dd></dl></section>
     <section className="panel"><h3>復習予定</h3>{nextReview?<><div className="history"><CalendarCheck/><div><strong>{nextReview.due_date}</strong><span>{reviewNames[nextReview.review_type]||nextReview.review_method}・{nextReview.status}</span></div></div><ReviewPlanDetails item={nextReview}/></>:<Empty>復習予定はありません</Empty>}</section></div>
-    <section className="panel"><div className="panel-title"><h3>解答履歴</h3><span className="muted">{attempts.length}回</span></div>{attempts.length?<div className="table-wrap"><table><thead><tr><th>日付</th><th>モード</th><th>評価</th><th>K/W/N/C</th><th>ミス</th><th>次の行動</th><th>操作</th></tr></thead><tbody>{attempts.map(a=><tr key={a.id}><td>{a.date}</td><td>{modes[a.mode]||a.mode}</td><td>{a.mark} / {a.score_label}{a.score_numeric!=null?` ${a.score_numeric}点`:""}</td><td>{(a.error_types||[a.error_type]).filter(error=>error!=="none").map(error=><ErrorBadge key={error} value={error}/>)}{!(a.error_types||[a.error_type]).some(error=>error!=="none")&&<ErrorBadge value="none"/>}</td><td>{a.error_point||"—"}</td><td>{a.next_action||"—"}</td><td><div className="history-actions"><button className="small ghost" onClick={()=>editAttempt(a)}><Pencil size={13}/>編集</button><button className="small danger-button" disabled={busy} onClick={()=>removeAttempt(a)}><Trash2 size={13}/>削除</button></div></td></tr>)}</tbody></table></div>:<Empty>まだ学習記録がありません</Empty>}</section>
+    <section className="panel"><div className="panel-title"><h3>解答履歴</h3><span className="muted">{attempts.length}回</span></div>{attempts.length?<div className="table-wrap"><table><thead><tr><th>日付</th><th>モード</th><th>評価</th><th>K/W/N/C</th><th>ミス</th><th>次の行動</th><th>操作</th></tr></thead><tbody>{attempts.map(a=><tr key={a.id}><td>{a.date}</td><td>{modes[a.mode]||a.mode}</td><td>{a.mark} / {a.score_label}{a.score_numeric!=null?` ${a.score_numeric}点`:""}</td><td>{(a.error_types||[a.error_type]).filter(error=>error!=="none").map(error=><ErrorBadge key={error} value={error}/>)}{!(a.error_types||[a.error_type]).some(error=>error!=="none")&&<ErrorBadge value="none"/>}</td><td>{a.error_point||"—"}</td><td>{removeTimingExpressions(a.next_action)||"—"}</td><td><div className="history-actions"><button className="small ghost" onClick={()=>editAttempt(a)}><Pencil size={13}/>編集</button><button className="small danger-button" disabled={busy} onClick={()=>removeAttempt(a)}><Trash2 size={13}/>削除</button></div></td></tr>)}</tbody></table></div>:<Empty>まだ学習記録がありません</Empty>}</section>
     {editing&&<Modal title="解答履歴を編集" close={()=>setEditing(null)}><form className="form-grid analysis-edit-form" onSubmit={saveEdit}>
       <Field label="問題"><input value={editing.problem_id} readOnly/></Field>
       <Field label="学習日"><input type="date" value={form.date} onChange={event=>setForm({...form,date:event.target.value})}/></Field>
@@ -631,7 +632,7 @@ function PastView({data,go}:{data:Bootstrap;go:(p:Page)=>void}) {
       const targets=[...new Set([...direct,...(insight?.recommendedA||[]),...(insight?.recommendedS||[])])];
       return <article className="panel past-result-card" key={attempt.id}>
         <div className="past-result-head"><div><ErrorBadge value={attempt.primary_error_type||attempt.error_type}/><h3>{problemDisplayLabel(problem)}</h3><span>{attempt.date} ・ {attempt.score_text||attempt.score_label} {attempt.score_numeric!=null?`${attempt.score_numeric}点`:""}</span></div>{review&&<Badge tone={review.status==="overdue"?"red":"orange"}>{review.due_date} 復習</Badge>}</div>
-        <div className="past-result-body"><div><span>失点・不安定だった箇所</span><p>{attempt.error_point||attempt.result_summary||"詳細未入力"}</p></div><div><span>次に直すこと</span><p>{attempt.next_action||review?.review_instruction||"GPT採点結果の指示を確認"}</p></div></div>
+        <div className="past-result-body"><div><span>失点・不安定だった箇所</span><p>{attempt.error_point||attempt.result_summary||"詳細未入力"}</p></div><div><span>次に直すこと</span><p>{removeTimingExpressions(attempt.next_action)||review?.review_instruction||"GPT採点結果の指示を確認"}</p></div></div>
         <div className="repair-targets"><span>戻るA/S問題</span><div>{targets.map(id=><Badge tone={id.includes("-S-")?"blue":""} key={id}>{id}</Badge>)}{!targets.length&&<small>関連問題はまだ未設定です</small>}</div></div>
         {review&&<ReviewPlanDetails item={review} compact/>}
       </article>;
@@ -645,7 +646,8 @@ function PastView({data,go}:{data:Bootstrap;go:(p:Page)=>void}) {
 
 function AnswerSheetsView(){
   const sheets=[
-    {mode:"skeleton",title:"骨格答案",pages:"1ページ",time:"10〜20分",description:"型、出発式、主役の統計量、条件、定理、結論を答案の設計図として残します。"},
+    {mode:"check",title:"短時間チェック",pages:"1ページ",time:"3〜5分",description:"C・none・安定S用。型、初手、今見る量、注意点だけを確認します。"},
+    {mode:"skeleton",title:"骨格答案",pages:"1ページ",time:"10〜20分",description:"答案の設計図だけを作ります。方針、出発式、今見る量、条件、道具、流れ、最後に示すことを書き、最終計算はしません。"},
     {mode:"main_calc",title:"主要計算",pages:"1ページ",time:"10〜20分",description:"計算・積分・和・変数変換など、得点の中心になる作業部分だけを途中式付きで書きます。"},
     {mode:"full",title:"フル答案",pages:"2ページ",time:"30〜45分",description:"採点可能な答案を最初から最後まで書くための、方針欄付き横罫シートです。"},
     {mode:"scan",title:"5問スキャン",pages:"1ページ",time:"5〜10分",description:"5問の型、入口、完走見込み、事故リスクを比較し、選ぶ3問と捨てる2問を決めます。"},
@@ -657,6 +659,12 @@ function AnswerSheetsView(){
     <section className="answer-sheet-hero">
       <div><span className="eyebrow">GOODNOTES / IPAD LANDSCAPE</span><h2>解答方式に合わせて、書く場所を先に決める</h2><p>すべてiPad横画面と同じ4:3比率です。PDFを開いてGoodNotesへ共有し、原本を複製してから使ってください。</p></div>
       <div className="answer-sheet-hero-actions"><SheetLink href={examplesHref} label="模範記入例を見る"/><SheetLink href={allHref} label="全シートを見る" primary/></div>
+    </section>
+    <section className="mode-role-guide">
+      <div><strong>check</strong><span>思い出せるか。型・初手・今見る量・注意点だけ。</span></div>
+      <div><strong>skeleton</strong><span>設計図を作れるか。最終式や完成答案は不要。</span></div>
+      <div><strong>main_calc</strong><span>落とした計算だけ直す。問題全体は解き直さない。</span></div>
+      <div><strong>full</strong><span>本番答案。途中式・条件・計算・結論まで全部。</span></div>
     </section>
     <div className="answer-sheet-grid">{sheets.map(sheet=><section className={`panel answer-sheet-card mode-${sheet.mode}`} key={sheet.mode}>
       <div className="sheet-preview"><NotebookPen size={24}/><span>{sheet.pages}</span></div>
