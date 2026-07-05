@@ -92,9 +92,9 @@ export function allowedReferenceLevel(item:ReviewItem):ReferenceLevel{
 
 export function referencePolicy(item:ReviewItem){
   switch(primaryError(item)){
-    case "K": return "まず何も見ずに骨格を書きます。詰まった箇所を特定した場合だけ前回ミスまで確認し、閉じてからもう一度再現してください。";
-    case "N": return "前回ミスや不足していた説明の確認は補修の一部です。確認後は閉じた状態で骨格を再現してください。";
-    case "W": return "前回落とした作業箇所を確認してから、閉じた状態で同じ計算を再演習してください。";
+    case "K": return "まず何も見ずに骨格を書きます。詰まった箇所を特定した場合だけ前回ミスまで確認し、表示を隠してからもう一度再現してください。";
+    case "N": return "前回ミスや不足していた説明の確認は補修の一部です。確認後は表示を隠して骨格を再現してください。";
+    case "W": return "前回落とした作業箇所を確認してから、表示を隠して同じ計算を再演習してください。";
     case "C": return "前回の確認漏れを見て、答えではなく再発防止のチェック項目に変換してください。";
     default: return item.requires_full_answer
       ?"制限時間終了まで参照しません。参照前の答案を確定してから補修してください。"
@@ -125,7 +125,7 @@ export function referenceDecision(
   const canComplete=result==="success";
   const shortenReview=exceedsAllowed;
   const message=!referenceClosedReproduction&&actual>0
-    ?"参照を閉じた後の再現が未確認のため、完了扱いにしません。"
+    ?"参照表示を隠した後の白紙再現が未確認のため、完了扱いにしません。"
     :!exceedsAllowed
       ?"許可範囲内の参照です。補修復習として通常どおり保存できます。"
       :actual<=2
@@ -187,9 +187,9 @@ export function todayMove(item:ReviewItem){
   if(item.requires_full_answer) return "制限時間で答案化 → 範囲・条件・結論を確認";
   if(item.mode==="check") return "型・初手・今見る量 → 注意点を1つ確認";
   switch(primaryError(item)){
-    case "K": return "何も見ずに骨格を書く → 詰まった箇所を特定 → 閉じて再現";
-    case "N": return "修正テーマ確認 → 修正ルール1行 → 閉じて骨格再現";
-    case "W": return "前回の作業箇所を確認 → 該当作業だけ再演習 → 閉じて再現";
+    case "K": return "何も見ずに骨格を書く → 詰まった箇所を特定 → 表示を隠して再現";
+    case "N": return "修正テーマ確認 → 修正ルール1行 → 表示を隠して骨格再現";
+    case "W": return "前回の作業箇所を確認 → 該当作業だけ再演習 → 表示を隠して再現";
     case "C": return "確認漏れをチェック項目化 → 型・初手・今見る量を確認";
     default: return "型・初手・今見る量 → 注意点を1つ確認";
   }
@@ -204,15 +204,15 @@ export function safeReviewActions(item:ReviewItem){
   switch(primaryError(item)){
     case "K": return [
       "何も見ずに、方針・出発式・今見る量・条件・道具・流れを書く",
-      "詰まった箇所だけを特定し、参照を閉じて骨格をもう一度書く"
+      "詰まった箇所だけを特定し、参照表示を隠して骨格をもう一度書く"
     ];
     case "N": return [
       "修正テーマを確認し、次回も使える修正ルールを1行書く",
-      "参照を閉じた後、最終式を含まない骨格を再現する"
+      "参照表示を隠してから、最終式を含まない骨格を再現する"
     ];
     case "W": return [
       "前回落とした作業部分だけを確認して再演習する",
-      "参照を閉じ、同じ作業を範囲・条件・符号付きでもう一度書く"
+      "参照表示を隠し、同じ作業を範囲・条件・符号付きでもう一度書く"
     ];
     case "C": return ["確認漏れを1つチェック項目にする","型・初手・今見る量を短く確認する"];
     default: return ["型・初手・今見る量を短く確認する","注意点を1つ確認する"];
@@ -228,9 +228,9 @@ export function completionChecklist(item:ReviewItem){
   ];
   if(mode==="check") return ["型・初手・今見る量を確認した","注意点を1つ確認した"];
   switch(primaryError(item)){
-    case "K": return ["まず何も見ずに骨格を書いた","詰まった箇所を特定した","参照を閉じたあと、骨格をもう一度書いた"];
-    case "N": return ["修正テーマを確認した","修正ルールを1行書いた","参照を閉じたあと、骨格を再現した"];
-    case "W": return ["前回落とした作業箇所を確認した","該当作業だけを再演習した","参照を閉じたあと、同じ作業をもう一度書いた"];
+    case "K": return ["まず何も見ずに骨格を書いた","詰まった箇所を特定した","表示を隠してから、骨格をもう一度書いた"];
+    case "N": return ["修正テーマを確認した","修正ルールを1行書いた","表示を隠してから、骨格を再現した"];
+    case "W": return ["前回落とした作業箇所を確認した","該当作業だけを再演習した","表示を隠してから、同じ作業をもう一度書いた"];
     default: return ["型・初手・今見る量を確認した","注意点を1つ確認した"];
   }
 }

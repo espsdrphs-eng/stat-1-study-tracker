@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   AlertTriangle, Archive, ArrowDown, BarChart3, BookOpen, CalendarCheck, CalendarClock, Check, ChevronRight, ClipboardPaste,
-  Clock3, Copy, Database, Download, Eye, Gauge, LayoutDashboard, ListChecks, Menu, NotebookPen,
+  Clock3, Copy, Database, Download, Eye, EyeOff, Gauge, LayoutDashboard, ListChecks, Menu, NotebookPen,
   Pencil, Play, Plus, RefreshCw, Search, Settings, Sparkles, Target, Trash2, X
 } from "lucide-react";
 import yaml from "js-yaml";
@@ -197,22 +197,31 @@ function promptHintLevel(level:ReferenceLevel){
   return level===0?"none":level===1?"minimal_hint":level===2?"previous_mistake":
     level===3?"saved_gpt_feedback":level===4?"official_answer":"external_reference";
 }
+type OpenReferencePanel="one_line_hint"|"previous_mistake"|"correction_rule"|"saved_gpt_feedback"|"official_answer"|"external_reference"|null;
 function ReviewPlanDetails({item,compact=false}:{item:Partial<Review&Task>;compact?:boolean}) {
   const [promptCopied,setPromptCopied]=useState(false);
   const [reviewMinutes,setReviewMinutes]=useState(String(item.estimated_minutes||item.minutes||""));
   const [reference,setReference]=useState<ReferenceState>(()=>readReferenceState(item.id));
   const [referenceClosedReproduction,setReferenceClosedReproduction]=useState(()=>readReferenceClosed(item.id));
-  const [ruleVisible,setRuleVisible]=useState(false);
+  const [openReferencePanel,setOpenReferencePanel]=useState<OpenReferencePanel>(null);
   if(!item.review_method&&!item.review_reason) return null;
   const actions=safeReviewActions(item);
   const template=reviewTemplate(item);
   const allowed=allowedReferenceLevel(item);
   const hasSavedFeedback=!!item.has_saved_gpt_feedback;
   const hasOfficialAnswer=!!item.official_answer_text||!!item.official_answer_url;
-  const reveal=(level:Exclude<ReferenceLevel,0>)=>{
+  const reveal=(level:Exclude<ReferenceLevel,0>,panel:Exclude<OpenReferencePanel,null>)=>{
     const next=revealReference(reference,level);
-    setReference(next);rememberReferenceState(item.id,next);setReferenceClosedReproduction(false);rememberReferenceClosed(item.id,false);
+    setReference(next);rememberReferenceState(item.id,next);setOpenReferencePanel(panel);
+    setReferenceClosedReproduction(false);rememberReferenceClosed(item.id,false);
   };
+  const hideReference=()=>setOpenReferencePanel(null);
+  const referenceButtonLabel=(panel:Exclude<OpenReferencePanel,null>,initial:string)=>
+    openReferencePanel===panel?`${initial.replace(/を見る$/,"")}を表示中`:
+      panel==="correction_rule"&&reference.previous_mistake||panel==="one_line_hint"&&reference.one_line_hint||
+      panel==="previous_mistake"&&reference.previous_mistake||panel==="saved_gpt_feedback"&&reference.saved_gpt_feedback||
+      panel==="official_answer"&&reference.official_answer||panel==="external_reference"&&reference.external_reference
+        ?`${initial.replace(/を見る$/,"")}をもう一度見る`:initial;
   const usedReference=reference.actual_reference_level>0;
   const reviewPrompt=item.id&&item.problem_id?buildReviewGradingPrompt({
     reviewId:item.id,problemId:item.problem_id,title:item.title,theme:item.theme,date:todayString(),mode:reviewMode(item),
@@ -249,20 +258,21 @@ function ReviewPlanDetails({item,compact=false}:{item:Partial<Review&Task>;compa
       <div className="reference-gate-head"><div><span>今回見たもの</span><strong>{referenceLabels[reference.actual_reference_level]}</strong></div><small>許可：{referenceLabels[allowed]}まで</small></div>
       <div className="hint-policy"><strong>参照ルール</strong><span>{referencePolicy(item)}</span></div>
       <div className="reference-buttons">
-        <button type="button" className={reference.one_line_hint?"viewed":""} onClick={()=>reveal(1)}><Eye size={14}/>1行ヒント</button>
-        <button type="button" className={reference.previous_mistake?"viewed":""} onClick={()=>reveal(2)}><Eye size={14}/>前回ミスを見る</button>
-        <button type="button" className={ruleVisible?"viewed":""} onClick={()=>{reveal(2);setRuleVisible(true)}}><Eye size={14}/>修正ルール例を見る</button>
-        {hasSavedFeedback&&<button type="button" className={reference.saved_gpt_feedback?"viewed":""} onClick={()=>reveal(3)}><Eye size={14}/>保存済みGPT解説を見る</button>}
-        {hasOfficialAnswer&&<button type="button" className={reference.official_answer?"viewed":""} onClick={()=>reveal(4)}><Eye size={14}/>公式解答を見る</button>}
-        <button type="button" className={reference.external_reference?"viewed":""} onClick={()=>reveal(5)}><Eye size={14}/>外部参照を記録</button>
+        <button type="button" className={reference.one_line_hint?"viewed":""} onClick={()=>reveal(1,"one_line_hint")}><Eye size={14}/>{referenceButtonLabel("one_line_hint","1行ヒントを見る")}</button>
+        <button type="button" className={reference.previous_mistake?"viewed":""} onClick={()=>reveal(2,"previous_mistake")}><Eye size={14}/>{referenceButtonLabel("previous_mistake","前回ミスを見る")}</button>
+        <button type="button" className={reference.previous_mistake?"viewed":""} onClick={()=>reveal(2,"correction_rule")}><Eye size={14}/>{referenceButtonLabel("correction_rule","修正ルール例を見る")}</button>
+        {hasSavedFeedback&&<button type="button" className={reference.saved_gpt_feedback?"viewed":""} onClick={()=>reveal(3,"saved_gpt_feedback")}><Eye size={14}/>{referenceButtonLabel("saved_gpt_feedback","保存済みGPT解説を見る")}</button>}
+        {hasOfficialAnswer&&<button type="button" className={reference.official_answer?"viewed":""} onClick={()=>reveal(4,"official_answer")}><Eye size={14}/>{referenceButtonLabel("official_answer","公式解答を見る")}</button>}
+        <button type="button" className={reference.external_reference?"viewed":""} onClick={()=>reveal(5,"external_reference")}><Eye size={14}/>{referenceButtonLabel("external_reference","外部参照を記録")}</button>
       </div>
-      {reference.one_line_hint&&<div className="revealed-reference hint"><span>1行ヒント</span><p>{oneLineHint(item)}</p></div>}
-      {reference.previous_mistake&&<div className="revealed-reference mistake"><span>前回ミスの詳細</span>{item.previous_error_point&&<p>{item.previous_error_point}</p>}{!item.previous_error_point&&<p>前回ミスの詳細記録はありません。</p>}</div>}
-      {ruleVisible&&<div className="revealed-reference rule"><span>修正ルール例</span><p>{removeTimingExpressions(correctionRuleExample(item))}</p></div>}
-      {reference.saved_gpt_feedback&&hasSavedFeedback&&<div className="revealed-reference explanation"><span>保存済みGPT解説</span><p>{item.previous_improvement_guidance||item.previous_required_derivation||item.previous_corrected_answer||removeTimingExpressions(item.previous_next_action)}</p></div>}
-      {reference.official_answer&&hasOfficialAnswer&&<div className="revealed-reference answer"><span>公式解答</span>{item.official_answer_text&&<p>{item.official_answer_text}</p>}{item.official_answer_url&&<a href={item.official_answer_url} target="_blank" rel="noreferrer">登録済み公式解答を開く</a>}</div>}
-      {reference.external_reference&&<div className="revealed-reference explanation"><span>外部参照</span><p>アプリ外のGPT・教材・解説を見たことを記録しました。閉じた後に再現してください。</p></div>}
-      <p className="reference-note">「前回ミス」はN・W・Cなどの補修では許可される場合があります。保存済みGPT解説・公式解答・外部参照が許可範囲を超えた場合は短期再確認になります。</p>
+      {openReferencePanel==="one_line_hint"&&<div className="revealed-reference hint"><div className="revealed-reference-head"><span>1行ヒント</span><button type="button" onClick={hideReference}><EyeOff size={13}/>隠す</button></div><p>{oneLineHint(item)}</p></div>}
+      {openReferencePanel==="previous_mistake"&&<div className="revealed-reference mistake"><div className="revealed-reference-head"><span>前回ミスの詳細</span><button type="button" onClick={hideReference}><EyeOff size={13}/>隠す</button></div>{item.previous_error_point&&<p>{item.previous_error_point}</p>}{!item.previous_error_point&&<p>前回ミスの詳細記録はありません。</p>}</div>}
+      {openReferencePanel==="correction_rule"&&<div className="revealed-reference rule"><div className="revealed-reference-head"><span>修正ルール例</span><button type="button" onClick={hideReference}><EyeOff size={13}/>隠す</button></div><p>{removeTimingExpressions(correctionRuleExample(item))}</p></div>}
+      {openReferencePanel==="saved_gpt_feedback"&&hasSavedFeedback&&<div className="revealed-reference explanation"><div className="revealed-reference-head"><span>保存済みGPT解説</span><button type="button" onClick={hideReference}><EyeOff size={13}/>隠す</button></div><p>{item.previous_improvement_guidance||item.previous_required_derivation||item.previous_corrected_answer||removeTimingExpressions(item.previous_next_action)}</p></div>}
+      {openReferencePanel==="official_answer"&&hasOfficialAnswer&&<div className="revealed-reference answer"><div className="revealed-reference-head"><span>公式解答</span><button type="button" onClick={hideReference}><EyeOff size={13}/>隠す</button></div>{item.official_answer_text&&<p>{item.official_answer_text}</p>}{item.official_answer_url&&<a href={item.official_answer_url} target="_blank" rel="noreferrer">登録済み公式解答を開く</a>}</div>}
+      {openReferencePanel==="external_reference"&&<div className="revealed-reference explanation"><div className="revealed-reference-head"><span>外部参照</span><button type="button" onClick={hideReference}><EyeOff size={13}/>隠す</button></div><p>アプリ外のGPT・教材・解説を見たことを記録しました。表示を隠してから白紙で再現してください。</p></div>}
+      {usedReference&&!openReferencePanel&&<div className="reference-hidden-status"><EyeOff size={14}/><span>{referenceLabels[reference.actual_reference_level]}を確認済み。参照内容は隠れています。</span></div>}
+      <p className="reference-note">参照内容は何度でも開閉できます。一度見た参照段階は記録に残りますが、表示を隠してから白紙で再現してください。「前回ミス」はN・W・Cなどの補修では許可される場合があります。</p>
     </div>
     {reviewPrompt&&<div className="review-prompt-prep">
       <div className="review-prompt-prep-head"><div><span>GPT採点前に入力</span><strong>時間と参照状況をプロンプトへ反映</strong></div></div>
@@ -271,7 +281,7 @@ function ReviewPlanDetails({item,compact=false}:{item:Partial<Review&Task>;compa
         <Field label="許可された参照"><input value={`${allowed}. ${referenceLabels[allowed]}まで`} readOnly/></Field>
         <Field label="実際に見た参照"><input value={`${reference.actual_reference_level}. ${referenceLabels[reference.actual_reference_level]}`} readOnly/></Field>
       </div>
-      {usedReference&&<label className="after-hint-check"><input type="checkbox" checked={referenceClosedReproduction} onChange={event=>{setReferenceClosedReproduction(event.target.checked);rememberReferenceClosed(item.id,event.target.checked)}}/><span>参照内容を閉じた後、該当部分を再現した</span></label>}
+      {usedReference&&<label className="after-hint-check"><input type="checkbox" checked={referenceClosedReproduction} onChange={event=>{setReferenceClosedReproduction(event.target.checked);rememberReferenceClosed(item.id,event.target.checked)}}/><span>表示を隠してから、該当部分を白紙で再現した</span></label>}
       <button className="ghost small review-prompt-copy" onClick={async()=>{await navigator.clipboard.writeText(reviewPrompt);setPromptCopied(true);setTimeout(()=>setPromptCopied(false),1800)}}>{promptCopied?<Check size={14}/>:<Copy size={14}/>} {promptCopied?"復習採点プロンプトをコピーしました":"入力内容を含むGPT採点プロンプトをコピー"}</button>
     </div>}
     {item.status==="done"&&<div className="post-review-summary"><span>復習後の確認</span>
@@ -303,7 +313,7 @@ function ReviewOutcomeModal({item,busy,close,save}:{item:Partial<Review&Task>;bu
     <div className="outcome-choices">{[["success","自力で再現できた"],["partial","一部だけできた"],["failed","できなかった"]].map(([key,label])=><button type="button" key={key} className={result===key?`selected ${key}`:""} onClick={()=>setResult(key as typeof result)}>{label}</button>)}</div>
     <div className="reference-judgement"><div><span>許可された参照</span><strong>{referenceLabels[allowed]}まで</strong></div><div><span>実際に見た参照</span><strong>{referenceLabels[reference.actual_reference_level]}</strong></div></div>
     <div className="outcome-reference"><span>今回見たもの</span><div>{([0,1,2,3,4,5] as ReferenceLevel[]).map(level=><button type="button" key={level} className={reference.actual_reference_level===level?"selected":""} onClick={()=>chooseReference(level)}>{level}. {referenceLabels[level]}</button>)}</div></div>
-    {hint&&<label className="outcome-check"><input type="checkbox" checked={referenceClosed} onChange={event=>{setReferenceClosed(event.target.checked);rememberReferenceClosed(item.id,event.target.checked)}}/><span>参照を閉じた後に該当部分を再現した</span></label>}
+    {hint&&<label className="outcome-check"><input type="checkbox" checked={referenceClosed} onChange={event=>{setReferenceClosed(event.target.checked);rememberReferenceClosed(item.id,event.target.checked)}}/><span>表示を隠してから、該当部分を白紙で再現した</span></label>}
     <Field label="実際にかかった時間（分）"><input type="number" min="0" value={minutes} onChange={event=>setMinutes(event.target.value)}/></Field>
     <div className="outcome-preview"><strong>保存前判定</strong><span>{decision.message}</span><small>完了扱い：{decision.canComplete?"可能":"不可"} ／ 次回補正：{decision.shortenReview?"短くする":"なし"}</small></div>
     <div className="form-actions"><button className="ghost" onClick={close}>キャンセル</button><button className="primary" disabled={busy} onClick={()=>save({
