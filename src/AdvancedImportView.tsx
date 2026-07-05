@@ -20,13 +20,15 @@ const missingRequiredFields=(update:StudyUpdate,hasPreviousTarget=false)=>{
   const needsDerivation=["main_calc","full","exam_90min"].includes(update.mode)||errors.some(error=>["W","N"].includes(error));
   const usesDetailedFeedback=[GRADING_RUBRIC_VERSION,REVIEW_RUBRIC_VERSION].includes(update.rubric_version||"");
   const strictReview=update.rubric_version===REVIEW_RUBRIC_VERSION;
+  const actualReference=Number(update.actual_reference_level??update.reference_level??0);
+  const allowedReference=Number(update.allowed_reference_level??0);
   const invalidSuccessProof=hasPreviousTarget&&update.review_outcome==="success"&&(
     update.target_issue_resolved!==true||update.minimum_pass_condition_met!==true||
     !update.resolution_evidence?.trim()||!update.required_work_shown?.length||
     !["full","conditional_full"].includes(update.evaluation_scope||"")||!update.graded_parts?.length||
     !!update.unresolved_carryover?.length||
-    (!!update.hint_used&&update.after_hint_reproduced!==true)||
-    Number(update.reference_level||1)>=3||
+    (actualReference>0&&!update.reference_closed_reproduction&&!update.after_hint_reproduced)||
+    (actualReference>allowedReference&&actualReference>=3)||
     /(変更なし|前回と同じ|同一答案|未修正)/.test(update.answer_change_summary||"")
   );
   return [
@@ -178,7 +180,7 @@ export default function AdvancedImportView({problems,attempts,reviews,run,busy}:
               <span>採点範囲 <strong>{update.evaluation_scope==="full"?"フル答案":"条件付きフル評価"}</strong></span>
               <span>実際に確認 <strong>{update.graded_parts?.join(" / ")||"記載なし"}</strong></span>
               {update.assumed_correct_parts?.length?<span>正しいと仮定 <strong>{update.assumed_correct_parts.join(" / ")}</strong></span>:null}
-              {isReviewImport&&<span>参照状況 <strong>{update.hint_used?`${update.hint_level||"ヒントあり"}・白紙再現 ${update.after_hint_reproduced?"済":"未確認"}`:"ヒントなし"}</strong></span>}
+              {isReviewImport&&<span>参照状況 <strong>許可 {update.allowed_reference_level??0}／実際 {update.actual_reference_level??update.reference_level??0}・参照後再現 {update.reference_closed_reproduction||update.after_hint_reproduced?"済":"未確認"}</strong></span>}
             </div>}
             <details className="detailed-feedback">
               <summary>修正版答案・途中計算・判定根拠を確認</summary>

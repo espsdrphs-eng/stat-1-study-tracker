@@ -124,10 +124,10 @@ test("復習結果に応じて次回間隔を適応させる",()=>{
   const review={id:1,problem_id:source.problem_id,due_date:"2026-06-30",review_type:"main_calc_retry",status:"pending",generated_from_attempt_id:1,interval_days:10};
   assert.equal(createAdaptiveReviewPlan(source,review,{result:"failed",hint_used:false,time_minutes:10}).interval_days,1);
   assert.equal(createAdaptiveReviewPlan(source,review,{result:"partial",hint_used:false,time_minutes:10}).interval_days,6);
-  assert.equal(createAdaptiveReviewPlan(source,review,{result:"success",hint_used:true,time_minutes:8}).interval_days,17);
+  assert.equal(createAdaptiveReviewPlan(source,review,{result:"success",hint_used:true,allowed_reference_level:2,actual_reference_level:2,reference_closed_reproduction:true,time_minutes:8}).interval_days,25);
   assert.equal(createAdaptiveReviewPlan(source,review,{result:"success",hint_used:false,time_minutes:6}).interval_days,25);
-  assert.equal(createAdaptiveReviewPlan(source,review,{result:"partial",hint_used:true,reference_level:4,official_answer:true,time_minutes:8}).interval_days,3);
-  assert.equal(createAdaptiveReviewPlan(source,review,{result:"partial",hint_used:true,reference_level:5,gpt_explanation:true,time_minutes:8}).interval_days,3);
+  assert.equal(createAdaptiveReviewPlan(source,review,{result:"partial",hint_used:true,allowed_reference_level:2,actual_reference_level:4,official_answer:true,time_minutes:8}).interval_days,3);
+  assert.equal(createAdaptiveReviewPlan(source,review,{result:"partial",hint_used:true,allowed_reference_level:2,actual_reference_level:5,external_reference:true,time_minutes:8}).interval_days,3);
 });
 
 test("自力成功の適応間隔は30日を上限にする",()=>{

@@ -6,6 +6,7 @@ export type Problem = {
   strategy_rank?:"SS"|"S"|"A+"|"A";
   display_label?:string; difficulty?:number|null; roadmap_label?:string; normalized_label?:string;
   related_s_problem_ids?:string[]; linked_past_exam_ids?:string[];
+  official_answer?:string; official_answer_url?:string;
 };
 export type Attempt = {
   id:number; problem_id:string; date:string; mode:string; time_minutes:number; mark:string;
@@ -23,6 +24,8 @@ export type Attempt = {
   hint_used?:boolean; hint_level?:string; after_hint_reproduced?:boolean;
   reference_level?:number; no_hint?:boolean; one_line_hint?:boolean; previous_mistake?:boolean;
   official_answer?:boolean; gpt_explanation?:boolean;
+  allowed_reference_level?:number; actual_reference_level?:number;
+  reference_closed_reproduction?:boolean; saved_gpt_feedback?:boolean; external_reference?:boolean;
 };
 export type Review = {
   id:number; problem_id:string; due_date:string; review_type:string; status:string; generated_from_attempt_id:number;
@@ -33,8 +36,11 @@ export type Review = {
   completion_result?:"success"|"partial"|"failed"; hint_used?:boolean; hint_level?:string; after_hint_reproduced?:boolean;
   reference_level?:number; no_hint?:boolean; one_line_hint?:boolean; previous_mistake?:boolean;
   official_answer?:boolean; gpt_explanation?:boolean;
+  allowed_reference_level?:number; actual_reference_level?:number;
+  reference_closed_reproduction?:boolean; saved_gpt_feedback?:boolean; external_reference?:boolean;
   completion_time_minutes?:number; completed_at?:string;
-  manual_order?:number; postponed_count?:number; last_postponed_at?:string;
+  manual_order?:number; postponed_count?:number; postpone_count?:number; last_postponed_at?:string;
+  postponed_at?:string; postponed_to?:string; postpone_reason?:string; triage_override?:"must";
 };
 export type WeakNote = {
   id:number; date:string; problem_id:string; error_type:string; theme:string; mistake:string;
@@ -56,6 +62,10 @@ export type Task = {
   previous_error_point?:string; previous_next_action?:string;
   previous_improvement_guidance?:string; previous_required_derivation?:string;
   previous_corrected_answer?:string; triage?:"must"|"if_time"|"tomorrow";
+  official_answer_text?:string; official_answer_url?:string; has_saved_gpt_feedback?:boolean;
+  allowed_reference_level?:number; actual_reference_level?:number;
+  reference_closed_reproduction?:boolean; triage_override?:"must";
+  postponed_at?:string; postponed_to?:string; postpone_reason?:string; postpone_count?:number;
 };
 export type WeaknessInsight = {
   theme:string; score:number; level:"重点"|"注意"|"観察"; confidence:"参考"|"暫定"|"分析可能";
@@ -104,6 +114,8 @@ export type StudyUpdate = {
   hint_level?:string; after_hint_reproduced?:boolean;
   reference_level?:number; no_hint?:boolean; one_line_hint?:boolean; previous_mistake?:boolean;
   official_answer?:boolean; gpt_explanation?:boolean;
+  allowed_reference_level?:number; actual_reference_level?:number;
+  reference_closed_reproduction?:boolean; saved_gpt_feedback?:boolean; external_reference?:boolean;
   evaluation_scope?:string; graded_parts?:string[]; assumed_correct_parts?:string[];
   unresolved_carryover?:string[];
   master_matched?:boolean; status?:string; math_localized?:boolean;

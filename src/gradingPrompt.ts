@@ -1,5 +1,5 @@
 export const GRADING_RUBRIC_VERSION="STAT1-GRADE-v5";
-export const REVIEW_RUBRIC_VERSION="STAT1-REVIEW-v7";
+export const REVIEW_RUBRIC_VERSION="STAT1-REVIEW-v8";
 
 export type ReviewPromptContext={
   reviewId?:number;problemId:string;title?:string;theme?:string;date:string;mode:string;
@@ -8,10 +8,11 @@ export type ReviewPromptContext={
   previousImprovementGuidance?:string;previousRequiredDerivation?:string;
   reviewMethod?:string;reviewInstruction?:string;reviewSteps?:string[];
   requiresFullAnswer?:boolean;linkedSProblemIds?:string[];
-  timeMinutes?:number;hintLevel?:"none"|"minimal_hint"|"previous_mistake"|"official_answer"|"gpt_explanation";
+  timeMinutes?:number;hintLevel?:"none"|"minimal_hint"|"previous_mistake"|"saved_gpt_feedback"|"official_answer"|"external_reference";
   afterHintReproduced?:boolean;
   referenceLevel?:number;noHint?:boolean;oneLineHint?:boolean;previousMistake?:boolean;
-  officialAnswer?:boolean;gptExplanation?:boolean;
+  officialAnswer?:boolean;gptExplanation?:boolean;externalReference?:boolean;
+  allowedReferenceLevel?:number;actualReferenceLevel?:number;referenceClosedReproduction?:boolean;
 };
 
 export function buildGradingPrompt(date:string){
@@ -119,11 +120,14 @@ export function buildReviewGradingPrompt(context:ReviewPromptContext){
   const hintLevel=context.hintLevel||"none";
   const hintUsed=hintLevel!=="none";
   const hintLabels:Record<string,string>={
-    none:"ヒントなし",minimal_hint:"1行ヒントのみ",previous_mistake:"前回ミスを確認",
-    official_answer:"公式解答を確認",gpt_explanation:"GPT解説を確認"
+    none:"見ていない",minimal_hint:"1行ヒント",previous_mistake:"前回ミス",
+    saved_gpt_feedback:"保存済みGPT解説",official_answer:"公式解答",external_reference:"外部参照"
   };
-  const inferredReferenceLevel:Record<string,number>={none:1,minimal_hint:2,previous_mistake:3,official_answer:4,gpt_explanation:5};
-  const referenceLevel=Math.min(5,Math.max(1,Number(context.referenceLevel||inferredReferenceLevel[hintLevel]||1)));
+  const inferredReferenceLevel:Record<string,number>={none:0,minimal_hint:1,previous_mistake:2,saved_gpt_feedback:3,official_answer:4,external_reference:5};
+  const actualReferenceLevel=Math.min(5,Math.max(0,Number(context.actualReferenceLevel??context.referenceLevel??inferredReferenceLevel[hintLevel]??0)));
+  const defaultAllowed=fullScope?0:previousErrors.some(error=>["K","N","W","C"].includes(error))?2:1;
+  const allowedReferenceLevel=Math.min(5,Math.max(0,Number(context.allowedReferenceLevel??defaultAllowed)));
+  const referenceClosed=context.referenceClosedReproduction??context.afterHintReproduced??false;
   const modeScope=fullScope
     ?"フル答案：全範囲を答案から採点する。未提出部分を正しいと仮定しない。"
     :context.mode==="main_calc"
@@ -163,7 +167,9 @@ ${steps}
 【入力】
 今回かかった時間（分）：${context.timeMinutes||""}
 参照した内容：${hintLabels[hintLevel]}
-ヒント・解答を見た後に、閉じて白紙から再現したか：${hintUsed?(context.afterHintReproduced?"はい":"いいえ"):"該当なし"}
+許可された参照段階：${allowedReferenceLevel}
+実際の参照段階：${actualReferenceLevel}
+参照を閉じた後に再現したか：${hintUsed?(referenceClosed?"はい":"いいえ"):"該当なし"}
 今回の答案：
 模範解答・参考解答（あれば）：
 
@@ -198,8 +204,8 @@ ${steps}
 17. N/Wの復習では、今回の復習対象に指定された範囲・条件・式変形が未提示なら基準を緩めない。暗記した結果だけの再掲はsuccessにしない。一方、対象外の骨格・無関係な計算・最終結論は要求しない。
 18. result_summary、error_point、next_actionは各1〜2文で簡潔にする。細かな判定根拠はresolution_evidenceとrequired_work_shownへ分離する。
 19. unresolved_carryoverには前回から残った課題だけを入れ、すべて解消した場合だけ空配列にする。
-20. ヒントありで白紙再現できたsuccessはmarkを○とする。ヒントなしの自力成功だけ◎候補にする。ヒントありで白紙再現していなければreview_outcomeはpartial以下とする。
-21. reference_levelが3以上（前回ミス・公式解答・GPT解説を確認）の場合、白紙再現できてもreview_outcomeをsuccessにしない。未解決点をerror_typesへ正しく残し、その分類からreview_after_daysを決める。
+20. 参照を使った場合でも、actual_reference_level が allowed_reference_level 以下で、参照を閉じた後に再現できていればsuccessを認める。前回ミスを見ただけで自動的にpartialへ下げない。
+21. actual_reference_level が allowed_reference_level を超えた場合だけ次回間隔を短くする。保存済みGPT解説・公式解答・外部参照まで見た場合、または参照を閉じた後に再現していない場合はsuccessにしない。
 22. next_actionには日付や復習間隔を書かない。「何をするか」だけを書く。復習間隔はreview_after_daysにのみ入れる。
 23. review_after_daysは今回残ったerror_typesから決める。Kあり=1、Nあり=2、Wあり=3、Cあり=7、none=14。複数なら最短を採用する。
 24. 最後に次のYAMLをコードブロックで出力する。LaTeXは避け、できるだけ日本語で書く。
@@ -245,13 +251,18 @@ ${fullScope?"  assumed_correct_parts: []":"  assumed_correct_parts:\n    - \"提
   review_outcome: "success"
   hint_used: ${hintUsed}
   hint_level: "${hintLevel}"
-  after_hint_reproduced: ${hintUsed?!!context.afterHintReproduced:false}
-  reference_level: ${referenceLevel}
-  no_hint: ${referenceLevel===1}
+  after_hint_reproduced: ${hintUsed?referenceClosed:false}
+  reference_closed_reproduction: ${hintUsed?referenceClosed:false}
+  allowed_reference_level: ${allowedReferenceLevel}
+  actual_reference_level: ${actualReferenceLevel}
+  reference_level: ${actualReferenceLevel}
+  no_hint: ${actualReferenceLevel===0}
   one_line_hint: ${context.oneLineHint??hintLevel==="minimal_hint"}
   previous_mistake: ${context.previousMistake??hintLevel==="previous_mistake"}
+  saved_gpt_feedback: ${context.gptExplanation??hintLevel==="saved_gpt_feedback"}
   official_answer: ${context.officialAnswer??hintLevel==="official_answer"}
-  gpt_explanation: ${context.gptExplanation??hintLevel==="gpt_explanation"}
+  external_reference: ${context.externalReference??hintLevel==="external_reference"}
+  gpt_explanation: ${context.gptExplanation??hintLevel==="saved_gpt_feedback"}
   target_issue_resolved: true
   minimum_pass_condition_met: true
   resolution_evidence: |

@@ -35,5 +35,15 @@ test("仕分け優先度はK、N、必修A、W、C、none、Sメンテの順",()
     taskPriority(task("C",5,"C")),
     taskPriority(task("none",5,"none")),
     taskPriority(task("S",5,"none","Sメンテ"))
-  ],[0,1,2,3,4,5,6]);
+  ],[0,1,2,4,5,6,7]);
+});
+
+test("期限切れはWより優先し、長いA+は余裕枠へ回す",()=>{
+  const overdue={...task("late",15,"none"),due_date:"2026-07-01"};
+  assert.equal(taskPriority(overdue,problem("late"),"2026-07-05"),3);
+  const result=triageTodayTasks([
+    task("K",30,"K"),task("A+",50,"none","A+演習"),overdue,task("W",20,"W")
+  ],70,[problem("K"),problem("A+","A","A+"),problem("late"),problem("W")],"2026-07-05");
+  assert.equal(result.tasks[0].triage,"must");
+  assert.notEqual(result.tasks[1].triage,"must");
 });

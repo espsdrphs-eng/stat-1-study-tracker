@@ -11,6 +11,7 @@ import { removeTimingExpressions, sanitizeStudyUpdateTiming } from "./reviewTimi
 import { buildProgressPlan, daysUntilExam } from "./studyProgress.ts";
 import { CHAPTER_META, officialProblemEntries, PAST_EXAM_YEAR_ORDER, STRATEGY_A_PLUS_ORDER, STRATEGY_S_ORDER, strategyRankFor } from "./officialMaster.ts";
 import { REVIEW_RUBRIC_VERSION } from "./gradingPrompt.ts";
+import { allowedReferenceLevel, referenceDecision, type ReferenceLevel } from "./reviewExperience.ts";
 
 type SMemory = { problem_id:string; state:"stable"|"check"|"forgotten"|"collapsed"; last_touched?:string; k_trigger_count:number };
 type StoredAttempt = Attempt;
@@ -360,7 +361,8 @@ const planFields=(plan:ReviewPlan)=>({
 type ReviewInsert=Omit<Review,"id">;
 async function addOrReplaceReview(review:ReviewInsert){
   const pending=(await db.reviews.where("problem_id").equals(review.problem_id).toArray()).filter(item=>item.status!=="done");
-  const dueDate=[review.due_date,...pending.map(item=>item.due_date)].sort()[0];
+  const scheduled=pending.filter(item=>item.status!=="deferred");
+  const dueDate=[review.due_date,...scheduled.map(item=>item.due_date)].sort()[0];
   if(pending.length) await db.reviews.bulkDelete(pending.map(item=>item.id));
   return Number(await db.reviews.add({id:undefined as unknown as number,...review,due_date:dueDate}));
 }
@@ -369,7 +371,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
   input={...input,...sanitizeStudyUpdateTiming(input)};
   const problem=await db.problems.get(input.problem_id);
   if(!problem) throw new Error(`未登録の問題IDです: ${input.problem_id}`);
-  if(input.generated_from_review_id&&[REVIEW_RUBRIC_VERSION,"STAT1-REVIEW-v6","STAT1-REVIEW-v5","STAT1-REVIEW-v4"].includes(input.rubric_version||"")){
+  if(input.generated_from_review_id&&[REVIEW_RUBRIC_VERSION,"STAT1-REVIEW-v7","STAT1-REVIEW-v6","STAT1-REVIEW-v5","STAT1-REVIEW-v4"].includes(input.rubric_version||"")){
     const review=await db.reviews.get(input.generated_from_review_id);
     const source=review?await db.attempts.get(review.generated_from_attempt_id):undefined;
     const previousErrors=source?normalizedErrors(source):[];
@@ -383,6 +385,12 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
   const correctedAnswer=japaneseizeMathText(input.corrected_answer||"");
   const primary=input.primary_error_type||input.error_type||"none";
   const errors=input.error_types?.length?input.error_types:[primary];
+  const actualReferenceLevel=Math.min(5,Math.max(0,Number(input.actual_reference_level??input.reference_level??(
+    input.external_reference?5:input.official_answer?4:input.saved_gpt_feedback||input.gpt_explanation?3:
+      input.previous_mistake?2:input.one_line_hint?1:0
+  ))));
+  const allowedReference=Math.min(5,Math.max(0,Number(input.allowed_reference_level??0)));
+  const referenceClosed=!!(input.reference_closed_reproduction??input.after_hint_reproduced);
   const related=[...new Set([...(input.related_s_problem_ids||input.linked_s_problems||[]),...list(input.linked_s_problem),...list(problem.linked_s_problems)])];
   const id=Number(await db.attempts.add({
     id:undefined as unknown as number,problem_id:input.problem_id,date,mode:input.mode||problem.recommended_mode,
@@ -404,18 +412,26 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
     graded_parts:input.graded_parts||[],assumed_correct_parts:input.assumed_correct_parts||[],
     unresolved_carryover:input.unresolved_carryover||[],hint_used:!!input.hint_used,
     hint_level:input.hint_level||"none",after_hint_reproduced:!!input.after_hint_reproduced,
-    reference_level:Number(input.reference_level||1),no_hint:input.no_hint??!input.hint_used,
+    reference_level:actualReferenceLevel,actual_reference_level:actualReferenceLevel,
+    allowed_reference_level:allowedReference,reference_closed_reproduction:referenceClosed,
+    no_hint:input.no_hint??actualReferenceLevel===0,
     one_line_hint:!!input.one_line_hint,previous_mistake:!!input.previous_mistake,
-    official_answer:!!input.official_answer,gpt_explanation:!!input.gpt_explanation
+    saved_gpt_feedback:!!input.saved_gpt_feedback||!!input.gpt_explanation,
+    official_answer:!!input.official_answer,external_reference:!!input.external_reference,
+    gpt_explanation:!!input.saved_gpt_feedback||!!input.gpt_explanation
   }));
   if(input.generated_from_review_id){
     await db.reviews.update(input.generated_from_review_id,{
       status:"done",completion_result:input.review_outcome||(["◎","○"].includes(input.mark)?"success":input.mark==="△"?"partial":"failed"),
       hint_used:!!input.hint_used,hint_level:input.hint_level||"none",
       after_hint_reproduced:!!input.after_hint_reproduced,
-      reference_level:Number(input.reference_level||1),no_hint:input.no_hint??!input.hint_used,
+      reference_level:actualReferenceLevel,actual_reference_level:actualReferenceLevel,
+      allowed_reference_level:allowedReference,reference_closed_reproduction:referenceClosed,
+      no_hint:input.no_hint??actualReferenceLevel===0,
       one_line_hint:!!input.one_line_hint,previous_mistake:!!input.previous_mistake,
-      official_answer:!!input.official_answer,gpt_explanation:!!input.gpt_explanation,
+      saved_gpt_feedback:!!input.saved_gpt_feedback||!!input.gpt_explanation,
+      official_answer:!!input.official_answer,external_reference:!!input.external_reference,
+      gpt_explanation:!!input.saved_gpt_feedback||!!input.gpt_explanation,
       completion_time_minutes:Number(input.time_minutes||0),completed_at:date
     });
   }
@@ -425,11 +441,11 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
   for(const attempt of [...attempts].reverse()){if(attempt.mark==="◎") consecutivePerfect++;else break}
   const sState:SState=input.mark==="◎"||input.mark==="○"?"stable":input.mark==="×"?"forgotten":"check";
   const basePlan=problem.category==="S"?createSReviewPlan(sState):createAttemptReviewPlan(input,related,consecutivePerfect);
-  const importedReferenceLevel=Number(input.reference_level||1);
-  const plan=input.generated_from_review_id&&importedReferenceLevel>=4
-    ?{...basePlan,interval_days:3,review_reason:"公式解答またはGPT解説を参照したため、完了扱いにせず3日後に再確認する。"}
-    :input.generated_from_review_id&&importedReferenceLevel===3
-      ?{...basePlan,interval_days:2,review_reason:"前回ミスを参照して補修したため、完了扱いにせず2日後に再確認する。"}
+  const exceedsAllowed=actualReferenceLevel>allowedReference;
+  const plan=input.generated_from_review_id&&exceedsAllowed&&actualReferenceLevel>=3
+    ?{...basePlan,interval_days:3,review_reason:"許可範囲を超えて保存済み解説・公式解答・外部資料を参照したため、3日後に再確認する。"}
+    :input.generated_from_review_id&&exceedsAllowed
+      ?{...basePlan,interval_days:Math.min(7,basePlan.interval_days||7),review_reason:"許可参照段階を超えたため、次回間隔を軽く短縮する。"}
       :basePlan;
   await addOrReplaceReview({
     problem_id:input.problem_id,due_date:await reviewDueDate(date,plan.interval_days||14),
@@ -593,15 +609,24 @@ async function completeReview(id:number,body:Record<string,unknown>){
   const problem=await db.problems.get(review.problem_id);
   if(!source||!problem) throw new Error("復習元の採点データが見つかりません");
   const requestedResult=["success","partial","failed"].includes(String(body.result))?String(body.result) as ReviewOutcome["result"]:"partial";
-  const referenceLevel=Math.min(5,Math.max(1,Number(body.reference_level||1)));
-  const hintUsed=referenceLevel>1||!!body.hint_used,afterHintReproduced=!!body.after_hint_reproduced;
-  const assistedBeyondHint=referenceLevel>=3;
+  const actualReferenceLevel=Math.min(5,Math.max(0,Number(body.actual_reference_level??body.reference_level??0))) as ReferenceLevel;
+  const reviewMode=review.requires_full_answer?"exam_90min":review.review_type==="main_calc_retry"?"main_calc":
+    ["careless_check","light_check"].includes(review.review_type)?"check":"skeleton";
+  const fallbackAllowed=allowedReferenceLevel({previous_errors:source.error_types||[source.error_type],mode:reviewMode,
+    requires_full_answer:review.requires_full_answer});
+  const allowedReference=Math.min(5,Math.max(0,Number(body.allowed_reference_level??fallbackAllowed))) as ReferenceLevel;
+  const referenceClosed=!!(body.reference_closed_reproduction??body.after_hint_reproduced);
+  const referenceCheck=referenceDecision(requestedResult,allowedReference,actualReferenceLevel,referenceClosed);
+  const hintUsed=actualReferenceLevel>0||!!body.hint_used,afterHintReproduced=referenceClosed;
   const outcome:ReviewOutcome={
-    result:requestedResult==="success"&&(assistedBeyondHint||hintUsed&&!afterHintReproduced)?"partial":requestedResult,
+    result:referenceCheck.result,
     hint_used:hintUsed,after_hint_reproduced:afterHintReproduced,time_minutes:Number(body.time_minutes||0),
-    reference_level:referenceLevel,no_hint:referenceLevel===1,one_line_hint:!!body.one_line_hint,
+    reference_level:actualReferenceLevel,allowed_reference_level:allowedReference,
+    actual_reference_level:actualReferenceLevel,reference_closed_reproduction:referenceClosed,
+    no_hint:actualReferenceLevel===0,one_line_hint:!!body.one_line_hint,
     previous_mistake:!!body.previous_mistake,official_answer:!!body.official_answer,
-    gpt_explanation:!!body.gpt_explanation
+    saved_gpt_feedback:!!body.saved_gpt_feedback||!!body.gpt_explanation,
+    external_reference:!!body.external_reference,gpt_explanation:!!body.saved_gpt_feedback||!!body.gpt_explanation
   };
   const related=[...(problem.related_s_problem_ids||[]),...list(problem.linked_s_problems)];
   const plan=createAdaptiveReviewPlan(source,review,outcome,related);
@@ -618,15 +643,22 @@ async function completeReview(id:number,body:Record<string,unknown>){
     auto_imported:false,import_confidence:1,grading_confidence:1,rubric_version:"REVIEW-SELF-v1",
     uncertain_points:[],generated_from_review_id:id,is_review_attempt:true,hint_used:outcome.hint_used,
     hint_level:String(body.hint_level|| (outcome.hint_used?"unspecified":"none")),
-    after_hint_reproduced:!!outcome.after_hint_reproduced,reference_level:referenceLevel,
-    no_hint:referenceLevel===1,one_line_hint:!!body.one_line_hint,previous_mistake:!!body.previous_mistake,
-    official_answer:!!body.official_answer,gpt_explanation:!!body.gpt_explanation
+    after_hint_reproduced:referenceClosed,reference_closed_reproduction:referenceClosed,
+    reference_level:actualReferenceLevel,actual_reference_level:actualReferenceLevel,
+    allowed_reference_level:allowedReference,no_hint:actualReferenceLevel===0,
+    one_line_hint:!!body.one_line_hint,previous_mistake:!!body.previous_mistake,
+    saved_gpt_feedback:!!body.saved_gpt_feedback||!!body.gpt_explanation,
+    official_answer:!!body.official_answer,external_reference:!!body.external_reference,
+    gpt_explanation:!!body.saved_gpt_feedback||!!body.gpt_explanation
   }));
   await db.reviews.update(id,{status:"done",completion_result:outcome.result,hint_used:outcome.hint_used,
     hint_level:String(body.hint_level|| (outcome.hint_used?"unspecified":"none")),after_hint_reproduced:!!outcome.after_hint_reproduced,
-    reference_level:referenceLevel,no_hint:referenceLevel===1,one_line_hint:!!body.one_line_hint,
+    reference_level:actualReferenceLevel,actual_reference_level:actualReferenceLevel,
+    allowed_reference_level:allowedReference,reference_closed_reproduction:referenceClosed,
+    no_hint:actualReferenceLevel===0,one_line_hint:!!body.one_line_hint,
     previous_mistake:!!body.previous_mistake,official_answer:!!body.official_answer,
-    gpt_explanation:!!body.gpt_explanation,
+    saved_gpt_feedback:!!body.saved_gpt_feedback||!!body.gpt_explanation,
+    external_reference:!!body.external_reference,gpt_explanation:!!body.saved_gpt_feedback||!!body.gpt_explanation,
     completion_time_minutes:outcome.time_minutes,completed_at:new Date().toISOString()});
   await addOrReplaceReview({problem_id:review.problem_id,due_date:await reviewDueDate(date,plan.interval_days||14),
     review_type:plan.review_type,status:"pending",generated_from_attempt_id:attemptId,duration_minutes:plan.estimated_minutes,
@@ -663,11 +695,40 @@ async function postponeReview(id:number,body:Record<string,unknown>){
   if(!review) throw new Error("移動する復習予定が見つかりません");
   if(review.status==="done") throw new Error("完了済みの復習予定は移動できません");
   const today=todayString();
-  const dueDate=postponedDueDate(today,body);
+  const unscheduled=!!body.unscheduled;
+  const dueDate=unscheduled?review.due_date:postponedDueDate(today,body);
+  const isToday=String(body.action)==="today";
+  const postponedAt=new Date().toISOString();
+  const count=Number(review.postpone_count||review.postponed_count||0)+(isToday?0:1);
   await db.reviews.update(id,{
-    due_date:dueDate,status:"pending",manual_order:Date.now(),
-    postponed_count:Number(review.postponed_count||0)+1,last_postponed_at:new Date().toISOString()
+    due_date:dueDate,status:unscheduled?"deferred":"pending",manual_order:isToday?0:Date.now(),
+    triage_override:isToday?"must":undefined,
+    postponed_count:count,postpone_count:count,last_postponed_at:postponedAt,
+    postponed_at:postponedAt,postponed_to:unscheduled?"unscheduled":dueDate,
+    postpone_reason:String(body.postpone_reason||"手動調整")
   });
+}
+
+async function postponeTask(body:Record<string,unknown>){
+  const problemId=String(body.problem_id||""),kind=String(body.kind||"課題");
+  if(!problemId) throw new Error("移動する課題が見つかりません");
+  const key=`task-postpone:${problemId}:${kind}`;
+  const previous=await db.meta.get(key);
+  let old:Record<string,unknown>={};
+  try{old=previous?JSON.parse(previous.value):{}}catch{old={}}
+  const today=todayString(),unscheduled=!!body.unscheduled,isToday=String(body.action)==="today";
+  const destination=unscheduled?"unscheduled":postponedDueDate(today,body);
+  const record={
+    problem_id:problemId,kind,postponed_at:new Date().toISOString(),postponed_to:destination,
+    postpone_reason:String(body.postpone_reason||"手動調整"),
+    postpone_count:Number(old.postpone_count||0)+(isToday?0:1),
+    triage_override:isToday?"must":"",
+    mode:String(body.mode||"skeleton"),review_method:String(body.review_method||""),
+    review_reason:String(body.review_reason||""),estimated_minutes:Number(body.estimated_minutes||0),
+    previous_errors:Array.isArray(body.previous_errors)?body.previous_errors:[],
+    error_type:String(body.error_type||"")
+  };
+  await db.meta.put({key,value:JSON.stringify(record)});
 }
 
 function suggest(theme=""){
@@ -690,7 +751,7 @@ async function bootstrap():Promise<Bootstrap>{
     daily_study_minutes:Math.max(30,Number(metaEntries.find(entry=>entry.key==="daily_study_minutes")?.value||150))
   };
   const reviews=rawReviews.map(review=>{
-    const status=review.status!=="done"&&review.due_date<today?"overdue":review.status;
+    const status=["pending","overdue"].includes(review.status)&&review.due_date<today?"overdue":review.status;
     if(review.review_method) return {...review,status};
     const problem=pmap.get(review.problem_id);
     const source=attemptMap.get(review.generated_from_attempt_id);
@@ -707,7 +768,7 @@ async function bootstrap():Promise<Bootstrap>{
   attempts.filter(a=>a.date>=fortnight&&a.error_type==="K").forEach(a=>kGroups.set(a.problem_id,(kGroups.get(a.problem_id)||0)+1));
   const kRepeat=[...kGroups.values()].filter(n=>n>1).length;
   const pastSkeleton=attempts.filter(a=>a.date>=fortnight&&pmap.get(a.problem_id)?.category==="past_exam").length;
-  const delayed3=reviews.filter(r=>r.status!=="done"&&r.due_date<addDays(today,-3)).length;
+  const delayed3=reviews.filter(r=>r.status==="overdue"&&r.due_date<addDays(today,-3)).length;
   const weakUpdates=weakNotes.filter(w=>w.date>=week).length;
   const scans=pastSessions.filter(s=>s.session_type==="scan_5_questions"),exams=pastSessions.filter(s=>s.session_type==="exam_90min");
   const studyDays14=new Set(attempts.filter(a=>a.date>=fortnight).map(a=>a.date)).size;
@@ -734,7 +795,7 @@ async function bootstrap():Promise<Bootstrap>{
   const dashboard={
     today,weekA:new Set(attempts.filter(a=>a.date>=week&&pmap.get(a.problem_id)?.category==="A").map(a=>a.problem_id)).size,
     weekPast:pastAttempts.filter(attempt=>attempt.date>=week).length,kRecurrence:kRepeat,
-    pending:reviews.filter(r=>r.status!=="done").length,overdue:reviews.filter(r=>r.status==="overdue").length,
+    pending:reviews.filter(r=>["pending","overdue"].includes(r.status)).length,overdue:reviews.filter(r=>r.status==="overdue").length,
     sStableRate:sMemory.length?Math.round(sMemory.filter(s=>s.state==="stable").length/sMemory.length*100):0,
     sForgotten:sMemory.filter(s=>["forgotten","collapsed","check"].includes(s.state)).length,
     scanSuccess:scans.length?Math.round(scans.filter(s=>s.selection_result==="good").length/scans.length*100):0,
@@ -749,7 +810,7 @@ async function bootstrap():Promise<Bootstrap>{
       allocation:progress.allocation,nextPhase:progress.nextPhase,dangerCriteria:progress.dangerCriteria,
       daysRemaining:progress.daysRemaining,examDateIsEstimate:!settings.exam_date}
   };
-  const dueReviews=reviews.filter(r=>r.status!=="done"&&r.due_date<=today).map(r=>{
+  const dueReviews=reviews.filter(r=>["pending","overdue"].includes(r.status)&&r.due_date<=today).map(r=>{
     const p=pmap.get(r.problem_id)!;const source=attempts.find(a=>a.id===r.generated_from_attempt_id);
     const defaultMinutes=r.estimated_minutes||r.duration_minutes||20;
     const minutes=source?.is_review_attempt&&source.time_minutes>0?Math.max(3,Math.round((defaultMinutes+source.time_minutes)/2)):defaultMinutes;
@@ -760,18 +821,24 @@ async function bootstrap():Promise<Bootstrap>{
       previous_date:source?.date,previous_score:source?`${source.score_text||source.score_label}${source.score_numeric!=null?` ${source.score_numeric}点`:""}`:"",
       previous_errors:source?.error_types||[source?.error_type||"none"],previous_error_point:source?.error_point||"",previous_next_action:source?.next_action||"",
       previous_improvement_guidance:source?.improvement_guidance||"",previous_required_derivation:source?.required_derivation||"",
+      previous_corrected_answer:source?.corrected_answer||"",
+      has_saved_gpt_feedback:!!(source?.improvement_guidance||source?.required_derivation||source?.corrected_answer||source?.result_summary),
+      official_answer_text:p?.official_answer||"",official_answer_url:p?.official_answer_url||"",
       kind:r.review_type==="s_check"?"S確認":r.generated_from_past_session_id?"過去問復習":"復習",reason:r.status==="overdue"?`期限切れ（${r.due_date}）`:"本日が復習日",
       mode:reviewMode,minutes,estimated_minutes:minutes,load:loadFor(reviewMode)};
   }).sort((a,b)=>(a.status==="overdue"&&a.error_type==="K"?0:1)-(b.status==="overdue"&&b.error_type==="K"?0:1)||
     Number(a.manual_order||0)-Number(b.manual_order||0));
-  const activeS=new Set(dueReviews.filter(r=>r.review_type==="s_check").map(r=>r.problem_id));
+  const activeS=new Set(reviews.filter(r=>r.review_type==="s_check"&&["pending","overdue","deferred"].includes(r.status)).map(r=>r.problem_id));
   const staleS=sMemory.filter(s=>!activeS.has(s.problem_id)&&(s.state==="forgotten"||s.state==="collapsed"||!!s.last_touched&&s.last_touched<=addDays(today,-30))).map(s=>{
     const p=pmap.get(s.problem_id)!,sPlan=createSReviewPlan(s.state);return {problem_id:s.problem_id,title:p.display_label||p.title,theme:p.theme,kind:"S点検",reason:s.state==="forgotten"||s.state==="collapsed"?"忘却状態から復旧":"30日以上未確認",mode:sPlan.mode,minutes:sPlan.estimated_minutes||5,load:s.state==="collapsed"?.4:.2,...planFields(sPlan)};
   });
   let load=[...dueReviews,...staleS].reduce((sum,x)=>sum+x.load,0);
   let plannedMinutes=[...dueReviews,...staleS].reduce((sum,x)=>sum+x.minutes,0);
   const seen=new Set(attempts.map(a=>a.problem_id));
-  const occupied=new Set([...dueReviews,...staleS].map(task=>task.problem_id));
+  const occupied=new Set([
+    ...reviews.filter(review=>["pending","overdue","deferred"].includes(review.status)).map(review=>review.problem_id),
+    ...dueReviews.map(task=>task.problem_id),...staleS.map(task=>task.problem_id)
+  ]);
   const strategySTasks:any[]=[];
   const sLimit=progress.phase==="foundation"?4:progress.phase==="integration"?3:2;
   for(const problemId of STRATEGY_S_ORDER){
@@ -832,10 +899,28 @@ async function bootstrap():Promise<Bootstrap>{
   const checkedKeys=new Set(metaEntries.filter(entry=>entry.key.startsWith(`today-check:${today}:`)&&entry.value==="1").map(entry=>entry.key));
   const regularReviews=dueReviews.filter(review=>!review.manual_order);
   const movedBackReviews=dueReviews.filter(review=>!!review.manual_order);
-  const baseTasks=[...regularReviews,...staleS,...strategySTasks,...newTasks,...pastTasks,...simulationTasks,...mixedTasks,...movedBackReviews].map(task=>({
+  const rawBaseTasks=[...regularReviews,...staleS,...strategySTasks,...newTasks,...pastTasks,...simulationTasks,...mixedTasks,...movedBackReviews].map(task=>({
     ...task,checked:checkedKeys.has(`today-check:${today}:${task.problem_id}:${task.kind}`)
   })) as Task[];
-  const triage=triageTodayTasks(baseTasks,settings.daily_study_minutes,problems);
+  const taskPostponements=new Map<string,Record<string,unknown>>();
+  for(const entry of metaEntries.filter(entry=>entry.key.startsWith("task-postpone:"))){
+    try{taskPostponements.set(entry.key.slice("task-postpone:".length),JSON.parse(entry.value))}catch{/* ignore invalid legacy value */}
+  }
+  const baseTasks=rawBaseTasks.filter(task=>{
+    if(task.id&&task.review_type) return true;
+    const record=taskPostponements.get(`${task.problem_id}:${task.kind}`);
+    if(!record) return true;
+    const destination=String(record.postponed_to||"");
+    return destination!=="unscheduled"&&destination<=today;
+  }).map(task=>{
+    if(task.id&&task.review_type) return task;
+    const record=taskPostponements.get(`${task.problem_id}:${task.kind}`);
+    if(!record) return task;
+    return {...task,triage_override:record.triage_override==="must"?"must" as const:undefined,
+      postponed_at:String(record.postponed_at||""),postponed_to:String(record.postponed_to||""),
+      postpone_reason:String(record.postpone_reason||""),postpone_count:Number(record.postpone_count||0)};
+  });
+  const triage=triageTodayTasks(baseTasks,settings.daily_study_minutes,problems,today);
   const tasks=triage.tasks;
   const totalLoad=Math.round(tasks.filter(task=>!task.checked).reduce((sum,x)=>sum+x.load,0)*10)/10;
   const remainingMinutes=tasks.filter(task=>!task.checked).reduce((sum,task)=>sum+task.minutes,0);
@@ -884,6 +969,8 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
       ()=>completeReview(Number(path.split("/")[3]),body));
   } else if(/^\/api\/reviews\/\d+\/postpone$/.test(path)) {
     await db.transaction("rw",[db.reviews],()=>postponeReview(Number(path.split("/")[3]),body));
+  } else if(path==="/api/tasks/postpone") {
+    await db.transaction("rw",[db.meta],()=>postponeTask(body));
   } else if(/^\/api\/reviews\/\d+\/done$/.test(path)) {
     await db.reviews.update(Number(path.split("/")[3]),{status:"done"});
   } else if(/^\/api\/reviews\/\d+\/pending$/.test(path)) {
