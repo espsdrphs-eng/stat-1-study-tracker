@@ -1,5 +1,5 @@
 import yaml from "js-yaml";
-import type { AnswerIndexEntry, Problem, StudyUpdate } from "./types";
+import type { AnswerIndexEntry, Problem, ProblemAlias, StudyUpdate } from "./types";
 import { japaneseizeMathText } from "./mathJapanese.ts";
 import { reviewDaysForErrors, sanitizeStudyUpdateTiming } from "./reviewTiming.ts";
 import { applyCanonicalMaster } from "./masterData.ts";
@@ -139,8 +139,10 @@ function weakNoteFromText(text:string,problemId:string,primary:string,themes:str
   };
 }
 
-function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem[],answers:AnswerIndexEntry[]=[]):StudyUpdate{
-  const candidate=canonicalProblemId(scalar(raw.problem_id)||deriveCandidate(text));
+function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem[],answers:AnswerIndexEntry[]=[],aliases:ProblemAlias[]=[]):StudyUpdate{
+  const rawCandidate=canonicalProblemId(scalar(raw.problem_id)||deriveCandidate(text));
+  const alias=aliases.find(item=>item.alias.normalize("NFKC").replace(/\s/g,"").toLowerCase()===rawCandidate.normalize("NFKC").replace(/\s/g,"").toLowerCase());
+  const candidate=canonicalProblemId(alias?.problem_id||rawCandidate);
   const master=matchMaster(candidate,problems);
   const chapter=master?.chapter??(Number(raw.chapter)||null);
   const category=(master?.category||scalar(raw.category)||(/-S-/.test(candidate)?"S":/-A-/.test(candidate)?"A":candidate.startsWith("PY-")?"past_exam":"A")) as StudyUpdate["category"];
@@ -253,7 +255,7 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
     external_reference:raw.external_reference==null?undefined:/^(true|yes|1|はい)$/i.test(scalar(raw.external_reference)),
     gpt_explanation:raw.gpt_explanation==null?undefined:/^(true|yes|1|はい)$/i.test(scalar(raw.gpt_explanation)),
     import_confidence:Math.round(confidence*100)/100,master_matched:!!master,status:"review_required",
-    main_theme:scalar(raw.main_theme)||parsedThemes[0]||"",raw_gpt_problem_id:candidate,raw_gpt_theme:parsedThemes.join(" / "),
+    main_theme:scalar(raw.main_theme)||parsedThemes[0]||"",raw_gpt_problem_id:rawCandidate,raw_gpt_theme:parsedThemes.join(" / "),
     math_localized:rawResultSummary!==resultSummary||rawErrorPoint!==errorPoint||rawNextAction!==nextAction||
       rawImprovementGuidance!==improvementGuidance||rawRequiredDerivation!==requiredDerivation||rawCorrectedAnswer!==correctedAnswer||
       weakNotes.some((note,index)=>note.mistake!==localizedWeakNotes[index]?.mistake||note.correction_rule!==localizedWeakNotes[index]?.correction_rule)
@@ -280,7 +282,7 @@ function extractStructured(text:string){
   }
 }
 
-export function parseStudyText(text:string,problems:Problem[],answers:AnswerIndexEntry[]=[]){
+export function parseStudyText(text:string,problems:Problem[],answers:AnswerIndexEntry[]=[],aliases:ProblemAlias[]=[]){
   const structured=extractStructured(text);
   if(structured&&typeof structured==="object"){
     const obj=structured as Record<string,unknown>;
@@ -288,12 +290,12 @@ export function parseStudyText(text:string,problems:Problem[],answers:AnswerInde
     // GPTやコピー元がインデントを落とすと study_update が null になり、
     // 各フィールドがトップレベルへ展開される。そこも1件として受け入れる。
     if(!rows.length&&obj.problem_id) rows=[obj];
-    const updates=rows.filter(x=>x&&typeof x==="object").map(x=>normalizeUpdate(x as Record<string,unknown>,text,problems,answers));
+    const updates=rows.filter(x=>x&&typeof x==="object").map(x=>normalizeUpdate(x as Record<string,unknown>,text,problems,answers,aliases));
     if(updates.length) return {structured:true,updates};
   }
   const candidate=deriveCandidate(text);
   if(!candidate) return {structured:false,updates:[] as StudyUpdate[]};
-  return {structured:false,updates:[normalizeUpdate({},text,problems,answers)]};
+  return {structured:false,updates:[normalizeUpdate({},text,problems,answers,aliases)]};
 }
 
 export function applyProblemMaster(update:StudyUpdate,problem:Problem):StudyUpdate{

@@ -22,7 +22,7 @@ import {
 import { removeTimingExpressions } from "./reviewTiming";
 import { EXAM_PHASES } from "./studyProgress";
 import { CHAPTER_META } from "./officialMaster";
-import { masterDiff, parseAnswerIndexPayload, parseProblemMasterPayload } from "./masterData";
+import { isProblemPack, masterDiff, parseAliasesPayload, parseAnswerIndexPayload, parseIntegratedMasterPayload, parseProblemMasterPayload } from "./masterData";
 import type { Attempt, Bootstrap, Problem, Review, StudyUpdate, Task } from "./types";
 
 type Page = "dashboard"|"today"|"problems"|"attempt"|"import"|"reviews"|"weak"|"past"|"sheets"|"settings";
@@ -99,7 +99,7 @@ export default function App() {
         page==="today"?<TodayView data={data} busy={busy} run={run} go={go}/>:
         page==="problems"?<ProblemsView data={data} select={setSelected} run={run} busy={busy}/>:
         page==="attempt"?<AttemptView problems={data.problems} run={run} busy={busy}/>:
-        page==="import"?<AdvancedImportView problems={data.problems} answerIndex={data.answerIndex} attempts={data.attempts} reviews={data.reviews} run={run} busy={busy}/>:
+        page==="import"?<AdvancedImportView problems={data.problems} answerIndex={data.answerIndex} problemAliases={data.problemAliases} attempts={data.attempts} reviews={data.reviews} run={run} busy={busy}/>:
         page==="reviews"?<ReviewsView data={data} run={run} busy={busy}/>:
         page==="weak"?<WeakView data={data} run={run} busy={busy}/>:
         page==="past"?<PastView data={data} go={go}/>:
@@ -787,7 +787,11 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
   const [examDate,setExamDate]=useState(data.settings.exam_date);
   const [dailyMinutes,setDailyMinutes]=useState(String(data.settings.daily_study_minutes||150));
   const [problemPreview,setProblemPreview]=useState<{raw:unknown;version:string;added:number;changed:number;unchanged:number;total:number}|null>(null);
-  const [answerPreview,setAnswerPreview]=useState<{raw:unknown;version:string;total:number}|null>(null);
+  const [answerPreview,setAnswerPreview]=useState<{raw:unknown;version:string;total:number;added:number;changed:number;unchanged:number}|null>(null);
+  const [aliasPreview,setAliasPreview]=useState<{raw:unknown;version:string;total:number;added:number;changed:number;unchanged:number}|null>(null);
+  const [integratedPreview,setIntegratedPreview]=useState<{raw:unknown;version:string;problemCount:number;answerCount:number;aliasCount:number;added:number;changed:number;unchanged:number}|null>(null);
+  const [backupMasterWarning,setBackupMasterWarning]=useState<unknown|null>(null);
+  const [showDiagnostics,setShowDiagnostics]=useState(false);
   const [masterError,setMasterError]=useState("");
   const saveBlob=(content:string,name:string,type:string)=>{
     const url=URL.createObjectURL(new Blob([content],{type}));const a=document.createElement("a");
@@ -795,8 +799,44 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
   };
   const downloadJson=async()=>saveBlob(JSON.stringify(await exportBackup(),null,2),`stat-study-${todayString()}.json`,"application/json");
   const downloadCsv=async(table:"attempts"|"problems")=>saveBlob(await csvFor(table),`${table}-${todayString()}.csv`,"text/csv;charset=utf-8");
-  const restore=(file:File)=>{
-    run(async()=>{const parsed=JSON.parse(await file.text());await restoreBackup(parsed)},"バックアップを復元しました");
+  const restore=async(file:File)=>{
+    try{
+      const parsed=JSON.parse(await file.text());
+      if(isProblemPack(parsed)){setBackupMasterWarning(parsed);return}
+      await run(async()=>restoreBackup(parsed),"バックアップを復元しました");
+    }catch(error){setMasterError((error as Error).message)}
+  };
+  const compareRows=<T extends Record<string,unknown>>(current:T[],incoming:T[],key:keyof T)=>{
+      const map=new Map(current.map(row=>[String(row[key]),row]));
+      let added=0,changed=0,unchanged=0;
+      for(const row of incoming){
+        const old=map.get(String(row[key]));
+        if(!old)added++;
+        else {
+          const clean=(value:T)=>Object.fromEntries(Object.entries(value).filter(([field])=>field!=="imported_at"));
+          if(JSON.stringify(clean(old))===JSON.stringify(clean(row)))unchanged++;
+          else changed++;
+        }
+      }
+      return {added,changed,unchanged};
+  };
+  const packDiff=(raw:unknown)=>{
+    const parsed=parseIntegratedMasterPayload(raw);
+    const problemDiff=parsed.problemMaster?masterDiff(data.problems,parsed.problemMaster.problems):{added:0,changed:0,unchanged:0,total:0};
+    const answerDiff=parsed.answerIndex?compareRows(data.answerIndex as unknown as Record<string,unknown>[],parsed.answerIndex.answers as unknown as Record<string,unknown>[],"problem_id"): {added:0,changed:0,unchanged:0};
+    const aliasDiff=parsed.aliases?compareRows(data.problemAliases as unknown as Record<string,unknown>[],parsed.aliases.aliases as unknown as Record<string,unknown>[],"alias"): {added:0,changed:0,unchanged:0};
+    return {parsed,added:problemDiff.added+answerDiff.added+aliasDiff.added,
+      changed:problemDiff.changed+answerDiff.changed+aliasDiff.changed,
+      unchanged:problemDiff.unchanged+answerDiff.unchanged+aliasDiff.unchanged};
+  };
+  const previewIntegrated=async(file:File)=>{
+    try{
+      const raw=JSON.parse(await file.text()),diff=packDiff(raw),parsed=diff.parsed;
+      setIntegratedPreview({raw,version:parsed.version,problemCount:parsed.problemMaster?.problems.length||0,
+        answerCount:parsed.answerIndex?.answers.length||0,aliasCount:parsed.aliases?.aliases.length||0,
+        added:diff.added,changed:diff.changed,unchanged:diff.unchanged});
+      setMasterError("");
+    }catch(error){setIntegratedPreview(null);setMasterError((error as Error).message)}
   };
   const previewProblemMaster=async(file:File)=>{
     try{const raw=JSON.parse(await file.text()),parsed=parseProblemMasterPayload(raw),diff=masterDiff(data.problems,parsed.problems);
@@ -805,38 +845,72 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
   };
   const previewAnswerIndex=async(file:File)=>{
     try{const raw=JSON.parse(await file.text()),parsed=parseAnswerIndexPayload(raw);
-      setAnswerPreview({raw,version:parsed.version,total:parsed.answers.length});setMasterError("");
+      const diff=compareRows(data.answerIndex as unknown as Record<string,unknown>[],parsed.answers as unknown as Record<string,unknown>[],"problem_id");
+      setAnswerPreview({raw,version:parsed.version,total:parsed.answers.length,...diff});setMasterError("");
     }catch(error){setAnswerPreview(null);setMasterError((error as Error).message)}
+  };
+  const previewAliases=async(file:File)=>{
+    try{const raw=JSON.parse(await file.text()),parsed=parseAliasesPayload(raw);
+      const diff=compareRows(data.problemAliases as unknown as Record<string,unknown>[],parsed.aliases as unknown as Record<string,unknown>[],"alias");
+      setAliasPreview({raw,version:parsed.version,total:parsed.aliases.length,...diff});setMasterError("");
+    }catch(error){setAliasPreview(null);setMasterError((error as Error).message)}
+  };
+  const moveBackupToMaster=()=>{
+    const raw=backupMasterWarning;setBackupMasterWarning(null);
+    if(!raw)return;
+    try{
+      const diff=packDiff(raw),parsed=diff.parsed;
+      setIntegratedPreview({raw,version:parsed.version,problemCount:parsed.problemMaster?.problems.length||0,
+        answerCount:parsed.answerIndex?.answers.length||0,aliasCount:parsed.aliases?.aliases.length||0,
+        added:diff.added,changed:diff.changed,unchanged:diff.unchanged});
+      setTimeout(()=>document.getElementById("problem-master-import")?.scrollIntoView({behavior:"smooth"}),0);
+    }catch(error){setMasterError((error as Error).message)}
   };
   const downloadMaster=async(kind:"problem"|"answer")=>{
     const data=kind==="problem"?await problemMasterExport():await answerIndexExport();
     saveBlob(JSON.stringify(data,null,2),kind==="problem"?"problem_master.json":"answer_index.json","application/json");
   };
-  return <><div className="settings-grid"><section className="panel"><div className="setting-icon"><Download/></div><h3>バックアップ・書き出し</h3><p>iPadの「ファイル」に定期的に保存してください。機種変更時にも復元できます。</p><div className="button-row"><button className="primary" onClick={downloadJson}><Download size={16}/>全データ JSON</button><button className="ghost" onClick={()=>downloadCsv("attempts")}>学習履歴 CSV</button><button className="ghost" onClick={()=>downloadCsv("problems")}>問題マスター CSV</button></div>
+  return <><section className="panel master-import-panel master-import-primary" id="problem-master-import"><div className="panel-title"><div><span className="eyebrow">CANONICAL DATA</span><h3>問題マスター取り込み</h3></div><Badge tone="green">バックアップ復元とは別機能</Badge></div>
+      <p>ChatGPTで作成した problem_master / answer_index JSON を読み込み、問題ID・テーマ・模範解答索引・GPT取り込み補正に使います。通常のバックアップ復元とは別機能です。</p>
+      <div className="master-import-actions">
+        <label className={`master-file-button primary ${busy?"disabled":""}`}><Database size={16}/>統合JSONを読み込む<input disabled={busy} type="file" accept=".json,application/json" onChange={event=>{const file=event.target.files?.[0];if(file)void previewIntegrated(file);event.target.value=""}}/></label>
+        <label className={`master-file-button ghost ${busy?"disabled":""}`}>problem_master.jsonを読み込む<input disabled={busy} type="file" accept=".json,application/json" onChange={event=>{const file=event.target.files?.[0];if(file)void previewProblemMaster(file);event.target.value=""}}/></label>
+        <label className={`master-file-button ghost ${busy?"disabled":""}`}>answer_index.jsonを読み込む<input disabled={busy} type="file" accept=".json,application/json" onChange={event=>{const file=event.target.files?.[0];if(file)void previewAnswerIndex(file);event.target.value=""}}/></label>
+        <label className={`master-file-button ghost ${busy?"disabled":""}`}>aliases.jsonを読み込む<input disabled={busy} type="file" accept=".json,application/json" onChange={event=>{const file=event.target.files?.[0];if(file)void previewAliases(file);event.target.value=""}}/></label>
+      </div>
+      {masterError&&<div className="match-warning"><AlertTriangle size={17}/><span>{masterError}</span></div>}
+      {integratedPreview&&<div className="pack-preview"><div className="panel-title"><div><span className="eyebrow">IMPORT PREVIEW</span><h4>統合JSONの差分確認</h4></div><Badge>{integratedPreview.version}</Badge></div>
+        <div className="pack-counts"><span>問題マスター<strong>{integratedPreview.problemCount}件</strong></span><span>解答索引<strong>{integratedPreview.answerCount}件</strong></span><span>エイリアス<strong>{integratedPreview.aliasCount}件</strong></span></div>
+        <div className="pack-diff"><span>新規追加 <strong>{integratedPreview.added}件</strong></span><span>更新 <strong>{integratedPreview.changed}件</strong></span><span>変更なし <strong>{integratedPreview.unchanged}件</strong></span><span>削除 <strong>0件</strong></span></div>
+        <div className="button-row"><button className="primary" disabled={busy} onClick={()=>{const preview=integratedPreview;setIntegratedPreview(null);run(()=>post("/api/master/integrated/import",preview.raw),"統合問題マスターを取り込み、整合性を診断しました")}}>取り込む</button><button className="ghost" onClick={()=>setIntegratedPreview(null)}>キャンセル</button></div>
+      </div>}
+      {(problemPreview||answerPreview||aliasPreview)&&<div className="individual-previews">
+        {problemPreview&&<div className="master-diff"><strong>問題マスター：{problemPreview.version}・{problemPreview.total}件</strong><span>追加 {problemPreview.added}／更新 {problemPreview.changed}／変更なし {problemPreview.unchanged}／削除 0</span><div className="button-row"><button className="primary small" disabled={busy} onClick={()=>{const preview=problemPreview;setProblemPreview(null);run(()=>post("/api/master/problem/import",preview.raw),"問題マスターを取り込み、整合性を診断しました")}}>取り込む</button><button className="ghost small" onClick={()=>setProblemPreview(null)}>キャンセル</button></div></div>}
+        {answerPreview&&<div className="master-diff"><strong>解答索引：{answerPreview.version}・{answerPreview.total}件</strong><span>追加 {answerPreview.added}／更新 {answerPreview.changed}／変更なし {answerPreview.unchanged}／削除 0</span><div className="button-row"><button className="primary small" disabled={busy} onClick={()=>{const preview=answerPreview;setAnswerPreview(null);run(()=>post("/api/master/answer/import",preview.raw),"模範解答索引を取り込みました")}}>取り込む</button><button className="ghost small" onClick={()=>setAnswerPreview(null)}>キャンセル</button></div></div>}
+        {aliasPreview&&<div className="master-diff"><strong>エイリアス：{aliasPreview.version}・{aliasPreview.total}件</strong><span>追加 {aliasPreview.added}／更新 {aliasPreview.changed}／変更なし {aliasPreview.unchanged}／削除 0</span><div className="button-row"><button className="primary small" disabled={busy} onClick={()=>{const preview=aliasPreview;setAliasPreview(null);run(()=>post("/api/master/aliases/import",preview.raw),"問題エイリアスを取り込みました")}}>取り込む</button><button className="ghost small" onClick={()=>setAliasPreview(null)}>キャンセル</button></div></div>}
+      </div>}
+      <div className="master-status-row">
+        <article><span>問題マスター</span><strong>登録済み {data.masterStatus.problem_count}件</strong><small>最終更新：{data.masterStatus.problem_updated_at?new Date(data.masterStatus.problem_updated_at).toLocaleDateString("ja-JP"):"未登録"}<br/>バージョン：{data.masterStatus.problem_version}</small></article>
+        <article><span>解答索引</span><strong>登録済み {data.masterStatus.answer_count}件</strong><small>PDF本体：{data.masterStatus.pdf_files.length?`${data.masterStatus.pdf_files.length}件・端末内`:"未登録"}<br/>要約・キーワード：{data.masterStatus.answer_count?"登録済み":"未登録"}</small></article>
+        <article><span>エイリアス</span><strong>登録済み {data.masterStatus.alias_count}件</strong><small>最終更新：{data.masterStatus.alias_updated_at?new Date(data.masterStatus.alias_updated_at).toLocaleDateString("ja-JP"):"未登録"}<br/>バージョン：{data.masterStatus.alias_version}</small></article>
+      </div>
+    </section>
+    <div className="settings-grid"><section className="panel"><div className="setting-icon"><Download/></div><h3>バックアップ・書き出し</h3><p>iPadの「ファイル」に定期的に保存してください。機種変更時にも復元できます。</p><div className="button-row"><button className="primary" onClick={downloadJson}><Download size={16}/>全データ JSON</button><button className="ghost" onClick={()=>downloadCsv("attempts")}>学習履歴 CSV</button><button className="ghost" onClick={()=>downloadCsv("problems")}>問題マスター CSV</button></div>
       <label className={`restore-button ${busy?"disabled":""}`}><Database size={16}/>JSONバックアップを復元<input disabled={busy} type="file" accept="application/json,.json" onChange={e=>{const file=e.target.files?.[0];if(file)restore(file);e.target.value=""}}/></label>
+      {backupMasterWarning!==null&&<div className="backup-master-warning"><AlertTriangle size={18}/><div><strong>これはアプリ全体のバックアップではなく、問題マスター用JSONの可能性があります。「問題マスター取り込み」から読み込んでください。</strong><div className="button-row"><button className="primary small" onClick={moveBackupToMaster}>問題マスター取り込みへ移動</button><button className="ghost small" onClick={()=>setBackupMasterWarning(null)}>キャンセル</button></div></div></div>}
     </section>
     <section className="panel"><div className="setting-icon"><Database/></div><h3>iPad内に保存</h3><p>記録はSafari／ホーム画面アプリ内のIndexedDBに保存されます。外部APIやクラウドには送信しません。</p><dl><dt>問題</dt><dd>{data.problems.length}件</dd><dt>解答履歴</dt><dd>{data.attempts.length}件</dd><dt>復習予定</dt><dd>{data.reviews.length}件</dd></dl></section>
     <section className="panel"><div className="setting-icon"><CalendarCheck/></div><h3>試験日と毎日の学習時間</h3><p>試験日から学習段階を判定し、毎日の目標時間に合わせて課題数を調整します。初期値は150分です。</p><Field label="統計検定1級の受験日"><input type="date" value={examDate} onChange={event=>setExamDate(event.target.value)}/></Field><Field label="1日の最低学習時間（分）"><input type="number" min="30" max="600" value={dailyMinutes} onChange={event=>setDailyMinutes(event.target.value)}/></Field><button className="primary setting-save" disabled={busy} onClick={()=>run(()=>post("/api/settings",{exam_date:examDate,daily_study_minutes:Number(dailyMinutes||150)}),"試験日と学習時間を保存し、計画を調整しました")}>保存する</button></section></div>
-    <section className="panel master-import-panel"><div className="panel-title"><div><span className="eyebrow">CANONICAL DATA</span><h3>問題マスター取り込み</h3></div><Badge tone="green">PDFではなくJSONが正本</Badge></div>
-      <p>ChatGPTで確認済みの <code>problem_master.json</code> と <code>answer_index.json</code> を取り込みます。PDF本体は判別には使いません。</p>
-      {masterError&&<div className="match-warning"><AlertTriangle size={17}/><span>{masterError}</span></div>}
-      <div className="master-import-grid">
-        <article><h4>問題マスター</h4><dl><dt>登録済み</dt><dd>{data.masterStatus.problem_count}件</dd><dt>バージョン</dt><dd>{data.masterStatus.problem_version}</dd><dt>最終更新</dt><dd>{data.masterStatus.problem_updated_at?new Date(data.masterStatus.problem_updated_at).toLocaleString("ja-JP"):"未登録"}</dd></dl>
-          <label className={`restore-button ${busy?"disabled":""}`}>problem_master.jsonを選択<input disabled={busy} type="file" accept=".json,application/json" onChange={event=>{const file=event.target.files?.[0];if(file)void previewProblemMaster(file);event.target.value=""}}/></label>
-          {problemPreview&&<div className="master-diff"><strong>{problemPreview.version}・{problemPreview.total}件</strong><span>追加 {problemPreview.added}／変更 {problemPreview.changed}／同一 {problemPreview.unchanged}</span><button className="primary small" disabled={busy} onClick={()=>{const preview=problemPreview;setProblemPreview(null);run(()=>post("/api/master/problem/import",preview.raw),"問題マスターを取り込み、既存データを診断しました")}}>差分を反映</button></div>}
-          <button className="ghost small" onClick={()=>downloadMaster("problem")}><Download size={14}/>現在の正本を書き出す</button>
-        </article>
-        <article><h4>模範解答索引</h4><dl><dt>登録済み</dt><dd>{data.masterStatus.answer_count}件</dd><dt>バージョン</dt><dd>{data.masterStatus.answer_version}</dd><dt>PDF本体</dt><dd>{data.masterStatus.pdf_files.length?`${data.masterStatus.pdf_files.length}件・端末内`:"未登録"}</dd></dl>
-          <label className={`restore-button ${busy?"disabled":""}`}>answer_index.jsonを選択<input disabled={busy} type="file" accept=".json,application/json" onChange={event=>{const file=event.target.files?.[0];if(file)void previewAnswerIndex(file);event.target.value=""}}/></label>
-          {answerPreview&&<div className="master-diff"><strong>{answerPreview.version}・{answerPreview.total}件</strong><span>要約・キーワードをスキーマ確認済み</span><button className="primary small" disabled={busy} onClick={()=>{const preview=answerPreview;setAnswerPreview(null);run(()=>post("/api/master/answer/import",preview.raw),"模範解答索引を取り込みました")}}>索引を反映</button></div>}
-          <button className="ghost small" onClick={()=>downloadMaster("answer")}><Download size={14}/>現在の索引を書き出す</button>
-        </article>
-      </div>
+    <section className="panel master-tools-panel"><div className="panel-title"><div><span className="eyebrow">MASTER TOOLS</span><h3>正本の書き出し・模範解答PDF</h3></div><Badge tone="green">PDFは端末内のみ</Badge></div>
+      <div className="button-row"><button className="ghost small" onClick={()=>downloadMaster("problem")}><Download size={14}/>現在のproblem_masterを書き出す</button><button className="ghost small" onClick={()=>downloadMaster("answer")}><Download size={14}/>現在のanswer_indexを書き出す</button></div>
       <div className="local-pdf-box"><div><strong>模範解答PDF（任意）</strong><span>GitHubには送らず、このiPadのIndexedDB内だけに保存します。</span></div><label className={`restore-button ${busy?"disabled":""}`}><BookOpen size={15}/>PDFを端末内に登録<input disabled={busy} type="file" accept="application/pdf,.pdf" onChange={event=>{const file=event.target.files?.[0];if(file)run(()=>saveAnswerPdf(file),`${file.name}をこのiPad内に保存しました`);event.target.value=""}}/></label></div>
     </section>
-    <section className="panel diagnostic-panel"><div className="panel-title"><div><span className="eyebrow">CONSISTENCY</span><h3>既存データの整合性診断</h3></div><Badge tone={data.masterStatus.diagnostics.some(item=>item.severity==="critical")?"red":data.masterStatus.diagnostics.length?"orange":"green"}>{data.masterStatus.diagnostics.length}件</Badge></div>
-      {!data.masterStatus.diagnostics.length?<p>problem_master / answer_index と学習履歴は整合しています。</p>:<div className="diagnostic-list">{data.masterStatus.diagnostics.slice(0,20).map(item=><div className={item.severity} key={item.id}><strong>{item.problem_id||item.record_type}</strong><span>{item.message}</span><small>{item.repairable?"自動修復可能":"ユーザー確認が必要"}</small></div>)}</div>}
-      <button className="primary" disabled={busy} onClick={()=>run(()=>post("/api/master/repair",{}),"自動修復可能な不整合を修復しました")}>整合性を再診断・修復</button>
+    <section className="panel diagnostic-panel"><div className="panel-title"><div><span className="eyebrow">CONSISTENCY</span><h3>整合性診断結果</h3></div><Badge tone={data.masterStatus.diagnostics.some(item=>item.severity==="critical")?"red":data.masterStatus.diagnostics.length?"orange":"green"}>要確認 {data.masterStatus.diagnostics.length}件</Badge></div>
+      {!data.masterStatus.diagnostics.length?<p>problem_master / answer_index と学習履歴は整合しています。</p>:<>
+        <div className="diagnostic-summary">{data.masterStatus.diagnostics.slice(0,3).map(item=><div key={item.id}><strong>{item.problem_id||item.record_type}</strong><span>{item.message}</span></div>)}</div>
+        {showDiagnostics&&<div className="diagnostic-list">{data.masterStatus.diagnostics.slice(0,50).map(item=><div className={item.severity} key={item.id}><strong>{item.problem_id||item.record_type}</strong><span>{item.message}</span><small>{item.repairable?"problem_masterに合わせて補正":"ユーザー確認が必要"}</small></div>)}</div>}
+      </>}
+      <div className="button-row"><button className="primary" disabled={busy||!data.masterStatus.diagnostics.some(item=>item.repairable)} onClick={()=>run(()=>post("/api/master/repair",{}),"自動修復可能な不整合を一括補正しました")}>一括補正する</button><button className="ghost" disabled={!data.masterStatus.diagnostics.length} onClick={()=>setShowDiagnostics(true)}>個別確認する</button><button className="ghost" disabled={!data.masterStatus.diagnostics.length} onClick={()=>setShowDiagnostics(false)}>後で確認する</button></div>
       {!!data.masterStatus.import_history.length&&<details><summary>取り込み履歴</summary><ul>{data.masterStatus.import_history.map((row,index)=><li key={index}>{row}</li>)}</ul></details>}
     </section>
     <section className="panel install-guide"><div className="setting-icon"><Plus/></div><div><h3>iPadへインストール</h3><p>Safariで公開URLを開き、共有ボタン →「ホーム画面に追加」を選びます。初回表示後はオフラインでも起動できます。</p></div><Badge tone="green">オフライン対応</Badge></section>

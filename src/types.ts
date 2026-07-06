@@ -21,6 +21,11 @@ export type CorrectionLog = {
   corrected_problem_id:string; raw_gpt_theme:string; corrected_theme:string;
   correction_reason:string; consistency_score:number; corrected_at:string;
 };
+export type ProblemAlias = { alias:string; problem_id:string; label?:string; imported_at?:string; alias_version?:string };
+export type MasterImportLog = {
+  id?:number; imported_at:string; file_kind:"integrated"|"problem_master"|"answer_index"|"aliases";
+  version:string; problem_count:number; answer_count:number; alias_count:number;
+};
 export type DataDiagnostic = {
   id:string; severity:"info"|"warning"|"critical"; problem_id?:string; record_type:string;
   message:string; suggested_problem_id?:string; repairable:boolean;
@@ -112,10 +117,11 @@ export type Dashboard = {
 };
 export type Bootstrap = {
   problems:Problem[]; attempts:Attempt[]; reviews:Review[]; roadmap:Roadmap[];
-  weakNotes:WeakNote[]; pastSessions:PastSession[]; answerIndex:AnswerIndexEntry[]; dashboard:Dashboard;
+  weakNotes:WeakNote[]; pastSessions:PastSession[]; answerIndex:AnswerIndexEntry[]; problemAliases:ProblemAlias[]; dashboard:Dashboard;
   settings:{exam_date:string;daily_study_minutes:number};
   masterStatus:{problem_count:number;answer_count:number;problem_version:string;answer_version:string;
-    problem_updated_at:string;answer_updated_at:string;pdf_files:string[];diagnostics:DataDiagnostic[];import_history:string[]};
+    problem_updated_at:string;answer_updated_at:string;alias_updated_at:string;alias_version:string;alias_count:number;
+    pdf_files:string[];diagnostics:DataDiagnostic[];import_history:string[]};
   today:{tasks:Task[];totalLoad:number;plannedMinutes:number;remainingMinutes:number;actualMinutes:number;
     targetMinutes:number;capacityPercent:number;warning:string;guidance:string;
     triageMinutes?:{must:number;if_time:number;tomorrow:number};

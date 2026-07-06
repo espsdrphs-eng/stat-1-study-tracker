@@ -1,7 +1,12 @@
-import type { AnswerIndexEntry, Problem, StudyUpdate } from "./types";
+import type { AnswerIndexEntry, Problem, ProblemAlias, StudyUpdate } from "./types";
 
 export type ProblemMasterPayload={version:string;problems:Partial<Problem>[]};
 export type AnswerIndexPayload={version:string;answers:AnswerIndexEntry[]};
+export type AliasPayload={version:string;aliases:ProblemAlias[]};
+export type IntegratedMasterPayload={
+  version:string;problemMaster?:ProblemMasterPayload;answerIndex?:AnswerIndexPayload;
+  aliases?:AliasPayload;importGuide?:unknown;
+};
 
 const array=(value:unknown)=>Array.isArray(value)?value.map(String).map(item=>item.trim()).filter(Boolean):[];
 const chapterNumber=(value:unknown)=>{
@@ -71,6 +76,62 @@ export function parseAnswerIndexPayload(raw:unknown):AnswerIndexPayload{
       canonical_keywords:array(item.canonical_keywords),index_version:version} as AnswerIndexEntry;
   });
   return {version,answers};
+}
+
+export function parseAliasesPayload(raw:unknown):AliasPayload{
+  const root=Array.isArray(raw)?{aliases:raw}:raw as Record<string,unknown>;
+  const version=String(root?.version||root?.alias_version||"stat1-aliases-v1");
+  const source=root?.problem_aliases??root?.aliases;
+  const rows:Array<Record<string,unknown>>=[];
+  if(Array.isArray(source)){
+    for(const entry of source){
+      if(typeof entry==="string") continue;
+      if(entry&&typeof entry==="object") rows.push(entry as Record<string,unknown>);
+    }
+  }else if(source&&typeof source==="object"){
+    for(const [alias,value] of Object.entries(source as Record<string,unknown>)){
+      if(typeof value==="string") rows.push({alias,problem_id:value});
+      else if(value&&typeof value==="object") rows.push({alias,...value as Record<string,unknown>});
+    }
+  }else throw new Error("aliases.json に aliases または problem_aliases がありません");
+  const seen=new Set<string>();
+  const aliases=rows.map((entry,index)=>{
+    const alias=String(entry.alias||entry.name||entry.from||"").trim(),problem_id=canonicalId(entry.problem_id||entry.canonical_id||entry.to);
+    if(!alias||!problem_id) throw new Error(`${index+1}件目の alias / problem_id が不足しています`);
+    const key=normalizedText(alias);
+    if(seen.has(key)) throw new Error(`エイリアス「${alias}」が重複しています`);
+    seen.add(key);
+    return {alias,problem_id,label:String(entry.label||""),alias_version:version} as ProblemAlias;
+  });
+  return {version,aliases};
+}
+
+export function isProblemPack(raw:unknown){
+  if(!raw||typeof raw!=="object"||Array.isArray(raw)) return false;
+  const root=raw as Record<string,unknown>;
+  if(["attempts","reviews","roadmap","weakNotes","pastSessions","settings"].some(key=>key in root)) return false;
+  return ["problem_master","answer_index","problem_aliases","problems","answers","aliases","import_guide"]
+    .some(key=>key in root);
+}
+
+export function parseIntegratedMasterPayload(raw:unknown):IntegratedMasterPayload{
+  if(!raw||typeof raw!=="object"||Array.isArray(raw)) throw new Error("統合JSONのルートはオブジェクトにしてください");
+  const root=raw as Record<string,unknown>,version=String(root.version||root.pack_version||root.name||"stat1_problem_pack");
+  const problemSource=root.problem_master??root.problems;
+  const answerSource=root.answer_index??root.answers;
+  const aliasSource=root.problem_aliases??root.aliases;
+  const problemMaster=problemSource===undefined?undefined:parseProblemMasterPayload(
+    Array.isArray(problemSource)?{version,problems:problemSource}:problemSource
+  );
+  const answerIndex=answerSource===undefined?undefined:parseAnswerIndexPayload(
+    Array.isArray(answerSource)?{version,answers:answerSource}:answerSource
+  );
+  const aliasPayload=aliasSource&&typeof aliasSource==="object"&&!Array.isArray(aliasSource)&&
+    ("aliases" in aliasSource||"problem_aliases" in aliasSource||"version" in aliasSource)
+    ?aliasSource:{version,aliases:aliasSource};
+  const aliases=aliasSource===undefined?undefined:parseAliasesPayload(aliasPayload);
+  if(!problemMaster&&!answerIndex&&!aliases) throw new Error("problem_master / answer_index / problem_aliases を検出できません");
+  return {version,problemMaster,answerIndex,aliases,importGuide:root.import_guide};
 }
 
 export function masterDiff(current:Problem[],incoming:Partial<Problem>[]){

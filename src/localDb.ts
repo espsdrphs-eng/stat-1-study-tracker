@@ -1,5 +1,5 @@
 import Dexie, { type EntityTable } from "dexie";
-import type { AnswerIndexEntry, Attempt, Bootstrap, CorrectionLog, DataDiagnostic, PastSession, Problem, Review, Roadmap, StudyUpdate, Task, WeakNote } from "./types";
+import type { AnswerIndexEntry, Attempt, Bootstrap, CorrectionLog, DataDiagnostic, MasterImportLog, PastSession, Problem, ProblemAlias, Review, Roadmap, StudyUpdate, Task, WeakNote } from "./types";
 import { japaneseizeMathText } from "./mathJapanese.ts";
 import { analyzeWeaknesses } from "./weaknessAnalytics.ts";
 import { createAdaptiveReviewPlan, createAttemptReviewPlan, createPastReviewPlan, createSReviewPlan, enforceReviewEvidence, normalizedErrors, type ReviewOutcome, type ReviewPlan, type SState } from "./reviewRules.ts";
@@ -12,7 +12,7 @@ import { buildProgressPlan, daysUntilExam } from "./studyProgress.ts";
 import { CHAPTER_META, officialProblemEntries, PAST_EXAM_YEAR_ORDER, STRATEGY_A_PLUS_ORDER, STRATEGY_S_ORDER, strategyRankFor } from "./officialMaster.ts";
 import { REVIEW_RUBRIC_VERSION } from "./gradingPrompt.ts";
 import { allowedReferenceLevel, referenceDecision, type ReferenceLevel } from "./reviewExperience.ts";
-import { applyCanonicalMaster, parseAnswerIndexPayload, parseProblemMasterPayload } from "./masterData.ts";
+import { applyCanonicalMaster, parseAliasesPayload, parseAnswerIndexPayload, parseIntegratedMasterPayload, parseProblemMasterPayload } from "./masterData.ts";
 
 type SMemory = { problem_id:string; state:"stable"|"check"|"forgotten"|"collapsed"; last_touched?:string; k_trigger_count:number };
 type StoredAttempt = Attempt;
@@ -43,6 +43,8 @@ class StudyDatabase extends Dexie {
   answerIndex!: EntityTable<AnswerIndexEntry,"problem_id">;
   correctionLogs!: EntityTable<CorrectionLog,"id">;
   answerPdfs!: EntityTable<StoredAnswerPdf,"file_name">;
+  problemAliases!: EntityTable<ProblemAlias,"alias">;
+  importLogs!: EntityTable<MasterImportLog,"id">;
   constructor() {
     super("stat-1-study-tracker");
     this.version(1).stores({
@@ -327,6 +329,19 @@ class StudyDatabase extends Dexie {
         await tx.table("reviews").put(review);
       }
     });
+    this.version(11).stores({
+      problems:"&problem_id,category,chapter,priority,completion_status,normalized_label",
+      attempts:"++id,problem_id,date,error_type,mark,primary_error_type,[problem_id+date]",
+      reviews:"++id,problem_id,due_date,status,review_type,task_origin,source_problem_id",
+      roadmap:"&order_index,problem_id,is_active",
+      weakNotes:"++id,problem_id,date,error_type,is_resolved,auto_generated,last_quizzed_at",
+      pastSessions:"++id,year,date,session_type,selection_result",
+      sMemory:"&problem_id,state,last_touched",meta:"&key",
+      answerIndex:"&problem_id,answer_available,pdf_file_name",
+      correctionLogs:"++id,corrected_at,raw_gpt_problem_id,corrected_problem_id",
+      answerPdfs:"&file_name,uploaded_at",problemAliases:"&alias,problem_id",
+      importLogs:"++id,imported_at,file_kind"
+    });
   }
 }
 
@@ -432,14 +447,16 @@ async function ensureBuiltInCanonical(){
   ];
   for(const definition of definitions){
     const problem=await db.problems.get(definition.problem_id);
-    if(problem&&(!problem.master_version||/AIC|自由度/.test(problem.theme))) await db.problems.update(definition.problem_id,{
+    if(problem) await db.problems.update(definition.problem_id,{
       theme:definition.theme,canonical_title:problem.display_label||problem.title,canonical_problem_type:definition.canonical_problem_type,
-      canonical_keywords:definition.canonical_keywords,answer_available:true,master_version:"mathstat-master-v1"
+      canonical_keywords:definition.canonical_keywords,answer_available:true,master_version:problem.master_version||"mathstat-master-v1"
     });
-    if(!await db.answerIndex.get(definition.problem_id)) await db.answerIndex.put({
-      problem_id:definition.problem_id,answer_available:true,pdf_file_name:"MathStat_Answers.pdf",page_start:null,page_end:null,
+    const priorAnswer=await db.answerIndex.get(definition.problem_id);
+    await db.answerIndex.put({
+      ...priorAnswer,problem_id:definition.problem_id,answer_available:true,pdf_file_name:priorAnswer?.pdf_file_name||"MathStat_Answers.pdf",
+      page_start:priorAnswer?.page_start??null,page_end:priorAnswer?.page_end??null,
       section_label:definition.section,answer_excerpt:definition.excerpt,canonical_keywords:definition.canonical_keywords,
-      imported_at:now,index_version:"mathstat-answers-v1"
+      imported_at:priorAnswer?.imported_at||now,index_version:priorAnswer?.index_version||"mathstat-answers-v1"
     });
   }
   if(!await db.meta.get("problem_master_version")) await db.meta.put({key:"problem_master_version",value:"mathstat-master-v1"});
@@ -865,6 +882,9 @@ async function appendImportHistory(kind:string,version:string,count:number){
   rows.unshift(`${new Date().toISOString()}｜${kind}｜${version}｜${count}件`);
   await db.meta.put({key,value:JSON.stringify(rows.slice(0,20))});
 }
+async function addImportLog(file_kind:MasterImportLog["file_kind"],version:string,problem_count=0,answer_count=0,alias_count=0){
+  await db.importLogs.add({id:undefined,imported_at:new Date().toISOString(),file_kind,version,problem_count,answer_count,alias_count});
+}
 
 async function importProblemMaster(raw:unknown){
   const payload=parseProblemMasterPayload(raw),now=new Date().toISOString();
@@ -889,6 +909,7 @@ async function importProblemMaster(raw:unknown){
   }
   await db.meta.bulkPut([{key:"problem_master_version",value:payload.version},{key:"problem_master_updated_at",value:now}]);
   await appendImportHistory("problem_master",payload.version,payload.problems.length);
+  await addImportLog("problem_master",payload.version,payload.problems.length,0,0);
   await repairDataIntegrity(true);
   return {count:payload.problems.length,version:payload.version};
 }
@@ -902,12 +923,43 @@ async function importAnswerIndex(raw:unknown){
   }
   await db.meta.bulkPut([{key:"answer_index_version",value:payload.version},{key:"answer_index_updated_at",value:now}]);
   await appendImportHistory("answer_index",payload.version,payload.answers.length);
+  await addImportLog("answer_index",payload.version,0,payload.answers.length,0);
   return {count:payload.answers.length,version:payload.version};
 }
 
+async function importAliases(raw:unknown){
+  const payload=parseAliasesPayload(raw),now=new Date().toISOString();
+  await db.problemAliases.bulkPut(payload.aliases.map(alias=>({...alias,imported_at:now,alias_version:payload.version})));
+  await db.meta.bulkPut([{key:"problem_alias_version",value:payload.version},{key:"problem_alias_updated_at",value:now}]);
+  await appendImportHistory("aliases",payload.version,payload.aliases.length);
+  await addImportLog("aliases",payload.version,0,0,payload.aliases.length);
+  return {count:payload.aliases.length,version:payload.version};
+}
+
+async function importIntegratedMaster(raw:unknown){
+  const payload=parseIntegratedMasterPayload(raw);
+  let problem_count=0,answer_count=0,alias_count=0;
+  if(payload.problemMaster){
+    const result=await importProblemMaster(payload.problemMaster);
+    problem_count=result.count;
+  }
+  if(payload.answerIndex){
+    const result=await importAnswerIndex(payload.answerIndex);
+    answer_count=result.count;
+  }
+  if(payload.aliases){
+    const result=await importAliases(payload.aliases);
+    alias_count=result.count;
+  }
+  await addImportLog("integrated",payload.version,problem_count,answer_count,alias_count);
+  await appendImportHistory("統合JSON",payload.version,problem_count+answer_count+alias_count);
+  await repairDataIntegrity(true);
+  return {version:payload.version,problem_count,answer_count,alias_count,diagnostics:await diagnoseData()};
+}
+
 async function diagnoseData():Promise<DataDiagnostic[]>{
-  const [problems,attempts,reviews,notes,answers]=await Promise.all([
-    db.problems.toArray(),db.attempts.toArray(),db.reviews.toArray(),db.weakNotes.toArray(),db.answerIndex.toArray()
+  const [problems,attempts,reviews,notes,answers,aliases]=await Promise.all([
+    db.problems.toArray(),db.attempts.toArray(),db.reviews.toArray(),db.weakNotes.toArray(),db.answerIndex.toArray(),db.problemAliases.toArray()
   ]);
   const pmap=new Map(problems.map(problem=>[problem.problem_id,problem])),amap=new Map(answers.map(answer=>[answer.problem_id,answer]));
   const diagnostics:DataDiagnostic[]=[];
@@ -935,6 +987,10 @@ async function diagnoseData():Promise<DataDiagnostic[]>{
     const answer=amap.get(problem.problem_id);
     if(problem.answer_available&&!answer) diagnostics.push({id:`answer-${problem.problem_id}`,severity:"warning",problem_id:problem.problem_id,record_type:"answer_index",message:"answer_available ですが answer_index がありません。",repairable:false});
   }
+  for(const alias of aliases) if(!pmap.has(alias.problem_id)) diagnostics.push({
+    id:`alias-${alias.alias}`,severity:"warning",problem_id:alias.problem_id,record_type:"alias",
+    message:`エイリアス「${alias.alias}」の参照先が problem_master にありません。`,repairable:false
+  });
   const s4=pmap.get("WB-6-S-04");
   if(s4&&/AIC|自由度|指数型分布族/.test(s4.theme)) diagnostics.push({id:"s4-theme",severity:"critical",problem_id:s4.problem_id,record_type:"problem",message:"WB-6-S-04 のテーマが正本と矛盾しています。",suggested_problem_id:"WB-6-S-01",repairable:true});
   return diagnostics;
@@ -997,10 +1053,10 @@ export async function openAnswerPdf(fileName:string,page?:number|null){
 async function bootstrap():Promise<Bootstrap>{
   await initialize();
   await ensureBuiltInCanonical();
-  const [problems,attempts,rawReviews,roadmap,weakNotes,pastSessions,sMemory,metaEntries,answerIndex,answerPdfs]=await Promise.all([
+  const [problems,attempts,rawReviews,roadmap,weakNotes,pastSessions,sMemory,metaEntries,answerIndex,answerPdfs,problemAliases]=await Promise.all([
     db.problems.toArray(),db.attempts.orderBy("id").reverse().toArray(),db.reviews.orderBy("due_date").toArray(),db.roadmap.orderBy("order_index").toArray(),
     db.weakNotes.orderBy("id").reverse().toArray(),db.pastSessions.orderBy("id").reverse().toArray(),db.sMemory.toArray(),db.meta.toArray(),
-    db.answerIndex.toArray(),db.answerPdfs.toArray()
+    db.answerIndex.toArray(),db.answerPdfs.toArray(),db.problemAliases.toArray()
   ]);
   const today=todayString(),week=addDays(today,-6),fortnight=addDays(today,-13);
   const pmap=new Map(problems.map(p=>[p.problem_id,p]));
@@ -1224,9 +1280,12 @@ async function bootstrap():Promise<Bootstrap>{
     answer_version:metaEntries.find(entry=>entry.key==="answer_index_version")?.value||"未設定",
     problem_updated_at:metaEntries.find(entry=>entry.key==="problem_master_updated_at")?.value||"",
     answer_updated_at:metaEntries.find(entry=>entry.key==="answer_index_updated_at")?.value||"",
+    alias_updated_at:metaEntries.find(entry=>entry.key==="problem_alias_updated_at")?.value||"",
+    alias_version:metaEntries.find(entry=>entry.key==="problem_alias_version")?.value||"未設定",
+    alias_count:problemAliases.length,
     pdf_files:[...pdfNames],diagnostics,import_history:importHistory
   };
-  return {problems:problems.sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.category.localeCompare(b.category)||a.problem_number-b.problem_number),attempts,reviews,roadmap,weakNotes,pastSessions,answerIndex,dashboard,settings,masterStatus,
+  return {problems:problems.sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.category.localeCompare(b.category)||a.problem_number-b.problem_number),attempts,reviews,roadmap,weakNotes,pastSessions,answerIndex,problemAliases,dashboard,settings,masterStatus,
     today:{tasks,totalLoad,plannedMinutes:plannedTotal,remainingMinutes,actualMinutes,targetMinutes:settings.daily_study_minutes,capacityPercent,warning,guidance,
       planned_minutes_total:plannedTotal,completed_minutes_today:actualMinutes,remaining_minutes_today:remainingMinutes,
       postponed_minutes_today:postponedMinutes,target_minutes_today:settings.daily_study_minutes,
@@ -1246,10 +1305,14 @@ export async function localGet<T>(path:string):Promise<T>{
 
 export async function localPost<T>(path:string,body:any):Promise<T>{
   await initialize();
-  if(path==="/api/master/problem/import"){
+  if(path==="/api/master/integrated/import"){
+    return await importIntegratedMaster(body) as T;
+  } else if(path==="/api/master/problem/import"){
     return await importProblemMaster(body) as T;
   } else if(path==="/api/master/answer/import"){
     return await importAnswerIndex(body) as T;
+  } else if(path==="/api/master/aliases/import"){
+    return await importAliases(body) as T;
   } else if(path==="/api/master/repair"){
     return await repairDataIntegrity() as T;
   } else if(path==="/api/problems"){
@@ -1327,20 +1390,23 @@ export async function exportBackup(){
     version:2,exported_at:new Date().toISOString(),
     problems:await db.problems.toArray(),attempts:await db.attempts.toArray(),reviews:await db.reviews.toArray(),
     roadmap:await db.roadmap.toArray(),weakNotes:await db.weakNotes.toArray(),pastSessions:await db.pastSessions.toArray(),
-    sMemory:await db.sMemory.toArray(),answerIndex:await db.answerIndex.toArray(),correctionLogs:await db.correctionLogs.toArray()
+    sMemory:await db.sMemory.toArray(),answerIndex:await db.answerIndex.toArray(),correctionLogs:await db.correctionLogs.toArray(),
+    problemAliases:await db.problemAliases.toArray(),importLogs:await db.importLogs.toArray()
   };
 }
 
 export async function restoreBackup(data:any){
   const required=["problems","attempts","reviews","roadmap","weakNotes","pastSessions","sMemory"];
   if(!data||!required.every(k=>Array.isArray(data[k]))) throw new Error("バックアップ形式が正しくありません");
-  await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.roadmap,db.weakNotes,db.pastSessions,db.sMemory,db.meta,db.answerIndex,db.correctionLogs],async()=>{
-    await Promise.all([db.problems.clear(),db.attempts.clear(),db.reviews.clear(),db.roadmap.clear(),db.weakNotes.clear(),db.pastSessions.clear(),db.sMemory.clear(),db.answerIndex.clear(),db.correctionLogs.clear()]);
+  await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.roadmap,db.weakNotes,db.pastSessions,db.sMemory,db.meta,db.answerIndex,db.correctionLogs,db.problemAliases,db.importLogs],async()=>{
+    await Promise.all([db.problems.clear(),db.attempts.clear(),db.reviews.clear(),db.roadmap.clear(),db.weakNotes.clear(),db.pastSessions.clear(),db.sMemory.clear(),db.answerIndex.clear(),db.correctionLogs.clear(),db.problemAliases.clear(),db.importLogs.clear()]);
     await db.problems.bulkAdd(data.problems);await db.attempts.bulkAdd(data.attempts);await db.reviews.bulkAdd(data.reviews);
     await db.roadmap.bulkAdd(data.roadmap);await db.weakNotes.bulkAdd(data.weakNotes);await db.pastSessions.bulkAdd(data.pastSessions);
     await db.sMemory.bulkAdd(data.sMemory);
     if(Array.isArray(data.answerIndex)) await db.answerIndex.bulkAdd(data.answerIndex);
     if(Array.isArray(data.correctionLogs)) await db.correctionLogs.bulkAdd(data.correctionLogs);
+    if(Array.isArray(data.problemAliases)) await db.problemAliases.bulkAdd(data.problemAliases);
+    if(Array.isArray(data.importLogs)) await db.importLogs.bulkAdd(data.importLogs);
     await db.meta.put({key:"seeded",value:"1"});
   });
 }

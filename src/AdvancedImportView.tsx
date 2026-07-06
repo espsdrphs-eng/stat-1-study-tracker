@@ -5,7 +5,7 @@ import { applyProblemMaster, parseStudyText, problemDisplayLabel, todayString } 
 import { createAttemptReviewPlan } from "./reviewRules";
 import { buildGradingPrompt, GRADING_RUBRIC_VERSION, REVIEW_RUBRIC_VERSION } from "./gradingPrompt";
 import { reviewDaysForErrors, sanitizeStudyUpdateTiming, timingWarningMessage, timingWarnings } from "./reviewTiming";
-import type { AnswerIndexEntry, Attempt, Problem, Review, StudyUpdate } from "./types";
+import type { AnswerIndexEntry, Attempt, Problem, ProblemAlias, Review, StudyUpdate } from "./types";
 
 const modes:Record<string,string>={check:"チェック",skeleton:"骨格",main_calc:"主要計算",full:"フル答案",scan:"スキャン",exam_90min:"90分演習"};
 const priority=["K","N","W","C"];
@@ -58,8 +58,8 @@ function Pill({children,tone=""}:{children:React.ReactNode;tone?:string}){
   return <span className={`badge ${tone}`}>{children}</span>;
 }
 
-export default function AdvancedImportView({problems,answerIndex,attempts,reviews,run,busy}:{
-  problems:Problem[];answerIndex:AnswerIndexEntry[];attempts:Attempt[];reviews:Review[];run:(action:()=>Promise<unknown>,success:string)=>Promise<boolean>;busy:boolean;
+export default function AdvancedImportView({problems,answerIndex,problemAliases,attempts,reviews,run,busy}:{
+  problems:Problem[];answerIndex:AnswerIndexEntry[];problemAliases:ProblemAlias[];attempts:Attempt[];reviews:Review[];run:(action:()=>Promise<unknown>,success:string)=>Promise<boolean>;busy:boolean;
 }){
   const [text,setText]=useState("");
   const [updates,setUpdates]=useState<StudyUpdate[]>([]);
@@ -74,7 +74,7 @@ export default function AdvancedImportView({problems,answerIndex,attempts,review
     setError("");
     setSaved(null);
     try{
-      const result=parseStudyText(text,problems,answerIndex);
+      const result=parseStudyText(text,problems,answerIndex,problemAliases);
       setStructured(result.structured);
       setUpdates(result.updates);
       setEditing(false);

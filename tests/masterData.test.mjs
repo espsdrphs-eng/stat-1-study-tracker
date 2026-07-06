@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  applyCanonicalMaster, consistencyScore, parseAnswerIndexPayload, parseProblemMasterPayload
+  applyCanonicalMaster, consistencyScore, isProblemPack, parseAliasesPayload,
+  parseAnswerIndexPayload, parseIntegratedMasterPayload, parseProblemMasterPayload
 } from "../src/masterData.ts";
 
 const rawProblems={version:"mathstat-master-v1",problems:[
@@ -40,4 +41,40 @@ test("S4に指数型分布族が貼られた場合はS1候補を出し、表示�
   assert.equal(result.suggested_problem_id,"WB-6-S-01");
   assert.equal(result.requires_problem_confirmation,true);
   assert.ok(consistencyScore(update,problems[0],answers[0])>consistencyScore(update,problems[1],answers[1]));
+});
+
+test("統合JSONの4キーと短縮配列名を読み込める",()=>{
+  const pack=parseIntegratedMasterPayload({
+    version:"stat1_problem_pack_with_past",
+    problem_master:rawProblems,
+    answer_index:rawAnswers,
+    problem_aliases:{"第6章S問1":"WB-6-S-01"},
+    import_guide:{source:"ChatGPT"}
+  });
+  assert.equal(pack.problemMaster?.problems.length,2);
+  assert.equal(pack.answerIndex?.answers.length,2);
+  assert.equal(pack.aliases?.aliases[0].problem_id,"WB-6-S-01");
+  assert.deepEqual(pack.importGuide,{source:"ChatGPT"});
+
+  const short=parseIntegratedMasterPayload({
+    problems:rawProblems.problems,answers:rawAnswers.answers,
+    aliases:[{alias:"6章S1",problem_id:"WB-6-S-01"}]
+  });
+  assert.equal(short.problemMaster?.problems.length,2);
+  assert.equal(short.answerIndex?.answers.length,2);
+  assert.equal(short.aliases?.aliases.length,1);
+  assert.equal(parseIntegratedMasterPayload({
+    problem_aliases:{version:"aliases-v2",aliases:[{alias:"S1",problem_id:"WB-6-S-01"}]}
+  }).aliases?.version,"aliases-v2");
+});
+
+test("問題エイリアスを配列とマップの両方から正規化する",()=>{
+  assert.equal(parseAliasesPayload({aliases:[{alias:"第6章S問4",problem_id:"WB-6-S-04"}]}).aliases[0].problem_id,"WB-6-S-04");
+  assert.equal(parseAliasesPayload({problem_aliases:{"6-S-4":"WB-6-S-04"}}).aliases[0].alias,"6-S-4");
+});
+
+test("問題パックとアプリ全体バックアップを区別する",()=>{
+  assert.equal(isProblemPack({problem_master:rawProblems}),true);
+  assert.equal(isProblemPack({problems:rawProblems.problems,answers:rawAnswers.answers}),true);
+  assert.equal(isProblemPack({problems:rawProblems.problems,attempts:[],reviews:[],settings:{}}),false);
 });

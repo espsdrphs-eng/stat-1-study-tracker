@@ -2,7 +2,7 @@ import type { Attempt, Problem, Review, WeakNote, WeaknessInsight } from "./type
 
 const errorWeight:Record<string,number>={K:5,N:3,W:2,C:1};
 const repairRules:[string,string[],string[]][]=[
-  ["AIC・自由度",["WB-6-A-05"],["WB-6-S-04"]],
+  ["AIC・自由度",["WB-6-A-05"],[]],
   ["回帰",["WB-6-A-19","WB-6-A-20"],["WB-6-S-21","WB-6-S-22"]],
   ["Fisher情報量",["WB-6-A-26"],[]],
   ["非正則推定",["WB-6-A-10","WB-6-A-29"],[]],

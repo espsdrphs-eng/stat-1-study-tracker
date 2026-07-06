@@ -179,3 +179,18 @@ review_after_days: 2
   assert.equal(result.updates[0].mode, "full");
   assert.deepEqual(result.updates[0].error_types, ["W", "N"]);
 });
+
+test("保存済みエイリアスで問題IDの表記ゆれを正本へ解決する",()=>{
+  const result=parseStudyText(`study_update:
+  problem_id: "第2章S問6"
+  date: "2026-07-06"
+  mode: "skeleton"
+  mark: "○"
+  score_label: "A"
+  error_types: ["none"]
+  next_action: "骨格を確認する"
+`,problems,[],[{alias:"第2章S問6",problem_id:"WB-2-S-06"}]);
+  assert.equal(result.updates[0].problem_id,"WB-2-S-06");
+  assert.equal(result.updates[0].raw_gpt_problem_id,"第2章S問6");
+  assert.equal(result.updates[0].master_matched,true);
+});
