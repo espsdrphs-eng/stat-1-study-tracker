@@ -101,6 +101,7 @@ export type Task = {
   official_answer_text?:string; official_answer_url?:string; has_saved_gpt_feedback?:boolean;
   official_answer_pdf_name?:string; official_answer_pdf_registered?:boolean; answer_section_label?:string;
   official_answer_page?:number|null;
+  canonical_problem_type?:string; canonical_keywords?:string[]; answer_excerpt?:string;
   allowed_reference_level?:number; actual_reference_level?:number;
   reference_closed_reproduction?:boolean; triage_override?:"must";
   postponed_at?:string; postponed_to?:string; postpone_reason?:string; postpone_count?:number;

@@ -15,7 +15,7 @@ import { buildReviewGradingPrompt } from "./gradingPrompt";
 import { reviewMode, reviewTemplate } from "./reviewPresentation";
 import {
   allowedReferenceLevel, completionChecklist, correctionRuleExample, correctionTheme, emptyReferenceState,
-  normalizeReferenceState, oneLineHint, referenceDecision, referenceLabels, referencePolicy,
+  normalizeReferenceState, oneLineHint, referenceDecision, referenceEntryPoint, referenceLabels, referencePolicy,
   referenceStateAtLevel, revealReference, reviewAim, reviewFormat, safeReviewActions, todayMove,
   type ReferenceLevel, type ReferenceState
 } from "./reviewExperience";
@@ -256,6 +256,7 @@ function ReviewPlanDetails({item,compact=false}:{item:Partial<Review&Task>;compa
     <div className="review-aim"><span>今回の狙い</span><strong>{reviewAim(item)}</strong></div>
     {item.task_origin==="linked_s_check"&&<div className="task-origin-note"><Badge tone="blue">関連S確認</Badge><div><strong>この問題自体は{hasPreviousAttempt?"既習":"初回"}確認です</strong><span>元問題：{item.source_problem_id||"記録なし"}／{item.review_goal_public||"元問題で崩れた基礎型を確認します。"}</span></div></div>}
     <div className="correction-theme"><span>修正テーマ</span><strong>{correctionTheme(item)}</strong></div>
+    <div className="review-entry-point"><span>今回の入口</span><strong>{referenceEntryPoint(item)}</strong></div>
     <div className="review-format"><strong>{reviewFormat(item)}</strong></div>
     <div className="next-actions"><span>今回やること</span><ol>{actions.map((action,index)=><li key={`${index}-${action}`}>{action}</li>)}</ol></div>
     <div className="review-template">
@@ -630,7 +631,10 @@ function ReviewsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>
       official_answer_text:answer?.answer_available&&answer.answer_excerpt?answer.answer_excerpt:problem?.official_answer||"",
       official_answer_url:problem?.official_answer_url||"",official_answer_pdf_name:answer?.pdf_file_name||"",
       official_answer_pdf_registered:!!answer?.pdf_file_name&&data.masterStatus.pdf_files.includes(answer.pdf_file_name),
-      answer_section_label:answer?.section_label||"",official_answer_page:answer?.page_start??null};
+      answer_section_label:answer?.section_label||"",official_answer_page:answer?.page_start??null,
+      canonical_problem_type:problem?.canonical_problem_type||problem?.theme||"",
+      canonical_keywords:[...(problem?.canonical_keywords||[]),...(answer?.canonical_keywords||[])],
+      answer_excerpt:answer?.answer_excerpt||""};
   };
   const saveReview=(body:Record<string,unknown>)=>{if(!selectedReview)return;const id=selectedReview.id;setSelectedReview(null);sessionStorage.removeItem(referenceStorageKey(id));sessionStorage.removeItem(referenceClosedStorageKey(id));run(()=>post(`/api/reviews/${id}/complete`,body),"復習結果を保存し、次回間隔を再計算しました")};
   const postpone=(body:Record<string,unknown>,label:string)=>{if(!postponeReviewItem)return;const id=postponeReviewItem.item.id;setPostponeReviewItem(null);

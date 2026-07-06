@@ -1222,13 +1222,18 @@ async function bootstrap():Promise<Bootstrap>{
       official_answer_url:p?.official_answer_url||"",official_answer_pdf_name:answer?.pdf_file_name||"",
       official_answer_pdf_registered:!!answer?.pdf_file_name&&pdfNames.has(answer.pdf_file_name),
       answer_section_label:answer?.section_label||"",official_answer_page:answer?.page_start??null,
+      canonical_problem_type:p?.canonical_problem_type||p?.theme||"",
+      canonical_keywords:[...(p?.canonical_keywords||[]),...(answer?.canonical_keywords||[])],
+      answer_excerpt:answer?.answer_excerpt||"",
       kind:r.review_type==="s_check"?"S確認":r.generated_from_past_session_id?"過去問復習":"復習",reason:r.status==="overdue"?`期限切れ（${r.due_date}）`:"本日が復習日",
       mode:reviewMode,minutes,estimated_minutes:minutes,load:loadFor(reviewMode)};
   }).sort((a,b)=>(a.status==="overdue"&&a.error_type==="K"?0:1)-(b.status==="overdue"&&b.error_type==="K"?0:1)||
     Number(a.manual_order||0)-Number(b.manual_order||0));
   const activeS=new Set(reviews.filter(r=>r.review_type==="s_check"&&["pending","overdue","deferred"].includes(r.status)).map(r=>r.problem_id));
   const staleS=sMemory.filter(s=>!activeS.has(s.problem_id)&&(s.state==="forgotten"||s.state==="collapsed"||!!s.last_touched&&s.last_touched<=addDays(today,-30))).map(s=>{
-    const p=pmap.get(s.problem_id)!,sPlan=createSReviewPlan(s.state);return {problem_id:s.problem_id,title:p.display_label||p.title,theme:p.theme,kind:"S点検",reason:s.state==="forgotten"||s.state==="collapsed"?"忘却状態から復旧":"30日以上未確認",mode:sPlan.mode,minutes:sPlan.estimated_minutes||5,load:s.state==="collapsed"?.4:.2,...planFields(sPlan)};
+    const p=pmap.get(s.problem_id)!,answer=answerMap.get(s.problem_id),sPlan=createSReviewPlan(s.state);return {problem_id:s.problem_id,title:p.display_label||p.title,theme:p.theme,
+      canonical_problem_type:p.canonical_problem_type||p.theme,canonical_keywords:[...(p.canonical_keywords||[]),...(answer?.canonical_keywords||[])],
+      answer_excerpt:answer?.answer_excerpt||"",kind:"S点検",reason:s.state==="forgotten"||s.state==="collapsed"?"忘却状態から復旧":"30日以上未確認",mode:sPlan.mode,minutes:sPlan.estimated_minutes||5,load:s.state==="collapsed"?.4:.2,...planFields(sPlan)};
   });
   let load=[...dueReviews,...staleS].reduce((sum,x)=>sum+x.load,0);
   let plannedMinutes=[...dueReviews,...staleS].reduce((sum,x)=>sum+x.minutes,0);
@@ -1245,7 +1250,10 @@ async function bootstrap():Promise<Bootstrap>{
     const latest=attempts.find(attempt=>attempt.problem_id===problemId);
     if(!problem||occupied.has(problemId)||(latest&&latest.date>addDays(today,-21))) continue;
     const minutes=problemId==="WB-6-S-21"||problemId==="WB-6-S-22"?15:10;
+    const answer=answerMap.get(problemId);
     strategySTasks.push({problem_id:problemId,title:problem.display_label||problem.title,theme:problem.theme,
+      canonical_problem_type:problem.canonical_problem_type||problem.theme,canonical_keywords:[...(problem.canonical_keywords||[]),...(answer?.canonical_keywords||[])],
+      answer_excerpt:answer?.answer_excerpt||"",
       kind:"S再固定",reason:`戦略${problem.strategy_rank||"S"}・${progress.phaseLabel}`,mode:"skeleton",minutes,load:.4});
     occupied.add(problemId);load+=.4;plannedMinutes+=minutes;
   }
@@ -1261,7 +1269,10 @@ async function bootstrap():Promise<Bootstrap>{
     const minutes=r.expected_mode==="full"?35:r.expected_mode==="main_calc"?20:15;
     if(newTasks.length>=3||plannedMinutes>=settings.daily_study_minutes*.9) break;
     if(newTasks.length>0&&plannedMinutes+minutes+mixedMinutes>settings.daily_study_minutes+15) break;
-    newTasks.push({...r,title:problem.display_label||problem.title,theme:problem.theme,kind:"A+演習",
+    const answer=answerMap.get(r.problem_id);
+    newTasks.push({...r,title:problem.display_label||problem.title,theme:problem.theme,
+      canonical_problem_type:problem.canonical_problem_type||problem.theme,canonical_keywords:[...(problem.canonical_keywords||[]),...(answer?.canonical_keywords||[])],
+      answer_excerpt:answer?.answer_excerpt||"",kind:"A+演習",
       reason:`${progress.phaseLabel}・ロードマップ ${r.order_index}番`,mode:r.expected_mode,minutes,load:r.load_score});
     occupied.add(r.problem_id);
     load+=r.load_score;plannedMinutes+=minutes;
@@ -1277,7 +1288,10 @@ async function bootstrap():Promise<Bootstrap>{
       const mode=question<=3?"full":"skeleton";
       const minutes=mode==="full"?35:20;
       if(pastTasks.length&&plannedMinutes+minutes>settings.daily_study_minutes+15) break;
+      const answer=answerMap.get(problemId);
       pastTasks.push({problem_id:problemId,title:problem.display_label||problem.title,theme:problem.theme,
+        canonical_problem_type:problem.canonical_problem_type||problem.theme,canonical_keywords:[...(problem.canonical_keywords||[]),...(answer?.canonical_keywords||[])],
+        answer_excerpt:answer?.answer_excerpt||"",
         kind:"過去問",reason:`${progress.phaseLabel}・3問フル＋2問骨格`,mode,minutes,load:mode==="full"?1.5:.8});
       occupied.add(problemId);load+=mode==="full"?1.5:.8;plannedMinutes+=minutes;
     }
@@ -1291,8 +1305,11 @@ async function bootstrap():Promise<Bootstrap>{
       kind:"本番シミュ",reason:"最終24日・最低3回の本番演習",mode:"exam_90min",minutes:90,load:3});
     load+=3;plannedMinutes+=90;
   }
+  const mixedAnswer=mixedProblem?answerMap.get(mixedProblem.problem_id):undefined;
   const mixedTasks=mixedProblem&&plannedMinutes+mixedMinutes<=settings.daily_study_minutes+15?[{problem_id:mixedProblem.problem_id,title:mixedProblem.display_label||mixedProblem.title,
-    theme:mixedProblem.theme,kind:"混合確認",reason:"既習テーマから型を見分ける混合演習",mode:"skeleton",minutes:12,load:.5}]:[];
+    theme:mixedProblem.theme,canonical_problem_type:mixedProblem.canonical_problem_type||mixedProblem.theme,
+    canonical_keywords:[...(mixedProblem.canonical_keywords||[]),...(mixedAnswer?.canonical_keywords||[])],
+    answer_excerpt:mixedAnswer?.answer_excerpt||"",kind:"混合確認",reason:"既習テーマから型を見分ける混合演習",mode:"skeleton",minutes:12,load:.5}]:[];
   if(mixedTasks.length){load+=.5;plannedMinutes+=mixedMinutes}
   const checkedKeys=new Set(metaEntries.filter(entry=>entry.key.startsWith(`today-check:${today}:`)&&entry.value==="1").map(entry=>entry.key));
   const regularReviews=dueReviews.filter(review=>!review.manual_order);
@@ -1353,6 +1370,9 @@ async function bootstrap():Promise<Bootstrap>{
     return {...saved,...current,
       title:pmap.get(saved.problem_id)?.display_label||pmap.get(saved.problem_id)?.title||saved.title,
       theme:pmap.get(saved.problem_id)?.theme||saved.theme,
+      canonical_problem_type:pmap.get(saved.problem_id)?.canonical_problem_type||saved.canonical_problem_type,
+      canonical_keywords:[...(pmap.get(saved.problem_id)?.canonical_keywords||[]),...(answerMap.get(saved.problem_id)?.canonical_keywords||saved.canonical_keywords||[])],
+      answer_excerpt:answerMap.get(saved.problem_id)?.answer_excerpt||saved.answer_excerpt,
       minutes:Number(snapshot!.initial_estimated_minutes[key]??saved.minutes),
       triage:forcedMust?"must":snapshot!.initial_bucket[key]||saved.triage||"tomorrow",
       checked:checkedKeys.has(`today-check:${today}:${saved.problem_id}:${saved.kind}`)||todayAttemptProblems.has(saved.problem_id)
