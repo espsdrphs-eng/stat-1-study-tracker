@@ -47,3 +47,12 @@ test("期限切れはWより優先し、長いA+は余裕枠へ回す",()=>{
   assert.equal(result.tasks[0].triage,"must");
   assert.notEqual(result.tasks[1].triage,"must");
 });
+
+test("関連S確認は通常後回しだが、重要A由来なら優先する",()=>{
+  const s={id:1,problem_id:"WB-6-S-04",source_type:"whitebook",category:"S",chapter:6,problem_number:4,title:"S4",theme:"推定",priority:"core",role:"foundation",recommended_mode:"check",linked_past_exams:"",linked_s_problems:"",linked_a_problems:"",notes:"",completion_status:"active"};
+  const important={...s,id:2,problem_id:"WB-6-A-20",category:"A",strategy_rank:"A+"};
+  const ordinary={...s,id:3,problem_id:"WB-2-A-03",category:"A",strategy_rank:"A"};
+  const linked={problem_id:s.problem_id,title:"S4",kind:"S確認",reason:"関連",mode:"check",minutes:5,load:.2,task_origin:"linked_s_check"};
+  assert.equal(taskPriority({...linked,source_problem_id:ordinary.problem_id},s,"2026-07-06",ordinary),8);
+  assert.equal(taskPriority({...linked,source_problem_id:important.problem_id},s,"2026-07-06",important),2);
+});

@@ -5,7 +5,7 @@ import { applyProblemMaster, parseStudyText, problemDisplayLabel, todayString } 
 import { createAttemptReviewPlan } from "./reviewRules";
 import { buildGradingPrompt, GRADING_RUBRIC_VERSION, REVIEW_RUBRIC_VERSION } from "./gradingPrompt";
 import { reviewDaysForErrors, sanitizeStudyUpdateTiming, timingWarningMessage, timingWarnings } from "./reviewTiming";
-import type { Attempt, Problem, Review, StudyUpdate } from "./types";
+import type { AnswerIndexEntry, Attempt, Problem, Review, StudyUpdate } from "./types";
 
 const modes:Record<string,string>={check:"チェック",skeleton:"骨格",main_calc:"主要計算",full:"フル答案",scan:"スキャン",exam_90min:"90分演習"};
 const priority=["K","N","W","C"];
@@ -58,8 +58,8 @@ function Pill({children,tone=""}:{children:React.ReactNode;tone?:string}){
   return <span className={`badge ${tone}`}>{children}</span>;
 }
 
-export default function AdvancedImportView({problems,attempts,reviews,run,busy}:{
-  problems:Problem[];attempts:Attempt[];reviews:Review[];run:(action:()=>Promise<unknown>,success:string)=>Promise<boolean>;busy:boolean;
+export default function AdvancedImportView({problems,answerIndex,attempts,reviews,run,busy}:{
+  problems:Problem[];answerIndex:AnswerIndexEntry[];attempts:Attempt[];reviews:Review[];run:(action:()=>Promise<unknown>,success:string)=>Promise<boolean>;busy:boolean;
 }){
   const [text,setText]=useState("");
   const [updates,setUpdates]=useState<StudyUpdate[]>([]);
@@ -74,7 +74,7 @@ export default function AdvancedImportView({problems,attempts,reviews,run,busy}:
     setError("");
     setSaved(null);
     try{
-      const result=parseStudyText(text,problems);
+      const result=parseStudyText(text,problems,answerIndex);
       setStructured(result.structured);
       setUpdates(result.updates);
       setEditing(false);
@@ -102,7 +102,7 @@ export default function AdvancedImportView({problems,attempts,reviews,run,busy}:
     const source=review&&attempts.find(item=>item.id===review.generated_from_attempt_id);
     return !!source&&(source.error_types||[source.error_type]).some(error=>["K","W","N","C"].includes(error));
   };
-  const canSave=updates.length>0&&updates.every(row=>missingRequiredFields(row,hasPreviousTarget(row)).length===0);
+  const canSave=updates.length>0&&updates.every(row=>missingRequiredFields(row,hasPreviousTarget(row)).length===0&&!row.requires_problem_confirmation);
   const saveUpdates=async()=>{
     const snapshot=updates.map(sanitizeStudyUpdateTiming);
     const ok=await run(()=>post("/api/import",{updates:snapshot}),`${snapshot.length}件を保存しました`);
@@ -155,6 +155,12 @@ export default function AdvancedImportView({problems,attempts,reviews,run,busy}:
             <div className="import-card-head"><div><strong>{update.display_label||update.problem_id||"問題未特定"}</strong><small>{update.problem_id} ・ {isReviewImport?`復習採点${update.generated_from_review_id?` #${update.generated_from_review_id}`:""}`:"初回採点"} ・ {update.rubric_version||"採点基準未記録"} ・ 採点確信度 {update.grading_confidence==null?"未記載":`${Math.round(update.grading_confidence*100)}%`}</small></div>
               <button onClick={()=>remove(index)} aria-label="候補を削除"><X size={16}/></button></div>
             {!update.master_matched&&<div className="match-warning"><AlertTriangle size={17}/><div><strong>問題マスターに未照合です</strong><span>保存前に登録済み問題を選択してください。</span></div></div>}
+            {update.auto_corrected&&<div className="master-correction"><Check size={17}/><div><strong>問題マスターで自動補正しました</strong><span>{update.correction_fields?.join(" / ")}｜整合性 {Math.round(Number(update.consistency_score||0)*100)}%</span><small>{update.correction_reason}</small></div></div>}
+            {update.requires_problem_confirmation&&update.suggested_problem_id&&<div className="candidate-confirm"><AlertTriangle size={17}/><div><strong>問題IDの確認が必要です</strong><span>取り込み内容は {update.problem_id} ではなく {update.suggested_problem_id}（{update.suggested_problem_label}）の可能性が高いです。</span><div>
+              <button type="button" className="primary small" onClick={()=>selectProblem(index,update.suggested_problem_id!)}>{update.suggested_problem_id}として保存</button>
+              <button type="button" className="ghost small" onClick={()=>setUpdates(rows=>rows.map((row,i)=>i===index?{...row,requires_problem_confirmation:false,problem_id_confirmed:true}:row))}>{update.problem_id}として保存</button>
+              <button type="button" className="ghost small" onClick={()=>remove(index)}>キャンセル</button>
+            </div></div></div>}
             {missing.length>0&&<div className="match-warning"><AlertTriangle size={17}/><div><strong>復習計画に必要な項目が不足しています</strong><span>{missing.join(" / ")}を確認・修正してください。</span></div></div>}
             {update.rubric_version!==expectedRubric&&<div className="match-warning"><AlertTriangle size={17}/><div><strong>採点基準を確認してください</strong><span>{expectedRubric}の{isReviewImport?"復習":"初回"}採点プロンプトによる結果を推奨します。</span></div></div>}
             {update.grading_confidence!=null&&update.grading_confidence<.7&&<div className="match-warning"><AlertTriangle size={17}/><div><strong>採点確信度が低い結果です</strong><span>{update.uncertain_points?.join(" / ")||"根拠を確認してから保存してください。"}</span></div></div>}
@@ -173,6 +179,7 @@ export default function AdvancedImportView({problems,attempts,reviews,run,busy}:
             </div>
 
             <div className="extracted-block"><span>主テーマ</span><div>{(update.themes||[]).map(theme=><Pill key={theme}>{theme}</Pill>)}{!update.themes?.length&&"—"}</div></div>
+            {update.raw_gpt_theme&&update.raw_gpt_theme!==update.theme&&<div className="raw-master-theme"><span>GPT由来テーマ</span><del>{update.raw_gpt_theme}</del><strong>正本：{update.theme}</strong></div>}
             <Field label="ミス内容" wide><textarea readOnly={!editing} value={update.error_point} onChange={event=>change(index,"error_point",event.target.value)}/></Field>
             <Field label="次回課題" wide><textarea readOnly={!editing} value={update.next_action} onChange={event=>change(index,"next_action",event.target.value)}/></Field>
             {!!dateWarnings.length&&<div className="timing-warning"><AlertTriangle size={17}/><div><strong>{timingWarningMessage}</strong><span>検出・自動除去：{dateWarnings.join(" / ")}</span></div></div>}

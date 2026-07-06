@@ -7,6 +7,23 @@ export type Problem = {
   display_label?:string; difficulty?:number|null; roadmap_label?:string; normalized_label?:string;
   related_s_problem_ids?:string[]; linked_past_exam_ids?:string[];
   official_answer?:string; official_answer_url?:string;
+  canonical_title?:string; canonical_problem_type?:string; canonical_keywords?:string[];
+  roadmap_rank?:string; source_book?:string; related_a_problem_ids?:string[];
+  related_past_exam_ids?:string[]; answer_available?:boolean; master_version?:string;
+};
+export type AnswerIndexEntry = {
+  problem_id:string; answer_available:boolean; pdf_file_name?:string; page_start?:number|null;
+  page_end?:number|null; section_label?:string; answer_excerpt?:string;
+  canonical_keywords?:string[]; imported_at?:string; index_version?:string;
+};
+export type CorrectionLog = {
+  id?:number; auto_corrected:boolean; correction_fields:string[]; raw_gpt_problem_id:string;
+  corrected_problem_id:string; raw_gpt_theme:string; corrected_theme:string;
+  correction_reason:string; consistency_score:number; corrected_at:string;
+};
+export type DataDiagnostic = {
+  id:string; severity:"info"|"warning"|"critical"; problem_id?:string; record_type:string;
+  message:string; suggested_problem_id?:string; repairable:boolean;
 };
 export type Attempt = {
   id:number; problem_id:string; date:string; mode:string; time_minutes:number; mark:string;
@@ -26,6 +43,10 @@ export type Attempt = {
   official_answer?:boolean; gpt_explanation?:boolean;
   allowed_reference_level?:number; actual_reference_level?:number;
   reference_closed_reproduction?:boolean; saved_gpt_feedback?:boolean; external_reference?:boolean;
+  task_origin?:"first_attempt"|"review_attempt"|"linked_s_check"|"related_drill"|"past_exam_followup";
+  source_problem_id?:string; attempt_exists?:boolean;
+  raw_gpt_problem_id?:string; raw_gpt_theme?:string; auto_corrected?:boolean;
+  correction_fields?:string[]; correction_reason?:string; consistency_score?:number;
 };
 export type Review = {
   id:number; problem_id:string; due_date:string; review_type:string; status:string; generated_from_attempt_id:number;
@@ -41,6 +62,8 @@ export type Review = {
   completion_time_minutes?:number; completed_at?:string;
   manual_order?:number; postponed_count?:number; postpone_count?:number; last_postponed_at?:string;
   postponed_at?:string; postponed_to?:string; postpone_reason?:string; triage_override?:"must";
+  task_origin?:"first_attempt"|"review_attempt"|"linked_s_check"|"related_drill"|"past_exam_followup";
+  source_problem_id?:string; attempt_exists?:boolean; review_goal_public?:string; source_error_summary?:string;
 };
 export type WeakNote = {
   id:number; date:string; problem_id:string; error_type:string; theme:string; mistake:string;
@@ -63,9 +86,13 @@ export type Task = {
   previous_improvement_guidance?:string; previous_required_derivation?:string;
   previous_corrected_answer?:string; triage?:"must"|"if_time"|"tomorrow";
   official_answer_text?:string; official_answer_url?:string; has_saved_gpt_feedback?:boolean;
+  official_answer_pdf_name?:string; official_answer_pdf_registered?:boolean; answer_section_label?:string;
+  official_answer_page?:number|null;
   allowed_reference_level?:number; actual_reference_level?:number;
   reference_closed_reproduction?:boolean; triage_override?:"must";
   postponed_at?:string; postponed_to?:string; postpone_reason?:string; postpone_count?:number;
+  task_origin?:"first_attempt"|"review_attempt"|"linked_s_check"|"related_drill"|"past_exam_followup";
+  source_problem_id?:string; attempt_exists?:boolean; review_goal_public?:string; source_error_summary?:string;
 };
 export type WeaknessInsight = {
   theme:string; score:number; level:"重点"|"注意"|"観察"; confidence:"参考"|"暫定"|"分析可能";
@@ -85,11 +112,17 @@ export type Dashboard = {
 };
 export type Bootstrap = {
   problems:Problem[]; attempts:Attempt[]; reviews:Review[]; roadmap:Roadmap[];
-  weakNotes:WeakNote[]; pastSessions:PastSession[]; dashboard:Dashboard;
+  weakNotes:WeakNote[]; pastSessions:PastSession[]; answerIndex:AnswerIndexEntry[]; dashboard:Dashboard;
   settings:{exam_date:string;daily_study_minutes:number};
+  masterStatus:{problem_count:number;answer_count:number;problem_version:string;answer_version:string;
+    problem_updated_at:string;answer_updated_at:string;pdf_files:string[];diagnostics:DataDiagnostic[];import_history:string[]};
   today:{tasks:Task[];totalLoad:number;plannedMinutes:number;remainingMinutes:number;actualMinutes:number;
     targetMinutes:number;capacityPercent:number;warning:string;guidance:string;
-    triageMinutes?:{must:number;if_time:number;tomorrow:number}};
+    triageMinutes?:{must:number;if_time:number;tomorrow:number};
+    planned_minutes_total:number;completed_minutes_today:number;remaining_minutes_today:number;
+    postponed_minutes_today:number;target_minutes_today:number;
+    triageCounts:{must:number;if_time:number;tomorrow:number;completed:number};
+    completedTasks:Task[]};
 };
 export type StudyUpdate = {
   problem_id:string; date:string; mode:string; time_minutes?:number|string; mark:string; score_label:string;
@@ -119,4 +152,10 @@ export type StudyUpdate = {
   evaluation_scope?:string; graded_parts?:string[]; assumed_correct_parts?:string[];
   unresolved_carryover?:string[];
   master_matched?:boolean; status?:string; math_localized?:boolean;
+  main_theme?:string; raw_gpt_problem_id?:string; raw_gpt_theme?:string;
+  auto_corrected?:boolean; correction_fields?:string[]; corrected_problem_id?:string;
+  corrected_theme?:string; correction_reason?:string; consistency_score?:number;
+  suggested_problem_id?:string; suggested_problem_label?:string; requires_problem_confirmation?:boolean;
+  problem_id_confirmed?:boolean;
+  answer_excerpt?:string; canonical_keywords?:string[]; canonical_problem_type?:string;
 };

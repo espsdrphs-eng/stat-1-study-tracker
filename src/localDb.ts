@@ -1,5 +1,5 @@
 import Dexie, { type EntityTable } from "dexie";
-import type { Attempt, Bootstrap, PastSession, Problem, Review, Roadmap, StudyUpdate, Task, WeakNote } from "./types";
+import type { AnswerIndexEntry, Attempt, Bootstrap, CorrectionLog, DataDiagnostic, PastSession, Problem, Review, Roadmap, StudyUpdate, Task, WeakNote } from "./types";
 import { japaneseizeMathText } from "./mathJapanese.ts";
 import { analyzeWeaknesses } from "./weaknessAnalytics.ts";
 import { createAdaptiveReviewPlan, createAttemptReviewPlan, createPastReviewPlan, createSReviewPlan, enforceReviewEvidence, normalizedErrors, type ReviewOutcome, type ReviewPlan, type SState } from "./reviewRules.ts";
@@ -12,12 +12,14 @@ import { buildProgressPlan, daysUntilExam } from "./studyProgress.ts";
 import { CHAPTER_META, officialProblemEntries, PAST_EXAM_YEAR_ORDER, STRATEGY_A_PLUS_ORDER, STRATEGY_S_ORDER, strategyRankFor } from "./officialMaster.ts";
 import { REVIEW_RUBRIC_VERSION } from "./gradingPrompt.ts";
 import { allowedReferenceLevel, referenceDecision, type ReferenceLevel } from "./reviewExperience.ts";
+import { applyCanonicalMaster, parseAnswerIndexPayload, parseProblemMasterPayload } from "./masterData.ts";
 
 type SMemory = { problem_id:string; state:"stable"|"check"|"forgotten"|"collapsed"; last_touched?:string; k_trigger_count:number };
 type StoredAttempt = Attempt;
 type StoredReview = Review;
 type StoredWeakNote = WeakNote;
 type StoredPastSession = PastSession;
+type StoredAnswerPdf={file_name:string;blob:Blob;uploaded_at:string};
 
 const migrationSProblems=[
   {chapter:2,number:1,theme:"確率分布の基本"},
@@ -38,6 +40,9 @@ class StudyDatabase extends Dexie {
   pastSessions!: EntityTable<StoredPastSession,"id">;
   sMemory!: EntityTable<SMemory,"problem_id">;
   meta!: EntityTable<{key:string;value:string},"key">;
+  answerIndex!: EntityTable<AnswerIndexEntry,"problem_id">;
+  correctionLogs!: EntityTable<CorrectionLog,"id">;
+  answerPdfs!: EntityTable<StoredAnswerPdf,"file_name">;
   constructor() {
     super("stat-1-study-tracker");
     this.version(1).stores({
@@ -266,6 +271,62 @@ class StudyDatabase extends Dexie {
           is_active:1};
       }));
     });
+    this.version(10).stores({
+      problems:"&problem_id,category,chapter,priority,completion_status,normalized_label",
+      attempts:"++id,problem_id,date,error_type,mark,primary_error_type,[problem_id+date]",
+      reviews:"++id,problem_id,due_date,status,review_type,task_origin,source_problem_id",
+      roadmap:"&order_index,problem_id,is_active",
+      weakNotes:"++id,problem_id,date,error_type,is_resolved,auto_generated,last_quizzed_at",
+      pastSessions:"++id,year,date,session_type,selection_result",
+      sMemory:"&problem_id,state,last_touched",
+      meta:"&key",
+      answerIndex:"&problem_id,answer_available,pdf_file_name",
+      correctionLogs:"++id,corrected_at,raw_gpt_problem_id,corrected_problem_id",
+      answerPdfs:"&file_name,uploaded_at"
+    }).upgrade(async tx=>{
+      const now=new Date().toISOString();
+      const canonical=[
+        {problem_id:"WB-6-S-01",theme:"指数型分布族・自然母数・期待値母数",canonical_problem_type:"指数型分布族の読み取り",
+          canonical_keywords:["指数型分布族","自然母数","期待値母数","t(X)","Bin(n,p)","Po(λ)","Geo(p)","NB(r,p)","N(μ,σ²)","Ga(α,β)","Beta(α,β)"]},
+        {problem_id:"WB-6-S-04",theme:"U(0,θ)、十分統計量、不偏推定量、MSE、MLE",canonical_problem_type:"一様分布の推定・十分統計量・MSE比較",
+          canonical_keywords:["U(0,θ)","最大統計量","十分統計量","不偏推定量","標本平均","MSE","最尤推定量","バイアス"]}
+      ];
+      for(const entry of canonical){
+        const problem=await tx.table("problems").get(entry.problem_id) as Problem|undefined;
+        if(problem) await tx.table("problems").put({...problem,...entry,canonical_title:problem.display_label||problem.title,
+          answer_available:true,master_version:"mathstat-master-v1"});
+      }
+      const a5=await tx.table("problems").get("WB-6-A-05") as Problem|undefined;
+      if(a5) await tx.table("problems").put({...a5,linked_s_problems:"",related_s_problem_ids:[]});
+      const q1=await tx.table("problems").get("PY-2025-Q1") as Problem|undefined;
+      if(q1) await tx.table("problems").put({...q1,linked_s_problems:"",related_s_problem_ids:[]});
+      const answers:AnswerIndexEntry[]=[
+        {problem_id:"WB-6-S-01",answer_available:true,pdf_file_name:"MathStat_Answers.pdf",page_start:null,page_end:null,
+          section_label:"第6章 問1",answer_excerpt:"Bin, Po, Geo, NB, N, Ga, Beta について、確率関数・密度関数を指数型分布族の形に直し、自然母数 η と t(X) の期待値を読む問題。",
+          canonical_keywords:canonical[0].canonical_keywords,imported_at:now,index_version:"mathstat-answers-v1"},
+        {problem_id:"WB-6-S-04",answer_available:true,pdf_file_name:"MathStat_Answers.pdf",page_start:null,page_end:null,
+          section_label:"第6章 問4",answer_excerpt:"X1,...,Xn が U(0,θ) に従う設定。θに対する十分統計量、最大統計量に基づく不偏推定量、標本平均に基づく不偏推定量、MSE比較、MLE、バイアス、MSEを扱う問題。",
+          canonical_keywords:canonical[1].canonical_keywords,imported_at:now,index_version:"mathstat-answers-v1"}
+      ];
+      await tx.table("answerIndex").bulkPut(answers);
+      await tx.table("meta").bulkPut([
+        {key:"problem_master_version",value:"mathstat-master-v1"},{key:"problem_master_updated_at",value:now},
+        {key:"answer_index_version",value:"mathstat-answers-v1"},{key:"answer_index_updated_at",value:now}
+      ]);
+      const priorAttempts=await tx.table("attempts").toArray() as Attempt[];
+      const priorReviews=await tx.table("reviews").toArray() as Review[];
+      for(const review of priorReviews){
+        const linked=review.review_type==="s_check",source=priorAttempts.find(attempt=>attempt.id===review.generated_from_attempt_id);
+        if(linked&&review.problem_id==="WB-6-S-04"&&source?.problem_id==="WB-6-A-05"&&review.status!=="done"){
+          await tx.table("reviews").delete(review.id);continue;
+        }
+        review.task_origin=linked?"linked_s_check":"review_attempt";
+        review.source_problem_id=linked?source?.problem_id:undefined;
+        review.attempt_exists=priorAttempts.some(attempt=>attempt.problem_id===review.problem_id);
+        review.review_goal_public=linked?"元問題で崩れた基礎型を確認する":undefined;
+        await tx.table("reviews").put(review);
+      }
+    });
   }
 }
 
@@ -292,17 +353,17 @@ const blocks:[number,number,string][] = [
 ];
 const sSeed:[number,number,string][] = [
   [2,1,"確率分布の基本"],[2,6,"非負整数値確率変数の期待値"],[2,7,"密度と期待値"],[2,10,"平均・分散の存在"],[2,25,"積率母関数"],
-  [6,4,"AIC・自由度"],[6,21,"回帰・推定"],[6,22,"回帰・分散分解"],
+  [6,1,"指数型分布族・自然母数・期待値母数"],[6,4,"U(0,θ)、十分統計量、不偏推定量、MSE、MLE"],[6,21,"回帰・推定"],[6,22,"回帰・分散分解"],
   [4,7,"変数変換・ヤコビアン"],[5,13,"順序統計量"],[5,17,"最大値・最小値"],
   [7,9,"exact検定"],[7,10,"尤度比検定"]
 ];
 const sLinks:Record<string,string> = {
-  "WB-6-A-05":"WB-6-S-04","WB-6-A-19":"WB-6-S-21;WB-6-S-22","WB-6-A-20":"WB-6-S-21;WB-6-S-22",
+  "WB-6-A-19":"WB-6-S-21;WB-6-S-22","WB-6-A-20":"WB-6-S-21;WB-6-S-22",
   "WB-4-A-26":"WB-4-S-07","WB-5-A-18":"WB-5-S-13;WB-5-S-17","WB-5-A-21":"WB-5-S-13",
   "WB-5-A-26":"WB-5-S-13;WB-5-S-17","WB-7-A-04":"WB-7-S-09","WB-7-A-08":"WB-7-S-10"
 };
 const repairRules:[string,string[],string[]][] = [
-  ["AIC・自由度",["WB-6-A-05"],["WB-6-S-04"]],["回帰",["WB-6-A-19","WB-6-A-20"],["WB-6-S-21","WB-6-S-22"]],
+  ["AIC・自由度",["WB-6-A-05"],[]],["回帰",["WB-6-A-19","WB-6-A-20"],["WB-6-S-21","WB-6-S-22"]],
   ["Fisher情報量",["WB-6-A-26"],[]],["非正則推定",["WB-6-A-10","WB-6-A-29"],[]],
   ["順序統計量",["WB-5-A-18","WB-5-A-21","WB-5-A-26"],["WB-5-S-13","WB-5-S-17"]],
   ["最小値・最大値",["WB-5-A-18","WB-5-A-26"],["WB-5-S-17"]],["ポアソン条件付き",["WB-4-A-34"],[]],
@@ -324,6 +385,12 @@ async function reviewDueDate(date:string,days:number){
   return preExam>date?preExam:addDays(date,1);
 }
 const list=(value="")=>String(value).split(/[;,、\s]+/).map(x=>x.trim()).filter(Boolean);
+const attemptMatchesProblem=(attempt:Attempt,problem:Problem)=>{
+  const text=[attempt.result_summary,attempt.error_point,attempt.next_action,attempt.improvement_guidance,attempt.required_derivation,attempt.corrected_answer].join(" ");
+  if(problem.problem_id==="WB-6-S-04"&&/AIC|自由度|指数型分布族|自然母数|期待値母数/.test(text)&&!/U\(0|一様分布|最大統計量|不偏推定量|MSE/.test(text)) return false;
+  if(problem.problem_id==="WB-6-S-01"&&/U\(0|一様分布|最大統計量|MSE/.test(text)&&!/指数型分布族|自然母数|期待値母数/.test(text)) return false;
+  return true;
+};
 
 async function initialize() {
   if(await db.meta.get("seeded")) return;
@@ -345,12 +412,38 @@ async function initialize() {
       const display=labelFor(chapter,"S",number,null);
       problems.push({id:id++,problem_id,source_type:"whitebook",category:"S",chapter,problem_number:number,title:display,theme,priority:"repair",role:"foundation",recommended_mode:"skeleton",linked_past_exams:"",linked_s_problems:"",linked_a_problems:"",notes:"",completion_status:"active",display_label:display,difficulty:null,roadmap_label:display,normalized_label:display.replace(/\s/g,""),related_s_problem_ids:[],linked_past_exam_ids:[]});
     }
-    problems.push({id:id++,problem_id:"PY-2025-Q1",source_type:"past_exam",category:"past_exam",chapter:null,problem_number:1,title:"2025年問1",theme:"AIC・区分的密度・MLE",priority:"core",role:"exam",recommended_mode:"scan",linked_past_exams:"",linked_s_problems:"WB-6-S-04",linked_a_problems:"WB-6-A-05",notes:"",completion_status:"active",display_label:"2025年問1",difficulty:null,roadmap_label:"2025年問1",normalized_label:"2025年問1",related_s_problem_ids:["WB-6-S-04"],linked_past_exam_ids:[]});
+    problems.push({id:id++,problem_id:"PY-2025-Q1",source_type:"past_exam",category:"past_exam",chapter:null,problem_number:1,title:"2025年問1",theme:"AIC・区分的密度・MLE",priority:"core",role:"exam",recommended_mode:"scan",linked_past_exams:"",linked_s_problems:"",linked_a_problems:"WB-6-A-05",notes:"",completion_status:"active",display_label:"2025年問1",difficulty:null,roadmap_label:"2025年問1",normalized_label:"2025年問1",related_s_problem_ids:[],linked_past_exam_ids:[]});
     await db.problems.bulkPut(problems);
     await db.sMemory.bulkPut(sSeed.map(([chapter,number])=>({problem_id:`WB-${chapter}-S-${String(number).padStart(2,"0")}`,state:"stable",k_trigger_count:0})));
     await db.roadmap.bulkPut(roadmapSeed.map(([chapter,number,,mode],i)=>({id:i+1,order_index:i+1,problem_id:`WB-${chapter}-A-${String(number).padStart(2,"0")}`,block_name:blocks.find(([from,to])=>i+1>=from&&i+1<=to)![2],expected_mode:mode,load_score:loadFor(mode),is_active:1})));
     await db.meta.put({key:"seeded",value:"1"});
   });
+}
+
+async function ensureBuiltInCanonical(){
+  const now=new Date().toISOString();
+  const definitions=[
+    {problem_id:"WB-6-S-01",theme:"指数型分布族・自然母数・期待値母数",canonical_problem_type:"指数型分布族の読み取り",
+      canonical_keywords:["指数型分布族","自然母数","期待値母数","t(X)","Bin(n,p)","Po(λ)","Geo(p)","NB(r,p)","N(μ,σ²)","Ga(α,β)","Beta(α,β)"],
+      excerpt:"Bin, Po, Geo, NB, N, Ga, Beta について、確率関数・密度関数を指数型分布族の形に直し、自然母数 η と t(X) の期待値を読む問題。",section:"第6章 問1"},
+    {problem_id:"WB-6-S-04",theme:"U(0,θ)、十分統計量、不偏推定量、MSE、MLE",canonical_problem_type:"一様分布の推定・十分統計量・MSE比較",
+      canonical_keywords:["U(0,θ)","最大統計量","十分統計量","不偏推定量","標本平均","MSE","最尤推定量","バイアス"],
+      excerpt:"X1,...,Xn が U(0,θ) に従う設定。θに対する十分統計量、最大統計量に基づく不偏推定量、標本平均に基づく不偏推定量、MSE比較、MLE、バイアス、MSEを扱う問題。",section:"第6章 問4"}
+  ];
+  for(const definition of definitions){
+    const problem=await db.problems.get(definition.problem_id);
+    if(problem&&(!problem.master_version||/AIC|自由度/.test(problem.theme))) await db.problems.update(definition.problem_id,{
+      theme:definition.theme,canonical_title:problem.display_label||problem.title,canonical_problem_type:definition.canonical_problem_type,
+      canonical_keywords:definition.canonical_keywords,answer_available:true,master_version:"mathstat-master-v1"
+    });
+    if(!await db.answerIndex.get(definition.problem_id)) await db.answerIndex.put({
+      problem_id:definition.problem_id,answer_available:true,pdf_file_name:"MathStat_Answers.pdf",page_start:null,page_end:null,
+      section_label:definition.section,answer_excerpt:definition.excerpt,canonical_keywords:definition.canonical_keywords,
+      imported_at:now,index_version:"mathstat-answers-v1"
+    });
+  }
+  if(!await db.meta.get("problem_master_version")) await db.meta.put({key:"problem_master_version",value:"mathstat-master-v1"});
+  if(!await db.meta.get("answer_index_version")) await db.meta.put({key:"answer_index_version",value:"mathstat-answers-v1"});
 }
 
 const planFields=(plan:ReviewPlan)=>({
@@ -371,6 +464,10 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
   input={...input,...sanitizeStudyUpdateTiming(input)};
   const problem=await db.problems.get(input.problem_id);
   if(!problem) throw new Error(`未登録の問題IDです: ${input.problem_id}`);
+  if(input.requires_problem_confirmation) throw new Error("問題ID候補を確認してから保存してください");
+  const answer=await db.answerIndex.get(problem.problem_id);
+  input=applyCanonicalMaster(input,problem,answer,await db.problems.toArray(),await db.answerIndex.toArray()) as StudyUpdate&Record<string,unknown>;
+  if(input.requires_problem_confirmation) throw new Error(`取り込み内容は ${input.suggested_problem_id||"別の問題"} の可能性があります。問題IDを確認してください`);
   if(input.generated_from_review_id&&[REVIEW_RUBRIC_VERSION,"STAT1-REVIEW-v7","STAT1-REVIEW-v6","STAT1-REVIEW-v5","STAT1-REVIEW-v4"].includes(input.rubric_version||"")){
     const review=await db.reviews.get(input.generated_from_review_id);
     const source=review?await db.attempts.get(review.generated_from_attempt_id):undefined;
@@ -391,7 +488,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
   ))));
   const allowedReference=Math.min(5,Math.max(0,Number(input.allowed_reference_level??0)));
   const referenceClosed=!!(input.reference_closed_reproduction??input.after_hint_reproduced);
-  const related=[...new Set([...(input.related_s_problem_ids||input.linked_s_problems||[]),...list(input.linked_s_problem),...list(problem.linked_s_problems)])];
+  const related=[...new Set([...(problem.related_s_problem_ids||[]),...list(problem.linked_s_problems)])];
   const id=Number(await db.attempts.add({
     id:undefined as unknown as number,problem_id:input.problem_id,date,mode:input.mode||problem.recommended_mode,
     time_minutes:Number(input.time_minutes||0),mark:input.mark||"△",score_label:input.score_label||"B",
@@ -418,8 +515,19 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
     one_line_hint:!!input.one_line_hint,previous_mistake:!!input.previous_mistake,
     saved_gpt_feedback:!!input.saved_gpt_feedback||!!input.gpt_explanation,
     official_answer:!!input.official_answer,external_reference:!!input.external_reference,
-    gpt_explanation:!!input.saved_gpt_feedback||!!input.gpt_explanation
+    gpt_explanation:!!input.saved_gpt_feedback||!!input.gpt_explanation,
+    task_origin:input.generated_from_review_id?"review_attempt":"first_attempt",attempt_exists:true,
+    raw_gpt_problem_id:input.raw_gpt_problem_id||input.problem_id,raw_gpt_theme:input.raw_gpt_theme||"",
+    auto_corrected:!!input.auto_corrected,correction_fields:input.correction_fields||[],
+    correction_reason:input.correction_reason||"",consistency_score:input.consistency_score
   }));
+  if(input.auto_corrected) await db.correctionLogs.add({
+    id:undefined,auto_corrected:true,correction_fields:input.correction_fields||[],
+    raw_gpt_problem_id:String(input.raw_gpt_problem_id||input.problem_id),corrected_problem_id:input.problem_id,
+    raw_gpt_theme:String(input.raw_gpt_theme||""),corrected_theme:problem.theme,
+    correction_reason:String(input.correction_reason||"problem_master に基づき補正"),
+    consistency_score:Number(input.consistency_score||0),corrected_at:new Date().toISOString()
+  });
   if(input.generated_from_review_id){
     await db.reviews.update(input.generated_from_review_id,{
       status:"done",completion_result:input.review_outcome||(["◎","○"].includes(input.mark)?"success":input.mark==="△"?"partial":"failed"),
@@ -450,14 +558,14 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
   await addOrReplaceReview({
     problem_id:input.problem_id,due_date:await reviewDueDate(date,plan.interval_days||14),
     review_type:plan.review_type,status:"pending",generated_from_attempt_id:id,duration_minutes:plan.estimated_minutes,
-    reason:plan.review_reason,...planFields(plan)
+    reason:plan.review_reason,task_origin:"review_attempt",attempt_exists:true,...planFields(plan)
   });
   if(plan.completion_candidate) await db.problems.update(input.problem_id,{completion_status:"completion_candidate"});
   const weakCandidates=input.weak_notes?.length?input.weak_notes:input.weak_note?[input.weak_note]:
     primary!=="none"&&localizedErrorPoint?[{theme:input.theme||problem.theme,error_type:primary,mistake:localizedErrorPoint,correction_rule:japaneseizeMathText(input.correction_rule||localizedNextAction)}]:[];
   for(const weak of weakCandidates) await db.weakNotes.add({
     id:undefined as unknown as number,date,problem_id:input.problem_id,error_type:weak.error_type||primary,
-    theme:weak.theme||input.theme||problem.theme,mistake:japaneseizeMathText(weak.mistake),
+    theme:problem.theme,mistake:japaneseizeMathText(weak.mistake),
     correction_rule:japaneseizeMathText(weak.correction_rule||input.correction_rule||localizedNextAction),is_resolved:0,
     source_text:input.source_text||"",auto_generated:!!input.auto_imported,generated_from_attempt_id:id
   });
@@ -475,7 +583,9 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
       await addOrReplaceReview({
         problem_id:sid,due_date:await reviewDueDate(date,sPlan.interval_days||1),
         review_type:"s_check",status:"pending",generated_from_attempt_id:id,duration_minutes:sPlan.estimated_minutes,
-        reason:sPlan.review_reason,...planFields(sPlan)
+        reason:sPlan.review_reason,task_origin:"linked_s_check",source_problem_id:input.problem_id,
+        attempt_exists:(await db.attempts.where("problem_id").equals(sid).count())>0,
+        review_goal_public:"元問題で崩れた基礎型を確認する",...planFields(sPlan)
       });
       const memory=await db.sMemory.get(sid);
       await db.sMemory.put({problem_id:sid,state:linkedState,last_touched:memory?.last_touched,k_trigger_count:(memory?.k_trigger_count||0)+1});
@@ -491,7 +601,9 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
           await addOrReplaceReview({
             problem_id:s.problem_id,due_date:await reviewDueDate(date,1),
             review_type:"s_check",status:"pending",generated_from_attempt_id:id,duration_minutes:collapsedPlan.estimated_minutes,
-            reason:collapsedPlan.review_reason,...planFields(collapsedPlan)
+            reason:collapsedPlan.review_reason,task_origin:"linked_s_check",source_problem_id:input.problem_id,
+            attempt_exists:(await db.attempts.where("problem_id").equals(s.problem_id).count())>0,
+            review_goal_public:"同じ章でKが重なったため基礎型を確認する",...planFields(collapsedPlan)
           });
         }
       }
@@ -556,7 +668,7 @@ async function updateAttemptAnalysis(id:number,body:Record<string,unknown>){
     :createAttemptReviewPlan(updated,related,0);
   await addOrReplaceReview({problem_id:attempt.problem_id,due_date:await reviewDueDate(date,plan.interval_days||14),
     review_type:plan.review_type,status:"pending",generated_from_attempt_id:id,duration_minutes:plan.estimated_minutes,
-    reason:plan.review_reason,...planFields(plan)});
+    reason:plan.review_reason,task_origin:"review_attempt",attempt_exists:true,...planFields(plan)});
   const theme=String(body.theme||oldNotes[0]?.theme||problem.theme);
   if(primary!=="none"&&errorPoint) await db.weakNotes.add({
     id:undefined as unknown as number,date,problem_id:attempt.problem_id,error_type:primary,theme,mistake:errorPoint,
@@ -569,7 +681,9 @@ async function updateAttemptAnalysis(id:number,body:Record<string,unknown>){
       if(!await db.problems.get(sid)) continue;
       await addOrReplaceReview({problem_id:sid,due_date:await reviewDueDate(date,sPlan.interval_days||1),
         review_type:"s_check",status:"pending",generated_from_attempt_id:id,duration_minutes:sPlan.estimated_minutes,
-        reason:sPlan.review_reason,...planFields(sPlan)});
+        reason:sPlan.review_reason,task_origin:"linked_s_check",source_problem_id:attempt.problem_id,
+        attempt_exists:(await db.attempts.where("problem_id").equals(sid).count())>0,
+        review_goal_public:"元問題で崩れた基礎型を確認する",...planFields(sPlan)});
     }
   }
   await refreshLinkedSMemory(related);
@@ -597,7 +711,7 @@ async function deleteAttemptAnalysis(id:number){
       :createAttemptReviewPlan(latest,related,0);
     await addOrReplaceReview({problem_id:latest.problem_id,due_date:await reviewDueDate(latest.date,plan.interval_days||14),
       review_type:plan.review_type,status:"pending",generated_from_attempt_id:latest.id,duration_minutes:plan.estimated_minutes,
-      reason:plan.review_reason,...planFields(plan)});
+      reason:plan.review_reason,task_origin:"review_attempt",attempt_exists:true,...planFields(plan)});
   }
   await db.problems.update(attempt.problem_id,{completion_status:stillWeak?"review_pending":"active"});
 }
@@ -608,6 +722,7 @@ async function completeReview(id:number,body:Record<string,unknown>){
   const source=await db.attempts.get(review.generated_from_attempt_id);
   const problem=await db.problems.get(review.problem_id);
   if(!source||!problem) throw new Error("復習元の採点データが見つかりません");
+  const linkedS=review.task_origin==="linked_s_check"||review.review_type==="s_check";
   const requestedResult=["success","partial","failed"].includes(String(body.result))?String(body.result) as ReviewOutcome["result"]:"partial";
   const actualReferenceLevel=Math.min(5,Math.max(0,Number(body.actual_reference_level??body.reference_level??0))) as ReferenceLevel;
   const reviewMode=review.requires_full_answer?"exam_90min":review.review_type==="main_calc_retry"?"main_calc":
@@ -629,17 +744,22 @@ async function completeReview(id:number,body:Record<string,unknown>){
     external_reference:!!body.external_reference,gpt_explanation:!!body.saved_gpt_feedback||!!body.gpt_explanation
   };
   const related=[...(problem.related_s_problem_ids||[]),...list(problem.linked_s_problems)];
-  const plan=createAdaptiveReviewPlan(source,review,outcome,related);
-  const successful=outcome.result==="success",sourceErrors=(source.error_types||[source.error_type]).filter(error=>error!=="none");
+  const successful=outcome.result==="success";
+  const plan=linkedS?createSReviewPlan(successful?"stable":outcome.result==="partial"?"check":"forgotten"):
+    createAdaptiveReviewPlan(source,review,outcome,related);
+  const sourceErrors=linkedS?[]:(source.error_types||[source.error_type]).filter(error=>error!=="none");
   const errors=successful?[]:sourceErrors.length?sourceErrors:["K"];
   const date=todayString(),mark=successful?(outcome.hint_used?"○":"◎"):outcome.result==="partial"?"△":"×";
   const attemptId=Number(await db.attempts.add({
     ...source,id:undefined as unknown as number,problem_id:review.problem_id,date,mode:plan.mode,
     time_minutes:outcome.time_minutes,mark,score_label:successful?"A":outcome.result==="partial"?"B":"C",
     error_type:errors[0]||"none",primary_error_type:errors[0]||"none",secondary_error_type:errors[1]||"",
-    error_types:errors,error_point:successful?"":source.error_point,
+    error_types:errors,error_point:successful?"":linkedS?"関連S確認で基礎型を再現できなかった":source.error_point,
     next_action:plan.review_instruction||"",memo:"復習結果から自動記録",
     score_text:"",score_numeric:null,score_max:null,result_summary:`復習結果：${outcome.result}${outcome.hint_used?"・ヒント使用":""}`,
+    improvement_guidance:linkedS?"":source.improvement_guidance,required_derivation:linkedS?"":source.required_derivation,
+    corrected_answer:linkedS?"":source.corrected_answer,resolution_evidence:"",answer_change_summary:"",
+    required_work_shown:[],graded_parts:[],assumed_correct_parts:[],unresolved_carryover:[],
     auto_imported:false,import_confidence:1,grading_confidence:1,rubric_version:"REVIEW-SELF-v1",
     uncertain_points:[],generated_from_review_id:id,is_review_attempt:true,hint_used:outcome.hint_used,
     hint_level:String(body.hint_level|| (outcome.hint_used?"unspecified":"none")),
@@ -649,7 +769,8 @@ async function completeReview(id:number,body:Record<string,unknown>){
     one_line_hint:!!body.one_line_hint,previous_mistake:!!body.previous_mistake,
     saved_gpt_feedback:!!body.saved_gpt_feedback||!!body.gpt_explanation,
     official_answer:!!body.official_answer,external_reference:!!body.external_reference,
-    gpt_explanation:!!body.saved_gpt_feedback||!!body.gpt_explanation
+    gpt_explanation:!!body.saved_gpt_feedback||!!body.gpt_explanation,
+    task_origin:linkedS?"linked_s_check":"review_attempt",source_problem_id:linkedS?source.problem_id:undefined,attempt_exists:true
   }));
   await db.reviews.update(id,{status:"done",completion_result:outcome.result,hint_used:outcome.hint_used,
     hint_level:String(body.hint_level|| (outcome.hint_used?"unspecified":"none")),after_hint_reproduced:!!outcome.after_hint_reproduced,
@@ -662,12 +783,12 @@ async function completeReview(id:number,body:Record<string,unknown>){
     completion_time_minutes:outcome.time_minutes,completed_at:new Date().toISOString()});
   await addOrReplaceReview({problem_id:review.problem_id,due_date:await reviewDueDate(date,plan.interval_days||14),
     review_type:plan.review_type,status:"pending",generated_from_attempt_id:attemptId,duration_minutes:plan.estimated_minutes,
-    reason:plan.review_reason,...planFields(plan)});
+    reason:plan.review_reason,task_origin:"review_attempt",attempt_exists:true,...planFields(plan)});
   if(successful){
     const resolved=(await db.weakNotes.toArray()).filter(note=>note.generated_from_attempt_id===source.id);
     for(const note of resolved) await db.weakNotes.update(note.id,{is_resolved:1});
   }
-  if(!successful&&source.error_point) await db.weakNotes.add({
+  if(!linkedS&&!successful&&source.error_point) await db.weakNotes.add({
     id:undefined as unknown as number,date,problem_id:review.problem_id,error_type:errors[0],theme:problem.theme,
     mistake:source.error_point,correction_rule:source.next_action||plan.review_instruction||"",is_resolved:0,
     source_text:"",auto_generated:true,generated_from_attempt_id:attemptId
@@ -678,7 +799,9 @@ async function completeReview(id:number,body:Record<string,unknown>){
       if(!await db.problems.get(sid)) continue;
       await addOrReplaceReview({problem_id:sid,due_date:await reviewDueDate(date,sPlan.interval_days||1),review_type:"s_check",
         status:"pending",generated_from_attempt_id:attemptId,duration_minutes:sPlan.estimated_minutes,
-        reason:sPlan.review_reason,...planFields(sPlan)});
+        reason:sPlan.review_reason,task_origin:"linked_s_check",source_problem_id:review.problem_id,
+        attempt_exists:(await db.attempts.where("problem_id").equals(sid).count())>0,
+        review_goal_public:"元問題で崩れた基礎型を確認する",...planFields(sPlan)});
     }
   }
   if(problem.category==="S"){
@@ -736,14 +859,153 @@ function suggest(theme=""){
     .flatMap(([trigger,a,s])=>[...a,...s].map(problem_id=>({trigger,problem_id})));
 }
 
+async function appendImportHistory(kind:string,version:string,count:number){
+  const key="master_import_history",old=await db.meta.get(key);
+  let rows:string[]=[];try{rows=old?JSON.parse(old.value):[]}catch{rows=[]}
+  rows.unshift(`${new Date().toISOString()}｜${kind}｜${version}｜${count}件`);
+  await db.meta.put({key,value:JSON.stringify(rows.slice(0,20))});
+}
+
+async function importProblemMaster(raw:unknown){
+  const payload=parseProblemMasterPayload(raw),now=new Date().toISOString();
+  for(const incoming of payload.problems){
+    const old=await db.problems.get(String(incoming.problem_id));
+    const category=incoming.category as Problem["category"];
+    const problem:Problem={
+      ...(old||{}),...incoming,id:old?.id||Date.now()+Math.floor(Math.random()*100000),
+      problem_id:String(incoming.problem_id),source_type:category==="past_exam"?"past_exam":"whitebook",
+      category,chapter:incoming.chapter??null,problem_number:Number(incoming.problem_number),
+      title:String(incoming.canonical_title||incoming.display_label||incoming.title),
+      theme:String(incoming.theme),priority:String(incoming.priority||old?.priority||"semi_core"),
+      role:String(incoming.role||old?.role||(category==="S"?"foundation":category==="A"?"training":"exam")),
+      recommended_mode:String(incoming.recommended_mode||old?.recommended_mode||(category==="S"?"skeleton":category==="A"?"full":"scan")),
+      linked_past_exams:String(incoming.linked_past_exams||""),linked_s_problems:String(incoming.linked_s_problems||""),
+      linked_a_problems:String(incoming.linked_a_problems||""),notes:String(incoming.notes||old?.notes||""),
+      completion_status:old?.completion_status||"active",display_label:String(incoming.display_label),
+      normalized_label:String(incoming.display_label).replace(/\s/g,""),master_version:payload.version
+    };
+    await db.problems.put(problem);
+    if(category==="S"&&!await db.sMemory.get(problem.problem_id)) await db.sMemory.put({problem_id:problem.problem_id,state:"check",k_trigger_count:0});
+  }
+  await db.meta.bulkPut([{key:"problem_master_version",value:payload.version},{key:"problem_master_updated_at",value:now}]);
+  await appendImportHistory("problem_master",payload.version,payload.problems.length);
+  await repairDataIntegrity(true);
+  return {count:payload.problems.length,version:payload.version};
+}
+
+async function importAnswerIndex(raw:unknown){
+  const payload=parseAnswerIndexPayload(raw),now=new Date().toISOString();
+  await db.answerIndex.bulkPut(payload.answers.map(answer=>({...answer,imported_at:now,index_version:payload.version})));
+  for(const answer of payload.answers){
+    const problem=await db.problems.get(answer.problem_id);
+    if(problem) await db.problems.update(answer.problem_id,{answer_available:answer.answer_available});
+  }
+  await db.meta.bulkPut([{key:"answer_index_version",value:payload.version},{key:"answer_index_updated_at",value:now}]);
+  await appendImportHistory("answer_index",payload.version,payload.answers.length);
+  return {count:payload.answers.length,version:payload.version};
+}
+
+async function diagnoseData():Promise<DataDiagnostic[]>{
+  const [problems,attempts,reviews,notes,answers]=await Promise.all([
+    db.problems.toArray(),db.attempts.toArray(),db.reviews.toArray(),db.weakNotes.toArray(),db.answerIndex.toArray()
+  ]);
+  const pmap=new Map(problems.map(problem=>[problem.problem_id,problem])),amap=new Map(answers.map(answer=>[answer.problem_id,answer]));
+  const diagnostics:DataDiagnostic[]=[];
+  for(const attempt of attempts){
+    const problem=pmap.get(attempt.problem_id);
+    if(!problem) diagnostics.push({id:`attempt-${attempt.id}`,severity:"critical",problem_id:attempt.problem_id,record_type:"attempt",message:"問題IDが problem_master に存在しません。",repairable:false});
+    else if(!attemptMatchesProblem(attempt,problem)) diagnostics.push({id:`attempt-content-${attempt.id}`,severity:"critical",problem_id:attempt.problem_id,record_type:"attempt",message:"採点内容がこの問題の canonical_keywords と強く矛盾します。元のGPT出力を保持したまま問題IDを確認してください。",suggested_problem_id:attempt.problem_id==="WB-6-S-04"?"WB-6-S-01":undefined,repairable:false});
+  }
+  for(const review of reviews){
+    const problem=pmap.get(review.problem_id),source=attempts.find(attempt=>attempt.id===review.generated_from_attempt_id);
+    if(!problem) diagnostics.push({id:`review-${review.id}`,severity:"critical",problem_id:review.problem_id,record_type:"review",message:"復習の問題IDが problem_master に存在しません。",repairable:false});
+    if(review.task_origin==="review_attempt"&&!attempts.some(attempt=>attempt.problem_id===review.problem_id))
+      diagnostics.push({id:`review-origin-${review.id}`,severity:"warning",problem_id:review.problem_id,record_type:"review",message:"履歴がないのに review_attempt になっています。",repairable:true});
+    if(review.review_type==="s_check"){
+      const sourceProblem=source&&pmap.get(source.problem_id),validLinks=sourceProblem?.related_s_problem_ids||list(sourceProblem?.linked_s_problems||"");
+      if(sourceProblem&&!validLinks.includes(review.problem_id))
+        diagnostics.push({id:`invalid-link-${review.id}`,severity:"critical",problem_id:review.problem_id,record_type:"linked_s_check",message:`${source.problem_id} からの関連S指定が problem_master と矛盾しています。`,repairable:true});
+    }
+  }
+  for(const note of notes){
+    const master=pmap.get(note.problem_id);
+    if(master&&note.theme&&note.theme!==master.theme) diagnostics.push({id:`note-${note.id}`,severity:"warning",problem_id:note.problem_id,record_type:"weak_note",message:"弱点テーマが problem_master と異なります。",repairable:true});
+  }
+  for(const problem of problems){
+    const answer=amap.get(problem.problem_id);
+    if(problem.answer_available&&!answer) diagnostics.push({id:`answer-${problem.problem_id}`,severity:"warning",problem_id:problem.problem_id,record_type:"answer_index",message:"answer_available ですが answer_index がありません。",repairable:false});
+  }
+  const s4=pmap.get("WB-6-S-04");
+  if(s4&&/AIC|自由度|指数型分布族/.test(s4.theme)) diagnostics.push({id:"s4-theme",severity:"critical",problem_id:s4.problem_id,record_type:"problem",message:"WB-6-S-04 のテーマが正本と矛盾しています。",suggested_problem_id:"WB-6-S-01",repairable:true});
+  return diagnostics;
+}
+
+async function repairDataIntegrity(silent=false){
+  const [problems,attempts,reviews,notes]=await Promise.all([db.problems.toArray(),db.attempts.toArray(),db.reviews.toArray(),db.weakNotes.toArray()]);
+  const pmap=new Map(problems.map(problem=>[problem.problem_id,problem]));
+  for(const note of notes){
+    const problem=pmap.get(note.problem_id);
+    if(problem&&note.theme!==problem.theme) await db.weakNotes.update(note.id,{theme:problem.theme});
+  }
+  for(const review of reviews){
+    const ownAttempts=attempts.filter(attempt=>attempt.problem_id===review.problem_id);
+    const source=attempts.find(attempt=>attempt.id===review.generated_from_attempt_id);
+    if(review.review_type==="s_check"){
+      const sourceProblem=source&&pmap.get(source.problem_id),validLinks=sourceProblem?.related_s_problem_ids||list(sourceProblem?.linked_s_problems||"");
+      if(sourceProblem&&!validLinks.includes(review.problem_id)&&review.status!=="done"){await db.reviews.delete(review.id);continue}
+      await db.reviews.update(review.id,{task_origin:"linked_s_check",source_problem_id:source?.problem_id,
+        attempt_exists:ownAttempts.length>0,review_goal_public:"元問題で崩れた基礎型を確認する"});
+    }else await db.reviews.update(review.id,{task_origin:ownAttempts.length?"review_attempt":"first_attempt",attempt_exists:ownAttempts.length>0});
+  }
+  if(!silent) await appendImportHistory("整合性修復","manual",reviews.length+notes.length);
+  return {diagnostics:await diagnoseData()};
+}
+
+export async function problemMasterExport(){
+  await initialize();
+  const meta=await db.meta.get("problem_master_version");
+  const problems=await db.problems.toArray();
+  return {version:meta?.value||"unversioned",problems:problems.map(problem=>({
+    problem_id:problem.problem_id,display_label:problem.display_label,type:problem.category,chapter:problem.chapter==null?null:`第${problem.chapter}章`,
+    problem_number:problem.problem_number,theme:problem.theme,canonical_title:problem.canonical_title||problem.title,
+    canonical_problem_type:problem.canonical_problem_type||problem.theme,canonical_keywords:problem.canonical_keywords||[],
+    roadmap_rank:problem.roadmap_rank||problem.strategy_rank,source_book:problem.source_book||"",
+    related_s_problems:problem.related_s_problem_ids||list(problem.linked_s_problems),
+    related_a_problems:problem.related_a_problem_ids||list(problem.linked_a_problems),
+    related_past_exams:problem.related_past_exam_ids||list(problem.linked_past_exams),
+    answer_available:!!problem.answer_available
+  }))};
+}
+export async function answerIndexExport(){
+  await initialize();
+  const meta=await db.meta.get("answer_index_version");
+  return {version:meta?.value||"unversioned",answers:await db.answerIndex.toArray()};
+}
+export async function saveAnswerPdf(file:File){
+  await initialize();
+  await db.answerPdfs.put({file_name:file.name,blob:file,uploaded_at:new Date().toISOString()});
+}
+export async function openAnswerPdf(fileName:string,page?:number|null){
+  const popup=window.open("about:blank","_blank");
+  const row=await db.answerPdfs.get(fileName);
+  if(!row){popup?.close();throw new Error("PDF本体はこのiPadに登録されていません")}
+  const url=URL.createObjectURL(row.blob),target=page?`${url}#page=${page}`:url;
+  if(popup) popup.location.href=target; else window.open(target,"_blank");
+  setTimeout(()=>URL.revokeObjectURL(url),120000);
+}
+
 async function bootstrap():Promise<Bootstrap>{
   await initialize();
-  const [problems,attempts,rawReviews,roadmap,weakNotes,pastSessions,sMemory,metaEntries]=await Promise.all([
+  await ensureBuiltInCanonical();
+  const [problems,attempts,rawReviews,roadmap,weakNotes,pastSessions,sMemory,metaEntries,answerIndex,answerPdfs]=await Promise.all([
     db.problems.toArray(),db.attempts.orderBy("id").reverse().toArray(),db.reviews.orderBy("due_date").toArray(),db.roadmap.orderBy("order_index").toArray(),
-    db.weakNotes.orderBy("id").reverse().toArray(),db.pastSessions.orderBy("id").reverse().toArray(),db.sMemory.toArray(),db.meta.toArray()
+    db.weakNotes.orderBy("id").reverse().toArray(),db.pastSessions.orderBy("id").reverse().toArray(),db.sMemory.toArray(),db.meta.toArray(),
+    db.answerIndex.toArray(),db.answerPdfs.toArray()
   ]);
   const today=todayString(),week=addDays(today,-6),fortnight=addDays(today,-13);
   const pmap=new Map(problems.map(p=>[p.problem_id,p]));
+  const answerMap=new Map(answerIndex.map(answer=>[answer.problem_id,answer]));
+  const pdfNames=new Set(answerPdfs.map(pdf=>pdf.file_name));
   const smap=new Map(sMemory.map(memory=>[memory.problem_id,memory]));
   const attemptMap=new Map(attempts.map(attempt=>[attempt.id,attempt]));
   const settings={
@@ -811,19 +1073,29 @@ async function bootstrap():Promise<Bootstrap>{
       daysRemaining:progress.daysRemaining,examDateIsEstimate:!settings.exam_date}
   };
   const dueReviews=reviews.filter(r=>["pending","overdue"].includes(r.status)&&r.due_date<=today).map(r=>{
-    const p=pmap.get(r.problem_id)!;const source=attempts.find(a=>a.id===r.generated_from_attempt_id);
+    const p=pmap.get(r.problem_id)!;const originSource=attempts.find(a=>a.id===r.generated_from_attempt_id);
+    const ownSource=attempts.find(attempt=>attempt.problem_id===r.problem_id&&p&&attemptMatchesProblem(attempt,p));
+    const linkedS=r.task_origin==="linked_s_check"||r.review_type==="s_check";
+    const source=linkedS?ownSource:originSource,answer=answerMap.get(r.problem_id);
     const defaultMinutes=r.estimated_minutes||r.duration_minutes||20;
     const minutes=source?.is_review_attempt&&source.time_minutes>0?Math.max(3,Math.round((defaultMinutes+source.time_minutes)/2)):defaultMinutes;
     const reviewMode=r.requires_full_answer?"exam_90min":r.review_type==="main_calc_retry"?"main_calc":
       ["careless_check","light_check"].includes(r.review_type)||(/軽い骨格確認|軽い想起チェック|月1回の軽い/.test(r.review_method||""))||
       r.review_type==="s_check"&&(/3分|5分チェック|5分骨格確認/.test(r.review_method||""))?"check":"skeleton";
-    return {...r,title:p?.display_label||p?.title||(r.generated_from_past_session_id?`${r.problem_id.replace("-SESSION","")} 過去問演習`:r.problem_id),theme:p?.theme||"",error_type:source?.error_type,
+    return {...r,task_origin:linkedS?"linked_s_check":r.task_origin||(source?"review_attempt":"first_attempt"),
+      source_problem_id:linkedS?(r.source_problem_id||originSource?.problem_id):r.source_problem_id,
+      attempt_exists:!!source,review_goal_public:linkedS?"元問題で崩れた基礎型を確認する":r.review_goal_public,
+      source_error_summary:linkedS?originSource?.error_point:"",
+      title:p?.display_label||p?.title||(r.generated_from_past_session_id?`${r.problem_id.replace("-SESSION","")} 過去問演習`:r.problem_id),theme:p?.theme||"",error_type:source?.error_type,
       previous_date:source?.date,previous_score:source?`${source.score_text||source.score_label}${source.score_numeric!=null?` ${source.score_numeric}点`:""}`:"",
       previous_errors:source?.error_types||[source?.error_type||"none"],previous_error_point:source?.error_point||"",previous_next_action:source?.next_action||"",
       previous_improvement_guidance:source?.improvement_guidance||"",previous_required_derivation:source?.required_derivation||"",
       previous_corrected_answer:source?.corrected_answer||"",
       has_saved_gpt_feedback:!!(source?.improvement_guidance||source?.required_derivation||source?.corrected_answer||source?.result_summary),
-      official_answer_text:p?.official_answer||"",official_answer_url:p?.official_answer_url||"",
+      official_answer_text:answer?.answer_available&&answer.answer_excerpt?answer.answer_excerpt:p?.official_answer||"",
+      official_answer_url:p?.official_answer_url||"",official_answer_pdf_name:answer?.pdf_file_name||"",
+      official_answer_pdf_registered:!!answer?.pdf_file_name&&pdfNames.has(answer.pdf_file_name),
+      answer_section_label:answer?.section_label||"",official_answer_page:answer?.page_start??null,
       kind:r.review_type==="s_check"?"S確認":r.generated_from_past_session_id?"過去問復習":"復習",reason:r.status==="overdue"?`期限切れ（${r.due_date}）`:"本日が復習日",
       mode:reviewMode,minutes,estimated_minutes:minutes,load:loadFor(reviewMode)};
   }).sort((a,b)=>(a.status==="overdue"&&a.error_type==="K"?0:1)-(b.status==="overdue"&&b.error_type==="K"?0:1)||
@@ -925,15 +1197,42 @@ async function bootstrap():Promise<Bootstrap>{
   const totalLoad=Math.round(tasks.filter(task=>!task.checked).reduce((sum,x)=>sum+x.load,0)*10)/10;
   const remainingMinutes=tasks.filter(task=>!task.checked).reduce((sum,task)=>sum+task.minutes,0);
   const actualMinutes=attempts.filter(attempt=>attempt.date===today).reduce((sum,attempt)=>sum+Math.max(0,Number(attempt.time_minutes||0)),0);
-  const capacityPercent=Math.round(plannedMinutes/settings.daily_study_minutes*100);
-  const warning=plannedMinutes>settings.daily_study_minutes
-    ?`予定超過：${plannedMinutes}分 / ${settings.daily_study_minutes}分。優先度に基づいて「今日必ず」「余裕があれば」「明日に送る」へ仕分けました。`:"";
-  const guidance=plannedMinutes<settings.daily_study_minutes-15
-    ?`アプリ内予定は${plannedMinutes}分です。残り${settings.daily_study_minutes-plannedMinutes}分は弱点クイズ、解説確認、または既習A問題の混合確認に使えます。`
+  const postponedReviewMinutes=reviews.filter(review=>review.postponed_at?.startsWith(today)&&review.postponed_to!==today)
+    .reduce((sum,review)=>sum+Number(review.estimated_minutes||review.duration_minutes||0),0);
+  const postponedTaskMinutes=[...taskPostponements.values()].filter(record=>String(record.postponed_at||"").startsWith(today)&&String(record.postponed_to||"")!==today)
+    .reduce((sum,record)=>sum+Number(record.estimated_minutes||0),0);
+  const postponedMinutes=postponedReviewMinutes+postponedTaskMinutes;
+  const completedTasks=attempts.filter(attempt=>attempt.date===today).map(attempt=>({
+    problem_id:attempt.problem_id,title:pmap.get(attempt.problem_id)?.display_label||attempt.problem_id,
+    kind:"完了",reason:`${attempt.mark} ${attempt.score_text||attempt.score_label}`,mode:attempt.mode,
+    minutes:Number(attempt.time_minutes||0),load:loadFor(attempt.mode),checked:true
+  } as Task));
+  const plannedTotal=remainingMinutes+actualMinutes+postponedMinutes;
+  const capacityPercent=Math.round(plannedTotal/settings.daily_study_minutes*100);
+  const warning=remainingMinutes>settings.daily_study_minutes
+    ?`残り予定が目標を超えています。先送り候補を確認してください。`
+    :plannedTotal>settings.daily_study_minutes
+      ?`計画は超過していますが、残りは目標内です。`:"";
+  const guidance=remainingMinutes<settings.daily_study_minutes-15
+    ?`未完了は${remainingMinutes}分です。残り${settings.daily_study_minutes-remainingMinutes}分は弱点クイズ、解説確認、または既習A問題の混合確認に使えます。`
     :`目標${settings.daily_study_minutes}分に対して、無理のない範囲の学習計画です。`;
-  return {problems:problems.sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.category.localeCompare(b.category)||a.problem_number-b.problem_number),attempts,reviews,roadmap,weakNotes,pastSessions,dashboard,settings,
-    today:{tasks,totalLoad,plannedMinutes,remainingMinutes,actualMinutes,targetMinutes:settings.daily_study_minutes,capacityPercent,warning,guidance,
-      triageMinutes:triage.minutes}} as Bootstrap;
+  const diagnostics=await diagnoseData();
+  let importHistory:string[]=[];try{importHistory=JSON.parse(metaEntries.find(entry=>entry.key==="master_import_history")?.value||"[]")}catch{importHistory=[]}
+  const masterStatus={
+    problem_count:problems.length,answer_count:answerIndex.length,
+    problem_version:metaEntries.find(entry=>entry.key==="problem_master_version")?.value||"未設定",
+    answer_version:metaEntries.find(entry=>entry.key==="answer_index_version")?.value||"未設定",
+    problem_updated_at:metaEntries.find(entry=>entry.key==="problem_master_updated_at")?.value||"",
+    answer_updated_at:metaEntries.find(entry=>entry.key==="answer_index_updated_at")?.value||"",
+    pdf_files:[...pdfNames],diagnostics,import_history:importHistory
+  };
+  return {problems:problems.sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.category.localeCompare(b.category)||a.problem_number-b.problem_number),attempts,reviews,roadmap,weakNotes,pastSessions,answerIndex,dashboard,settings,masterStatus,
+    today:{tasks,totalLoad,plannedMinutes:plannedTotal,remainingMinutes,actualMinutes,targetMinutes:settings.daily_study_minutes,capacityPercent,warning,guidance,
+      planned_minutes_total:plannedTotal,completed_minutes_today:actualMinutes,remaining_minutes_today:remainingMinutes,
+      postponed_minutes_today:postponedMinutes,target_minutes_today:settings.daily_study_minutes,
+      triageMinutes:triage.minutes,triageCounts:{must:tasks.filter(t=>t.triage==="must"&&!t.checked).length,
+        if_time:tasks.filter(t=>t.triage==="if_time"&&!t.checked).length,tomorrow:tasks.filter(t=>t.triage==="tomorrow"&&!t.checked).length,
+        completed:completedTasks.length},completedTasks}} as Bootstrap;
 }
 
 export async function localGet<T>(path:string):Promise<T>{
@@ -947,7 +1246,13 @@ export async function localGet<T>(path:string):Promise<T>{
 
 export async function localPost<T>(path:string,body:any):Promise<T>{
   await initialize();
-  if(path==="/api/problems"){
+  if(path==="/api/master/problem/import"){
+    return await importProblemMaster(body) as T;
+  } else if(path==="/api/master/answer/import"){
+    return await importAnswerIndex(body) as T;
+  } else if(path==="/api/master/repair"){
+    return await repairDataIntegrity() as T;
+  } else if(path==="/api/problems"){
     const chapter=body.chapter?Number(body.chapter):null,number=Number(body.problem_number),difficulty=body.difficulty?Number(body.difficulty):null;
     const display=body.source_type==="past_exam"?body.title:labelFor(chapter,body.category,number,difficulty);
     await db.problems.add({...body,id:Date.now(),chapter,problem_number:number,difficulty,completion_status:"active",
@@ -955,9 +1260,9 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
       related_s_problem_ids:list(body.linked_s_problems),linked_past_exam_ids:list(body.linked_past_exams)});
     if(body.category==="S") await db.sMemory.put({problem_id:body.problem_id,state:"stable",k_trigger_count:0});
   } else if(path==="/api/attempts") {
-    await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta],()=>saveAttempt(body));
+    await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.answerIndex,db.correctionLogs],()=>saveAttempt(body));
   } else if(path==="/api/import") {
-    await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta],async()=>{for(const update of body.updates) await saveAttempt(update)});
+    await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.answerIndex,db.correctionLogs],async()=>{for(const update of body.updates) await saveAttempt(update)});
   } else if(/^\/api\/attempts\/\d+\/update$/.test(path)) {
     await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta],
       ()=>updateAttemptAnalysis(Number(path.split("/")[3]),body));
@@ -1008,7 +1313,8 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
         problem_id:`PY-${session.year}-SESSION`,
         due_date:await reviewDueDate(String(session.date||todayString()),plan.interval_days||7),review_type:plan.review_type,
         status:"pending",generated_from_attempt_id:0,generated_from_past_session_id:sessionId,
-        duration_minutes:plan.estimated_minutes,reason:plan.review_reason,...planFields(plan)
+        duration_minutes:plan.estimated_minutes,reason:plan.review_reason,task_origin:"past_exam_followup",
+        attempt_exists:false,...planFields(plan)
       });
     });
   } else throw new Error(`未対応の保存です: ${path}`);
@@ -1018,21 +1324,24 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
 export async function exportBackup(){
   await initialize();
   return {
-    version:1,exported_at:new Date().toISOString(),
+    version:2,exported_at:new Date().toISOString(),
     problems:await db.problems.toArray(),attempts:await db.attempts.toArray(),reviews:await db.reviews.toArray(),
     roadmap:await db.roadmap.toArray(),weakNotes:await db.weakNotes.toArray(),pastSessions:await db.pastSessions.toArray(),
-    sMemory:await db.sMemory.toArray()
+    sMemory:await db.sMemory.toArray(),answerIndex:await db.answerIndex.toArray(),correctionLogs:await db.correctionLogs.toArray()
   };
 }
 
 export async function restoreBackup(data:any){
   const required=["problems","attempts","reviews","roadmap","weakNotes","pastSessions","sMemory"];
   if(!data||!required.every(k=>Array.isArray(data[k]))) throw new Error("バックアップ形式が正しくありません");
-  await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.roadmap,db.weakNotes,db.pastSessions,db.sMemory,db.meta],async()=>{
-    await Promise.all([db.problems.clear(),db.attempts.clear(),db.reviews.clear(),db.roadmap.clear(),db.weakNotes.clear(),db.pastSessions.clear(),db.sMemory.clear()]);
+  await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.roadmap,db.weakNotes,db.pastSessions,db.sMemory,db.meta,db.answerIndex,db.correctionLogs],async()=>{
+    await Promise.all([db.problems.clear(),db.attempts.clear(),db.reviews.clear(),db.roadmap.clear(),db.weakNotes.clear(),db.pastSessions.clear(),db.sMemory.clear(),db.answerIndex.clear(),db.correctionLogs.clear()]);
     await db.problems.bulkAdd(data.problems);await db.attempts.bulkAdd(data.attempts);await db.reviews.bulkAdd(data.reviews);
     await db.roadmap.bulkAdd(data.roadmap);await db.weakNotes.bulkAdd(data.weakNotes);await db.pastSessions.bulkAdd(data.pastSessions);
-    await db.sMemory.bulkAdd(data.sMemory);await db.meta.put({key:"seeded",value:"1"});
+    await db.sMemory.bulkAdd(data.sMemory);
+    if(Array.isArray(data.answerIndex)) await db.answerIndex.bulkAdd(data.answerIndex);
+    if(Array.isArray(data.correctionLogs)) await db.correctionLogs.bulkAdd(data.correctionLogs);
+    await db.meta.put({key:"seeded",value:"1"});
   });
 }
 

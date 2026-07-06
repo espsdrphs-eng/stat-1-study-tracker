@@ -1,7 +1,8 @@
 import yaml from "js-yaml";
-import type { Problem, StudyUpdate } from "./types";
+import type { AnswerIndexEntry, Problem, StudyUpdate } from "./types";
 import { japaneseizeMathText } from "./mathJapanese.ts";
 import { reviewDaysForErrors, sanitizeStudyUpdateTiming } from "./reviewTiming.ts";
+import { applyCanonicalMaster } from "./masterData.ts";
 
 const errorPriority=["K","N","W","C"];
 
@@ -138,7 +139,7 @@ function weakNoteFromText(text:string,problemId:string,primary:string,themes:str
   };
 }
 
-function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem[]):StudyUpdate{
+function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem[],answers:AnswerIndexEntry[]=[]):StudyUpdate{
   const candidate=canonicalProblemId(scalar(raw.problem_id)||deriveCandidate(text));
   const master=matchMaster(candidate,problems);
   const chapter=master?.chapter??(Number(raw.chapter)||null);
@@ -252,11 +253,13 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
     external_reference:raw.external_reference==null?undefined:/^(true|yes|1|はい)$/i.test(scalar(raw.external_reference)),
     gpt_explanation:raw.gpt_explanation==null?undefined:/^(true|yes|1|はい)$/i.test(scalar(raw.gpt_explanation)),
     import_confidence:Math.round(confidence*100)/100,master_matched:!!master,status:"review_required",
+    main_theme:scalar(raw.main_theme)||parsedThemes[0]||"",raw_gpt_problem_id:candidate,raw_gpt_theme:parsedThemes.join(" / "),
     math_localized:rawResultSummary!==resultSummary||rawErrorPoint!==errorPoint||rawNextAction!==nextAction||
       rawImprovementGuidance!==improvementGuidance||rawRequiredDerivation!==requiredDerivation||rawCorrectedAnswer!==correctedAnswer||
       weakNotes.some((note,index)=>note.mistake!==localizedWeakNotes[index]?.mistake||note.correction_rule!==localizedWeakNotes[index]?.correction_rule)
   };
-  return sanitizeStudyUpdateTiming(normalized);
+  const canonical=master?applyCanonicalMaster(normalized,master,answers.find(answer=>answer.problem_id===master.problem_id),problems,answers):normalized;
+  return sanitizeStudyUpdateTiming(canonical);
 }
 
 function extractStructured(text:string){
@@ -277,7 +280,7 @@ function extractStructured(text:string){
   }
 }
 
-export function parseStudyText(text:string,problems:Problem[]){
+export function parseStudyText(text:string,problems:Problem[],answers:AnswerIndexEntry[]=[]){
   const structured=extractStructured(text);
   if(structured&&typeof structured==="object"){
     const obj=structured as Record<string,unknown>;
@@ -285,18 +288,21 @@ export function parseStudyText(text:string,problems:Problem[]){
     // GPTやコピー元がインデントを落とすと study_update が null になり、
     // 各フィールドがトップレベルへ展開される。そこも1件として受け入れる。
     if(!rows.length&&obj.problem_id) rows=[obj];
-    const updates=rows.filter(x=>x&&typeof x==="object").map(x=>normalizeUpdate(x as Record<string,unknown>,text,problems));
+    const updates=rows.filter(x=>x&&typeof x==="object").map(x=>normalizeUpdate(x as Record<string,unknown>,text,problems,answers));
     if(updates.length) return {structured:true,updates};
   }
   const candidate=deriveCandidate(text);
   if(!candidate) return {structured:false,updates:[] as StudyUpdate[]};
-  return {structured:false,updates:[normalizeUpdate({},text,problems)]};
+  return {structured:false,updates:[normalizeUpdate({},text,problems,answers)]};
 }
 
 export function applyProblemMaster(update:StudyUpdate,problem:Problem):StudyUpdate{
   return {
     ...update,problem_id:problem.problem_id,display_label:problemDisplayLabel(problem),source_type:problem.source_type,
     category:problem.category,chapter:problem.chapter,problem_number:problem.problem_number,
-    difficulty:problem.difficulty??null,master_matched:true
+    difficulty:problem.difficulty??null,theme:problem.theme,themes:[problem.theme],
+    canonical_problem_type:problem.canonical_problem_type,canonical_keywords:problem.canonical_keywords,
+    corrected_problem_id:problem.problem_id,corrected_theme:problem.theme,
+    requires_problem_confirmation:false,problem_id_confirmed:true,master_matched:true
   };
 }

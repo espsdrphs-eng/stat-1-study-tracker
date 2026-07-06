@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import yaml from "js-yaml";
 import { api, post } from "./api";
-import { csvFor, exportBackup, restoreBackup } from "./localDb";
+import { answerIndexExport, csvFor, exportBackup, openAnswerPdf, problemMasterExport, restoreBackup, saveAnswerPdf } from "./localDb";
 import AdvancedImportView from "./AdvancedImportView";
 import { problemDisplayLabel } from "./importParser";
 import { createAttemptReviewPlan } from "./reviewRules";
@@ -22,6 +22,7 @@ import {
 import { removeTimingExpressions } from "./reviewTiming";
 import { EXAM_PHASES } from "./studyProgress";
 import { CHAPTER_META } from "./officialMaster";
+import { masterDiff, parseAnswerIndexPayload, parseProblemMasterPayload } from "./masterData";
 import type { Attempt, Bootstrap, Problem, Review, StudyUpdate, Task } from "./types";
 
 type Page = "dashboard"|"today"|"problems"|"attempt"|"import"|"reviews"|"weak"|"past"|"sheets"|"settings";
@@ -39,6 +40,12 @@ const sheetHref=(mode:string)=>`./answer-sheets/${sheetFiles[mode]||sheetFiles.s
 const reviewNames:Record<string,string>={skeleton_retry:"骨格再現",main_calc_retry:"主要計算",full_retry:"フル再演習",careless_check:"チェックリスト確認",light_check:"短時間チェック",s_check:"S確認",past_exam_link:"過去問連動",past_exam_selection:"選題確認",past_exam_retry:"過去問補修"};
 const todayString = () => new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Tokyo",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
 const blankUpdate = ():StudyUpdate => ({problem_id:"",date:todayString(),mode:"full",mark:"△",score_label:"B",error_type:"none",error_point:"",next_action:""});
+const attemptConsistentForDisplay=(attempt:Attempt,problem?:Problem)=>{
+  if(!problem)return false;
+  const text=[attempt.result_summary,attempt.error_point,attempt.next_action,attempt.improvement_guidance,attempt.required_derivation,attempt.corrected_answer].join(" ");
+  if(problem.problem_id==="WB-6-S-04"&&/AIC|自由度|指数型分布族|自然母数|期待値母数/.test(text)&&!/U\(0|一様分布|最大統計量|不偏推定量|MSE/.test(text)) return false;
+  return true;
+};
 
 function Badge({children,tone=""}:{children:React.ReactNode;tone?:string}) {
   return <span className={`badge ${tone}`}>{children}</span>;
@@ -78,7 +85,7 @@ export default function App() {
   return <div className="app-shell">
     <aside className={`sidebar ${menu?"open":""}`}>
       <div className="brand"><div className="brand-mark">1</div><div><strong>統計一級</strong><span>STUDY TRACKER</span></div><button className="mobile-close" onClick={()=>setMenu(false)}><X/></button></div>
-      <div className={`today-mini ${data.today.plannedMinutes>data.today.targetMinutes?"over":""}`}><span>{data.today.plannedMinutes>data.today.targetMinutes?"予定超過":"今日の予定合計"}</span><strong>{data.today.plannedMinutes} / {data.today.targetMinutes}分</strong><div className="load-track"><i style={{width:`${Math.min(100,data.today.capacityPercent)}%`}}/></div><small>記録済み {data.today.actualMinutes}分{data.today.plannedMinutes>data.today.targetMinutes?`・明日候補 ${data.today.triageMinutes?.tomorrow||0}分`:""}</small></div>
+      <div className={`today-mini ${data.today.remaining_minutes_today>data.today.target_minutes_today?"over":""}`}><span>今日の進捗</span><strong>計画 {data.today.planned_minutes_total}分 / 目標 {data.today.target_minutes_today}分</strong><div className="load-track"><i style={{width:`${Math.min(100,data.today.capacityPercent)}%`}}/></div><small>完了 {data.today.completed_minutes_today}分</small><small>残り {data.today.remaining_minutes_today}分・先送り {data.today.postponed_minutes_today}分</small></div>
       <nav>{nav.map(([key,Icon])=><button key={key} className={page===key?"active":""} onClick={()=>go(key)}><Icon size={19}/><span>{pageTitles[key]}</span>{key==="reviews"&&data.dashboard.pending>0&&<b>{data.dashboard.pending}</b>}</button>)}</nav>
       <div className="sidebar-foot"><Gauge size={17}/><div><span>2週間ペース</span><strong className={`pace-${data.dashboard.pace.label}`}>{data.dashboard.pace.label}</strong></div></div>
     </aside>
@@ -92,7 +99,7 @@ export default function App() {
         page==="today"?<TodayView data={data} busy={busy} run={run} go={go}/>:
         page==="problems"?<ProblemsView data={data} select={setSelected} run={run} busy={busy}/>:
         page==="attempt"?<AttemptView problems={data.problems} run={run} busy={busy}/>:
-        page==="import"?<AdvancedImportView problems={data.problems} attempts={data.attempts} reviews={data.reviews} run={run} busy={busy}/>:
+        page==="import"?<AdvancedImportView problems={data.problems} answerIndex={data.answerIndex} attempts={data.attempts} reviews={data.reviews} run={run} busy={busy}/>:
         page==="reviews"?<ReviewsView data={data} run={run} busy={busy}/>:
         page==="weak"?<WeakView data={data} run={run} busy={busy}/>:
         page==="past"?<PastView data={data} go={go}/>:
@@ -118,7 +125,7 @@ function DashboardView({data,go}:{data:Bootstrap;go:(p:Page)=>void}) {
     {data.today.warning&&<div className="warning"><AlertTriangle/><div><strong>予定時間を調整してください</strong><p>{data.today.warning}</p></div></div>}
     <section className="section-head"><div><span className="eyebrow">OVERVIEW</span><h2>今週の学習状況</h2></div><span className="muted">直近7日間</span></section>
     <div className="metrics-grid">
-      <Metric label="今日の予定合計" value={data.today.plannedMinutes} unit="分" hint={`目標${data.today.targetMinutes}分・記録済み${data.today.actualMinutes}分`} tone={data.today.plannedMinutes>data.today.targetMinutes+30?"red":""}/>
+      <Metric label="今日の計画" value={data.today.planned_minutes_total} unit="分" hint={`完了${data.today.completed_minutes_today}分・残り${data.today.remaining_minutes_today}分・先送り${data.today.postponed_minutes_today}分`} tone={data.today.remaining_minutes_today>data.today.target_minutes_today?"red":""}/>
       <Metric label="A問題進捗" value={d.weekA} unit="題" hint="今週の新規・復習"/>
       <Metric label={d.pace.phase==="foundation"?"過去問（任意）":"過去問GPT採点"} value={d.weekPast} unit="件" hint={d.pace.phase==="foundation"?"基礎期は未実施でも可":"今週の取り込み"}/>
       <Metric label="K再発" value={d.kRecurrence} unit="題" hint="直近2週間" tone={d.kRecurrence>2?"red":""}/>
@@ -209,7 +216,8 @@ function ReviewPlanDetails({item,compact=false}:{item:Partial<Review&Task>;compa
   const template=reviewTemplate(item);
   const allowed=allowedReferenceLevel(item);
   const hasSavedFeedback=!!item.has_saved_gpt_feedback;
-  const hasOfficialAnswer=!!item.official_answer_text||!!item.official_answer_url;
+  const hasOfficialAnswer=!!item.official_answer_text||!!item.official_answer_url||!!item.official_answer_pdf_registered;
+  const hasPreviousAttempt=item.attempt_exists!==false;
   const reveal=(level:Exclude<ReferenceLevel,0>,panel:Exclude<OpenReferencePanel,null>)=>{
     const next=revealReference(reference,level);
     setReference(next);rememberReferenceState(item.id,next);setOpenReferencePanel(panel);
@@ -246,6 +254,7 @@ function ReviewPlanDetails({item,compact=false}:{item:Partial<Review&Task>;compa
       <div><span>使用シート</span><strong>{template.sheetLabel}</strong></div>
     </div>
     <div className="review-aim"><span>今回の狙い</span><strong>{reviewAim(item)}</strong></div>
+    {item.task_origin==="linked_s_check"&&<div className="task-origin-note"><Badge tone="blue">関連S確認</Badge><div><strong>この問題自体は{hasPreviousAttempt?"既習":"初回"}確認です</strong><span>元問題：{item.source_problem_id||"記録なし"}／{item.review_goal_public||"元問題で崩れた基礎型を確認します。"}</span></div></div>}
     <div className="correction-theme"><span>修正テーマ</span><strong>{correctionTheme(item)}</strong></div>
     <div className="review-format"><strong>{reviewFormat(item)}</strong></div>
     <div className="next-actions"><span>今回やること</span><ol>{actions.map((action,index)=><li key={`${index}-${action}`}>{action}</li>)}</ol></div>
@@ -259,17 +268,18 @@ function ReviewPlanDetails({item,compact=false}:{item:Partial<Review&Task>;compa
       <div className="hint-policy"><strong>参照ルール</strong><span>{referencePolicy(item)}</span></div>
       <div className="reference-buttons">
         <button type="button" className={reference.one_line_hint?"viewed":""} onClick={()=>reveal(1,"one_line_hint")}><Eye size={14}/>{referenceButtonLabel("one_line_hint","1行ヒントを見る")}</button>
-        <button type="button" className={reference.previous_mistake?"viewed":""} onClick={()=>reveal(2,"previous_mistake")}><Eye size={14}/>{referenceButtonLabel("previous_mistake","前回ミスを見る")}</button>
-        <button type="button" className={reference.previous_mistake?"viewed":""} onClick={()=>reveal(2,"correction_rule")}><Eye size={14}/>{referenceButtonLabel("correction_rule","修正ルール例を見る")}</button>
+        {hasPreviousAttempt&&<button type="button" className={reference.previous_mistake?"viewed":""} onClick={()=>reveal(2,"previous_mistake")}><Eye size={14}/>{referenceButtonLabel("previous_mistake","前回ミスを見る")}</button>}
+        {hasPreviousAttempt&&<button type="button" className={reference.previous_mistake?"viewed":""} onClick={()=>reveal(2,"correction_rule")}><Eye size={14}/>{referenceButtonLabel("correction_rule","修正ルール例を見る")}</button>}
         {hasSavedFeedback&&<button type="button" className={reference.saved_gpt_feedback?"viewed":""} onClick={()=>reveal(3,"saved_gpt_feedback")}><Eye size={14}/>{referenceButtonLabel("saved_gpt_feedback","保存済みGPT解説を見る")}</button>}
-        {hasOfficialAnswer&&<button type="button" className={reference.official_answer?"viewed":""} onClick={()=>reveal(4,"official_answer")}><Eye size={14}/>{referenceButtonLabel("official_answer","公式解答を見る")}</button>}
+        {hasOfficialAnswer&&<button type="button" className={reference.official_answer?"viewed":""} onClick={()=>{reveal(4,"official_answer");if(item.official_answer_pdf_registered&&item.official_answer_pdf_name)void openAnswerPdf(item.official_answer_pdf_name,item.official_answer_page)}}><Eye size={14}/>{referenceButtonLabel("official_answer",item.official_answer_pdf_registered?"模範解答PDFを見る":"模範解答要約を見る")}</button>}
         <button type="button" className={reference.external_reference?"viewed":""} onClick={()=>reveal(5,"external_reference")}><Eye size={14}/>{referenceButtonLabel("external_reference","外部参照を記録")}</button>
       </div>
+      {!hasPreviousAttempt&&<div className="no-attempt-note"><span>この問題の前回記録はありません。今回は関連確認または初回確認として扱います。</span></div>}
       {openReferencePanel==="one_line_hint"&&<div className="revealed-reference hint"><div className="revealed-reference-head"><span>1行ヒント</span><button type="button" onClick={hideReference}><EyeOff size={13}/>隠す</button></div><p>{oneLineHint(item)}</p></div>}
       {openReferencePanel==="previous_mistake"&&<div className="revealed-reference mistake"><div className="revealed-reference-head"><span>前回ミスの詳細</span><button type="button" onClick={hideReference}><EyeOff size={13}/>隠す</button></div>{item.previous_error_point&&<p>{item.previous_error_point}</p>}{!item.previous_error_point&&<p>前回ミスの詳細記録はありません。</p>}</div>}
       {openReferencePanel==="correction_rule"&&<div className="revealed-reference rule"><div className="revealed-reference-head"><span>修正ルール例</span><button type="button" onClick={hideReference}><EyeOff size={13}/>隠す</button></div><p>{removeTimingExpressions(correctionRuleExample(item))}</p></div>}
       {openReferencePanel==="saved_gpt_feedback"&&hasSavedFeedback&&<div className="revealed-reference explanation"><div className="revealed-reference-head"><span>保存済みGPT解説</span><button type="button" onClick={hideReference}><EyeOff size={13}/>隠す</button></div><p>{item.previous_improvement_guidance||item.previous_required_derivation||item.previous_corrected_answer||removeTimingExpressions(item.previous_next_action)}</p></div>}
-      {openReferencePanel==="official_answer"&&hasOfficialAnswer&&<div className="revealed-reference answer"><div className="revealed-reference-head"><span>公式解答</span><button type="button" onClick={hideReference}><EyeOff size={13}/>隠す</button></div>{item.official_answer_text&&<p>{item.official_answer_text}</p>}{item.official_answer_url&&<a href={item.official_answer_url} target="_blank" rel="noreferrer">登録済み公式解答を開く</a>}</div>}
+      {openReferencePanel==="official_answer"&&hasOfficialAnswer&&<div className="revealed-reference answer"><div className="revealed-reference-head"><span>{item.official_answer_pdf_registered?"模範解答PDF":"模範解答要約"}</span><button type="button" onClick={hideReference}><EyeOff size={13}/>隠す</button></div>{item.answer_section_label&&<small>{item.answer_section_label}</small>}{item.official_answer_text&&<p>{item.official_answer_text}</p>}{item.official_answer_url&&<a href={item.official_answer_url} target="_blank" rel="noreferrer">登録済み公式解答を開く</a>}</div>}
       {openReferencePanel==="external_reference"&&<div className="revealed-reference explanation"><div className="revealed-reference-head"><span>外部参照</span><button type="button" onClick={hideReference}><EyeOff size={13}/>隠す</button></div><p>アプリ外のGPT・教材・解説を見たことを記録しました。表示を隠してから白紙で再現してください。</p></div>}
       {usedReference&&!openReferencePanel&&<div className="reference-hidden-status"><EyeOff size={14}/><span>{referenceLabels[reference.actual_reference_level]}を確認済み。参照内容は隠れています。</span></div>}
       <p className="reference-note">参照内容は何度でも開閉できます。一度見た参照段階は記録に残りますが、表示を隠してから白紙で再現してください。「前回ミス」はN・W・Cなどの補修では許可される場合があります。</p>
@@ -291,6 +301,7 @@ function ReviewPlanDetails({item,compact=false}:{item:Partial<Review&Task>;compa
       <p><b>関連S/A：</b>{item.linked_s_problem_ids?.join(" / ")||"今回の指定なし"}</p>
     </div>}
     <details><summary>詳細を見る</summary><div className="review-explanation"><span>なぜ復習するか</span><p>{item.review_reason}</p><span>詳しい手順</span><p>{item.review_instruction}</p></div>
+      {item.task_origin==="linked_s_check"&&item.source_error_summary&&<div className="source-problem-detail"><span>元問題での弱点</span><p>{item.source_error_summary}</p></div>}
       {!!item.review_steps?.length&&<ol>{item.review_steps.map((step,index)=><li key={`${index}-${step}`}>{step}</li>)}</ol>}
       <div className="related-detail"><span>関連S/A・過去問対応</span><p>{item.requires_s_check&&item.linked_s_problem_ids?.length?`関連S：${item.linked_s_problem_ids.join(" / ")}`:"今回の関連問題確認は不要です。"}</p></div>
     </details>
@@ -369,30 +380,37 @@ function PostponeReviewModal({item,initial="tomorrow",busy,close,save}:{item:Par
 function TodayView({data,busy,run,go}:{data:Bootstrap;busy:boolean;run:(a:()=>Promise<unknown>,s:string)=>void;go:(p:Page)=>void}) {
   const [reviewTask,setReviewTask]=useState<Task|null>(null);
   const [postponeTask,setPostponeTask]=useState<{item:Task;initial:ScheduleAction}|null>(null);
+  const [todayFilter,setTodayFilter]=useState<"must"|"if_time"|"tomorrow"|"completed"|"all">("must");
   const saveReview=(body:Record<string,unknown>)=>{if(!reviewTask?.id)return;const id=reviewTask.id;setReviewTask(null);
     sessionStorage.removeItem(referenceStorageKey(id));
     sessionStorage.removeItem(referenceClosedStorageKey(id));
     run(()=>post(`/api/reviews/${id}/complete`,body),"復習結果を保存し、次回間隔を再計算しました")};
   const postponeReview=(body:Record<string,unknown>,label:string)=>{if(!postponeTask)return;const item=postponeTask.item;setPostponeTask(null);
     run(()=>post(item.id&&item.review_type?`/api/reviews/${item.id}/postpone`:"/api/tasks/postpone",body),`課題を「${label}」に変更しました`)};
-  const triageGroups=data.today.warning?[
+  const allGroups=[
     {key:"must",label:"今日必ずやる",description:"K・N・過去問直結の必修Aを優先",tasks:data.today.tasks.filter(task=>task.triage==="must")},
     {key:"if_time",label:"余裕があればやる",description:"目標時間内に収まるW・C・通常課題",tasks:data.today.tasks.filter(task=>task.triage==="if_time")},
-    {key:"tomorrow",label:"明日に送る",description:"C・none・Sメンテなど優先度が低い順",tasks:data.today.tasks.filter(task=>task.triage==="tomorrow")}
-  ].filter(group=>group.tasks.length):[{key:"today",label:"今日の課題",description:"",tasks:data.today.tasks}];
+    {key:"tomorrow",label:"先送り候補",description:"C・none・Sメンテ・緊急性の低い関連S確認",tasks:data.today.tasks.filter(task=>task.triage==="tomorrow")}
+  ];
+  const triageGroups=allGroups.filter(group=>(todayFilter==="all"||todayFilter===group.key)&&group.tasks.length);
+  const summary=[
+    {key:"must",label:"必ずやる",count:data.today.triageCounts.must,minutes:data.today.triageMinutes?.must||0},
+    {key:"if_time",label:"余裕があれば",count:data.today.triageCounts.if_time,minutes:data.today.triageMinutes?.if_time||0},
+    {key:"tomorrow",label:"先送り候補",count:data.today.triageCounts.tomorrow,minutes:data.today.triageMinutes?.tomorrow||0},
+    {key:"completed",label:"完了済み",count:data.today.triageCounts.completed,minutes:data.today.completed_minutes_today}
+  ] as const;
   return <>
-    <div className="page-intro"><div><p>課題を終えたらチェックを付け、GPTの採点結果を取り込んでください。</p><button className="text-btn" onClick={()=>go("import")}><ClipboardPaste size={15}/>GPT採点結果を取り込む</button></div><div className={`load-pill ${data.today.plannedMinutes>data.today.targetMinutes?"over":""}`}><Gauge/><div><span>予定合計／目標</span><strong>{data.today.plannedMinutes} / {data.today.targetMinutes}分</strong><small>記録済み {data.today.actualMinutes}分・未完了 {data.today.remainingMinutes}分</small></div></div></div>
+    <div className="page-intro"><div><p>課題を終えたらチェックを付け、GPTの採点結果を取り込んでください。</p><button className="text-btn" onClick={()=>go("import")}><ClipboardPaste size={15}/>GPT採点結果を取り込む</button></div><div className={`load-pill ${data.today.remaining_minutes_today>data.today.target_minutes_today?"over":""}`}><Gauge/><div><span>計画／目標</span><strong>{data.today.planned_minutes_total} / {data.today.target_minutes_today}分</strong><small>完了 {data.today.completed_minutes_today}分・残り {data.today.remaining_minutes_today}分・先送り {data.today.postponed_minutes_today}分</small></div></div></div>
     {data.today.warning&&<div className="warning"><AlertTriangle/><div><strong>詰め込みすぎです</strong><p>{data.today.warning}</p></div></div>}
-    {data.today.warning&&<div className="schedule-organizer"><div><strong>予定整理</strong><span>予定超過：{data.today.plannedMinutes}分 / {data.today.targetMinutes}分</span></div><div className="triage-summary">
-      <div className="must"><span>今日必ずやる</span><strong>{data.today.triageMinutes?.must||0}分</strong></div>
-      <div className="if-time"><span>余裕があれば</span><strong>{data.today.triageMinutes?.if_time||0}分</strong></div>
-      <div className="tomorrow"><span>明日に送る</span><strong>{data.today.triageMinutes?.tomorrow||0}分</strong></div>
-    </div></div>}
+    <div className="schedule-organizer today-overview"><div><strong>今日の課題</strong><span>計画 {data.today.planned_minutes_total}分・残り {data.today.remaining_minutes_today}分</span></div><div className="triage-summary four">
+      {summary.map(item=><button type="button" className={`${item.key} ${todayFilter===item.key?"active":""}`} onClick={()=>setTodayFilter(item.key)} key={item.key}><span>{item.label}</span><strong>{item.count}件 / {item.minutes}分</strong></button>)}
+    </div><div className="today-tabs">{summary.map(item=><button className={todayFilter===item.key?"active":""} onClick={()=>setTodayFilter(item.key)} key={item.key}>{item.label}</button>)}<button className={todayFilter==="all"?"active":""} onClick={()=>setTodayFilter("all")}>すべて</button></div></div>
     {!data.today.warning&&<div className="time-guidance"><Clock3 size={16}/><span>{data.today.guidance}</span></div>}
     <section className="panel">
       <div className="table-wrap"><table><thead><tr><th>種類</th><th>問題</th><th>推奨モード</th><th>予定時間</th><th>理由</th><th/></tr></thead>
       {triageGroups.map(group=><tbody key={group.key} className={`triage-group ${group.key}`}><tr className="triage-heading"><td colSpan={6}><strong>{group.label}</strong>{group.description&&<span>{group.description}</span>}</td></tr>{group.tasks.map((t,i)=><TodayTaskRows key={`${t.problem_id}-${i}`} task={t} busy={busy} run={run} date={data.dashboard.today} onReview={setReviewTask} onPostpone={(item,initial)=>setPostponeTask({item,initial})}/>)}</tbody>)}</table></div>
-      {!data.today.tasks.length&&<Empty>今日の課題は完了しました</Empty>}
+      {todayFilter==="completed"&&<div className="completed-task-list">{data.today.completedTasks.map((task,index)=><div key={`${task.problem_id}-${index}`}><Check size={16}/><strong>{task.title}</strong><span>{task.minutes}分・{task.reason}</span></div>)}{!data.today.completedTasks.length&&<Empty>今日の完了記録はまだありません</Empty>}</div>}
+      {todayFilter!=="completed"&&!triageGroups.length&&<Empty>この区分の課題はありません</Empty>}
     </section>
     {reviewTask&&<ReviewOutcomeModal item={reviewTask} busy={busy} close={()=>setReviewTask(null)} save={saveReview}/>}
     {postponeTask&&<PostponeReviewModal item={postponeTask.item} initial={postponeTask.initial} busy={busy} close={()=>setPostponeTask(null)} save={postponeReview}/>}
@@ -470,8 +488,11 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport}:{problem:Problem;
   const [editing,setEditing]=useState<Attempt|null>(null);
   const [form,setForm]=useState<Record<string,string>>({});
   const attempts=data.attempts.filter(a=>a.problem_id===problem.problem_id);
+  const validAttempts=attempts.filter(attempt=>attemptConsistentForDisplay(attempt,problem));
   const reviews=data.reviews.filter(a=>a.problem_id===problem.problem_id);
-  const latest=attempts[0],nextReview=reviews.filter(r=>r.status!=="done").sort((a,b)=>a.due_date.localeCompare(b.due_date))[0];
+  const latest=validAttempts[0],nextReview=reviews.filter(r=>r.status!=="done").sort((a,b)=>a.due_date.localeCompare(b.due_date))[0];
+  const answer=data.answerIndex.find(item=>item.problem_id===problem.problem_id);
+  const pdfRegistered=!!answer?.pdf_file_name&&data.masterStatus.pdf_files.includes(answer.pdf_file_name);
   const related=problem.related_s_problem_ids?.length?problem.related_s_problem_ids:String(problem.linked_s_problems||"").split(";").filter(Boolean);
   const editAttempt=(attempt:Attempt)=>{
     setEditing(attempt);
@@ -498,9 +519,11 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport}:{problem:Problem;
       {latest.required_derivation&&<div><span>省略してはいけない途中計算</span><p>{latest.required_derivation}</p></div>}
       {latest.improvement_guidance&&<div><span>次回の直し方</span><p>{latest.improvement_guidance}</p></div>}
     </div></details>}
-    <div className="detail-grid"><section className="panel"><h3>問題情報</h3><dl><dt>役割</dt><dd>{problem.role}</dd><dt>難易度</dt><dd>{problem.difficulty!=null?`難${problem.difficulty}`:"—"}</dd><dt>推奨モード</dt><dd>{modes[problem.recommended_mode]}</dd><dt>関連S問題</dt><dd>{related.join(" / ")||"—"}</dd><dt>関連A問題</dt><dd>{problem.linked_a_problems||"—"}</dd><dt>関連過去問</dt><dd>{problem.linked_past_exams||"—"}</dd><dt>次回課題</dt><dd>{removeTimingExpressions(latest?.next_action)||"—"}</dd><dt>メモ</dt><dd>{problem.notes||"—"}</dd></dl></section>
+    <div className="detail-grid"><section className="panel"><h3>問題情報</h3><dl><dt>役割</dt><dd>{problem.role}</dd><dt>出題型</dt><dd>{problem.canonical_problem_type||"—"}</dd><dt>難易度</dt><dd>{problem.difficulty!=null?`難${problem.difficulty}`:"—"}</dd><dt>推奨モード</dt><dd>{modes[problem.recommended_mode]}</dd><dt>関連S問題</dt><dd>{related.join(" / ")||"—"}</dd><dt>関連A問題</dt><dd>{problem.linked_a_problems||"—"}</dd><dt>関連過去問</dt><dd>{problem.linked_past_exams||"—"}</dd><dt>次回課題</dt><dd>{removeTimingExpressions(latest?.next_action)||"—"}</dd><dt>メモ</dt><dd>{problem.notes||"—"}</dd></dl>
+      {answer?.answer_available&&(answer.answer_excerpt||pdfRegistered)&&<div className="problem-answer-index"><strong>{pdfRegistered?"模範解答PDF登録済み":"模範解答要約"}</strong><span>{answer.section_label||answer.pdf_file_name}</span>{answer.answer_excerpt&&<p>{answer.answer_excerpt}</p>}{pdfRegistered&&<button className="ghost small" onClick={()=>void openAnswerPdf(answer.pdf_file_name!,answer.page_start)}>模範解答PDFを見る</button>}</div>}
+    </section>
     <section className="panel"><h3>復習予定</h3>{nextReview?<><div className="history"><CalendarCheck/><div><strong>{nextReview.due_date}</strong><span>{reviewNames[nextReview.review_type]||nextReview.review_method}・{nextReview.status}</span></div></div><ReviewPlanDetails item={nextReview}/></>:<Empty>復習予定はありません</Empty>}</section></div>
-    <section className="panel"><div className="panel-title"><h3>解答履歴</h3><span className="muted">{attempts.length}回</span></div>{attempts.length?<div className="table-wrap"><table><thead><tr><th>日付</th><th>モード</th><th>評価</th><th>K/W/N/C</th><th>ミス</th><th>次の行動</th><th>操作</th></tr></thead><tbody>{attempts.map(a=><tr key={a.id}><td>{a.date}</td><td>{modes[a.mode]||a.mode}</td><td>{a.mark} / {a.score_label}{a.score_numeric!=null?` ${a.score_numeric}点`:""}</td><td>{(a.error_types||[a.error_type]).filter(error=>error!=="none").map(error=><ErrorBadge key={error} value={error}/>)}{!(a.error_types||[a.error_type]).some(error=>error!=="none")&&<ErrorBadge value="none"/>}</td><td>{a.error_point||"—"}</td><td>{removeTimingExpressions(a.next_action)||"—"}</td><td><div className="history-actions"><button className="small ghost" onClick={()=>editAttempt(a)}><Pencil size={13}/>編集</button><button className="small danger-button" disabled={busy} onClick={()=>removeAttempt(a)}><Trash2 size={13}/>削除</button></div></td></tr>)}</tbody></table></div>:<Empty>まだ学習記録がありません</Empty>}</section>
+    <section className="panel"><div className="panel-title"><h3>解答履歴</h3><span className="muted">{attempts.length}回</span></div>{attempts.length?<div className="table-wrap"><table><thead><tr><th>日付</th><th>モード</th><th>評価</th><th>K/W/N/C</th><th>ミス</th><th>次の行動</th><th>操作</th></tr></thead><tbody>{attempts.map(a=>{const consistent=attemptConsistentForDisplay(a,problem);return <tr key={a.id} className={!consistent?"inconsistent-record":""}><td>{a.date}{!consistent&&<small> ID要確認</small>}</td><td>{modes[a.mode]||a.mode}</td><td>{a.mark} / {a.score_label}{a.score_numeric!=null?` ${a.score_numeric}点`:""}</td><td>{(a.error_types||[a.error_type]).filter(error=>error!=="none").map(error=><ErrorBadge key={error} value={error}/>)}{!(a.error_types||[a.error_type]).some(error=>error!=="none")&&<ErrorBadge value="none"/>}</td><td>{a.error_point||"—"}</td><td>{removeTimingExpressions(a.next_action)||"—"}</td><td><div className="history-actions"><button className="small ghost" onClick={()=>editAttempt(a)}><Pencil size={13}/>編集</button><button className="small danger-button" disabled={busy} onClick={()=>removeAttempt(a)}><Trash2 size={13}/>削除</button></div></td></tr>})}</tbody></table></div>:<Empty>まだ学習記録がありません</Empty>}</section>
     {editing&&<Modal title="解答履歴を編集" close={()=>setEditing(null)}><form className="form-grid analysis-edit-form" onSubmit={saveEdit}>
       <Field label="問題"><input value={editing.problem_id} readOnly/></Field>
       <Field label="学習日"><input type="date" value={form.date} onChange={event=>setForm({...form,date:event.target.value})}/></Field>
@@ -579,13 +602,21 @@ function ImportView({problems,run,busy}:{problems:Problem[];run:(a:()=>Promise<u
 
 function ReviewsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean}) {
   const [filter,setFilter]=useState("open"); const pmap=Object.fromEntries(data.problems.map(p=>[p.problem_id,p]));
+  const answerMap=Object.fromEntries(data.answerIndex.map(answer=>[answer.problem_id,answer]));
   const [selectedReview,setSelectedReview]=useState<Review|null>(null);
   const [postponeReviewItem,setPostponeReviewItem]=useState<{item:Review;initial:ScheduleAction}|null>(null);
   const rows=data.reviews.filter(r=>filter==="all"||(filter==="open"?["pending","overdue","deferred"].includes(r.status):r.status===filter))
     .sort((a,b)=>a.due_date.localeCompare(b.due_date)||Number(a.manual_order||0)-Number(b.manual_order||0)||a.id-b.id);
   const reviewPromptItem=(review:Review)=>{
-    const source=data.attempts.find(attempt=>attempt.id===review.generated_from_attempt_id),problem=pmap[review.problem_id];
-    return {...review,title:problem?.display_label||problem?.title||review.problem_id,theme:problem?.theme||"",
+    const originSource=data.attempts.find(attempt=>attempt.id===review.generated_from_attempt_id),problem=pmap[review.problem_id];
+    const linkedS=review.task_origin==="linked_s_check"||review.review_type==="s_check";
+    const source=linkedS?data.attempts.find(attempt=>attempt.problem_id===review.problem_id&&attemptConsistentForDisplay(attempt,problem)):originSource;
+    const answer=answerMap[review.problem_id];
+    return {...review,task_origin:linkedS?"linked_s_check":review.task_origin||(source?"review_attempt":"first_attempt"),
+      source_problem_id:linkedS?(review.source_problem_id||originSource?.problem_id):review.source_problem_id,
+      attempt_exists:!!source,review_goal_public:linkedS?"元問題で崩れた基礎型を確認する":review.review_goal_public,
+      source_error_summary:linkedS?originSource?.error_point:"",
+      title:problem?.display_label||problem?.title||review.problem_id,theme:problem?.theme||"",
       mode:review.requires_full_answer?"exam_90min":review.review_type==="main_calc_retry"?"main_calc":
         ["careless_check","light_check"].includes(review.review_type)||
         review.review_type==="s_check"&&(/3分|5分チェック|5分骨格確認/.test(review.review_method||""))?"check":"skeleton",
@@ -594,7 +625,10 @@ function ReviewsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>
       previous_improvement_guidance:source?.improvement_guidance||"",previous_required_derivation:source?.required_derivation||"",
       previous_corrected_answer:source?.corrected_answer||"",
       has_saved_gpt_feedback:!!(source?.improvement_guidance||source?.required_derivation||source?.corrected_answer||source?.result_summary),
-      official_answer_text:problem?.official_answer||"",official_answer_url:problem?.official_answer_url||""};
+      official_answer_text:answer?.answer_available&&answer.answer_excerpt?answer.answer_excerpt:problem?.official_answer||"",
+      official_answer_url:problem?.official_answer_url||"",official_answer_pdf_name:answer?.pdf_file_name||"",
+      official_answer_pdf_registered:!!answer?.pdf_file_name&&data.masterStatus.pdf_files.includes(answer.pdf_file_name),
+      answer_section_label:answer?.section_label||"",official_answer_page:answer?.page_start??null};
   };
   const saveReview=(body:Record<string,unknown>)=>{if(!selectedReview)return;const id=selectedReview.id;setSelectedReview(null);sessionStorage.removeItem(referenceStorageKey(id));sessionStorage.removeItem(referenceClosedStorageKey(id));run(()=>post(`/api/reviews/${id}/complete`,body),"復習結果を保存し、次回間隔を再計算しました")};
   const postpone=(body:Record<string,unknown>,label:string)=>{if(!postponeReviewItem)return;const id=postponeReviewItem.item.id;setPostponeReviewItem(null);
@@ -752,6 +786,9 @@ function AnswerSheetsView(){
 function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean}) {
   const [examDate,setExamDate]=useState(data.settings.exam_date);
   const [dailyMinutes,setDailyMinutes]=useState(String(data.settings.daily_study_minutes||150));
+  const [problemPreview,setProblemPreview]=useState<{raw:unknown;version:string;added:number;changed:number;unchanged:number;total:number}|null>(null);
+  const [answerPreview,setAnswerPreview]=useState<{raw:unknown;version:string;total:number}|null>(null);
+  const [masterError,setMasterError]=useState("");
   const saveBlob=(content:string,name:string,type:string)=>{
     const url=URL.createObjectURL(new Blob([content],{type}));const a=document.createElement("a");
     a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
@@ -761,11 +798,47 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
   const restore=(file:File)=>{
     run(async()=>{const parsed=JSON.parse(await file.text());await restoreBackup(parsed)},"バックアップを復元しました");
   };
+  const previewProblemMaster=async(file:File)=>{
+    try{const raw=JSON.parse(await file.text()),parsed=parseProblemMasterPayload(raw),diff=masterDiff(data.problems,parsed.problems);
+      setProblemPreview({raw,version:parsed.version,...diff});setMasterError("");
+    }catch(error){setProblemPreview(null);setMasterError((error as Error).message)}
+  };
+  const previewAnswerIndex=async(file:File)=>{
+    try{const raw=JSON.parse(await file.text()),parsed=parseAnswerIndexPayload(raw);
+      setAnswerPreview({raw,version:parsed.version,total:parsed.answers.length});setMasterError("");
+    }catch(error){setAnswerPreview(null);setMasterError((error as Error).message)}
+  };
+  const downloadMaster=async(kind:"problem"|"answer")=>{
+    const data=kind==="problem"?await problemMasterExport():await answerIndexExport();
+    saveBlob(JSON.stringify(data,null,2),kind==="problem"?"problem_master.json":"answer_index.json","application/json");
+  };
   return <><div className="settings-grid"><section className="panel"><div className="setting-icon"><Download/></div><h3>バックアップ・書き出し</h3><p>iPadの「ファイル」に定期的に保存してください。機種変更時にも復元できます。</p><div className="button-row"><button className="primary" onClick={downloadJson}><Download size={16}/>全データ JSON</button><button className="ghost" onClick={()=>downloadCsv("attempts")}>学習履歴 CSV</button><button className="ghost" onClick={()=>downloadCsv("problems")}>問題マスター CSV</button></div>
       <label className={`restore-button ${busy?"disabled":""}`}><Database size={16}/>JSONバックアップを復元<input disabled={busy} type="file" accept="application/json,.json" onChange={e=>{const file=e.target.files?.[0];if(file)restore(file);e.target.value=""}}/></label>
     </section>
     <section className="panel"><div className="setting-icon"><Database/></div><h3>iPad内に保存</h3><p>記録はSafari／ホーム画面アプリ内のIndexedDBに保存されます。外部APIやクラウドには送信しません。</p><dl><dt>問題</dt><dd>{data.problems.length}件</dd><dt>解答履歴</dt><dd>{data.attempts.length}件</dd><dt>復習予定</dt><dd>{data.reviews.length}件</dd></dl></section>
     <section className="panel"><div className="setting-icon"><CalendarCheck/></div><h3>試験日と毎日の学習時間</h3><p>試験日から学習段階を判定し、毎日の目標時間に合わせて課題数を調整します。初期値は150分です。</p><Field label="統計検定1級の受験日"><input type="date" value={examDate} onChange={event=>setExamDate(event.target.value)}/></Field><Field label="1日の最低学習時間（分）"><input type="number" min="30" max="600" value={dailyMinutes} onChange={event=>setDailyMinutes(event.target.value)}/></Field><button className="primary setting-save" disabled={busy} onClick={()=>run(()=>post("/api/settings",{exam_date:examDate,daily_study_minutes:Number(dailyMinutes||150)}),"試験日と学習時間を保存し、計画を調整しました")}>保存する</button></section></div>
+    <section className="panel master-import-panel"><div className="panel-title"><div><span className="eyebrow">CANONICAL DATA</span><h3>問題マスター取り込み</h3></div><Badge tone="green">PDFではなくJSONが正本</Badge></div>
+      <p>ChatGPTで確認済みの <code>problem_master.json</code> と <code>answer_index.json</code> を取り込みます。PDF本体は判別には使いません。</p>
+      {masterError&&<div className="match-warning"><AlertTriangle size={17}/><span>{masterError}</span></div>}
+      <div className="master-import-grid">
+        <article><h4>問題マスター</h4><dl><dt>登録済み</dt><dd>{data.masterStatus.problem_count}件</dd><dt>バージョン</dt><dd>{data.masterStatus.problem_version}</dd><dt>最終更新</dt><dd>{data.masterStatus.problem_updated_at?new Date(data.masterStatus.problem_updated_at).toLocaleString("ja-JP"):"未登録"}</dd></dl>
+          <label className={`restore-button ${busy?"disabled":""}`}>problem_master.jsonを選択<input disabled={busy} type="file" accept=".json,application/json" onChange={event=>{const file=event.target.files?.[0];if(file)void previewProblemMaster(file);event.target.value=""}}/></label>
+          {problemPreview&&<div className="master-diff"><strong>{problemPreview.version}・{problemPreview.total}件</strong><span>追加 {problemPreview.added}／変更 {problemPreview.changed}／同一 {problemPreview.unchanged}</span><button className="primary small" disabled={busy} onClick={()=>{const preview=problemPreview;setProblemPreview(null);run(()=>post("/api/master/problem/import",preview.raw),"問題マスターを取り込み、既存データを診断しました")}}>差分を反映</button></div>}
+          <button className="ghost small" onClick={()=>downloadMaster("problem")}><Download size={14}/>現在の正本を書き出す</button>
+        </article>
+        <article><h4>模範解答索引</h4><dl><dt>登録済み</dt><dd>{data.masterStatus.answer_count}件</dd><dt>バージョン</dt><dd>{data.masterStatus.answer_version}</dd><dt>PDF本体</dt><dd>{data.masterStatus.pdf_files.length?`${data.masterStatus.pdf_files.length}件・端末内`:"未登録"}</dd></dl>
+          <label className={`restore-button ${busy?"disabled":""}`}>answer_index.jsonを選択<input disabled={busy} type="file" accept=".json,application/json" onChange={event=>{const file=event.target.files?.[0];if(file)void previewAnswerIndex(file);event.target.value=""}}/></label>
+          {answerPreview&&<div className="master-diff"><strong>{answerPreview.version}・{answerPreview.total}件</strong><span>要約・キーワードをスキーマ確認済み</span><button className="primary small" disabled={busy} onClick={()=>{const preview=answerPreview;setAnswerPreview(null);run(()=>post("/api/master/answer/import",preview.raw),"模範解答索引を取り込みました")}}>索引を反映</button></div>}
+          <button className="ghost small" onClick={()=>downloadMaster("answer")}><Download size={14}/>現在の索引を書き出す</button>
+        </article>
+      </div>
+      <div className="local-pdf-box"><div><strong>模範解答PDF（任意）</strong><span>GitHubには送らず、このiPadのIndexedDB内だけに保存します。</span></div><label className={`restore-button ${busy?"disabled":""}`}><BookOpen size={15}/>PDFを端末内に登録<input disabled={busy} type="file" accept="application/pdf,.pdf" onChange={event=>{const file=event.target.files?.[0];if(file)run(()=>saveAnswerPdf(file),`${file.name}をこのiPad内に保存しました`);event.target.value=""}}/></label></div>
+    </section>
+    <section className="panel diagnostic-panel"><div className="panel-title"><div><span className="eyebrow">CONSISTENCY</span><h3>既存データの整合性診断</h3></div><Badge tone={data.masterStatus.diagnostics.some(item=>item.severity==="critical")?"red":data.masterStatus.diagnostics.length?"orange":"green"}>{data.masterStatus.diagnostics.length}件</Badge></div>
+      {!data.masterStatus.diagnostics.length?<p>problem_master / answer_index と学習履歴は整合しています。</p>:<div className="diagnostic-list">{data.masterStatus.diagnostics.slice(0,20).map(item=><div className={item.severity} key={item.id}><strong>{item.problem_id||item.record_type}</strong><span>{item.message}</span><small>{item.repairable?"自動修復可能":"ユーザー確認が必要"}</small></div>)}</div>}
+      <button className="primary" disabled={busy} onClick={()=>run(()=>post("/api/master/repair",{}),"自動修復可能な不整合を修復しました")}>整合性を再診断・修復</button>
+      {!!data.masterStatus.import_history.length&&<details><summary>取り込み履歴</summary><ul>{data.masterStatus.import_history.map((row,index)=><li key={index}>{row}</li>)}</ul></details>}
+    </section>
     <section className="panel install-guide"><div className="setting-icon"><Plus/></div><div><h3>iPadへインストール</h3><p>Safariで公開URLを開き、共有ボタン →「ホーム画面に追加」を選びます。初回表示後はオフラインでも起動できます。</p></div><Badge tone="green">オフライン対応</Badge></section>
     <section className="panel"><div className="panel-title"><div><span className="eyebrow">INITIAL ROADMAP</span><h3>A問題ロードマップ</h3></div><Badge>{data.roadmap.length}題</Badge></div><div className="roadmap">{Object.entries(data.roadmap.reduce((acc,r)=>{(acc[r.block_name]??=[]).push(r);return acc},{} as Record<string,typeof data.roadmap>)).map(([block,rows])=><div className="roadmap-block" key={block}><h4>{block}</h4><div>{rows.map(r=><span key={r.id}><b>{r.order_index}</b>{r.problem_id}<small>{modes[r.expected_mode]}・{r.load_score}</small></span>)}</div></div>)}</div></section>
   </>
