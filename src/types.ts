@@ -29,6 +29,9 @@ export type MasterImportLog = {
 export type DataDiagnostic = {
   id:string; severity:"info"|"warning"|"critical"; problem_id?:string; record_type:string;
   message:string; suggested_problem_id?:string; repairable:boolean;
+  review_id?:number; source_problem_id?:string; target_problem_id?:string;
+  current_related_ids?:string[]; canonical_related_ids?:string[];
+  recommended_action?:"repair"|"remove"|"add_to_master"|"hold"|"ignore";
 };
 export type Attempt = {
   id:number; problem_id:string; date:string; mode:string; time_minutes:number; mark:string;
@@ -69,6 +72,11 @@ export type Review = {
   postponed_at?:string; postponed_to?:string; postpone_reason?:string; triage_override?:"must";
   task_origin?:"first_attempt"|"review_attempt"|"linked_s_check"|"related_drill"|"past_exam_followup";
   source_problem_id?:string; attempt_exists?:boolean; review_goal_public?:string; source_error_summary?:string;
+};
+export type TodayPlanSnapshot = {
+  date:string;task_ids:string[];start_of_day_planned_minutes:number;
+  initial_bucket:Record<string,"must"|"if_time"|"tomorrow">;
+  initial_estimated_minutes:Record<string,number>;tasks:Task[];created_at:string;
 };
 export type WeakNote = {
   id:number; date:string; problem_id:string; error_type:string; theme:string; mistake:string;
@@ -127,6 +135,8 @@ export type Bootstrap = {
     triageMinutes?:{must:number;if_time:number;tomorrow:number};
     planned_minutes_total:number;completed_minutes_today:number;remaining_minutes_today:number;
     postponed_minutes_today:number;target_minutes_today:number;
+    start_of_day_planned_minutes:number;active_remaining_minutes:number;
+    postpone_candidate_minutes:number;active_total_if_done:number;
     triageCounts:{must:number;if_time:number;tomorrow:number;completed:number};
     completedTasks:Task[]};
 };

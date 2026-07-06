@@ -1,5 +1,5 @@
 import Dexie, { type EntityTable } from "dexie";
-import type { AnswerIndexEntry, Attempt, Bootstrap, CorrectionLog, DataDiagnostic, MasterImportLog, PastSession, Problem, ProblemAlias, Review, Roadmap, StudyUpdate, Task, WeakNote } from "./types";
+import type { AnswerIndexEntry, Attempt, Bootstrap, CorrectionLog, DataDiagnostic, MasterImportLog, PastSession, Problem, ProblemAlias, Review, Roadmap, StudyUpdate, Task, TodayPlanSnapshot, WeakNote } from "./types";
 import { japaneseizeMathText } from "./mathJapanese.ts";
 import { analyzeWeaknesses } from "./weaknessAnalytics.ts";
 import { createAdaptiveReviewPlan, createAttemptReviewPlan, createPastReviewPlan, createSReviewPlan, enforceReviewEvidence, normalizedErrors, type ReviewOutcome, type ReviewPlan, type SState } from "./reviewRules.ts";
@@ -7,12 +7,13 @@ import { postponedDueDate } from "./reviewScheduling.ts";
 import { applyWeakNoteQuizResult } from "./weakNoteQuiz.ts";
 import { selectMixedPractice } from "./studyScheduler.ts";
 import { triageTodayTasks } from "./studyTriage.ts";
+import { summarizeTodayTime } from "./todayPlan.ts";
 import { removeTimingExpressions, sanitizeStudyUpdateTiming } from "./reviewTiming.ts";
 import { buildProgressPlan, daysUntilExam } from "./studyProgress.ts";
 import { CHAPTER_META, officialProblemEntries, PAST_EXAM_YEAR_ORDER, STRATEGY_A_PLUS_ORDER, STRATEGY_S_ORDER, strategyRankFor } from "./officialMaster.ts";
 import { REVIEW_RUBRIC_VERSION } from "./gradingPrompt.ts";
 import { allowedReferenceLevel, referenceDecision, type ReferenceLevel } from "./reviewExperience.ts";
-import { applyCanonicalMaster, parseAliasesPayload, parseAnswerIndexPayload, parseIntegratedMasterPayload, parseProblemMasterPayload } from "./masterData.ts";
+import { applyCanonicalMaster, parseAliasesPayload, parseAnswerIndexPayload, parseIntegratedMasterPayload, parseProblemMasterPayload, relatedSIntegrity } from "./masterData.ts";
 
 type SMemory = { problem_id:string; state:"stable"|"check"|"forgotten"|"collapsed"; last_touched?:string; k_trigger_count:number };
 type StoredAttempt = Attempt;
@@ -389,6 +390,7 @@ const repairRules:[string,string[],string[]][] = [
 
 const loadFor=(mode:string)=>({check:.2,skeleton:.5,main_calc:.8,full:1.2,scan:.6,exam_90min:3}[mode]??.5);
 const todayString=()=>new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Tokyo",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
+const taskSnapshotId=(task:Task)=>task.id&&task.review_type?`review:${task.id}`:`task:${task.problem_id}:${task.kind}`;
 const addDays=(date:string,days:number)=>{
   const d=new Date(`${date}T12:00:00`);d.setDate(d.getDate()+Number(days));
   return new Intl.DateTimeFormat("sv-SE",{year:"numeric",month:"2-digit",day:"2-digit"}).format(d);
@@ -847,6 +849,7 @@ async function postponeReview(id:number,body:Record<string,unknown>){
     postponed_at:postponedAt,postponed_to:unscheduled?"unscheduled":dueDate,
     postpone_reason:String(body.postpone_reason||"手動調整")
   });
+  if(isToday) await db.meta.delete(`today-plan-snapshot:${today}`);
 }
 
 async function postponeTask(body:Record<string,unknown>){
@@ -869,6 +872,7 @@ async function postponeTask(body:Record<string,unknown>){
     error_type:String(body.error_type||"")
   };
   await db.meta.put({key,value:JSON.stringify(record)});
+  if(isToday) await db.meta.delete(`today-plan-snapshot:${today}`);
 }
 
 function suggest(theme=""){
@@ -970,13 +974,27 @@ async function diagnoseData():Promise<DataDiagnostic[]>{
   }
   for(const review of reviews){
     const problem=pmap.get(review.problem_id),source=attempts.find(attempt=>attempt.id===review.generated_from_attempt_id);
+    if(review.status==="ignored") continue;
     if(!problem) diagnostics.push({id:`review-${review.id}`,severity:"critical",problem_id:review.problem_id,record_type:"review",message:"復習の問題IDが problem_master に存在しません。",repairable:false});
     if(review.task_origin==="review_attempt"&&!attempts.some(attempt=>attempt.problem_id===review.problem_id))
       diagnostics.push({id:`review-origin-${review.id}`,severity:"warning",problem_id:review.problem_id,record_type:"review",message:"履歴がないのに review_attempt になっています。",repairable:true});
     if(review.review_type==="s_check"){
-      const sourceProblem=source&&pmap.get(source.problem_id),validLinks=sourceProblem?.related_s_problem_ids||list(sourceProblem?.linked_s_problems||"");
-      if(sourceProblem&&!validLinks.includes(review.problem_id))
-        diagnostics.push({id:`invalid-link-${review.id}`,severity:"critical",problem_id:review.problem_id,record_type:"linked_s_check",message:`${source.problem_id} からの関連S指定が problem_master と矛盾しています。`,repairable:true});
+      const sourceId=review.source_problem_id||source?.problem_id||"",sourceProblem=pmap.get(sourceId);
+      const validLinks=[...new Set([...(sourceProblem?.related_s_problem_ids||[]),...list(sourceProblem?.linked_s_problems||"")])];
+      const integrity=relatedSIntegrity(sourceId,review.problem_id,validLinks);
+      if(integrity.state==="self_reference") diagnostics.push({
+        id:`self-link-${review.id}`,severity:"critical",problem_id:review.problem_id,record_type:"linked_s_check",
+        review_id:review.id,source_problem_id:sourceId,target_problem_id:review.problem_id,
+        current_related_ids:[review.problem_id],canonical_related_ids:validLinks,
+        message:`${sourceId} から同じ問題への自己参照です。`,repairable:true,recommended_action:"remove"
+      });
+      else if(sourceProblem&&integrity.state==="id_review_needed") diagnostics.push({
+        id:`invalid-link-${review.id}`,severity:"critical",problem_id:review.problem_id,record_type:"linked_s_check",
+        review_id:review.id,source_problem_id:sourceId,target_problem_id:review.problem_id,
+        current_related_ids:[review.problem_id],canonical_related_ids:validLinks,
+        message:`${sourceId} からの関連S指定が problem_master と矛盾しています。`,
+        repairable:false,recommended_action:"hold"
+      });
     }
   }
   for(const note of notes){
@@ -999,6 +1017,16 @@ async function diagnoseData():Promise<DataDiagnostic[]>{
 async function repairDataIntegrity(silent=false){
   const [problems,attempts,reviews,notes]=await Promise.all([db.problems.toArray(),db.attempts.toArray(),db.reviews.toArray(),db.weakNotes.toArray()]);
   const pmap=new Map(problems.map(problem=>[problem.problem_id,problem]));
+  let selfReferencesRemoved=0;
+  for(const problem of problems){
+    const related=[...new Set([...(problem.related_s_problem_ids||[]),...list(problem.linked_s_problems)])];
+    if(related.includes(problem.problem_id)){
+      const cleaned=related.filter(problemId=>problemId!==problem.problem_id);
+      await db.problems.update(problem.problem_id,{related_s_problem_ids:cleaned,linked_s_problems:cleaned.join(";")});
+      problem.related_s_problem_ids=cleaned;problem.linked_s_problems=cleaned.join(";");
+      selfReferencesRemoved++;
+    }
+  }
   for(const note of notes){
     const problem=pmap.get(note.problem_id);
     if(problem&&note.theme!==problem.theme) await db.weakNotes.update(note.id,{theme:problem.theme});
@@ -1007,13 +1035,55 @@ async function repairDataIntegrity(silent=false){
     const ownAttempts=attempts.filter(attempt=>attempt.problem_id===review.problem_id);
     const source=attempts.find(attempt=>attempt.id===review.generated_from_attempt_id);
     if(review.review_type==="s_check"){
-      const sourceProblem=source&&pmap.get(source.problem_id),validLinks=sourceProblem?.related_s_problem_ids||list(sourceProblem?.linked_s_problems||"");
-      if(sourceProblem&&!validLinks.includes(review.problem_id)&&review.status!=="done"){await db.reviews.delete(review.id);continue}
-      await db.reviews.update(review.id,{task_origin:"linked_s_check",source_problem_id:source?.problem_id,
+      const sourceId=review.source_problem_id||source?.problem_id||"",sourceProblem=pmap.get(sourceId);
+      const validLinks=[...new Set([...(sourceProblem?.related_s_problem_ids||[]),...list(sourceProblem?.linked_s_problems||"")])];
+      const integrity=relatedSIntegrity(sourceId,review.problem_id,validLinks);
+      if(integrity.state==="self_reference"&&review.status!=="done"){
+        if(sourceProblem){
+          const withoutSelf=validLinks.filter(problemId=>problemId!==review.problem_id);
+          await db.problems.update(sourceProblem.problem_id,{related_s_problem_ids:withoutSelf,linked_s_problems:withoutSelf.join(";")});
+        }
+        await db.reviews.delete(review.id);selfReferencesRemoved++;continue;
+      }
+      const invalid=!!sourceProblem&&integrity.state==="id_review_needed";
+      await db.reviews.update(review.id,{status:review.status==="ignored"?"ignored":invalid&&review.status!=="done"?"id_review_needed":review.status==="id_review_needed"?"pending":review.status,
+        task_origin:"linked_s_check",source_problem_id:sourceId,
         attempt_exists:ownAttempts.length>0,review_goal_public:"元問題で崩れた基礎型を確認する"});
     }else await db.reviews.update(review.id,{task_origin:ownAttempts.length?"review_attempt":"first_attempt",attempt_exists:ownAttempts.length>0});
   }
+  if(selfReferencesRemoved) await appendImportHistory("自己参照のため削除","integrity-repair",selfReferencesRemoved);
   if(!silent) await appendImportHistory("整合性修復","manual",reviews.length+notes.length);
+  const diagnostics=await diagnoseData();
+  return {diagnostics,self_references_removed:selfReferencesRemoved,remaining_review_needed:diagnostics.filter(item=>item.recommended_action==="hold").length};
+}
+
+async function resolveDiagnostic(body:Record<string,unknown>){
+  const reviewId=Number(body.review_id),action=String(body.action||"hold");
+  const review=await db.reviews.get(reviewId);
+  if(!review||review.review_type!=="s_check") throw new Error("対象の関連S確認が見つかりません");
+  const sourceId=review.source_problem_id||(await db.attempts.get(review.generated_from_attempt_id))?.problem_id||"";
+  const source=sourceId?await db.problems.get(sourceId):undefined;
+  if(action==="remove"||action==="recommended"){
+    if(source){
+      const related=[...new Set([...(source.related_s_problem_ids||[]),...list(source.linked_s_problems)])].filter(problemId=>problemId!==review.problem_id);
+      await db.problems.update(source.problem_id,{related_s_problem_ids:related,linked_s_problems:related.join(";")});
+    }
+    await db.reviews.delete(reviewId);
+    await appendImportHistory("関連S指定を削除",`${sourceId}→${review.problem_id}`,1);
+  }else if(action==="add_to_master"){
+    if(!source) throw new Error("元問題が problem_master にありません");
+    if(source.problem_id===review.problem_id) throw new Error("自己参照は problem_master に追加できません");
+    const related=[...new Set([...(source.related_s_problem_ids||[]),...list(source.linked_s_problems),review.problem_id])];
+    await db.problems.update(source.problem_id,{related_s_problem_ids:related,linked_s_problems:related.join(";")});
+    await db.reviews.update(reviewId,{status:"pending",source_problem_id:sourceId});
+    await appendImportHistory("problem_master に関連Sを追加",`${sourceId}→${review.problem_id}`,1);
+  }else if(action==="ignore"){
+    await db.reviews.update(reviewId,{status:"ignored"});
+    await appendImportHistory("関連S矛盾を無視",`${sourceId}→${review.problem_id}`,1);
+  }else{
+    await db.reviews.update(reviewId,{status:"id_review_needed",source_problem_id:sourceId});
+    await appendImportHistory("ID要確認に保留",`${sourceId}→${review.problem_id}`,1);
+  }
   return {diagnostics:await diagnoseData()};
 }
 
@@ -1248,11 +1318,52 @@ async function bootstrap():Promise<Bootstrap>{
       postponed_at:String(record.postponed_at||""),postponed_to:String(record.postponed_to||""),
       postpone_reason:String(record.postpone_reason||""),postpone_count:Number(record.postpone_count||0)};
   });
-  const triage=triageTodayTasks(baseTasks,settings.daily_study_minutes,problems,today);
-  const tasks=triage.tasks;
-  const totalLoad=Math.round(tasks.filter(task=>!task.checked).reduce((sum,x)=>sum+x.load,0)*10)/10;
-  const remainingMinutes=tasks.filter(task=>!task.checked).reduce((sum,task)=>sum+task.minutes,0);
+  const generatedTriage=triageTodayTasks(baseTasks,settings.daily_study_minutes,problems,today);
+  const snapshotKey=`today-plan-snapshot:${today}`;
+  let snapshot:TodayPlanSnapshot|null=null;
+  const storedSnapshot=metaEntries.find(entry=>entry.key===snapshotKey)?.value;
+  if(storedSnapshot) try{snapshot=JSON.parse(storedSnapshot) as TodayPlanSnapshot}catch{snapshot=null}
+  if(!snapshot){
+    const snapshotTasks=generatedTriage.tasks.map(task=>({...task,checked:false}));
+    snapshot={
+      date:today,task_ids:snapshotTasks.map(taskSnapshotId),
+      start_of_day_planned_minutes:snapshotTasks.reduce((sum,task)=>sum+task.minutes,0),
+      initial_bucket:Object.fromEntries(snapshotTasks.map(task=>[taskSnapshotId(task),task.triage||"tomorrow"])),
+      initial_estimated_minutes:Object.fromEntries(snapshotTasks.map(task=>[taskSnapshotId(task),task.minutes])),
+      tasks:snapshotTasks,created_at:new Date().toISOString()
+    };
+    await db.meta.put({key:snapshotKey,value:JSON.stringify(snapshot)});
+  }
+  const generatedMap=new Map(generatedTriage.tasks.map(task=>[taskSnapshotId(task),task]));
+  const reviewMap=new Map(reviews.map(review=>[review.id,review]));
+  const todayAttemptProblems=new Set(attempts.filter(attempt=>attempt.date===today).map(attempt=>attempt.problem_id));
+  const tasks=snapshot.tasks.filter(saved=>{
+    if(saved.id&&saved.review_type){
+      const review=reviewMap.get(saved.id);
+      return !!review&&["pending","overdue"].includes(review.status)&&review.due_date<=today;
+    }
+    const record=taskPostponements.get(`${saved.problem_id}:${saved.kind}`);
+    if(!record) return true;
+    const destination=String(record.postponed_to||"");
+    return destination!=="unscheduled"&&destination<=today;
+  }).map(saved=>{
+    const key=taskSnapshotId(saved),current=generatedMap.get(key),review=saved.id?reviewMap.get(saved.id):undefined;
+    const record=!saved.id?taskPostponements.get(`${saved.problem_id}:${saved.kind}`):undefined;
+    const forcedMust=review?.triage_override==="must"||record?.triage_override==="must";
+    return {...saved,...current,
+      title:pmap.get(saved.problem_id)?.display_label||pmap.get(saved.problem_id)?.title||saved.title,
+      theme:pmap.get(saved.problem_id)?.theme||saved.theme,
+      minutes:Number(snapshot!.initial_estimated_minutes[key]??saved.minutes),
+      triage:forcedMust?"must":snapshot!.initial_bucket[key]||saved.triage||"tomorrow",
+      checked:checkedKeys.has(`today-check:${today}:${saved.problem_id}:${saved.kind}`)||todayAttemptProblems.has(saved.problem_id)
+    } as Task;
+  });
+  const totalLoad=Math.round(tasks.filter(task=>!task.checked&&task.triage!=="tomorrow").reduce((sum,x)=>sum+x.load,0)*10)/10;
   const actualMinutes=attempts.filter(attempt=>attempt.date===today).reduce((sum,attempt)=>sum+Math.max(0,Number(attempt.time_minutes||0)),0);
+  const timeSummary=summarizeTodayTime(tasks,actualMinutes,settings.daily_study_minutes,snapshot.start_of_day_planned_minutes);
+  const activeRemainingMinutes=timeSummary.activeRemainingMinutes;
+  const postponeCandidateMinutes=timeSummary.postponeCandidateMinutes;
+  const remainingMinutes=activeRemainingMinutes;
   const postponedReviewMinutes=reviews.filter(review=>review.postponed_at?.startsWith(today)&&review.postponed_to!==today)
     .reduce((sum,review)=>sum+Number(review.estimated_minutes||review.duration_minutes||0),0);
   const postponedTaskMinutes=[...taskPostponements.values()].filter(record=>String(record.postponed_at||"").startsWith(today)&&String(record.postponed_to||"")!==today)
@@ -1263,15 +1374,10 @@ async function bootstrap():Promise<Bootstrap>{
     kind:"完了",reason:`${attempt.mark} ${attempt.score_text||attempt.score_label}`,mode:attempt.mode,
     minutes:Number(attempt.time_minutes||0),load:loadFor(attempt.mode),checked:true
   } as Task));
-  const plannedTotal=remainingMinutes+actualMinutes+postponedMinutes;
-  const capacityPercent=Math.round(plannedTotal/settings.daily_study_minutes*100);
-  const warning=remainingMinutes>settings.daily_study_minutes
-    ?`残り予定が目標を超えています。先送り候補を確認してください。`
-    :plannedTotal>settings.daily_study_minutes
-      ?`計画は超過していますが、残りは目標内です。`:"";
-  const guidance=remainingMinutes<settings.daily_study_minutes-15
-    ?`未完了は${remainingMinutes}分です。残り${settings.daily_study_minutes-remainingMinutes}分は弱点クイズ、解説確認、または既習A問題の混合確認に使えます。`
-    :`目標${settings.daily_study_minutes}分に対して、無理のない範囲の学習計画です。`;
+  const plannedTotal=snapshot.start_of_day_planned_minutes;
+  const activeTotalIfDone=timeSummary.activeTotalIfDone;
+  const capacityPercent=timeSummary.capacityPercent;
+  const warning=timeSummary.warning,guidance=timeSummary.guidance;
   const diagnostics=await diagnoseData();
   let importHistory:string[]=[];try{importHistory=JSON.parse(metaEntries.find(entry=>entry.key==="master_import_history")?.value||"[]")}catch{importHistory=[]}
   const masterStatus={
@@ -1289,7 +1395,13 @@ async function bootstrap():Promise<Bootstrap>{
     today:{tasks,totalLoad,plannedMinutes:plannedTotal,remainingMinutes,actualMinutes,targetMinutes:settings.daily_study_minutes,capacityPercent,warning,guidance,
       planned_minutes_total:plannedTotal,completed_minutes_today:actualMinutes,remaining_minutes_today:remainingMinutes,
       postponed_minutes_today:postponedMinutes,target_minutes_today:settings.daily_study_minutes,
-      triageMinutes:triage.minutes,triageCounts:{must:tasks.filter(t=>t.triage==="must"&&!t.checked).length,
+      start_of_day_planned_minutes:snapshot.start_of_day_planned_minutes,active_remaining_minutes:activeRemainingMinutes,
+      postpone_candidate_minutes:postponeCandidateMinutes,active_total_if_done:activeTotalIfDone,
+      triageMinutes:{
+        must:tasks.filter(task=>task.triage==="must"&&!task.checked).reduce((sum,task)=>sum+task.minutes,0),
+        if_time:tasks.filter(task=>task.triage==="if_time"&&!task.checked).reduce((sum,task)=>sum+task.minutes,0),
+        tomorrow:postponeCandidateMinutes
+      },triageCounts:{must:tasks.filter(t=>t.triage==="must"&&!t.checked).length,
         if_time:tasks.filter(t=>t.triage==="if_time"&&!t.checked).length,tomorrow:tasks.filter(t=>t.triage==="tomorrow"&&!t.checked).length,
         completed:completedTasks.length},completedTasks}} as Bootstrap;
 }
@@ -1315,6 +1427,12 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     return await importAliases(body) as T;
   } else if(path==="/api/master/repair"){
     return await repairDataIntegrity() as T;
+  } else if(path==="/api/master/diagnostic/resolve"){
+    return await resolveDiagnostic(body) as T;
+  } else if(path==="/api/today/recalculate"){
+    await db.meta.delete(`today-plan-snapshot:${todayString()}`);
+    await appendImportHistory("今日の予定を再計算","manual",1);
+    return {ok:true} as T;
   } else if(path==="/api/problems"){
     const chapter=body.chapter?Number(body.chapter):null,number=Number(body.problem_number),difficulty=body.difficulty?Number(body.difficulty):null;
     const display=body.source_type==="past_exam"?body.title:labelFor(chapter,body.category,number,difficulty);
@@ -1336,7 +1454,7 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta],
       ()=>completeReview(Number(path.split("/")[3]),body));
   } else if(/^\/api\/reviews\/\d+\/postpone$/.test(path)) {
-    await db.transaction("rw",[db.reviews],()=>postponeReview(Number(path.split("/")[3]),body));
+    await db.transaction("rw",[db.reviews,db.meta],()=>postponeReview(Number(path.split("/")[3]),body));
   } else if(path==="/api/tasks/postpone") {
     await db.transaction("rw",[db.meta],()=>postponeTask(body));
   } else if(/^\/api\/reviews\/\d+\/done$/.test(path)) {

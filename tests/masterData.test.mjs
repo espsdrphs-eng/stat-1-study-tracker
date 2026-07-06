@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   applyCanonicalMaster, consistencyScore, isProblemPack, parseAliasesPayload,
-  parseAnswerIndexPayload, parseIntegratedMasterPayload, parseProblemMasterPayload
+  parseAnswerIndexPayload, parseIntegratedMasterPayload, parseProblemMasterPayload, relatedSIntegrity
 } from "../src/masterData.ts";
 
 const rawProblems={version:"mathstat-master-v1",problems:[
@@ -77,4 +77,14 @@ test("問題パックとアプリ全体バックアップを区別する",()=>{
   assert.equal(isProblemPack({problem_master:rawProblems}),true);
   assert.equal(isProblemPack({problems:rawProblems.problems,answers:rawAnswers.answers}),true);
   assert.equal(isProblemPack({problems:rawProblems.problems,attempts:[],reviews:[],settings:{}}),false);
+});
+
+test("関連Sの自己参照は削除し、正本にない関連指定はID要確認に保留する",()=>{
+  assert.deepEqual(relatedSIntegrity("WB-6-S-01","WB-6-S-01",[]),{
+    state:"self_reference",recommended_action:"remove"
+  });
+  assert.deepEqual(relatedSIntegrity("WB-6-A-29","WB-6-S-01",[]),{
+    state:"id_review_needed",recommended_action:"hold"
+  });
+  assert.equal(relatedSIntegrity("WB-6-A-29","WB-6-S-01",["WB-6-S-01"]).state,"valid");
 });

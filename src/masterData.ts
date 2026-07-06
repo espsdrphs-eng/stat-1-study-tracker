@@ -114,6 +114,12 @@ export function isProblemPack(raw:unknown){
     .some(key=>key in root);
 }
 
+export function relatedSIntegrity(sourceProblemId:string,targetProblemId:string,canonicalRelatedIds:string[]){
+  if(sourceProblemId&&sourceProblemId===targetProblemId) return {state:"self_reference" as const,recommended_action:"remove" as const};
+  if(canonicalRelatedIds.includes(targetProblemId)) return {state:"valid" as const,recommended_action:"repair" as const};
+  return {state:"id_review_needed" as const,recommended_action:"hold" as const};
+}
+
 export function parseIntegratedMasterPayload(raw:unknown):IntegratedMasterPayload{
   if(!raw||typeof raw!=="object"||Array.isArray(raw)) throw new Error("統合JSONのルートはオブジェクトにしてください");
   const root=raw as Record<string,unknown>,version=String(root.version||root.pack_version||root.name||"stat1_problem_pack");

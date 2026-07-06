@@ -85,7 +85,7 @@ export default function App() {
   return <div className="app-shell">
     <aside className={`sidebar ${menu?"open":""}`}>
       <div className="brand"><div className="brand-mark">1</div><div><strong>統計一級</strong><span>STUDY TRACKER</span></div><button className="mobile-close" onClick={()=>setMenu(false)}><X/></button></div>
-      <div className={`today-mini ${data.today.remaining_minutes_today>data.today.target_minutes_today?"over":""}`}><span>今日の進捗</span><strong>計画 {data.today.planned_minutes_total}分 / 目標 {data.today.target_minutes_today}分</strong><div className="load-track"><i style={{width:`${Math.min(100,data.today.capacityPercent)}%`}}/></div><small>完了 {data.today.completed_minutes_today}分</small><small>残り {data.today.remaining_minutes_today}分・先送り {data.today.postponed_minutes_today}分</small></div>
+      <div className={`today-mini ${data.today.warning?"over":""}`}><span>今日の進捗</span><strong>これから {data.today.active_remaining_minutes}分</strong><div className="load-track"><i style={{width:`${Math.min(100,data.today.capacityPercent)}%`}}/></div><small>完了 {data.today.completed_minutes_today}分・目標 {data.today.target_minutes_today}分</small><small>先送り候補 {data.today.postpone_candidate_minutes}分（実行予定外）</small></div>
       <nav>{nav.map(([key,Icon])=><button key={key} className={page===key?"active":""} onClick={()=>go(key)}><Icon size={19}/><span>{pageTitles[key]}</span>{key==="reviews"&&data.dashboard.pending>0&&<b>{data.dashboard.pending}</b>}</button>)}</nav>
       <div className="sidebar-foot"><Gauge size={17}/><div><span>2週間ペース</span><strong className={`pace-${data.dashboard.pace.label}`}>{data.dashboard.pace.label}</strong></div></div>
     </aside>
@@ -125,7 +125,7 @@ function DashboardView({data,go}:{data:Bootstrap;go:(p:Page)=>void}) {
     {data.today.warning&&<div className="warning"><AlertTriangle/><div><strong>予定時間を調整してください</strong><p>{data.today.warning}</p></div></div>}
     <section className="section-head"><div><span className="eyebrow">OVERVIEW</span><h2>今週の学習状況</h2></div><span className="muted">直近7日間</span></section>
     <div className="metrics-grid">
-      <Metric label="今日の計画" value={data.today.planned_minutes_total} unit="分" hint={`完了${data.today.completed_minutes_today}分・残り${data.today.remaining_minutes_today}分・先送り${data.today.postponed_minutes_today}分`} tone={data.today.remaining_minutes_today>data.today.target_minutes_today?"red":""}/>
+      <Metric label="今日これから" value={data.today.active_remaining_minutes} unit="分" hint={`完了${data.today.completed_minutes_today}分・先送り候補${data.today.postpone_candidate_minutes}分は除外`} tone={data.today.warning?"red":""}/>
       <Metric label="A問題進捗" value={d.weekA} unit="題" hint="今週の新規・復習"/>
       <Metric label={d.pace.phase==="foundation"?"過去問（任意）":"過去問GPT採点"} value={d.weekPast} unit="件" hint={d.pace.phase==="foundation"?"基礎期は未実施でも可":"今週の取り込み"}/>
       <Metric label="K再発" value={d.kRecurrence} unit="題" hint="直近2週間" tone={d.kRecurrence>2?"red":""}/>
@@ -381,6 +381,7 @@ function TodayView({data,busy,run,go}:{data:Bootstrap;busy:boolean;run:(a:()=>Pr
   const [reviewTask,setReviewTask]=useState<Task|null>(null);
   const [postponeTask,setPostponeTask]=useState<{item:Task;initial:ScheduleAction}|null>(null);
   const [todayFilter,setTodayFilter]=useState<"must"|"if_time"|"tomorrow"|"completed"|"all">("must");
+  const [recalculateConfirm,setRecalculateConfirm]=useState(false);
   const saveReview=(body:Record<string,unknown>)=>{if(!reviewTask?.id)return;const id=reviewTask.id;setReviewTask(null);
     sessionStorage.removeItem(referenceStorageKey(id));
     sessionStorage.removeItem(referenceClosedStorageKey(id));
@@ -400,9 +401,9 @@ function TodayView({data,busy,run,go}:{data:Bootstrap;busy:boolean;run:(a:()=>Pr
     {key:"completed",label:"完了済み",count:data.today.triageCounts.completed,minutes:data.today.completed_minutes_today}
   ] as const;
   return <>
-    <div className="page-intro"><div><p>課題を終えたらチェックを付け、GPTの採点結果を取り込んでください。</p><button className="text-btn" onClick={()=>go("import")}><ClipboardPaste size={15}/>GPT採点結果を取り込む</button></div><div className={`load-pill ${data.today.remaining_minutes_today>data.today.target_minutes_today?"over":""}`}><Gauge/><div><span>計画／目標</span><strong>{data.today.planned_minutes_total} / {data.today.target_minutes_today}分</strong><small>完了 {data.today.completed_minutes_today}分・残り {data.today.remaining_minutes_today}分・先送り {data.today.postponed_minutes_today}分</small></div></div></div>
-    {data.today.warning&&<div className="warning"><AlertTriangle/><div><strong>詰め込みすぎです</strong><p>{data.today.warning}</p></div></div>}
-    <div className="schedule-organizer today-overview"><div><strong>今日の課題</strong><span>計画 {data.today.planned_minutes_total}分・残り {data.today.remaining_minutes_today}分</span></div><div className="triage-summary four">
+    <div className="page-intro"><div><p>課題を終えたらチェックを付け、GPTの採点結果を取り込んでください。</p><div className="button-row"><button className="text-btn" onClick={()=>go("import")}><ClipboardPaste size={15}/>GPT採点結果を取り込む</button><button className="text-btn" onClick={()=>setRecalculateConfirm(true)}><RefreshCw size={15}/>今日の予定を再計算する</button></div></div><div className={`load-pill ${data.today.warning?"over":""}`}><Gauge/><div><span>今日の実行見込み／目標</span><strong>{data.today.active_total_if_done} / {data.today.target_minutes_today}分</strong><small>完了 {data.today.completed_minutes_today}分 + これから {data.today.active_remaining_minutes}分</small><small>先送り候補 {data.today.postpone_candidate_minutes}分は含めない</small></div></div></div>
+    {data.today.warning&&<div className="warning"><AlertTriangle/><div><strong>今日の実行見込みが目標を超えています</strong><p>{data.today.warning}</p></div></div>}
+    <div className="schedule-organizer today-overview"><div><strong>今日の課題</strong><span>朝の計画 {data.today.start_of_day_planned_minutes}分・これから {data.today.active_remaining_minutes}分</span></div><div className="triage-summary four">
       {summary.map(item=><button type="button" className={`${item.key} ${todayFilter===item.key?"active":""}`} onClick={()=>setTodayFilter(item.key)} key={item.key}><span>{item.label}</span><strong>{item.count}件 / {item.minutes}分</strong></button>)}
     </div><div className="today-tabs">{summary.map(item=><button className={todayFilter===item.key?"active":""} onClick={()=>setTodayFilter(item.key)} key={item.key}>{item.label}</button>)}<button className={todayFilter==="all"?"active":""} onClick={()=>setTodayFilter("all")}>すべて</button></div></div>
     {!data.today.warning&&<div className="time-guidance"><Clock3 size={16}/><span>{data.today.guidance}</span></div>}
@@ -414,6 +415,7 @@ function TodayView({data,busy,run,go}:{data:Bootstrap;busy:boolean;run:(a:()=>Pr
     </section>
     {reviewTask&&<ReviewOutcomeModal item={reviewTask} busy={busy} close={()=>setReviewTask(null)} save={saveReview}/>}
     {postponeTask&&<PostponeReviewModal item={postponeTask.item} initial={postponeTask.initial} busy={busy} close={()=>setPostponeTask(null)} save={postponeReview}/>}
+    {recalculateConfirm&&<Modal title="今日の予定を再計算する" close={()=>setRecalculateConfirm(false)}><div className="postpone-review"><p>問題マスターの補正内容に基づき、今日の予定時間と分類を再計算します。現在の今日の計画が変わります。</p><div className="form-actions"><button className="ghost" onClick={()=>setRecalculateConfirm(false)}>キャンセル</button><button className="primary" disabled={busy} onClick={()=>{setRecalculateConfirm(false);run(()=>post("/api/today/recalculate",{}),"今日の予定時間と分類を再計算しました")}}>再計算する</button></div></div></Modal>}
   </>
 }
 function TodayTaskRows({task:t,busy,run,date,onReview,onPostpone}:{task:Task;busy:boolean;run:(a:()=>Promise<unknown>,s:string)=>void;date:string;onReview:(task:Task)=>void;onPostpone:(task:Task,action:ScheduleAction)=>void}) {
@@ -605,7 +607,7 @@ function ReviewsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>
   const answerMap=Object.fromEntries(data.answerIndex.map(answer=>[answer.problem_id,answer]));
   const [selectedReview,setSelectedReview]=useState<Review|null>(null);
   const [postponeReviewItem,setPostponeReviewItem]=useState<{item:Review;initial:ScheduleAction}|null>(null);
-  const rows=data.reviews.filter(r=>filter==="all"||(filter==="open"?["pending","overdue","deferred"].includes(r.status):r.status===filter))
+  const rows=data.reviews.filter(r=>!["id_review_needed","ignored"].includes(r.status)&&(filter==="all"||(filter==="open"?["pending","overdue","deferred"].includes(r.status):r.status===filter)))
     .sort((a,b)=>a.due_date.localeCompare(b.due_date)||Number(a.manual_order||0)-Number(b.manual_order||0)||a.id-b.id);
   const reviewPromptItem=(review:Review)=>{
     const originSource=data.attempts.find(attempt=>attempt.id===review.generated_from_attempt_id),problem=pmap[review.problem_id];
@@ -870,6 +872,11 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
     const data=kind==="problem"?await problemMasterExport():await answerIndexExport();
     saveBlob(JSON.stringify(data,null,2),kind==="problem"?"problem_master.json":"answer_index.json","application/json");
   };
+  const resolveDiagnosticItem=(item:Bootstrap["masterStatus"]["diagnostics"][number],action:string,label:string)=>{
+    if(!item.review_id)return;
+    run(()=>post("/api/master/diagnostic/resolve",{review_id:item.review_id,action}),label);
+  };
+  const unresolvedLinks=data.masterStatus.diagnostics.filter(item=>item.recommended_action==="hold");
   return <><section className="panel master-import-panel master-import-primary" id="problem-master-import"><div className="panel-title"><div><span className="eyebrow">CANONICAL DATA</span><h3>問題マスター取り込み</h3></div><Badge tone="green">バックアップ復元とは別機能</Badge></div>
       <p>ChatGPTで作成した problem_master / answer_index JSON を読み込み、問題ID・テーマ・模範解答索引・GPT取り込み補正に使います。通常のバックアップ復元とは別機能です。</p>
       <div className="master-import-actions">
@@ -907,8 +914,13 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
     </section>
     <section className="panel diagnostic-panel"><div className="panel-title"><div><span className="eyebrow">CONSISTENCY</span><h3>整合性診断結果</h3></div><Badge tone={data.masterStatus.diagnostics.some(item=>item.severity==="critical")?"red":data.masterStatus.diagnostics.length?"orange":"green"}>要確認 {data.masterStatus.diagnostics.length}件</Badge></div>
       {!data.masterStatus.diagnostics.length?<p>problem_master / answer_index と学習履歴は整合しています。</p>:<>
+        {!!unresolvedLinks.length&&<div className="diagnostic-remains"><AlertTriangle size={18}/><div><strong>自動補正できる項目は修復済みです。</strong><span>残り{unresolvedLinks.length}件は、関連S指定の真偽を自動判断できないため要確認です。今日の復習予定には含めていません。</span></div></div>}
         <div className="diagnostic-summary">{data.masterStatus.diagnostics.slice(0,3).map(item=><div key={item.id}><strong>{item.problem_id||item.record_type}</strong><span>{item.message}</span></div>)}</div>
-        {showDiagnostics&&<div className="diagnostic-list">{data.masterStatus.diagnostics.slice(0,50).map(item=><div className={item.severity} key={item.id}><strong>{item.problem_id||item.record_type}</strong><span>{item.message}</span><small>{item.repairable?"problem_masterに合わせて補正":"ユーザー確認が必要"}</small></div>)}</div>}
+        {showDiagnostics&&<div className="diagnostic-list diagnostic-detail-list">{data.masterStatus.diagnostics.slice(0,50).map(item=><div className={item.severity} key={item.id}>
+          <div className="diagnostic-fields"><span>対象 problem_id</span><strong>{item.target_problem_id||item.problem_id||"—"}</strong><span>source_problem_id</span><strong>{item.source_problem_id||"—"}</strong><span>現在の関連指定</span><strong>{item.current_related_ids?.join(", ")||"—"}</strong><span>problem_master上の指定</span><strong>{item.canonical_related_ids?.join(", ")||"なし"}</strong><span>推奨処理</span><strong>{item.recommended_action==="hold"?"ID要確認として保留":item.recommended_action==="remove"?"自己参照のため削除":item.repairable?"problem_masterに合わせて補正":"個別確認"}</strong></div>
+          <p>{item.message}</p>
+          {item.review_id?<div className="diagnostic-actions"><button className="primary small" disabled={busy} onClick={()=>resolveDiagnosticItem(item,item.recommended_action==="remove"?"remove":"hold","推奨処理を適用しました")}>推奨処理を適用</button><button className="ghost small" disabled={busy} onClick={()=>resolveDiagnosticItem(item,"remove","関連S指定を削除しました")}>関連指定を削除</button><button className="ghost small" disabled={busy} onClick={()=>resolveDiagnosticItem(item,"add_to_master","problem_masterに関連Sを追加しました")}>problem_masterに追加</button><button className="ghost small" disabled={busy} onClick={()=>resolveDiagnosticItem(item,"hold","ID要確認として保留しました")}>ID要確認に送る</button><button className="ghost small" disabled={busy} onClick={()=>resolveDiagnosticItem(item,"ignore","診断項目を無視しました")}>無視する</button></div>:<small>{item.repairable?"一括補正の対象です":"ユーザー確認が必要です"}</small>}
+        </div>)}</div>}
       </>}
       <div className="button-row"><button className="primary" disabled={busy||!data.masterStatus.diagnostics.some(item=>item.repairable)} onClick={()=>run(()=>post("/api/master/repair",{}),"自動修復可能な不整合を一括補正しました")}>一括補正する</button><button className="ghost" disabled={!data.masterStatus.diagnostics.length} onClick={()=>setShowDiagnostics(true)}>個別確認する</button><button className="ghost" disabled={!data.masterStatus.diagnostics.length} onClick={()=>setShowDiagnostics(false)}>後で確認する</button></div>
       {!!data.masterStatus.import_history.length&&<details><summary>取り込み履歴</summary><ul>{data.masterStatus.import_history.map((row,index)=><li key={index}>{row}</li>)}</ul></details>}
