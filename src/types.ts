@@ -142,7 +142,8 @@ export type Bootstrap = {
     completedTasks:Task[]};
 };
 export type StudyUpdate = {
-  problem_id:string; date:string; mode:string; time_minutes?:number|string; mark:string; score_label:string;
+  problem_id:string; date:string; mode:string; time_minutes?:number|string; actual_minutes?:number|string;
+  estimated_minutes?:number|string; mark:string; score_label:string;
   error_type:string; error_point:string; next_action:string; review_after_days?:number|string;
   linked_s_problem?:string; linked_past_exam?:string; theme?:string; correction_rule?:string;
   display_label?:string; source_type?:"whitebook"|"past_exam"; category?:"S"|"A"|"past_exam";
@@ -153,7 +154,7 @@ export type StudyUpdate = {
   improvement_guidance?:string; required_derivation?:string; corrected_answer?:string;
   target_issue_resolved?:boolean; minimum_pass_condition_met?:boolean;
   resolution_evidence?:string; answer_change_summary?:string; required_work_shown?:string[];
-  primary_error_type?:string; secondary_error_type?:string; review_reason?:string;
+  primary_error_type?:string; secondary_error_type?:string; review_reason?:string; review_method?:string;
   weak_note?:{theme:string;error_type:string;mistake:string;correction_rule:string};
   weak_notes?:Array<{theme:string;error_type:string;mistake:string;correction_rule:string}>;
   s_check_suggestions?:Array<{problem_id?:string;reason?:string}>;
@@ -162,7 +163,7 @@ export type StudyUpdate = {
   grading_confidence?:number|null; rubric_version?:string; uncertain_points?:string[];
   generated_from_review_id?:number; review_outcome?:"success"|"partial"|"failed"; hint_used?:boolean;
   task_origin?:"first_attempt"|"review_attempt"|"linked_s_check"|"related_drill"|"past_exam_followup";
-  hint_level?:string; after_hint_reproduced?:boolean;
+  hint_level?:string; after_hint_reproduced?:boolean; after_reference_reproduced?:boolean;
   reference_level?:number; no_hint?:boolean; one_line_hint?:boolean; previous_mistake?:boolean;
   official_answer?:boolean; gpt_explanation?:boolean;
   allowed_reference_level?:number; actual_reference_level?:number;
@@ -176,4 +177,6 @@ export type StudyUpdate = {
   suggested_problem_id?:string; suggested_problem_label?:string; requires_problem_confirmation?:boolean;
   problem_id_confirmed?:boolean;
   answer_excerpt?:string; canonical_keywords?:string[]; canonical_problem_type?:string;
+  raw_import_data?:Record<string,unknown>; raw_time_minutes?:number|string; raw_score_label?:string;
+  raw_reference_closed_reproduction?:boolean;
 };

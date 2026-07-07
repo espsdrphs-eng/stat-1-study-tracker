@@ -53,6 +53,17 @@ function normalizeErrors(values:unknown){
     : String(values||"").toUpperCase().match(/\b[KWNC]\b/g)||[];
   return [...new Set(found)];
 }
+function inferReviewMethod(errors:string[],primary:string,days:number){
+  const normalized=[...new Set([...errors,primary].map(String).filter(Boolean))];
+  if(normalized.includes("K")||normalized.includes("N")||days<=2) return "skeleton";
+  if(normalized.includes("W")||days===3) return "main_calc";
+  return "check";
+}
+function booleanValue(value:unknown){
+  if(value==null) return undefined;
+  if(typeof value==="boolean") return value;
+  return /^(true|yes|1|はい)$/i.test(String(value).trim());
+}
 function normalizeMode(value:unknown,text:string){
   const raw=scalar(value).trim();
   if(["check","skeleton","main_calc","full","scan","exam_90min"].includes(raw)) return raw;
@@ -155,7 +166,8 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
   const relatedRaw=raw.related_s_problem_ids??raw.linked_s_problems??raw.linked_s_problem;
   const related=relatedRaw?stringArray(relatedRaw).map(canonicalProblemId):parseRelatedS(text,chapter);
   const ignored=stringArray(raw.ignored_parts??extractLine(text,/今回無視する部分/));
-  const scoreText=scalar(raw.score_text)||scalar(raw.score_label)||
+  const rawScoreLabel=scalar(raw.score_label);
+  const scoreText=scalar(raw.score_text)||rawScoreLabel||
     extractLine(text,/段階評価|総合評価/).match(/[SABC][+-]?/i)?.[0]?.toUpperCase()||"";
   const scoreMatch=text.match(/点数\s*[：:]\s*(\d+(?:\.\d+)?)\s*\/\s*(\d+)/);
   const scoreNumeric=raw.score_numeric!=null?Number(raw.score_numeric):scoreMatch?Number(scoreMatch[1]):null;
@@ -166,13 +178,17 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
   const primary=shortestError;
   const secondary=scalar(raw.secondary_error_type)||errors.find(error=>error!==primary)||"";
   const days=reviewDaysForErrors(errors);
+  const reviewMethod=scalar(raw.review_method)||inferReviewMethod(errors,primary,days);
+  const rawActualMinutes=raw.actual_minutes??raw.time_minutes;
+  const actualMinutes=rawActualMinutes==null?undefined:Number(rawActualMinutes);
   const mark=scalar(raw.mark)||markFromScore(scoreNumeric);
   const rawResultSummary=scalar(raw.result_summary)||extractLine(text,/最終結論/);
   const resultSummary=japaneseizeMathText(rawResultSummary);
   const examRank=scalar(raw.exam_selection_rank)||extractLine(text,/本番で選ぶべきか/).match(/[SABC]/i)?.[0]?.toUpperCase()||"";
   const mode=normalizeMode(raw.mode,text);
   const inferredPoint=/平均/.test(text)&&/MGF|積率母関数/.test(text)?"平均非存在とMGF非存在の示し方が答案として粗い":text.match(/最大のズレ\s*[：:]\s*([^\n]+)/)?.[1]?.trim()||"";
-  const rawErrorPoint=scalar(raw.error_point)||inferredPoint;
+  const noneResult=primary==="none"&&errors.length===0;
+  const rawErrorPoint=scalar(raw.error_point)||inferredPoint||(noneResult?"大きな問題なし":"");
   const rawNextAction=scalar(raw.next_action)||(/E\[\|X\|\]/.test(text)?"E[|X|]の発散計算を再演習し、平均の存在条件をノート化する。":"抽出内容を確認し、誤りの根拠を再演習する。");
   const errorPoint=japaneseizeMathText(rawErrorPoint);
   const nextAction=japaneseizeMathText(rawNextAction);
@@ -182,8 +198,8 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
   const improvementGuidance=japaneseizeMathText(rawImprovementGuidance);
   const requiredDerivation=japaneseizeMathText(rawRequiredDerivation);
   const correctedAnswer=japaneseizeMathText(rawCorrectedAnswer);
-  const targetIssueResolved=raw.target_issue_resolved==null?undefined:/^(true|yes|1|はい)$/i.test(scalar(raw.target_issue_resolved));
-  const minimumPassConditionMet=raw.minimum_pass_condition_met==null?undefined:/^(true|yes|1|はい)$/i.test(scalar(raw.minimum_pass_condition_met));
+  const targetIssueResolved=booleanValue(raw.target_issue_resolved);
+  const minimumPassConditionMet=booleanValue(raw.minimum_pass_condition_met);
   const resolutionEvidence=japaneseizeMathText(scalar(raw.resolution_evidence));
   const answerChangeSummary=japaneseizeMathText(scalar(raw.answer_change_summary));
   const requiredWorkShown=stringArray(raw.required_work_shown).map(japaneseizeMathText);
@@ -218,9 +234,24 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
   const confidence=[candidate,master,scoreText||scoreNumeric!=null,errors.length,themes.length].filter(Boolean).length/5;
   const gradingConfidenceRaw=raw.grading_confidence??raw.confidence;
   const gradingConfidence=gradingConfidenceRaw==null?null:Math.min(1,Number(gradingConfidenceRaw)>1?Number(gradingConfidenceRaw)/100:Number(gradingConfidenceRaw));
+  const afterReferenceReproduced=raw.after_reference_reproduced==null
+    ? booleanValue(raw.reference_closed_reproduction)
+    : booleanValue(raw.after_reference_reproduced);
+  const autoCorrectionFields=[
+    raw.time_minutes!=null&&raw.actual_minutes==null?"actual_minutes":"",
+    raw.score_label!=null&&raw.score_text==null?"score_text":"",
+    raw.reference_closed_reproduction!=null&&raw.after_reference_reproduced==null?"after_reference_reproduced":"",
+    !raw.review_method?"review_method":"",
+    !raw.main_theme&&themes.length?"main_theme":"",
+    noneResult&&!scalar(raw.error_point)?"error_point":""
+  ].filter(Boolean) as string[];
+  const mergedCorrectionFields=[...new Set([...(Array.isArray(raw.correction_fields)?raw.correction_fields.map(String):[]),...autoCorrectionFields])];
   const normalized:StudyUpdate={
     problem_id:candidate,date:scalar(raw.date)==="auto_today"||!raw.date?todayString():scalar(raw.date),
-    mode,time_minutes:raw.time_minutes==null?undefined:Number(raw.time_minutes),mark,score_label:scoreLabel(scoreText,scoreNumeric),error_type:primary,error_point:errorPoint,next_action:nextAction,
+    mode,time_minutes:actualMinutes,actual_minutes:actualMinutes,
+    raw_time_minutes:raw.time_minutes==null?undefined:raw.time_minutes as number|string,
+    raw_score_label:rawScoreLabel||undefined,
+    mark,score_label:scoreLabel(scoreText,scoreNumeric),error_type:primary,error_point:errorPoint,next_action:nextAction,
     display_label:scalar(raw.display_label)||display,source_type:master?.source_type||(candidate.startsWith("PY-")?"past_exam":"whitebook"),
     category,chapter,problem_number:problemNumber,difficulty,themes,theme:themes.join(" / "),
     related_s_problem_ids:related,linked_s_problems:related,linked_s_problem:related.join(";"),
@@ -231,8 +262,9 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
     resolution_evidence:resolutionEvidence,answer_change_summary:answerChangeSummary,required_work_shown:requiredWorkShown,
     evaluation_scope:evaluationScope,graded_parts:gradedParts,assumed_correct_parts:assumedCorrectParts,
     unresolved_carryover:unresolvedCarryover,
-    error_types:errors,primary_error_type:primary,secondary_error_type:secondary,
+    error_types:errors.length?errors:["none"],primary_error_type:primary,secondary_error_type:secondary,
     review_after_days:days,review_reason:shortestError==="none"?"ミス分類なしのため14日後":`${shortestError}が含まれるため${days}日後`,
+    review_method:reviewMethod,
     weak_note:localizedWeakNotes[0],weak_notes:localizedWeakNotes,correction_rule:localizedWeakNotes[0]?.correction_rule,source_text:text,auto_imported:true,
     s_check_suggestions:sCheckSuggestions,
     grading_confidence:Number.isFinite(gradingConfidence)?gradingConfidence:null,
@@ -248,7 +280,9 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
     reference_level:raw.reference_level==null?undefined:Number(raw.reference_level),
     allowed_reference_level:raw.allowed_reference_level==null?undefined:Number(raw.allowed_reference_level),
     actual_reference_level:raw.actual_reference_level==null?undefined:Number(raw.actual_reference_level),
-    reference_closed_reproduction:raw.reference_closed_reproduction==null?undefined:/^(true|yes|1|はい)$/i.test(scalar(raw.reference_closed_reproduction)),
+    reference_closed_reproduction:booleanValue(raw.reference_closed_reproduction),
+    after_reference_reproduced:afterReferenceReproduced,
+    raw_reference_closed_reproduction:booleanValue(raw.reference_closed_reproduction),
     no_hint:raw.no_hint==null?undefined:/^(true|yes|1|はい)$/i.test(scalar(raw.no_hint)),
     one_line_hint:raw.one_line_hint==null?undefined:/^(true|yes|1|はい)$/i.test(scalar(raw.one_line_hint)),
     previous_mistake:raw.previous_mistake==null?undefined:/^(true|yes|1|はい)$/i.test(scalar(raw.previous_mistake)),
@@ -257,7 +291,9 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
     external_reference:raw.external_reference==null?undefined:/^(true|yes|1|はい)$/i.test(scalar(raw.external_reference)),
     gpt_explanation:raw.gpt_explanation==null?undefined:/^(true|yes|1|はい)$/i.test(scalar(raw.gpt_explanation)),
     import_confidence:Math.round(confidence*100)/100,master_matched:!!master,status:"review_required",
-    main_theme:scalar(raw.main_theme)||parsedThemes[0]||"",raw_gpt_problem_id:rawCandidate,raw_gpt_theme:parsedThemes.join(" / "),
+    main_theme:scalar(raw.main_theme)||themes[0]||"",raw_gpt_problem_id:rawCandidate,raw_gpt_theme:parsedThemes.join(" / "),
+    raw_import_data:raw,
+    auto_corrected:!!raw.auto_corrected||mergedCorrectionFields.length>0,correction_fields:mergedCorrectionFields,
     math_localized:rawResultSummary!==resultSummary||rawErrorPoint!==errorPoint||rawNextAction!==nextAction||
       rawImprovementGuidance!==improvementGuidance||rawRequiredDerivation!==requiredDerivation||rawCorrectedAnswer!==correctedAnswer||
       weakNotes.some((note,index)=>note.mistake!==localizedWeakNotes[index]?.mistake||note.correction_rule!==localizedWeakNotes[index]?.correction_rule)

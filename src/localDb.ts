@@ -494,13 +494,15 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
     input=enforceReviewEvidence(input,previousErrors,input.rubric_version||REVIEW_RUBRIC_VERSION) as StudyUpdate&Record<string,unknown>;
   }
   const date=input.date||todayString();
-  const localizedErrorPoint=japaneseizeMathText(input.error_point||"");
   const localizedNextAction=japaneseizeMathText(input.next_action||"");
   const improvementGuidance=japaneseizeMathText(input.improvement_guidance||"");
   const requiredDerivation=japaneseizeMathText(input.required_derivation||"");
   const correctedAnswer=japaneseizeMathText(input.corrected_answer||"");
   const primary=input.primary_error_type||input.error_type||"none";
   const errors=input.error_types?.length?input.error_types:[primary];
+  const hasRealError=errors.some(error=>["K","W","N","C"].includes(String(error)));
+  const localizedErrorPoint=japaneseizeMathText(input.error_point||(hasRealError?"":"大きな問題なし"));
+  const actualMinutes=Number(input.actual_minutes??input.time_minutes??0);
   const actualReferenceLevel=Math.min(5,Math.max(0,Number(input.actual_reference_level??input.reference_level??(
     input.external_reference?5:input.official_answer?4:input.saved_gpt_feedback||input.gpt_explanation?3:
       input.previous_mistake?2:input.one_line_hint?1:0
@@ -510,7 +512,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
   const related=[...new Set([...(problem.related_s_problem_ids||[]),...list(problem.linked_s_problems)])];
   const id=Number(await db.attempts.add({
     id:undefined as unknown as number,problem_id:input.problem_id,date,mode:input.mode||problem.recommended_mode,
-    time_minutes:Number(input.time_minutes||0),mark:input.mark||"△",score_label:input.score_label||"B",
+    time_minutes:actualMinutes,mark:input.mark||"△",score_label:input.score_label||"B",
     error_type:primary,error_point:localizedErrorPoint,next_action:localizedNextAction,memo:String(input.memo||""),
     score_text:input.score_text||"",score_numeric:input.score_numeric??null,score_max:input.score_max??null,
     result_summary:japaneseizeMathText(input.result_summary||""),exam_selection_rank:input.exam_selection_rank||"",
@@ -559,7 +561,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
       saved_gpt_feedback:!!input.saved_gpt_feedback||!!input.gpt_explanation,
       official_answer:!!input.official_answer,external_reference:!!input.external_reference,
       gpt_explanation:!!input.saved_gpt_feedback||!!input.gpt_explanation,
-      completion_time_minutes:Number(input.time_minutes||0),completed_at:date
+      completion_time_minutes:actualMinutes,completed_at:date
     });
   }
   const attempts=(await db.attempts.where("problem_id").equals(input.problem_id).sortBy("date")).filter(x=>x.id!==id);

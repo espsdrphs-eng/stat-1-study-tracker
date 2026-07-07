@@ -193,14 +193,15 @@ export function applyCanonicalMaster(update:StudyUpdate,problem:Problem,answer:A
   const suspect=best&&best.problem.problem_id!==problem.problem_id&&best.score>=Math.max(.55,score+.18);
   const reason=fields.length?`problem_id は ${problem.problem_id} ですが、GPT由来情報と差があるため problem_master を正として補正しました。`:"problem_master と整合しています。";
   const canonicalLinks=problem.master_version?problem.related_s_problem_ids||[]:update.related_s_problem_ids||update.linked_s_problems||[];
+  const mergedFields=[...new Set([...(update.correction_fields||[]),...fields])];
   return {
     ...update,problem_id:problem.problem_id,display_label:problem.display_label,category:problem.category,
     source_type:problem.source_type,chapter:problem.chapter,problem_number:problem.problem_number,
-    theme:problem.theme,themes:[problem.theme],canonical_problem_type:problem.canonical_problem_type,
+    theme:problem.theme,main_theme:problem.theme,themes:[problem.theme],canonical_problem_type:problem.canonical_problem_type,
     canonical_keywords:problem.canonical_keywords||[],answer_excerpt:answer?.answer_excerpt||"",
     related_s_problem_ids:canonicalLinks,linked_s_problems:canonicalLinks,
     raw_gpt_problem_id:update.raw_gpt_problem_id||update.problem_id,raw_gpt_theme:rawTheme,
-    auto_corrected:fields.length>0,correction_fields:fields,corrected_problem_id:problem.problem_id,
+    auto_corrected:!!update.auto_corrected||fields.length>0,correction_fields:mergedFields,corrected_problem_id:problem.problem_id,
     corrected_theme:problem.theme,correction_reason:reason,consistency_score:score,
     suggested_problem_id:suspect?best.problem.problem_id:undefined,
     suggested_problem_label:suspect?best.problem.display_label:undefined,
