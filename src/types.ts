@@ -175,7 +175,8 @@ export type StudyUpdate = {
   auto_corrected?:boolean; correction_fields?:string[]; corrected_problem_id?:string;
   corrected_theme?:string; correction_reason?:string; consistency_score?:number;
   suggested_problem_id?:string; suggested_problem_label?:string; requires_problem_confirmation?:boolean;
-  problem_id_confirmed?:boolean;
+  problem_id_confirmed?:boolean; problem_id_source?:"yaml"|"manual"|"alias"|"text";
+  ignored_problem_candidates?:Array<{problem_id:string;reason:string}>;
   answer_excerpt?:string; canonical_keywords?:string[]; canonical_problem_type?:string;
   raw_import_data?:Record<string,unknown>; raw_time_minutes?:number|string; raw_score_label?:string;
   raw_reference_closed_reproduction?:boolean;

@@ -185,12 +185,13 @@ export function findBestProblemCandidate(update:StudyUpdate,problems:Problem[],a
 export function applyCanonicalMaster(update:StudyUpdate,problem:Problem,answer:AnswerIndexEntry|undefined,allProblems:Problem[],answers:AnswerIndexEntry[]){
   const rawTheme=String(update.main_theme||update.theme||(update.themes||[]).join(" / "));
   const score=consistencyScore(update,problem,answer);
+  const idLocked=!!update.problem_id_confirmed||["yaml","manual","alias"].includes(String(update.problem_id_source||""));
   const fields:string[]=[];
   if(update.display_label!==problem.display_label) fields.push("display_label");
   if(rawTheme&&normalizedText(rawTheme)!==normalizedText(problem.theme)) fields.push("theme");
   if(update.category!==problem.category) fields.push("type");
   const best=findBestProblemCandidate(update,allProblems,answers);
-  const suspect=best&&best.problem.problem_id!==problem.problem_id&&best.score>=Math.max(.55,score+.18);
+  const suspect=!idLocked&&best&&best.problem.problem_id!==problem.problem_id&&best.score>=Math.max(.55,score+.18);
   const reason=fields.length?`problem_id は ${problem.problem_id} ですが、GPT由来情報と差があるため problem_master を正として補正しました。`:"problem_master と整合しています。";
   const canonicalLinks=problem.master_version?problem.related_s_problem_ids||[]:update.related_s_problem_ids||update.linked_s_problems||[];
   const mergedFields=[...new Set([...(update.correction_fields||[]),...fields])];
@@ -205,6 +206,10 @@ export function applyCanonicalMaster(update:StudyUpdate,problem:Problem,answer:A
     corrected_theme:problem.theme,correction_reason:reason,consistency_score:score,
     suggested_problem_id:suspect?best.problem.problem_id:undefined,
     suggested_problem_label:suspect?best.problem.display_label:undefined,
-    requires_problem_confirmation:!update.problem_id_confirmed&&(!!suspect||score<.5),master_matched:true
+    ignored_problem_candidates:idLocked&&best&&best.problem.problem_id!==problem.problem_id
+      ?[{problem_id:best.problem.problem_id,reason:`${update.problem_id_source||"confirmed"}で確定済みのため無視`}]
+      :update.ignored_problem_candidates,
+    requires_problem_confirmation:!idLocked&&(!!suspect||score<.5),problem_id_confirmed:idLocked||update.problem_id_confirmed,
+    master_matched:true
   } as StudyUpdate;
 }

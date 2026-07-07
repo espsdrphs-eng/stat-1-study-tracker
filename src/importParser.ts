@@ -109,6 +109,21 @@ function parseRelatedS(text:string,chapter:number|null){
   }
   return [...new Set(ids)];
 }
+function stripPromptExampleSections(text:string){
+  const headings=[
+    "認識する表記例","安定した採点用プロンプト","プロンプト本文","例","example",
+    "template","使い方","入力例","出力例"
+  ];
+  const pattern=new RegExp(`^\\s*(?:${headings.map(x=>x.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")).join("|")})\\s*[:：]?\\s*$`,"i");
+  const lines=text.split(/\r?\n/),kept:string[]=[];
+  let skipping=false;
+  for(const line of lines){
+    if(pattern.test(line)){skipping=true;continue}
+    if(skipping&&/^\s*(?:study_updates?|問題|実際の問題|解答|採点結果|YAML|---|##?)(?:\s|[:：]|$)/i.test(line)) skipping=false;
+    if(!skipping) kept.push(line);
+  }
+  return kept.join("\n");
+}
 function deriveCandidate(text:string){
   const direct=text.match(/\b(?:WB-\d+-[AS]-\d+|PY-\d{4}-Q\d+)\b/i)?.[0];
   if(direct) return canonicalProblemId(direct);
@@ -150,10 +165,12 @@ function weakNoteFromText(text:string,problemId:string,primary:string,themes:str
   };
 }
 
-function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem[],answers:AnswerIndexEntry[]=[],aliases:ProblemAlias[]=[]):StudyUpdate{
-  const rawCandidate=canonicalProblemId(scalar(raw.problem_id)||deriveCandidate(text));
+function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem[],answers:AnswerIndexEntry[]=[],aliases:ProblemAlias[]=[],useTextCandidate=false):StudyUpdate{
+  const explicitProblemId=scalar(raw.problem_id).trim();
+  const rawCandidate=canonicalProblemId(explicitProblemId||(useTextCandidate?deriveCandidate(stripPromptExampleSections(text)):""));
   const alias=aliases.find(item=>item.alias.normalize("NFKC").replace(/\s/g,"").toLowerCase()===rawCandidate.normalize("NFKC").replace(/\s/g,"").toLowerCase());
   const candidate=canonicalProblemId(alias?.problem_id||rawCandidate);
+  const problemIdSource=alias?"alias":explicitProblemId?"yaml":useTextCandidate&&rawCandidate?"text":undefined;
   const master=matchMaster(candidate,problems);
   const chapter=master?.chapter??(Number(raw.chapter)||null);
   const category=(master?.category||scalar(raw.category)||(/-S-/.test(candidate)?"S":/-A-/.test(candidate)?"A":candidate.startsWith("PY-")?"past_exam":"A")) as StudyUpdate["category"];
@@ -292,6 +309,7 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
     gpt_explanation:raw.gpt_explanation==null?undefined:/^(true|yes|1|はい)$/i.test(scalar(raw.gpt_explanation)),
     import_confidence:Math.round(confidence*100)/100,master_matched:!!master,status:"review_required",
     main_theme:scalar(raw.main_theme)||themes[0]||"",raw_gpt_problem_id:rawCandidate,raw_gpt_theme:parsedThemes.join(" / "),
+    problem_id_source:problemIdSource,problem_id_confirmed:!!problemIdSource,
     raw_import_data:raw,
     auto_corrected:!!raw.auto_corrected||mergedCorrectionFields.length>0,correction_fields:mergedCorrectionFields,
     math_localized:rawResultSummary!==resultSummary||rawErrorPoint!==errorPoint||rawNextAction!==nextAction||
@@ -328,12 +346,12 @@ export function parseStudyText(text:string,problems:Problem[],answers:AnswerInde
     // GPTやコピー元がインデントを落とすと study_update が null になり、
     // 各フィールドがトップレベルへ展開される。そこも1件として受け入れる。
     if(!rows.length&&obj.problem_id) rows=[obj];
-    const updates=rows.filter(x=>x&&typeof x==="object").map(x=>normalizeUpdate(x as Record<string,unknown>,text,problems,answers,aliases));
+    const updates=rows.filter(x=>x&&typeof x==="object").map(x=>normalizeUpdate(x as Record<string,unknown>,text,problems,answers,aliases,false));
     if(updates.length) return {structured:true,updates};
   }
-  const candidate=deriveCandidate(text);
+  const candidate=deriveCandidate(stripPromptExampleSections(text));
   if(!candidate) return {structured:false,updates:[] as StudyUpdate[]};
-  return {structured:false,updates:[normalizeUpdate({},text,problems,answers,aliases)]};
+  return {structured:false,updates:[normalizeUpdate({},text,problems,answers,aliases,true)]};
 }
 
 export function applyProblemMaster(update:StudyUpdate,problem:Problem):StudyUpdate{
@@ -343,6 +361,7 @@ export function applyProblemMaster(update:StudyUpdate,problem:Problem):StudyUpda
     difficulty:problem.difficulty??null,theme:problem.theme,themes:[problem.theme],
     canonical_problem_type:problem.canonical_problem_type,canonical_keywords:problem.canonical_keywords,
     corrected_problem_id:problem.problem_id,corrected_theme:problem.theme,
-    requires_problem_confirmation:false,problem_id_confirmed:true,master_matched:true
+    suggested_problem_id:undefined,suggested_problem_label:undefined,
+    requires_problem_confirmation:false,problem_id_confirmed:true,problem_id_source:"manual",master_matched:true
   };
 }
