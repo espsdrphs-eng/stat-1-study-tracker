@@ -161,6 +161,7 @@ export type StudyUpdate = {
   source_text?:string; auto_imported?:boolean; import_confidence?:number;
   grading_confidence?:number|null; rubric_version?:string; uncertain_points?:string[];
   generated_from_review_id?:number; review_outcome?:"success"|"partial"|"failed"; hint_used?:boolean;
+  task_origin?:"first_attempt"|"review_attempt"|"linked_s_check"|"related_drill"|"past_exam_followup";
   hint_level?:string; after_hint_reproduced?:boolean;
   reference_level?:number; no_hint?:boolean; one_line_hint?:boolean; previous_mistake?:boolean;
   official_answer?:boolean; gpt_explanation?:boolean;

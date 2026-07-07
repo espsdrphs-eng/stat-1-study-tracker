@@ -535,7 +535,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
     saved_gpt_feedback:!!input.saved_gpt_feedback||!!input.gpt_explanation,
     official_answer:!!input.official_answer,external_reference:!!input.external_reference,
     gpt_explanation:!!input.saved_gpt_feedback||!!input.gpt_explanation,
-    task_origin:input.generated_from_review_id?"review_attempt":"first_attempt",attempt_exists:true,
+    task_origin:input.task_origin||(input.generated_from_review_id?"review_attempt":"first_attempt"),attempt_exists:true,
     raw_gpt_problem_id:input.raw_gpt_problem_id||input.problem_id,raw_gpt_theme:input.raw_gpt_theme||"",
     auto_corrected:!!input.auto_corrected,correction_fields:input.correction_fields||[],
     correction_reason:input.correction_reason||"",consistency_score:input.consistency_score
@@ -1118,6 +1118,13 @@ export async function openAnswerPdf(fileName:string,page?:number|null){
   const url=URL.createObjectURL(row.blob),target=page?`${url}#page=${page}`:url;
   if(popup) popup.location.href=target; else window.open(target,"_blank");
   setTimeout(()=>URL.revokeObjectURL(url),120000);
+}
+export async function answerPdfObjectUrl(fileName:string,page?:number|null){
+  await initialize();
+  const row=await db.answerPdfs.get(fileName);
+  if(!row) throw new Error("PDF本体はこのiPadに登録されていません");
+  const url=URL.createObjectURL(row.blob);
+  return {url,pageUrl:page?`${url}#page=${page}`:url,revoke:()=>URL.revokeObjectURL(url)};
 }
 
 async function bootstrap():Promise<Bootstrap>{

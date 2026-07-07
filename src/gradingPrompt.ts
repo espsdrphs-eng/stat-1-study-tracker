@@ -15,6 +15,136 @@ export type ReviewPromptContext={
   allowedReferenceLevel?:number;actualReferenceLevel?:number;referenceClosedReproduction?:boolean;
 };
 
+export type FirstAttemptPromptContext={
+  problemId:string;
+  displayLabel?:string;
+  theme?:string;
+  canonicalProblemType?:string;
+  mode?:string;
+  estimatedMinutes?:number;
+};
+
+export function buildFirstAttemptGradingPrompt(context:FirstAttemptPromptContext){
+  const mode=context.mode||"full";
+  return `あなたは統計検定1級・統計数理の答案採点者です。
+以下の問題について、私の初回答案を採点してください。
+
+今回は初回答案です。
+前回ミスや前回復習履歴はありません。
+復習ではなく、初回の到達度診断として採点してください。
+
+【重要】
+problem_id は下記の指定値を必ずそのまま使ってください。
+GPT側で別の problem_id を推測して変更しないでください。
+
+problem_id:
+${context.problemId}
+
+display_label:
+${context.displayLabel||context.problemId}
+
+theme:
+${context.theme||"未設定"}
+
+canonical_problem_type:
+${context.canonicalProblemType||context.theme||"未設定"}
+
+mode:
+${mode}
+
+予定時間の目安:
+${context.estimatedMinutes||""}分
+
+【入力】
+問題文：
+ここに問題文または画像を貼る
+
+私の答案：
+ここに自分の答案または画像を貼る
+
+模範解答：
+ここに模範解答または画像を貼る
+
+【採点方針】
+以下を診断してください。
+
+1. 方針・入口が正しいか
+2. 出発式が正しいか
+3. 主要計算が再現できているか
+4. 条件・定義域・添字・独立性などの確認が足りているか
+5. 結論が問題の要求に対応しているか
+6. 試験答案として再現可能か
+7. K/W/N/C のどれが主な弱点か
+
+【K/W/N/C】
+K：型・方針・入口が崩れている
+W：計算・式変形・積分・和・場合分けなどの作業で崩れている
+N：ノート不足・説明不足・再現性不足
+C：符号・係数・範囲・条件などのケアレス
+none：大きな問題なし
+
+【出力】
+最後に、以下のYAMLを必ず出してください。
+アプリ取り込み用なので、YAML内ではLaTeXを使わず、自然な日本語またはプレーンテキストで書いてください。
+next_action には日付や「何日後」を書かないでください。
+review_after_days は error_types から決めてください。Kあり=1、Nあり=2、Wあり=3、Cあり=7、none=14。複数なら最短です。
+
+\`\`\`yaml
+study_update:
+  problem_id: "${context.problemId}"
+  display_label: "${context.displayLabel||context.problemId}"
+  date: "auto_today"
+  task_origin: "first_attempt"
+  mode: "${mode}"
+  review_method: ""
+  mark: "△"
+  score_text: ""
+  score_numeric:
+  time_minutes:
+  result_summary: ""
+  exam_selection_rank: ""
+  error_types:
+    - "N"
+  primary_error_type: "N"
+  main_theme: "${context.theme||""}"
+  themes:
+    - "${context.theme||""}"
+  error_point: ""
+  next_action: ""
+  review_after_days: 2
+  linked_s_problems: []
+  linked_past_exams: []
+  ignored_parts: []
+  weak_notes:
+    - ""
+  s_check_suggestions: []
+  grading_confidence: 85
+  rubric_version: "${GRADING_RUBRIC_VERSION}"
+  evaluation_scope: "full"
+  graded_parts:
+    - "答案から実際に採点した部分"
+  assumed_correct_parts: []
+  unresolved_carryover: []
+  uncertain_points: []
+\`\`\``;
+}
+
+export function buildRepairPrompt(context:FirstAttemptPromptContext){
+  return `次の統計検定1級の問題について、解答を教えるのではなく、理解補修用の短いクイズを作ってください。
+
+problem_id: ${context.problemId}
+display_label: ${context.displayLabel||context.problemId}
+theme: ${context.theme||"未設定"}
+canonical_problem_type: ${context.canonicalProblemType||context.theme||"未設定"}
+
+条件：
+- 1問ずつ出してください。
+- 最初から答えや模範解答を出さないでください。
+- 方針、出発式、主要計算、条件確認の順に確認してください。
+- 私が答えるまで正解を表示しないでください。
+- 最後に、復習で書くべき修正ルールを1行にまとめてください。`;
+}
+
 export function buildGradingPrompt(date:string){
   return `あなたは統計検定1級・統計数理の答案採点者です。
 以下のルーブリックに厳密に従い、答案の正しさと再現可能性を診断してください。

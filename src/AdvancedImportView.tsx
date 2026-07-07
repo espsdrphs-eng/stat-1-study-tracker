@@ -33,7 +33,7 @@ const missingRequiredFields=(update:StudyUpdate,hasPreviousTarget=false)=>{
   );
   return [
     !update.master_matched||!update.problem_id?"問題マスター":"",
-    !Number(update.time_minutes)?"今回の所要時間":"",
+    !Number(update.time_minutes)?"今回の実績時間":"",
     !update.score_text&&update.score_numeric==null?"段階評価または点数":"",
     !update.themes?.length?"主テーマ":"",
     hasError&&!update.error_point.trim()?"ミス内容":"",
@@ -170,7 +170,7 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
               </select></Field>
               <Field label="モード"><select disabled={!editing} value={update.mode} onChange={event=>change(index,"mode",event.target.value)}>{Object.entries(modes).map(([key,label])=><option value={key} key={key}>{label}</option>)}</select></Field>
               <Field label="学習日"><input readOnly={!editing} type="date" value={update.date} onChange={event=>change(index,"date",event.target.value)}/></Field>
-              <Field label="今回の所要時間（分）"><input readOnly={!editing} placeholder="要確認" type="number" value={update.time_minutes??""} onChange={event=>change(index,"time_minutes",event.target.value===""?undefined:Number(event.target.value))}/></Field>
+              <Field label="今回の実績時間（分）"><input readOnly={!editing} placeholder="実際に解いた分数" type="number" value={update.time_minutes??""} onChange={event=>change(index,"time_minutes",event.target.value===""?undefined:Number(event.target.value))}/></Field>
               <Field label="段階評価"><input readOnly={!editing} placeholder="要確認" value={update.score_text||(update.score_numeric!=null?update.score_label:"")} onChange={event=>change(index,"score_text",event.target.value)}/></Field>
               <Field label="点数"><input readOnly={!editing} placeholder="要確認" type="number" value={update.score_numeric??""} onChange={event=>change(index,"score_numeric",event.target.value===""?null:Number(event.target.value))}/></Field>
               <Field label="mark"><select disabled={!editing} value={update.mark} onChange={event=>change(index,"mark",event.target.value)}>{["◎","○","△","×"].map(mark=><option key={mark}>{mark}</option>)}</select></Field>

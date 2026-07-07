@@ -6,12 +6,12 @@ import {
 } from "lucide-react";
 import yaml from "js-yaml";
 import { api, post } from "./api";
-import { answerIndexExport, csvFor, exportBackup, openAnswerPdf, problemMasterExport, restoreBackup, saveAnswerPdf } from "./localDb";
+import { answerIndexExport, answerPdfObjectUrl, csvFor, exportBackup, problemMasterExport, restoreBackup, saveAnswerPdf } from "./localDb";
 import AdvancedImportView from "./AdvancedImportView";
 import { problemDisplayLabel } from "./importParser";
 import { createAttemptReviewPlan } from "./reviewRules";
 import { analyzeWeakTrends, buildQuizPrompt } from "./weakTrend";
-import { buildReviewGradingPrompt } from "./gradingPrompt";
+import { buildFirstAttemptGradingPrompt, buildRepairPrompt, buildReviewGradingPrompt } from "./gradingPrompt";
 import { reviewMode, reviewTemplate } from "./reviewPresentation";
 import {
   allowedReferenceLevel, completionChecklist, correctionRuleExample, correctionTheme, emptyReferenceState,
@@ -68,6 +68,24 @@ function SheetLink({href,label="シートを見る",primary=false}:{href:string;
       </section>
     </div>}</>;
 }
+function AnswerPdfButton({fileName,page,label="模範解答PDFを見る",className="ghost small",beforeOpen}:{fileName?:string;page?:number|null;label?:string;className?:string;beforeOpen?:()=>void}){
+  const [viewer,setViewer]=useState<{url:string;revoke:()=>void}|null>(null);
+  const [pdfError,setPdfError]=useState("");
+  const close=()=>{viewer?.revoke();setViewer(null)};
+  const open=async()=>{
+    if(!fileName){setPdfError("PDF本体はこのiPadに登録されていません");return}
+    try{beforeOpen?.();const pdf=await answerPdfObjectUrl(fileName,page);setViewer({url:pdf.pageUrl,revoke:pdf.revoke});setPdfError("")}
+    catch(reason){setPdfError((reason as Error).message)}
+  };
+  return <>{pdfError&&<span className="pdf-error-inline">{pdfError}</span>}<button type="button" className={className} onClick={open}><BookOpen size={14}/>{label}</button>
+    {viewer&&<div className="sheet-modal-backdrop" role="presentation" onClick={close}>
+      <section className="sheet-modal" role="dialog" aria-modal="true" aria-label={label} onClick={event=>event.stopPropagation()}>
+        <header><div><strong>{label}</strong><span>閉じると元のアプリ画面に戻ります</span></div><button type="button" className="sheet-modal-close" onClick={close} aria-label="PDFを閉じる"><X size={21}/>閉じる</button></header>
+        <iframe src={viewer.url} title={label}/>
+        <footer><button type="button" className="ghost" onClick={close}><X size={15}/>閉じて戻る</button></footer>
+      </section>
+    </div>}</>;
+}
 
 export default function App() {
   const [data,setData]=useState<Bootstrap|null>(null);
@@ -75,9 +93,11 @@ export default function App() {
   const [menu,setMenu]=useState(false);
   const [selected,setSelected]=useState<Problem|null>(null);
   const [busy,setBusy]=useState(false);
+  const [refreshing,setRefreshing]=useState(false);
   const [message,setMessage]=useState("");
   const [error,setError]=useState("");
   const load=async()=>{setError("");try{setData(await api<Bootstrap>("/api/bootstrap"));}catch(e){setError((e as Error).message)}};
+  const refresh=async()=>{setRefreshing(true);setError("");try{setData(await api<Bootstrap>("/api/bootstrap"));setMessage("データを更新しました")}catch(e){setError((e as Error).message)}finally{setRefreshing(false)}};
   useEffect(()=>{load()},[]);
   const run=async(action:()=>Promise<unknown>,success:string)=>{setBusy(true);setError("");try{await action();setMessage(success);await load();return true}catch(e){setError((e as Error).message);return false}finally{setBusy(false)}};
   const go=(next:Page)=>{setPage(next);setMenu(false);setSelected(null)};
@@ -91,12 +111,12 @@ export default function App() {
     </aside>
     {menu&&<div className="scrim" onClick={()=>setMenu(false)}/>}
     <main>
-      <header><button className="menu-btn" onClick={()=>setMenu(true)}><Menu/></button><div><span className="eyebrow">{data.dashboard.today.replaceAll("-",".")}</span><h1>{selected?selected.problem_id:pageTitles[page]}</h1></div><button className="icon-btn" onClick={load} title="更新"><RefreshCw size={19}/></button></header>
+      <header><button className="menu-btn" onClick={()=>setMenu(true)}><Menu/></button><div><span className="eyebrow">{data.dashboard.today.replaceAll("-",".")}</span><h1>{selected?selected.problem_id:pageTitles[page]}</h1></div><button className={`icon-btn ${refreshing?"spinning":""}`} onClick={refresh} title="更新" disabled={refreshing}><RefreshCw size={19}/></button></header>
       {(message||error)&&<div className={`toast ${error?"danger":""}`} onClick={()=>{setMessage("");setError("")}}>{error||message}<X size={16}/></div>}
       <div className="content">
         {selected?<ProblemDetail problem={selected} data={data} run={run} busy={busy} onBack={()=>setSelected(null)} onImport={()=>{setSelected(null);setPage("import")}}/>:
-        page==="dashboard"?<DashboardView data={data} go={go}/>:
-        page==="today"?<TodayView data={data} busy={busy} run={run} go={go}/>:
+        page==="dashboard"?<DashboardView data={data} go={go} select={setSelected}/>:
+        page==="today"?<TodayView data={data} busy={busy} run={run} go={go} select={setSelected}/>:
         page==="problems"?<ProblemsView data={data} select={setSelected} run={run} busy={busy}/>:
         page==="attempt"?<AttemptView problems={data.problems} run={run} busy={busy}/>:
         page==="import"?<AdvancedImportView problems={data.problems} answerIndex={data.answerIndex} problemAliases={data.problemAliases} attempts={data.attempts} reviews={data.reviews} run={run} busy={busy}/>:
@@ -110,17 +130,33 @@ export default function App() {
   </div>
 }
 
-function DashboardView({data,go}:{data:Bootstrap;go:(p:Page)=>void}) {
+function nextQueueTask(data:Bootstrap){
+  const open=data.today.tasks.filter(task=>!task.checked);
+  const must=open.find(task=>task.triage==="must");
+  if(must) return {task:must,source:"今日やること > 必ずやる > 1番目"};
+  const ifTime=open.find(task=>task.triage==="if_time");
+  if(ifTime) return {task:ifTime,source:"今日やること > 余裕があれば > 1番目"};
+  const review=data.reviews.find(review=>["overdue","pending"].includes(review.status));
+  if(review) return {task:{problem_id:review.problem_id,title:review.problem_id,kind:"復習",reason:review.status==="overdue"?"期限切れの復習待ち":"復習待ち",mode:review.requires_full_answer?"full":review.review_type==="main_calc_retry"?"main_calc":"skeleton",minutes:review.estimated_minutes||review.duration_minutes||15,load:0,status:review.status,review_method:review.review_method} as Task,source:`復習予定 > ${review.status==="overdue"?"期限切れ":"未完了"} > 最優先`};
+  return {task:null,source:"今日は完了"};
+}
+function DashboardView({data,go,select}:{data:Bootstrap;go:(p:Page)=>void;select:(p:Problem)=>void}) {
   const d=data.dashboard;
+  const pmap=Object.fromEntries(data.problems.map(problem=>[problem.problem_id,problem]));
   const pastIds=new Set(data.problems.filter(problem=>problem.category==="past_exam").map(problem=>problem.problem_id));
   const pastAttemptCount=data.attempts.filter(attempt=>pastIds.has(attempt.problem_id)).length;
   const pastReviewCount=data.reviews.filter(review=>review.status!=="done"&&pastIds.has(review.problem_id)).length;
-  const nextTask=data.today.tasks.find(task=>!task.checked);
+  const next=nextQueueTask(data);
+  const nextTask=next.task;
+  const nextProblem=nextTask?pmap[nextTask.problem_id]:undefined;
   const gradingPending=data.today.tasks.filter(task=>task.checked).length;
   return <>
     <section className="hero">
-      <div><span className="eyebrow">NEXT ACTION</span><h2>{nextTask?.title||(gradingPending?`${gradingPending}件の採点結果を取り込む`:"本日の課題は完了です")}</h2><p>{nextTask?.reason||(gradingPending?"解答済みの問題をGPTで採点し、結果を貼り付けてください。":"記録を振り返り、次のロードマップを確認しましょう。")}</p></div>
-      <button className="primary" onClick={()=>go(!nextTask&&gradingPending?"import":"today")}>{!nextTask&&gradingPending?<ClipboardPaste size={18}/>:<Play size={18}/>} {!nextTask&&gradingPending?"GPT採点を取り込む":"今日の課題を見る"}</button>
+      <div><span className="eyebrow">NEXT ACTION</span><h2>{nextTask?`${nextTask.problem_id}｜${nextTask.title}`:(gradingPending?`${gradingPending}件の採点結果を取り込む`:"本日の課題は完了です")}</h2>
+        {nextTask?<div className="next-task-meta"><Badge>{modes[nextTask.mode]||nextTask.mode}</Badge><span>{nextTask.minutes}分</span><span>表示元：{next.source}</span></div>:null}
+        <p>{nextTask?.reason||(gradingPending?"解答済みの問題をGPTで採点し、結果を貼り付けてください。":"記録を振り返り、次のロードマップを確認しましょう。")}</p></div>
+      <div className="hero-actions"><button className="primary" onClick={()=>go(!nextTask&&gradingPending?"import":"today")}>{!nextTask&&gradingPending?<ClipboardPaste size={18}/>:<Play size={18}/>} {!nextTask&&gradingPending?"GPT採点を取り込む":"今日の課題を見る"}</button>
+        {nextProblem&&<button className="ghost" onClick={()=>select(nextProblem)}><BookOpen size={18}/>この問題を開く</button>}</div>
     </section>
     {data.today.warning&&<div className="warning"><AlertTriangle/><div><strong>予定時間を調整してください</strong><p>{data.today.warning}</p></div></div>}
     <section className="section-head"><div><span className="eyebrow">OVERVIEW</span><h2>今週の学習状況</h2></div><span className="muted">直近7日間</span></section>
@@ -272,7 +308,9 @@ function ReviewPlanDetails({item,compact=false}:{item:Partial<Review&Task>;compa
         {hasPreviousAttempt&&<button type="button" className={reference.previous_mistake?"viewed":""} onClick={()=>reveal(2,"previous_mistake")}><Eye size={14}/>{referenceButtonLabel("previous_mistake","前回ミスを見る")}</button>}
         {hasPreviousAttempt&&<button type="button" className={reference.previous_mistake?"viewed":""} onClick={()=>reveal(2,"correction_rule")}><Eye size={14}/>{referenceButtonLabel("correction_rule","修正ルール例を見る")}</button>}
         {hasSavedFeedback&&<button type="button" className={reference.saved_gpt_feedback?"viewed":""} onClick={()=>reveal(3,"saved_gpt_feedback")}><Eye size={14}/>{referenceButtonLabel("saved_gpt_feedback","保存済みGPT解説を見る")}</button>}
-        {hasOfficialAnswer&&<button type="button" className={reference.official_answer?"viewed":""} onClick={()=>{reveal(4,"official_answer");if(item.official_answer_pdf_registered&&item.official_answer_pdf_name)void openAnswerPdf(item.official_answer_pdf_name,item.official_answer_page)}}><Eye size={14}/>{referenceButtonLabel("official_answer",item.official_answer_pdf_registered?"模範解答PDFを見る":"模範解答要約を見る")}</button>}
+        {hasOfficialAnswer&&(item.official_answer_pdf_registered&&item.official_answer_pdf_name
+          ?<AnswerPdfButton fileName={item.official_answer_pdf_name} page={item.official_answer_page} label={referenceButtonLabel("official_answer","模範解答PDFを見る")} className={reference.official_answer?"viewed":""} beforeOpen={()=>reveal(4,"official_answer")}/>
+          :<button type="button" className={reference.official_answer?"viewed":""} onClick={()=>reveal(4,"official_answer")}><Eye size={14}/>{referenceButtonLabel("official_answer","模範解答要約を見る")}</button>)}
         <button type="button" className={reference.external_reference?"viewed":""} onClick={()=>reveal(5,"external_reference")}><Eye size={14}/>{referenceButtonLabel("external_reference","外部参照を記録")}</button>
       </div>
       {!hasPreviousAttempt&&<div className="no-attempt-note"><span>この問題の前回記録はありません。今回は関連確認または初回確認として扱います。</span></div>}
@@ -378,11 +416,12 @@ function PostponeReviewModal({item,initial="tomorrow",busy,close,save}:{item:Par
     <small>「今日やる」は今日必須へ戻します。期限なしは今日の自動予定から外れますが、問題一覧からはいつでも開けます。</small>
   </div></Modal>;
 }
-function TodayView({data,busy,run,go}:{data:Bootstrap;busy:boolean;run:(a:()=>Promise<unknown>,s:string)=>void;go:(p:Page)=>void}) {
+function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a:()=>Promise<unknown>,s:string)=>void;go:(p:Page)=>void;select:(p:Problem)=>void}) {
   const [reviewTask,setReviewTask]=useState<Task|null>(null);
   const [postponeTask,setPostponeTask]=useState<{item:Task;initial:ScheduleAction}|null>(null);
   const [todayFilter,setTodayFilter]=useState<"must"|"if_time"|"tomorrow"|"completed"|"all">("must");
   const [recalculateConfirm,setRecalculateConfirm]=useState(false);
+  const pmap=Object.fromEntries(data.problems.map(problem=>[problem.problem_id,problem]));
   const saveReview=(body:Record<string,unknown>)=>{if(!reviewTask?.id)return;const id=reviewTask.id;setReviewTask(null);
     sessionStorage.removeItem(referenceStorageKey(id));
     sessionStorage.removeItem(referenceClosedStorageKey(id));
@@ -410,7 +449,7 @@ function TodayView({data,busy,run,go}:{data:Bootstrap;busy:boolean;run:(a:()=>Pr
     {!data.today.warning&&<div className="time-guidance"><Clock3 size={16}/><span>{data.today.guidance}</span></div>}
     <section className="panel">
       <div className="table-wrap"><table><thead><tr><th>種類</th><th>問題</th><th>推奨モード</th><th>予定時間</th><th>理由</th><th/></tr></thead>
-      {triageGroups.map(group=><tbody key={group.key} className={`triage-group ${group.key}`}><tr className="triage-heading"><td colSpan={6}><strong>{group.label}</strong>{group.description&&<span>{group.description}</span>}</td></tr>{group.tasks.map((t,i)=><TodayTaskRows key={`${t.problem_id}-${i}`} task={t} busy={busy} run={run} date={data.dashboard.today} onReview={setReviewTask} onPostpone={(item,initial)=>setPostponeTask({item,initial})}/>)}</tbody>)}</table></div>
+      {triageGroups.map(group=><tbody key={group.key} className={`triage-group ${group.key}`}><tr className="triage-heading"><td colSpan={6}><strong>{group.label}</strong>{group.description&&<span>{group.description}</span>}</td></tr>{group.tasks.map((t,i)=><TodayTaskRows key={`${t.problem_id}-${i}`} task={t} problem={pmap[t.problem_id]} busy={busy} run={run} date={data.dashboard.today} onReview={setReviewTask} onOpenProblem={problem=>select(problem)} onPostpone={(item,initial)=>setPostponeTask({item,initial})}/>)}</tbody>)}</table></div>
       {todayFilter==="completed"&&<div className="completed-task-list">{data.today.completedTasks.map((task,index)=><div key={`${task.problem_id}-${index}`}><Check size={16}/><strong>{task.title}</strong><span>{task.minutes}分・{task.reason}</span></div>)}{!data.today.completedTasks.length&&<Empty>今日の完了記録はまだありません</Empty>}</div>}
       {todayFilter!=="completed"&&!triageGroups.length&&<Empty>この区分の課題はありません</Empty>}
     </section>
@@ -419,13 +458,79 @@ function TodayView({data,busy,run,go}:{data:Bootstrap;busy:boolean;run:(a:()=>Pr
     {recalculateConfirm&&<Modal title="今日の予定を再計算する" close={()=>setRecalculateConfirm(false)}><div className="postpone-review"><p>問題マスターの補正内容に基づき、今日の予定時間と分類を再計算します。現在の今日の計画が変わります。</p><div className="form-actions"><button className="ghost" onClick={()=>setRecalculateConfirm(false)}>キャンセル</button><button className="primary" disabled={busy} onClick={()=>{setRecalculateConfirm(false);run(()=>post("/api/today/recalculate",{}),"今日の予定時間と分類を再計算しました")}}>再計算する</button></div></div></Modal>}
   </>
 }
-function TodayTaskRows({task:t,busy,run,date,onReview,onPostpone}:{task:Task;busy:boolean;run:(a:()=>Promise<unknown>,s:string)=>void;date:string;onReview:(task:Task)=>void;onPostpone:(task:Task,action:ScheduleAction)=>void}) {
+function copyText(text:string,label:string,setCopied:(value:string)=>void){
+  return navigator.clipboard.writeText(text).then(()=>{setCopied(label);setTimeout(()=>setCopied(""),1800)});
+}
+function StudyPromptButtons({item}:{item:Partial<Review&Task>}) {
+  const [copied,setCopied]=useState("");
+  const firstPrompt=buildFirstAttemptGradingPrompt({
+    problemId:item.problem_id||"",displayLabel:item.title||item.problem_id,theme:item.theme,
+    canonicalProblemType:item.canonical_problem_type,mode:item.mode,estimatedMinutes:item.minutes||item.estimated_minutes
+  });
+  const reviewPrompt=item.id&&item.problem_id?buildReviewGradingPrompt({
+    reviewId:item.id,problemId:item.problem_id,title:item.title,theme:item.theme,date:todayString(),mode:reviewMode(item),
+    previousDate:item.previous_date,previousScore:item.previous_score,previousErrors:item.previous_errors,
+    previousErrorPoint:item.previous_error_point,previousNextAction:item.previous_next_action,
+    previousImprovementGuidance:item.previous_improvement_guidance,previousRequiredDerivation:item.previous_required_derivation,
+    reviewMethod:item.review_method,reviewInstruction:item.review_instruction,reviewSteps:item.review_steps,
+    requiresFullAnswer:item.requires_full_answer,linkedSProblemIds:item.linked_s_problem_ids
+  }):"";
+  const repairPrompt=buildRepairPrompt({
+    problemId:item.problem_id||"",displayLabel:item.title||item.problem_id,theme:item.theme,
+    canonicalProblemType:item.canonical_problem_type,mode:item.mode,estimatedMinutes:item.minutes||item.estimated_minutes
+  });
+  const isFirst=(item.task_origin||"first_attempt")==="first_attempt"&&!item.id;
+  return <div className="prompt-button-row">
+    <button type="button" className={isFirst?"primary small":"ghost small"} onClick={()=>void copyText(firstPrompt,"first",setCopied)}><Copy size={14}/>{copied==="first"?"コピー済み":"初回採点プロンプト"}</button>
+    <button type="button" className="ghost small" disabled={!reviewPrompt} onClick={()=>reviewPrompt&&void copyText(reviewPrompt,"review",setCopied)}><Copy size={14}/>{copied==="review"?"コピー済み":"復習採点プロンプト"}</button>
+    <button type="button" className="ghost small" onClick={()=>void copyText(repairPrompt,"repair",setCopied)}><Copy size={14}/>{copied==="repair"?"コピー済み":"理解補修プロンプト"}</button>
+  </div>;
+}
+function TodayTaskDetails({task,problem,onOpenProblem}:{task:Task;problem?:Problem;onOpenProblem:(problem:Problem)=>void}) {
+  const template=reviewTemplate(task);
+  const origin=task.task_origin||((task.id||task.review_method)?"review_attempt":"first_attempt");
+  const hasPrevious=task.attempt_exists!==false&&!!(task.previous_date||task.previous_error_point);
+  const answerAvailable=!!(task.official_answer_text||task.answer_excerpt||task.official_answer_pdf_registered);
+  return <div className="today-task-detail">
+    <div className="today-task-info-grid">
+      <div><span>problem_id</span><strong>{task.problem_id}</strong></div>
+      <div><span>display_label</span><strong>{task.title}</strong></div>
+      <div><span>theme</span><strong>{task.theme||"未設定"}</strong></div>
+      <div><span>canonical_problem_type</span><strong>{task.canonical_problem_type||"未設定"}</strong></div>
+      <div><span>task_origin</span><strong>{origin}</strong></div>
+      <div><span>review_method</span><strong>{task.review_method||"初回演習"}</strong></div>
+      <div><span>使用シート</span><strong>{template.sheetLabel}</strong></div>
+      <div><span>推定時間</span><strong>{task.minutes}分</strong></div>
+    </div>
+    {origin==="first_attempt"&&<div className="first-attempt-note"><Badge tone="green">初回</Badge><div><strong>この問題は初回です</strong><span>{task.mode==="full"?"まずフル答案として、方針・出発式・主要計算・結論まで書いてください。":"指定モードで、方針・出発式・今回見る量を明確にしてから解いてください。"}</span></div></div>}
+    {origin==="review_attempt"&&<div className="first-attempt-note review"><Badge tone="orange">復習</Badge><div><strong>前回記録：{hasPrevious?"あり":"なし"}</strong><span>{hasPrevious?`前回：${task.previous_score||task.previous_date}`:"前回ミスの詳細はありません。通常確認として扱います。"}</span></div></div>}
+    {origin==="linked_s_check"&&<div className="first-attempt-note linked"><Badge tone="blue">関連S</Badge><div><strong>この問題自体は初回確認です</strong><span>元問題の弱点から作られた関連確認です。元問題：{task.source_problem_id||"記録なし"}</span></div></div>}
+    <div className="today-specific-guide">
+      <div><span>今日やる理由</span><strong>{task.reason}</strong></div>
+      <div><span>修正テーマ</span><strong>{correctionTheme(task)}</strong></div>
+      <div><span>今回の入口</span><strong>{referenceEntryPoint(task)}</strong></div>
+      <div><span>1行ヒント</span><strong>{oneLineHint(task)}</strong></div>
+      <div><span>前回記録の有無</span><strong>{hasPrevious?"あり":"なし"}</strong></div>
+      <div><span>模範解答要約の有無</span><strong>{answerAvailable?"あり":"なし"}</strong></div>
+    </div>
+    <div className="today-card-actions">
+      {problem&&<button type="button" className="ghost small" onClick={()=>onOpenProblem(problem)}><BookOpen size={14}/>問題詳細</button>}
+      <button type="button" className="ghost small" disabled><BookOpen size={14}/>問題PDF未登録</button>
+      {task.official_answer_pdf_registered&&task.official_answer_pdf_name
+        ?<AnswerPdfButton fileName={task.official_answer_pdf_name} page={task.official_answer_page} label="模範解答PDF" className="ghost small"/>
+        :answerAvailable?<button type="button" className="ghost small" disabled><BookOpen size={14}/>模範解答要約あり</button>:null}
+      <SheetLink href={sheetHref(task.mode)} label="解答シート"/>
+      <StudyPromptButtons item={task}/>
+    </div>
+  </div>;
+}
+function TodayTaskRows({task:t,problem,busy,run,date,onReview,onOpenProblem,onPostpone}:{task:Task;problem?:Problem;busy:boolean;run:(a:()=>Promise<unknown>,s:string)=>void;date:string;onReview:(task:Task)=>void;onOpenProblem:(problem:Problem)=>void;onPostpone:(task:Task,action:ScheduleAction)=>void}) {
   const isReview=!!t.id&&!!t.review_type;
   const toggle=()=>isReview
     ?onReview(t)
     :run(()=>post("/api/today-check",{date,problem_id:t.problem_id,kind:t.kind,checked:!t.checked}),t.checked?"チェックを外しました":"解答済み・採点待ちにしました");
   return <><tr className={t.checked?"task-checked":""}><td><Badge tone={t.kind==="S確認"?"blue":t.error_type==="K"?"red":""}>{t.kind}</Badge></td><td><strong>{t.problem_id}</strong><small>{t.title}{t.checked&&<em className="grading-wait">採点待ち</em>}</small></td><td>{modes[t.mode]||t.mode}</td><td>{t.minutes}分</td><td>{t.reason}{t.postpone_count?` ・ 先送り${t.postpone_count}回（${t.postpone_reason}）`:""}</td><td><div className="task-actions"><SheetLink href={sheetHref(t.mode)} label="シート"/><label className="task-check"><input type="checkbox" checked={!!t.checked} disabled={busy} onChange={toggle}/><span>{isReview?"復習結果を記録":"解答済み"}</span></label></div><ScheduleQuickButtons item={t} busy={busy} select={action=>onPostpone(t,action)}/></td></tr>
-    {(t.review_method||t.review_reason)&&<tr className="task-plan-row"><td colSpan={6}><ReviewPlanDetails item={t} compact/></td></tr>}</>;
+    <tr className="task-plan-row"><td colSpan={6}><TodayTaskDetails task={t} problem={problem} onOpenProblem={onOpenProblem}/>{(t.review_method||t.review_reason)&&<ReviewPlanDetails item={t} compact/>}</td></tr></>;
 }
 
 function ProblemChip({problem,latest,rank,select}:{problem:Problem;latest?:Attempt;rank:string;select:(problem:Problem)=>void}){
@@ -523,7 +628,7 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport}:{problem:Problem;
       {latest.improvement_guidance&&<div><span>次回の直し方</span><p>{latest.improvement_guidance}</p></div>}
     </div></details>}
     <div className="detail-grid"><section className="panel"><h3>問題情報</h3><dl><dt>役割</dt><dd>{problem.role}</dd><dt>出題型</dt><dd>{problem.canonical_problem_type||"—"}</dd><dt>難易度</dt><dd>{problem.difficulty!=null?`難${problem.difficulty}`:"—"}</dd><dt>推奨モード</dt><dd>{modes[problem.recommended_mode]}</dd><dt>関連S問題</dt><dd>{related.join(" / ")||"—"}</dd><dt>関連A問題</dt><dd>{problem.linked_a_problems||"—"}</dd><dt>関連過去問</dt><dd>{problem.linked_past_exams||"—"}</dd><dt>次回課題</dt><dd>{removeTimingExpressions(latest?.next_action)||"—"}</dd><dt>メモ</dt><dd>{problem.notes||"—"}</dd></dl>
-      {answer?.answer_available&&(answer.answer_excerpt||pdfRegistered)&&<div className="problem-answer-index"><strong>{pdfRegistered?"模範解答PDF登録済み":"模範解答要約"}</strong><span>{answer.section_label||answer.pdf_file_name}</span>{answer.answer_excerpt&&<p>{answer.answer_excerpt}</p>}{pdfRegistered&&<button className="ghost small" onClick={()=>void openAnswerPdf(answer.pdf_file_name!,answer.page_start)}>模範解答PDFを見る</button>}</div>}
+      {answer?.answer_available&&(answer.answer_excerpt||pdfRegistered)&&<div className="problem-answer-index"><strong>{pdfRegistered?"模範解答PDF登録済み":"模範解答要約"}</strong><span>{answer.section_label||answer.pdf_file_name}</span>{answer.answer_excerpt&&<p>{answer.answer_excerpt}</p>}{pdfRegistered&&<AnswerPdfButton fileName={answer.pdf_file_name} page={answer.page_start} label="模範解答PDFを見る"/>}</div>}
     </section>
     <section className="panel"><h3>復習予定</h3>{nextReview?<><div className="history"><CalendarCheck/><div><strong>{nextReview.due_date}</strong><span>{reviewNames[nextReview.review_type]||nextReview.review_method}・{nextReview.status}</span></div></div><ReviewPlanDetails item={nextReview}/></>:<Empty>復習予定はありません</Empty>}</section></div>
     <section className="panel"><div className="panel-title"><h3>解答履歴</h3><span className="muted">{attempts.length}回</span></div>{attempts.length?<div className="table-wrap"><table><thead><tr><th>日付</th><th>モード</th><th>評価</th><th>K/W/N/C</th><th>ミス</th><th>次の行動</th><th>操作</th></tr></thead><tbody>{attempts.map(a=>{const consistent=attemptConsistentForDisplay(a,problem);return <tr key={a.id} className={!consistent?"inconsistent-record":""}><td>{a.date}{!consistent&&<small> ID要確認</small>}</td><td>{modes[a.mode]||a.mode}</td><td>{a.mark} / {a.score_label}{a.score_numeric!=null?` ${a.score_numeric}点`:""}</td><td>{(a.error_types||[a.error_type]).filter(error=>error!=="none").map(error=><ErrorBadge key={error} value={error}/>)}{!(a.error_types||[a.error_type]).some(error=>error!=="none")&&<ErrorBadge value="none"/>}</td><td>{a.error_point||"—"}</td><td>{removeTimingExpressions(a.next_action)||"—"}</td><td><div className="history-actions"><button className="small ghost" onClick={()=>editAttempt(a)}><Pencil size={13}/>編集</button><button className="small danger-button" disabled={busy} onClick={()=>removeAttempt(a)}><Trash2 size={13}/>削除</button></div></td></tr>})}</tbody></table></div>:<Empty>まだ学習記録がありません</Empty>}</section>
