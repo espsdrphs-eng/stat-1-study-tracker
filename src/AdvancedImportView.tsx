@@ -5,6 +5,7 @@ import { applyProblemMaster, parseStudyText, problemDisplayLabel, todayString } 
 import { createAttemptReviewPlan } from "./reviewRules";
 import { buildGradingPrompt, GRADING_RUBRIC_VERSION, REVIEW_RUBRIC_VERSION } from "./gradingPrompt";
 import { reviewDaysForErrors, sanitizeStudyUpdateTiming, timingWarningMessage, timingWarnings } from "./reviewTiming";
+import { finalizeStudyUpdateForSave, prepareImportedStudyUpdate } from "./studyCycle";
 import type { AnswerIndexEntry, Attempt, Problem, ProblemAlias, Review, StudyUpdate } from "./types";
 
 const modes:Record<string,string>={check:"チェック",skeleton:"骨格",main_calc:"主要計算",full:"フル答案",scan:"スキャン",exam_90min:"90分演習"};
@@ -96,10 +97,10 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
     try{
       const result=parseStudyText(text,problems,answerIndex,problemAliases);
       const historyIds=new Set(attempts.map(attempt=>attempt.problem_id));
-      const normalized=result.updates.map(update=>update.task_origin?update:{
+      const normalized=result.updates.map(update=>prepareImportedStudyUpdate({
         ...update,
-        task_origin:update.generated_from_review_id?"review_attempt":historyIds.has(update.problem_id)?"review_attempt":"first_attempt"
-      } as StudyUpdate);
+        task_origin:update.task_origin||(update.generated_from_review_id?"review_attempt":historyIds.has(update.problem_id)?"review_attempt":"first_attempt")
+      } as StudyUpdate,{attempts,today:todayString()}));
       setStructured(result.structured);
       setUpdates(normalized);
       setEditing(false);
@@ -114,7 +115,7 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
 
   const selectProblem=(index:number,problemId:string)=>{
     const problem=problems.find(p=>p.problem_id===problemId);
-    if(problem) setUpdates(rows=>rows.map((row,i)=>i===index?applyProblemMaster(row,problem):row));
+    if(problem) setUpdates(rows=>rows.map((row,i)=>i===index?finalizeStudyUpdateForSave(applyProblemMaster(row,problem)):row));
   };
 
   const changeErrors=(index:number,value:string)=>{
@@ -125,12 +126,12 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
     const secondary=errors.find(error=>error!==primary&&error!=="none")||"";
     const realErrors=errors.filter(error=>error!=="none");
     const days=reviewDaysForErrors(realErrors);
-    setUpdates(rows=>rows.map((row,i)=>i===index?{
+    setUpdates(rows=>rows.map((row,i)=>i===index?finalizeStudyUpdateForSave({
       ...row,error_types:errors,primary_error_type:primary,secondary_error_type:secondary,error_type:primary,
       review_after_days:days,review_method:inferReviewMethod(realErrors,days),
       error_point:primary==="none"&&!row.error_point?.trim()?"大きな問題なし":row.error_point,
       review_reason:primary==="none"?"ミス分類なしのため14日後":`${primary}が含まれるため${days}日後`
-    }:row));
+    }):row));
   };
 
   const remove=(index:number)=>setUpdates(rows=>rows.filter((_,i)=>i!==index));
@@ -152,7 +153,7 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
   };
 
   const saveUpdates=async()=>{
-    const snapshot=updates.map(sanitizeStudyUpdateTiming);
+    const snapshot=updates.map(update=>sanitizeStudyUpdateTiming(finalizeStudyUpdateForSave(update)));
     const ok=await run(()=>post("/api/import",{updates:snapshot}),`${snapshot.length}件を保存しました`);
     if(!ok)return;
     setText("");

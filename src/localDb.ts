@@ -14,6 +14,7 @@ import { CHAPTER_META, officialProblemEntries, PAST_EXAM_YEAR_ORDER, STRATEGY_A_
 import { REVIEW_RUBRIC_VERSION } from "./gradingPrompt.ts";
 import { allowedReferenceLevel, referenceDecision, type ReferenceLevel } from "./reviewExperience.ts";
 import { applyCanonicalMaster, parseAliasesPayload, parseAnswerIndexPayload, parseIntegratedMasterPayload, parseProblemMasterPayload, relatedSIntegrity } from "./masterData.ts";
+import { finalizeStudyUpdateForSave } from "./studyCycle.ts";
 
 type SMemory = { problem_id:string; state:"stable"|"check"|"forgotten"|"collapsed"; last_touched?:string; k_trigger_count:number };
 type StoredAttempt = Attempt;
@@ -485,7 +486,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
   if(!problem) throw new Error(`未登録の問題IDです: ${input.problem_id}`);
   if(input.requires_problem_confirmation) throw new Error("問題ID候補を確認してから保存してください");
   const answer=await db.answerIndex.get(problem.problem_id);
-  input=applyCanonicalMaster(input,problem,answer,await db.problems.toArray(),await db.answerIndex.toArray()) as StudyUpdate&Record<string,unknown>;
+  input=finalizeStudyUpdateForSave(applyCanonicalMaster(input,problem,answer,await db.problems.toArray(),await db.answerIndex.toArray())) as StudyUpdate&Record<string,unknown>;
   if(input.requires_problem_confirmation) throw new Error(`取り込み内容は ${input.suggested_problem_id||"別の問題"} の可能性があります。問題IDを確認してください`);
   if(input.generated_from_review_id&&[REVIEW_RUBRIC_VERSION,"STAT1-REVIEW-v7","STAT1-REVIEW-v6","STAT1-REVIEW-v5","STAT1-REVIEW-v4"].includes(input.rubric_version||"")){
     const review=await db.reviews.get(input.generated_from_review_id);
