@@ -30,10 +30,11 @@ const pageTitles:Record<Page,string> = {
   dashboard:"ダッシュボード",today:"今日やること",problems:"問題一覧",attempt:"手入力（予備）",
   import:"GPT回答取り込み",reviews:"復習予定",weak:"弱点傾向",past:"過去問分析",sheets:"解答シート",settings:"設定"
 };
-const nav = [
-  ["dashboard",LayoutDashboard],["today",ListChecks],["problems",BookOpen],["attempt",NotebookPen],
-  ["import",ClipboardPaste],["reviews",CalendarCheck],["weak",AlertTriangle],["past",Target],["sheets",Download],["settings",Settings]
-] as const;
+const navGroups = [
+  {label:"今日",items:[["dashboard",LayoutDashboard],["today",ListChecks],["reviews",CalendarCheck]]},
+  {label:"学習",items:[["problems",BookOpen],["past",Target],["weak",AlertTriangle]]},
+  {label:"管理",items:[["import",ClipboardPaste],["sheets",Download],["attempt",NotebookPen],["settings",Settings]]}
+] as const satisfies readonly {label:string;items:readonly (readonly [Page,typeof LayoutDashboard])[]}[];
 const modes:Record<string,string>={check:"チェック",skeleton:"骨格",main_calc:"主要計算",full:"フル答案",scan:"スキャン",exam_90min:"90分演習"};
 const sheetFiles:Record<string,string>={check:"00-check.pdf",skeleton:"01-skeleton.pdf",main_calc:"02-main-calculation.pdf",full:"03-full-answer.pdf",scan:"04-five-question-scan.pdf",exam_90min:"05-exam-90min.pdf"};
 const sheetHref=(mode:string)=>`./answer-sheets/${sheetFiles[mode]||sheetFiles.skeleton}`;
@@ -106,7 +107,7 @@ export default function App() {
     <aside className={`sidebar ${menu?"open":""}`}>
       <div className="brand"><div className="brand-mark">1</div><div><strong>統計一級</strong><span>STUDY TRACKER</span></div><button className="mobile-close" onClick={()=>setMenu(false)}><X/></button></div>
       <div className={`today-mini ${data.today.warning?"over":""}`}><span>今日の進捗</span><strong>これから {data.today.active_remaining_minutes}分</strong><div className="load-track"><i style={{width:`${Math.min(100,data.today.capacityPercent)}%`}}/></div><small>完了 {data.today.completed_minutes_today}分・目標 {data.today.target_minutes_today}分</small><small>先送り候補 {data.today.postpone_candidate_minutes}分（実行予定外）</small></div>
-      <nav>{nav.map(([key,Icon])=><button key={key} className={page===key?"active":""} onClick={()=>go(key)}><Icon size={19}/><span>{pageTitles[key]}</span>{key==="reviews"&&data.dashboard.pending>0&&<b>{data.dashboard.pending}</b>}</button>)}</nav>
+      <nav>{navGroups.map(group=><div className="nav-group" key={group.label}><span className="nav-section-label">{group.label}</span>{group.items.map(([key,Icon])=><button key={key} className={page===key?"active":""} onClick={()=>go(key)}><Icon size={19}/><span>{pageTitles[key]}</span>{key==="reviews"&&data.dashboard.pending>0&&<b>{data.dashboard.pending}</b>}</button>)}</div>)}</nav>
       <div className="sidebar-foot"><Gauge size={17}/><div><span>2週間ペース</span><strong className={`pace-${data.dashboard.pace.label}`}>{data.dashboard.pace.label}</strong></div></div>
     </aside>
     {menu&&<div className="scrim" onClick={()=>setMenu(false)}/>}
@@ -151,7 +152,7 @@ function DashboardView({data,go,select}:{data:Bootstrap;go:(p:Page)=>void;select
   const nextProblem=nextTask?pmap[nextTask.problem_id]:undefined;
   const gradingPending=data.today.tasks.filter(task=>task.checked).length;
   return <>
-    <section className="hero">
+    <section className="hero next-task-card">
       <div><span className="eyebrow">NEXT ACTION</span><h2>{nextTask?`${nextTask.problem_id}｜${nextTask.title}`:(gradingPending?`${gradingPending}件の採点結果を取り込む`:"本日の課題は完了です")}</h2>
         {nextTask?<div className="next-task-meta"><Badge>{modes[nextTask.mode]||nextTask.mode}</Badge><span>{nextTask.minutes}分</span><span>表示元：{next.source}</span></div>:null}
         <p>{nextTask?.reason||(gradingPending?"解答済みの問題をGPTで採点し、結果を貼り付けてください。":"記録を振り返り、次のロードマップを確認しましょう。")}</p></div>
