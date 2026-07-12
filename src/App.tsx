@@ -450,7 +450,7 @@ function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a
     {!data.today.warning&&<div className="time-guidance"><Clock3 size={16}/><span>{data.today.guidance}</span></div>}
     <section className="panel">
       <div className="table-wrap"><table><thead><tr><th>種類</th><th>問題</th><th>推奨モード</th><th>予定時間</th><th>理由</th><th/></tr></thead>
-      {triageGroups.map(group=><tbody key={group.key} className={`triage-group ${group.key}`}><tr className="triage-heading"><td colSpan={6}><strong>{group.label}</strong>{group.description&&<span>{group.description}</span>}</td></tr>{group.tasks.map((t,i)=><TodayTaskRows key={`${t.problem_id}-${i}`} task={t} problem={pmap[t.problem_id]} busy={busy} run={run} date={data.dashboard.today} onReview={setReviewTask} onOpenProblem={problem=>select(problem)} onPostpone={(item,initial)=>setPostponeTask({item,initial})}/>)}</tbody>)}</table></div>
+      {triageGroups.map(group=><tbody key={group.key} className={`triage-group ${group.key}`}><tr className="triage-heading"><td colSpan={6}><strong>{group.label}</strong>{group.description&&<span>{group.description}</span>}</td></tr>{group.tasks.map((t,i)=><TodayTaskRows key={`${t.problem_id}-${i}`} task={t} problem={pmap[t.problem_id]} busy={busy} run={run} date={data.dashboard.today} onReview={setReviewTask} onOpenProblem={problem=>select(problem)} onOpenSettings={()=>go("settings")} onPostpone={(item,initial)=>setPostponeTask({item,initial})}/>)}</tbody>)}</table></div>
       {todayFilter==="completed"&&<div className="completed-task-list">{data.today.completedTasks.map((task,index)=><div key={`${task.problem_id}-${index}`}><Check size={16}/><strong>{task.title}</strong><span>{task.minutes}分・{task.reason}</span></div>)}{!data.today.completedTasks.length&&<Empty>今日の完了記録はまだありません</Empty>}</div>}
       {todayFilter!=="completed"&&!triageGroups.length&&<Empty>この区分の課題はありません</Empty>}
     </section>
@@ -487,17 +487,71 @@ function StudyPromptButtons({item}:{item:Partial<Review&Task>}) {
     <button type="button" className="ghost small" onClick={()=>void copyText(repairPrompt,"repair",setCopied)}><Copy size={14}/>{copied==="repair"?"コピー済み":"理解補修プロンプト"}</button>
   </div>;
 }
-function TodayTaskDetails({task,problem,onOpenProblem}:{task:Task;problem?:Problem;onOpenProblem:(problem:Problem)=>void}) {
+function AnswerIndexPanel({task,onOpenSettings}:{task:Task;onOpenSettings:()=>void}) {
+  const [visible,setVisible]=useState(false);
+  const [page,setPage]=useState(Number(task.official_answer_page||task.answer_page_start||1));
+  const [viewer,setViewer]=useState<{url:string;revoke:()=>void}|null>(null);
+  const [error,setError]=useState("");
+  const [reproduced,setReproduced]=useState(readReferenceClosed(task.id));
+  const pageStart=Number(task.answer_page_start||task.official_answer_page||page||1);
+  const pageEnd=Number(task.answer_page_end||task.answer_page_start||task.official_answer_page||pageStart);
+  const show=async()=>{
+    setVisible(true);
+    setError("");
+    if(task.id) {
+      rememberReferenceState(task.id,revealReference(readReferenceState(task.id),4));
+      rememberReferenceClosed(task.id,false);
+    }
+    setReproduced(false);
+    if(task.official_answer_pdf_registered&&task.official_answer_pdf_name){
+      try{
+        viewer?.revoke();
+        const pdf=await answerPdfObjectUrl(task.official_answer_pdf_name,page);
+        setViewer({url:pdf.pageUrl,revoke:pdf.revoke});
+      }catch(reason){setError((reason as Error).message)}
+    }
+  };
+  const hide=()=>{setVisible(false);viewer?.revoke();setViewer(null)};
+  const move=(next:number)=>{
+    const bounded=Math.max(pageStart,Math.min(pageEnd,next));
+    setPage(bounded);
+    if(task.official_answer_pdf_registered&&task.official_answer_pdf_name){
+      viewer?.revoke();
+      void answerPdfObjectUrl(task.official_answer_pdf_name,bounded).then(pdf=>setViewer({url:pdf.pageUrl,revoke:pdf.revoke})).catch(reason=>setError((reason as Error).message));
+    }
+  };
+  const markReproduced=()=>{
+    if(task.id) rememberReferenceClosed(task.id,true);
+    setReproduced(true);
+  };
+  useEffect(()=>()=>viewer?.revoke(),[viewer]);
+  const hasIndex=!!(task.official_answer_pdf_name||task.answer_excerpt||task.official_answer_text);
+  return <section className="answer-index-panel">
+    <div className="answer-panel-head"><div><span>模範解答</span><strong>{task.problem_id}</strong></div>{hasIndex&&<small>範囲：PDF {pageStart}〜{pageEnd}ページ</small>}</div>
+    {!visible&&<div className="answer-hidden"><EyeOff size={18}/><p>模範解答は非表示です。</p>{hasIndex?<button type="button" className="primary small" onClick={show}><Eye size={14}/>解答を表示する</button>:<span>この問題の模範解答索引は未登録です。</span>}</div>}
+    {visible&&<div className="answer-visible">
+      <div className="answer-view-toolbar"><span>現在：{page}ページ</span><div className="button-row"><button type="button" className="ghost small" disabled={page<=pageStart} onClick={()=>move(page-1)}>前へ</button><button type="button" className="ghost small" disabled={page>=pageEnd} onClick={()=>move(page+1)}>次へ</button><button type="button" className="ghost small" onClick={hide}><EyeOff size={14}/>解答を隠す</button></div></div>
+      {task.official_answer_pdf_registered&&viewer?<iframe className="answer-inline-frame" src={viewer.url} title={`${task.problem_id} 模範解答`}/>:
+        <div className="answer-missing-pdf"><AlertTriangle size={18}/><strong>模範解答ページは登録されていますが、対応するPDF本体がありません。</strong><span>必要なPDF：{task.official_answer_pdf_name||"MathStat_Answers.pdf"}</span>{task.answer_document_key&&<span>document_key：{task.answer_document_key}</span>}<button type="button" className="ghost small" onClick={onOpenSettings}>設定でPDFを登録する</button>{(task.answer_excerpt||task.official_answer_text)&&<details><summary>模範解答の概要を見る</summary><p>{task.answer_excerpt||task.official_answer_text}</p></details>}{error&&<small>{error}</small>}</div>}
+      <label className="reference-reproduced"><input type="checkbox" checked={reproduced} onChange={markReproduced}/>表示を隠して白紙で再現した</label>
+    </div>}
+  </section>;
+}
+function TodayTaskDetails({task,problem,onOpenProblem,onOpenSettings}:{task:Task;problem?:Problem;onOpenProblem:(problem:Problem)=>void;onOpenSettings:()=>void}) {
   const template=reviewTemplate(task);
   const origin=task.task_origin||((task.id||task.review_method)?"review_attempt":"first_attempt");
   const hasPrevious=task.attempt_exists!==false&&!!(task.previous_date||task.previous_error_point);
   const answerAvailable=!!(task.official_answer_text||task.answer_excerpt||task.official_answer_pdf_registered);
+  const [tab,setTab]=useState<"task"|"answer">("task");
   return <div className="today-task-detail">
+    <div className="task-detail-tabs"><button className={tab==="task"?"active":""} type="button" onClick={()=>setTab("task")}>問題・課題</button><button className={tab==="answer"?"active":""} type="button" onClick={()=>setTab("answer")}>模範解答</button></div>
+    <div className={`today-answer-split tab-${tab}`}><section className="task-detail-pane">
     <div className="today-task-info-grid">
       <div><span>problem_id</span><strong>{task.problem_id}</strong></div>
       <div><span>display_label</span><strong>{task.title}</strong></div>
       <div><span>theme</span><strong>{task.theme||"未設定"}</strong></div>
       <div><span>canonical_problem_type</span><strong>{task.canonical_problem_type||"未設定"}</strong></div>
+      <div><span>question_excerpt</span><strong>{(problem as Problem&{question_excerpt?:string})?.question_excerpt||"問題文は問題詳細または問題PDFで確認してください"}</strong></div>
       <div><span>task_origin</span><strong>{origin}</strong></div>
       <div><span>review_method</span><strong>{task.review_method||"初回演習"}</strong></div>
       <div><span>使用シート</span><strong>{template.sheetLabel}</strong></div>
@@ -523,15 +577,16 @@ function TodayTaskDetails({task,problem,onOpenProblem}:{task:Task;problem?:Probl
       <SheetLink href={sheetHref(task.mode)} label="解答シート"/>
       <StudyPromptButtons item={task}/>
     </div>
+    </section><AnswerIndexPanel task={task} onOpenSettings={onOpenSettings}/></div>
   </div>;
 }
-function TodayTaskRows({task:t,problem,busy,run,date,onReview,onOpenProblem,onPostpone}:{task:Task;problem?:Problem;busy:boolean;run:(a:()=>Promise<unknown>,s:string)=>void;date:string;onReview:(task:Task)=>void;onOpenProblem:(problem:Problem)=>void;onPostpone:(task:Task,action:ScheduleAction)=>void}) {
+function TodayTaskRows({task:t,problem,busy,run,date,onReview,onOpenProblem,onOpenSettings,onPostpone}:{task:Task;problem?:Problem;busy:boolean;run:(a:()=>Promise<unknown>,s:string)=>void;date:string;onReview:(task:Task)=>void;onOpenProblem:(problem:Problem)=>void;onOpenSettings:()=>void;onPostpone:(task:Task,action:ScheduleAction)=>void}) {
   const isReview=!!t.id&&!!t.review_type;
   const toggle=()=>isReview
     ?onReview(t)
     :run(()=>post("/api/today-check",{date,problem_id:t.problem_id,kind:t.kind,checked:!t.checked}),t.checked?"チェックを外しました":"解答済み・採点待ちにしました");
   return <><tr className={t.checked?"task-checked":""}><td><Badge tone={t.kind==="S確認"?"blue":t.error_type==="K"?"red":""}>{t.kind}</Badge></td><td><strong>{t.problem_id}</strong><small>{t.title}{t.checked&&<em className="grading-wait">採点待ち</em>}</small></td><td>{modes[t.mode]||t.mode}</td><td>{t.minutes}分</td><td>{t.reason}{t.postpone_count?` ・ 先送り${t.postpone_count}回（${t.postpone_reason}）`:""}</td><td><div className="task-actions"><SheetLink href={sheetHref(t.mode)} label="シート"/><label className="task-check"><input type="checkbox" checked={!!t.checked} disabled={busy} onChange={toggle}/><span>{isReview?"復習結果を記録":"解答済み"}</span></label></div><ScheduleQuickButtons item={t} busy={busy} select={action=>onPostpone(t,action)}/></td></tr>
-    <tr className="task-plan-row"><td colSpan={6}><TodayTaskDetails task={t} problem={problem} onOpenProblem={onOpenProblem}/>{(t.review_method||t.review_reason)&&<ReviewPlanDetails item={t} compact/>}</td></tr></>;
+    <tr className="task-plan-row"><td colSpan={6}><TodayTaskDetails task={t} problem={problem} onOpenProblem={onOpenProblem} onOpenSettings={onOpenSettings}/>{(t.review_method||t.review_reason)&&<ReviewPlanDetails item={t} compact/>}</td></tr></>;
 }
 
 function ProblemChip({problem,latest,rank,select}:{problem:Problem;latest?:Attempt;rank:string;select:(problem:Problem)=>void}){
@@ -899,7 +954,7 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
   const [examDate,setExamDate]=useState(data.settings.exam_date);
   const [dailyMinutes,setDailyMinutes]=useState(String(data.settings.daily_study_minutes||150));
   const [problemPreview,setProblemPreview]=useState<{raw:unknown;version:string;added:number;changed:number;unchanged:number;total:number}|null>(null);
-  const [answerPreview,setAnswerPreview]=useState<{raw:unknown;version:string;total:number;added:number;changed:number;unchanged:number}|null>(null);
+  const [answerPreview,setAnswerPreview]=useState<{raw:unknown;version:string;total:number;added:number;changed:number;unchanged:number;unmatched:number}|null>(null);
   const [aliasPreview,setAliasPreview]=useState<{raw:unknown;version:string;total:number;added:number;changed:number;unchanged:number}|null>(null);
   const [integratedPreview,setIntegratedPreview]=useState<{raw:unknown;version:string;problemCount:number;answerCount:number;aliasCount:number;added:number;changed:number;unchanged:number}|null>(null);
   const [backupMasterWarning,setBackupMasterWarning]=useState<unknown|null>(null);
@@ -958,7 +1013,9 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
   const previewAnswerIndex=async(file:File)=>{
     try{const raw=JSON.parse(await file.text()),parsed=parseAnswerIndexPayload(raw);
       const diff=compareRows(data.answerIndex as unknown as Record<string,unknown>[],parsed.answers as unknown as Record<string,unknown>[],"problem_id");
-      setAnswerPreview({raw,version:parsed.version,total:parsed.answers.length,...diff});setMasterError("");
+      const problemIds=new Set(data.problems.map(problem=>problem.problem_id));
+      const unmatched=parsed.answers.filter(answer=>!problemIds.has(answer.problem_id)).length;
+      setAnswerPreview({raw,version:parsed.version,total:parsed.answers.length,...diff,unmatched});setMasterError("");
     }catch(error){setAnswerPreview(null);setMasterError((error as Error).message)}
   };
   const previewAliases=async(file:File)=>{
@@ -1003,7 +1060,7 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
       </div>}
       {(problemPreview||answerPreview||aliasPreview)&&<div className="individual-previews">
         {problemPreview&&<div className="master-diff"><strong>問題マスター：{problemPreview.version}・{problemPreview.total}件</strong><span>追加 {problemPreview.added}／更新 {problemPreview.changed}／変更なし {problemPreview.unchanged}／削除 0</span><div className="button-row"><button className="primary small" disabled={busy} onClick={()=>{const preview=problemPreview;setProblemPreview(null);run(()=>post("/api/master/problem/import",preview.raw),"問題マスターを取り込み、整合性を診断しました")}}>取り込む</button><button className="ghost small" onClick={()=>setProblemPreview(null)}>キャンセル</button></div></div>}
-        {answerPreview&&<div className="master-diff"><strong>解答索引：{answerPreview.version}・{answerPreview.total}件</strong><span>追加 {answerPreview.added}／更新 {answerPreview.changed}／変更なし {answerPreview.unchanged}／削除 0</span><div className="button-row"><button className="primary small" disabled={busy} onClick={()=>{const preview=answerPreview;setAnswerPreview(null);run(()=>post("/api/master/answer/import",preview.raw),"模範解答索引を取り込みました")}}>取り込む</button><button className="ghost small" onClick={()=>setAnswerPreview(null)}>キャンセル</button></div></div>}
+        {answerPreview&&<div className="master-diff"><strong>解答索引：{answerPreview.version}・{answerPreview.total}件</strong><span>読み込み {answerPreview.total}／新規 {answerPreview.added}／更新 {answerPreview.changed}／変更なし {answerPreview.unchanged}／未照合 {answerPreview.unmatched}</span><div className="button-row"><button className="primary small" disabled={busy} onClick={()=>{const preview=answerPreview;setAnswerPreview(null);run(()=>post("/api/master/answer/import",preview.raw),`解答索引を更新しました。読み込み：${preview.total}件／新規：${preview.added}件／更新：${preview.changed}件／変更なし：${preview.unchanged}件／未照合：${preview.unmatched}件`)}}>取り込む</button><button className="ghost small" onClick={()=>setAnswerPreview(null)}>キャンセル</button></div></div>}
         {aliasPreview&&<div className="master-diff"><strong>エイリアス：{aliasPreview.version}・{aliasPreview.total}件</strong><span>追加 {aliasPreview.added}／更新 {aliasPreview.changed}／変更なし {aliasPreview.unchanged}／削除 0</span><div className="button-row"><button className="primary small" disabled={busy} onClick={()=>{const preview=aliasPreview;setAliasPreview(null);run(()=>post("/api/master/aliases/import",preview.raw),"問題エイリアスを取り込みました")}}>取り込む</button><button className="ghost small" onClick={()=>setAliasPreview(null)}>キャンセル</button></div></div>}
       </div>}
       <div className="master-status-row">

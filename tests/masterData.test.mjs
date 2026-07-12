@@ -25,6 +25,21 @@ test("problem_master と answer_index のスキーマを正規化する",()=>{
   assert.equal(answers.answers[0].problem_id,"WB-6-S-01");
 });
 
+test("answer_indexキーとdocument_key形式の解答索引を読み込める",()=>{
+  const payload=parseAnswerIndexPayload({
+    answer_index:[{problem_id:"WB-4-A-21",document_key:"mathstat_answers_2025_03_07",page_start:68,page_end:69,open_page:68}],
+    documents:[]
+  });
+  assert.equal(payload.answers.length,1);
+  assert.equal(payload.answers[0].problem_id,"WB-4-A-21");
+  assert.equal(payload.answers[0].pdf_file_name,"MathStat_Answers.pdf");
+  assert.equal(payload.answers[0].page_start,68);
+  assert.equal(payload.answers[0].page_end,69);
+  assert.equal(payload.answers[0].open_page,68);
+  assert.equal(payload.answers[0].document_key,"mathstat_answers_2025_03_07");
+  assert.equal(parseAnswerIndexPayload({answers:[]}).answers.length,0);
+});
+
 test("S4に指数型分布族が貼られた場合はS1候補を出し、表示テーマをS4正本へ補正する",()=>{
   const problems=parseProblemMasterPayload(rawProblems).problems.map((problem,index)=>({
     id:index+1,source_type:"whitebook",priority:"core",role:"foundation",recommended_mode:"skeleton",

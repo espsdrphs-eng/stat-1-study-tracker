@@ -61,17 +61,36 @@ export function parseProblemMasterPayload(raw:unknown):ProblemMasterPayload{
 
 export function parseAnswerIndexPayload(raw:unknown):AnswerIndexPayload{
   const root=Array.isArray(raw)?{answers:raw}:raw as Record<string,unknown>;
-  const rows=Array.isArray(root?.answers)?root.answers:Array.isArray(root?.answer_index)?root.answer_index:null;
+  const rows=Array.isArray(root?.answer_index)?root.answer_index:Array.isArray(root?.answers)?root.answers:null;
   if(!rows) throw new Error("answer_index.json に answers 配列がありません");
   const version=String(root.version||root.index_version||"mathstat-answers-v1"),seen=new Set<string>();
+  const documents=new Map<string,Record<string,unknown>>();
+  if(Array.isArray(root?.documents)){
+    for(const document of root.documents){
+      if(document&&typeof document==="object"){
+        const item=document as Record<string,unknown>,key=String(item.document_key||item.key||item.id||"");
+        if(key) documents.set(key,item);
+      }
+    }
+  }
+  const inferPdfName=(item:Record<string,unknown>)=>{
+    const documentKey=String(item.document_key||"");
+    const document=documentKey?documents.get(documentKey):undefined;
+    const explicit=item.pdf_file_name||item.file_name||item.document_file_name||item.pdf_name||document?.pdf_file_name||document?.file_name||document?.name;
+    if(explicit) return String(explicit);
+    if(/mathstat[_-]?answers/i.test(documentKey)) return "MathStat_Answers.pdf";
+    return "";
+  };
   const answers=rows.map((entry,index)=>{
     if(!entry||typeof entry!=="object") throw new Error(`${index+1}件目がオブジェクトではありません`);
     const item=entry as Record<string,unknown>,problem_id=canonicalId(item.problem_id);
     if(!problem_id) throw new Error(`${index+1}件目の problem_id が空です`);
     if(seen.has(problem_id)) throw new Error(`${problem_id} が重複しています`);
     seen.add(problem_id);
-    return {problem_id,answer_available:Boolean(item.answer_available),pdf_file_name:String(item.pdf_file_name||""),
-      page_start:item.page_start==null?null:Number(item.page_start),page_end:item.page_end==null?null:Number(item.page_end),
+    const pageStart=item.page_start==null?null:Number(item.page_start),pageEnd=item.page_end==null?null:Number(item.page_end);
+    return {problem_id,answer_available:item.answer_available==null?true:Boolean(item.answer_available),pdf_file_name:inferPdfName(item),
+      document_key:String(item.document_key||""),page_start:pageStart,page_end:pageEnd,
+      open_page:item.open_page==null?pageStart:Number(item.open_page),
       section_label:String(item.section_label||""),answer_excerpt:String(item.answer_excerpt||""),
       canonical_keywords:array(item.canonical_keywords),index_version:version} as AnswerIndexEntry;
   });

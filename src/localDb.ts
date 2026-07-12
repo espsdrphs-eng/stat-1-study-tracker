@@ -923,7 +923,20 @@ async function importProblemMaster(raw:unknown){
 
 async function importAnswerIndex(raw:unknown){
   const payload=parseAnswerIndexPayload(raw),now=new Date().toISOString();
-  await db.answerIndex.bulkPut(payload.answers.map(answer=>({...answer,imported_at:now,index_version:payload.version})));
+  const [currentAnswers,problems]=await Promise.all([db.answerIndex.toArray(),db.problems.toArray()]);
+  const currentMap=new Map(currentAnswers.map(answer=>[answer.problem_id,answer]));
+  const problemIds=new Set(problems.map(problem=>problem.problem_id));
+  const clean=(value:Record<string,unknown>)=>Object.fromEntries(Object.entries(value).filter(([key])=>!["imported_at","index_version"].includes(key)));
+  let added=0,changed=0,unchanged=0,unmatched=0;
+  const rows=payload.answers.map(answer=>{
+    const old=currentMap.get(answer.problem_id);
+    if(!old) added++;
+    else if(JSON.stringify(clean(old as unknown as Record<string,unknown>))===JSON.stringify(clean(answer as unknown as Record<string,unknown>))) unchanged++;
+    else changed++;
+    if(!problemIds.has(answer.problem_id)) unmatched++;
+    return {...answer,imported_at:now,index_version:payload.version};
+  });
+  await db.answerIndex.bulkPut(rows);
   for(const answer of payload.answers){
     const problem=await db.problems.get(answer.problem_id);
     if(problem) await db.problems.update(answer.problem_id,{answer_available:answer.answer_available});
@@ -931,7 +944,7 @@ async function importAnswerIndex(raw:unknown){
   await db.meta.bulkPut([{key:"answer_index_version",value:payload.version},{key:"answer_index_updated_at",value:now}]);
   await appendImportHistory("answer_index",payload.version,payload.answers.length);
   await addImportLog("answer_index",payload.version,0,payload.answers.length,0);
-  return {count:payload.answers.length,version:payload.version};
+  return {count:payload.answers.length,version:payload.version,added,changed,unchanged,unmatched};
 }
 
 async function importAliases(raw:unknown){
@@ -1376,13 +1389,22 @@ async function bootstrap():Promise<Bootstrap>{
   }).map(saved=>{
     const key=taskSnapshotId(saved),current=generatedMap.get(key),review=saved.id?reviewMap.get(saved.id):undefined;
     const record=!saved.id?taskPostponements.get(`${saved.problem_id}:${saved.kind}`):undefined;
+    const answer=answerMap.get(saved.problem_id);
     const forcedMust=review?.triage_override==="must"||record?.triage_override==="must";
     return {...saved,...current,
       title:pmap.get(saved.problem_id)?.display_label||pmap.get(saved.problem_id)?.title||saved.title,
       theme:pmap.get(saved.problem_id)?.theme||saved.theme,
       canonical_problem_type:pmap.get(saved.problem_id)?.canonical_problem_type||saved.canonical_problem_type,
-      canonical_keywords:[...(pmap.get(saved.problem_id)?.canonical_keywords||[]),...(answerMap.get(saved.problem_id)?.canonical_keywords||saved.canonical_keywords||[])],
-      answer_excerpt:answerMap.get(saved.problem_id)?.answer_excerpt||saved.answer_excerpt,
+      canonical_keywords:[...(pmap.get(saved.problem_id)?.canonical_keywords||[]),...(answer?.canonical_keywords||saved.canonical_keywords||[])],
+      answer_excerpt:answer?.answer_excerpt||saved.answer_excerpt,
+      official_answer_text:answer?.answer_excerpt||saved.official_answer_text,
+      official_answer_pdf_name:answer?.pdf_file_name||saved.official_answer_pdf_name,
+      official_answer_pdf_registered:!!answer?.pdf_file_name&&pdfNames.has(answer.pdf_file_name),
+      answer_section_label:answer?.section_label||saved.answer_section_label,
+      official_answer_page:answer?.open_page??answer?.page_start??saved.official_answer_page,
+      answer_page_start:answer?.page_start,
+      answer_page_end:answer?.page_end,
+      answer_document_key:answer?.document_key,
       minutes:Number(snapshot!.initial_estimated_minutes[key]??saved.minutes),
       triage:forcedMust?"must":snapshot!.initial_bucket[key]||saved.triage||"tomorrow",
       checked:checkedKeys.has(`today-check:${today}:${saved.problem_id}:${saved.kind}`)||todayAttemptProblems.has(saved.problem_id)

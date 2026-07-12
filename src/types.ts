@@ -13,7 +13,7 @@ export type Problem = {
 };
 export type AnswerIndexEntry = {
   problem_id:string; answer_available:boolean; pdf_file_name?:string; page_start?:number|null;
-  page_end?:number|null; section_label?:string; answer_excerpt?:string;
+  page_end?:number|null; open_page?:number|null; document_key?:string; section_label?:string; answer_excerpt?:string;
   canonical_keywords?:string[]; imported_at?:string; index_version?:string;
 };
 export type CorrectionLog = {
@@ -100,7 +100,7 @@ export type Task = {
   previous_corrected_answer?:string; triage?:"must"|"if_time"|"tomorrow";
   official_answer_text?:string; official_answer_url?:string; has_saved_gpt_feedback?:boolean;
   official_answer_pdf_name?:string; official_answer_pdf_registered?:boolean; answer_section_label?:string;
-  official_answer_page?:number|null;
+  official_answer_page?:number|null; answer_page_start?:number|null; answer_page_end?:number|null; answer_document_key?:string;
   canonical_problem_type?:string; canonical_keywords?:string[]; answer_excerpt?:string;
   allowed_reference_level?:number; actual_reference_level?:number;
   reference_closed_reproduction?:boolean; triage_override?:"must";
