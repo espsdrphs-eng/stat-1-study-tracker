@@ -21,7 +21,20 @@ type StoredAttempt = Attempt;
 type StoredReview = Review;
 type StoredWeakNote = WeakNote;
 type StoredPastSession = PastSession;
-type StoredAnswerPdf={file_name:string;blob:Blob;uploaded_at:string};
+type StoredAnswerPdf={
+  file_name:string;blob:Blob;uploaded_at:string;document_key?:string;kind?:string;source_book?:string;
+  original_file_name?:string;display_name?:string;page_count?:number;sha256?:string;registered_at?:string;
+};
+
+export const ANSWER_PDF_DOCUMENTS = [{
+  document_key:"mathstat_answers_2025_03_07",
+  kind:"answer",
+  source_book:"MathStat",
+  display_name:"白本・模範解答PDF",
+  expected_file_name:"MathStat_Answers.pdf",
+  expected_page_count:151,
+  expected_sha256:"ca5b9503d01070e898602af2d7b9d0735ab4afdfea02655b90fa80858ea5fd1c"
+}] as const;
 
 const migrationSProblems=[
   {chapter:2,number:1,theme:"確率分布の基本"},
@@ -343,6 +356,24 @@ class StudyDatabase extends Dexie {
       correctionLogs:"++id,corrected_at,raw_gpt_problem_id,corrected_problem_id",
       answerPdfs:"&file_name,uploaded_at",problemAliases:"&alias,problem_id",
       importLogs:"++id,imported_at,file_kind"
+    });
+    this.version(12).stores({
+      problems:"&problem_id,category,chapter,priority,completion_status,normalized_label",
+      attempts:"++id,problem_id,date,error_type,mark,primary_error_type,[problem_id+date]",
+      reviews:"++id,problem_id,due_date,status,review_type,task_origin,source_problem_id",
+      roadmap:"&order_index,problem_id,is_active",
+      weakNotes:"++id,problem_id,date,error_type,is_resolved,auto_generated,last_quizzed_at",
+      pastSessions:"++id,year,date,session_type,selection_result",
+      sMemory:"&problem_id,state,last_touched",meta:"&key",
+      answerIndex:"&problem_id,answer_available,pdf_file_name,document_key",
+      correctionLogs:"++id,corrected_at,raw_gpt_problem_id,corrected_problem_id",
+      answerPdfs:"&file_name,document_key,uploaded_at,registered_at",problemAliases:"&alias,problem_id",
+      importLogs:"++id,imported_at,file_kind"
+    }).upgrade(async tx=>{
+      await tx.table("answerPdfs").toCollection().modify((pdf:StoredAnswerPdf)=>{
+        pdf.original_file_name=pdf.original_file_name||pdf.file_name;
+        pdf.registered_at=pdf.registered_at||pdf.uploaded_at;
+      });
     });
   }
 }
@@ -1123,24 +1154,66 @@ export async function answerIndexExport(){
   const meta=await db.meta.get("answer_index_version");
   return {version:meta?.value||"unversioned",answers:await db.answerIndex.toArray()};
 }
-export async function saveAnswerPdf(file:File){
+const pdfPageCountFromText=(text:string)=>[...text.matchAll(/\/Type\s*\/Page\b/g)].length;
+const hexFromBuffer=(buffer:ArrayBuffer)=>[...new Uint8Array(buffer)].map(byte=>byte.toString(16).padStart(2,"0")).join("");
+
+export async function inspectAnswerPdf(file:File){
+  const buffer=await file.arrayBuffer();
+  const sha256=crypto?.subtle?hexFromBuffer(await crypto.subtle.digest("SHA-256",buffer)):"";
+  const text=new TextDecoder("latin1").decode(new Uint8Array(buffer));
+  return {original_file_name:file.name,size:file.size,page_count:pdfPageCountFromText(text),sha256};
+}
+
+async function findStoredAnswerPdf(identifier:string){
   await initialize();
-  await db.answerPdfs.put({file_name:file.name,blob:file,uploaded_at:new Date().toISOString()});
+  const byDocumentKey=await db.answerPdfs.where("document_key").equals(identifier).first();
+  if(byDocumentKey) return byDocumentKey;
+  return await db.answerPdfs.get(identifier);
+}
+
+export async function saveAnswerPdf(file:File,registration:{document_key:string}){
+  await initialize();
+  const doc=ANSWER_PDF_DOCUMENTS.find(item=>item.document_key===registration.document_key);
+  if(!doc) throw new Error("登録先document_keyが不明です");
+  const inspection=await inspectAnswerPdf(file);
+  const pageMatches=inspection.page_count===doc.expected_page_count;
+  const hashMatches=!doc.expected_sha256||inspection.sha256===doc.expected_sha256;
+  if(!pageMatches||!hashMatches){
+    throw new Error(`選択したPDFは登録先と一致しない可能性があります。期待：${doc.expected_file_name} / ${doc.expected_page_count}ページ。選択：${file.name} / ${inspection.page_count||"不明"}ページ。別PDFを選んでください。`);
+  }
+  const now=new Date().toISOString();
+  const existing=await db.answerPdfs.where("document_key").equals(registration.document_key).toArray();
+  if(existing.length) await db.answerPdfs.bulkDelete(existing.map(row=>row.file_name));
+  const storageKey=`${registration.document_key}.pdf`;
+  await db.answerPdfs.put({
+    file_name:storageKey,document_key:registration.document_key,kind:doc.kind,source_book:doc.source_book,
+    original_file_name:file.name,display_name:doc.display_name,page_count:inspection.page_count,
+    sha256:inspection.sha256,blob:file,uploaded_at:now,registered_at:now
+  });
+  const saved=await findStoredAnswerPdf(registration.document_key);
+  if(!saved||!saved.blob||saved.blob.size<=0||saved.document_key!==registration.document_key||saved.page_count!==doc.expected_page_count){
+    throw new Error("PDFの保存確認に失敗しました。もう一度登録してください。");
+  }
 }
 export async function openAnswerPdf(fileName:string,page?:number|null){
   const popup=window.open("about:blank","_blank");
-  const row=await db.answerPdfs.get(fileName);
+  const row=await findStoredAnswerPdf(fileName);
   if(!row){popup?.close();throw new Error("PDF本体はこのiPadに登録されていません")}
   const url=URL.createObjectURL(row.blob),target=page?`${url}#page=${page}`:url;
   if(popup) popup.location.href=target; else window.open(target,"_blank");
   setTimeout(()=>URL.revokeObjectURL(url),120000);
 }
 export async function answerPdfObjectUrl(fileName:string,page?:number|null){
-  await initialize();
-  const row=await db.answerPdfs.get(fileName);
+  const row=await findStoredAnswerPdf(fileName);
   if(!row) throw new Error("PDF本体はこのiPadに登録されていません");
   const url=URL.createObjectURL(row.blob);
   return {url,pageUrl:page?`${url}#page=${page}`:url,revoke:()=>URL.revokeObjectURL(url)};
+}
+
+export async function deleteAnswerPdf(documentKey:string){
+  await initialize();
+  const rows=await db.answerPdfs.where("document_key").equals(documentKey).toArray();
+  if(rows.length) await db.answerPdfs.bulkDelete(rows.map(row=>row.file_name));
 }
 
 async function bootstrap():Promise<Bootstrap>{
@@ -1155,6 +1228,7 @@ async function bootstrap():Promise<Bootstrap>{
   const pmap=new Map(problems.map(p=>[p.problem_id,p]));
   const answerMap=new Map(answerIndex.map(answer=>[answer.problem_id,answer]));
   const pdfNames=new Set(answerPdfs.map(pdf=>pdf.file_name));
+  const pdfDocumentKeys=new Set(answerPdfs.map(pdf=>pdf.document_key).filter(Boolean) as string[]);
   const smap=new Map(sMemory.map(memory=>[memory.problem_id,memory]));
   const attemptMap=new Map(attempts.map(attempt=>[attempt.id,attempt]));
   const settings={
@@ -1243,8 +1317,9 @@ async function bootstrap():Promise<Bootstrap>{
       has_saved_gpt_feedback:!!(source?.improvement_guidance||source?.required_derivation||source?.corrected_answer||source?.result_summary),
       official_answer_text:answer?.answer_available&&answer.answer_excerpt?answer.answer_excerpt:p?.official_answer||"",
       official_answer_url:p?.official_answer_url||"",official_answer_pdf_name:answer?.pdf_file_name||"",
-      official_answer_pdf_registered:!!answer?.pdf_file_name&&pdfNames.has(answer.pdf_file_name),
-      answer_section_label:answer?.section_label||"",official_answer_page:answer?.page_start??null,
+      official_answer_pdf_registered:!!answer&&(!!answer.document_key&&pdfDocumentKeys.has(answer.document_key)||!!answer.pdf_file_name&&pdfNames.has(answer.pdf_file_name)),
+      answer_section_label:answer?.section_label||"",official_answer_page:answer?.open_page??answer?.page_start??null,
+      answer_page_start:answer?.page_start,answer_page_end:answer?.page_end,answer_document_key:answer?.document_key,
       canonical_problem_type:p?.canonical_problem_type||p?.theme||"",
       canonical_keywords:[...(p?.canonical_keywords||[]),...(answer?.canonical_keywords||[])],
       answer_excerpt:answer?.answer_excerpt||"",
@@ -1399,7 +1474,7 @@ async function bootstrap():Promise<Bootstrap>{
       answer_excerpt:answer?.answer_excerpt||saved.answer_excerpt,
       official_answer_text:answer?.answer_excerpt||saved.official_answer_text,
       official_answer_pdf_name:answer?.pdf_file_name||saved.official_answer_pdf_name,
-      official_answer_pdf_registered:!!answer?.pdf_file_name&&pdfNames.has(answer.pdf_file_name),
+      official_answer_pdf_registered:!!answer&&(!!answer.document_key&&pdfDocumentKeys.has(answer.document_key)||!!answer.pdf_file_name&&pdfNames.has(answer.pdf_file_name)),
       answer_section_label:answer?.section_label||saved.answer_section_label,
       official_answer_page:answer?.open_page??answer?.page_start??saved.official_answer_page,
       answer_page_start:answer?.page_start,
@@ -1432,6 +1507,12 @@ async function bootstrap():Promise<Bootstrap>{
   const warning=timeSummary.warning,guidance=timeSummary.guidance;
   const diagnostics=await diagnoseData();
   let importHistory:string[]=[];try{importHistory=JSON.parse(metaEntries.find(entry=>entry.key==="master_import_history")?.value||"[]")}catch{importHistory=[]}
+  const pdfDocuments=answerPdfs.map(pdf=>({
+    document_key:pdf.document_key||pdf.file_name,kind:pdf.kind,source_book:pdf.source_book,
+    original_file_name:pdf.original_file_name||pdf.file_name,display_name:pdf.display_name||pdf.original_file_name||pdf.file_name,
+    page_count:pdf.page_count,sha256:pdf.sha256,registered_at:pdf.registered_at||pdf.uploaded_at,file_name:pdf.file_name,
+    answer_count:answerIndex.filter(answer=>answer.document_key&&pdf.document_key?answer.document_key===pdf.document_key:answer.pdf_file_name===pdf.original_file_name||answer.pdf_file_name===pdf.file_name).length
+  }));
   const masterStatus={
     problem_count:problems.length,answer_count:answerIndex.length,
     problem_version:metaEntries.find(entry=>entry.key==="problem_master_version")?.value||"未設定",
@@ -1441,7 +1522,7 @@ async function bootstrap():Promise<Bootstrap>{
     alias_updated_at:metaEntries.find(entry=>entry.key==="problem_alias_updated_at")?.value||"",
     alias_version:metaEntries.find(entry=>entry.key==="problem_alias_version")?.value||"未設定",
     alias_count:problemAliases.length,
-    pdf_files:[...pdfNames],diagnostics,import_history:importHistory
+    pdf_files:[...new Set([...pdfNames,...pdfDocumentKeys])],pdf_documents:pdfDocuments,diagnostics,import_history:importHistory
   };
   return {problems:problems.sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.category.localeCompare(b.category)||a.problem_number-b.problem_number),attempts,reviews,roadmap,weakNotes,pastSessions,answerIndex,problemAliases,dashboard,settings,masterStatus,
     today:{tasks,totalLoad,plannedMinutes:plannedTotal,remainingMinutes,actualMinutes,targetMinutes:settings.daily_study_minutes,capacityPercent,warning,guidance,

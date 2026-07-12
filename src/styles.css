@@ -238,6 +238,21 @@ header h1{font-size:28px;font-weight:700;letter-spacing:-.02em;color:var(--text-
 .answer-missing-pdf p{margin:8px 0 0;color:var(--text-secondary);line-height:1.7}
 .reference-reproduced{display:flex;align-items:center;gap:8px;color:var(--text-primary);font-size:13px;font-weight:700}
 .reference-reproduced input{width:18px;height:18px;accent-color:var(--accent)}
+.pdf-document-status{display:grid;gap:10px;margin-top:12px}
+.pdf-document-status article{background:var(--surface-subtle);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center}
+.pdf-document-status span,.pdf-document-status strong,.pdf-document-status small{display:block}
+.pdf-document-status span{font-size:12px;color:var(--text-secondary);font-weight:700}
+.pdf-document-status strong{font-size:16px;color:var(--text-primary);margin-top:3px}
+.pdf-document-status small{grid-column:1/-1;color:var(--text-secondary);font-size:12px;line-height:1.7}
+.pdf-document-status .button-row{grid-column:1/-1}
+.pdf-register-confirm{display:grid;gap:14px}
+.pdf-register-confirm dl{display:grid;grid-template-columns:160px minmax(0,1fr);gap:8px 12px;background:var(--surface-subtle);border:1px solid var(--border);border-radius:var(--radius-md);padding:14px;margin:0}
+.pdf-register-confirm dt{font-size:12px;color:var(--text-secondary);font-weight:700}
+.pdf-register-confirm dd{margin:0;min-width:0;overflow-wrap:anywhere;color:var(--text-primary);font-size:13px}
+.match-ok,.match-warning{display:flex;gap:10px;align-items:flex-start;border-radius:var(--radius-md);padding:12px;font-size:13px;line-height:1.6}
+.match-ok{background:var(--success-soft);color:var(--success);border:1px solid #CBEBDD}
+.match-warning{background:var(--warning-soft);color:var(--warning);border:1px solid #F0D28F}
+.match-warning strong,.match-warning span{display:block}
 @media(max-width:900px){
   .task-detail-tabs{display:flex}
   .today-answer-split{display:block}
@@ -245,4 +260,4 @@ header h1{font-size:28px;font-weight:700;letter-spacing:-.02em;color:var(--text-
   .today-answer-split.tab-answer .task-detail-pane{display:none}
   .answer-inline-frame{height:430px}
 }
-@media(max-width:600px){.answer-view-toolbar{align-items:flex-start;flex-direction:column}.answer-inline-frame{height:360px}}
+@media(max-width:600px){.answer-view-toolbar{align-items:flex-start;flex-direction:column}.answer-inline-frame{height:360px}.pdf-document-status article{grid-template-columns:1fr}.pdf-register-confirm dl{grid-template-columns:1fr}}

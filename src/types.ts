@@ -130,7 +130,9 @@ export type Bootstrap = {
   settings:{exam_date:string;daily_study_minutes:number};
   masterStatus:{problem_count:number;answer_count:number;problem_version:string;answer_version:string;
     problem_updated_at:string;answer_updated_at:string;alias_updated_at:string;alias_version:string;alias_count:number;
-    pdf_files:string[];diagnostics:DataDiagnostic[];import_history:string[]};
+    pdf_files:string[];pdf_documents:{document_key:string;kind?:string;source_book?:string;original_file_name?:string;
+      display_name?:string;page_count?:number;sha256?:string;registered_at?:string;file_name?:string;answer_count:number}[];
+    diagnostics:DataDiagnostic[];import_history:string[]};
   today:{tasks:Task[];totalLoad:number;plannedMinutes:number;remainingMinutes:number;actualMinutes:number;
     targetMinutes:number;capacityPercent:number;warning:string;guidance:string;
     triageMinutes?:{must:number;if_time:number;tomorrow:number};
