@@ -1210,6 +1210,20 @@ export async function answerPdfObjectUrl(fileName:string,page?:number|null){
   return {url,pageUrl:page?`${url}#page=${page}`:url,revoke:()=>URL.revokeObjectURL(url)};
 }
 
+export async function answerPdfRecord(identifier:string){
+  const row=await findStoredAnswerPdf(identifier);
+  if(!row) throw new Error("PDF本体はこのiPadに登録されていません");
+  return {
+    document_key:row.document_key||row.file_name,
+    file_name:row.file_name,
+    original_file_name:row.original_file_name||row.file_name,
+    display_name:row.display_name||row.original_file_name||row.file_name,
+    page_count:row.page_count,
+    sha256:row.sha256,
+    blob:row.blob
+  };
+}
+
 export async function deleteAnswerPdf(documentKey:string){
   await initialize();
   const rows=await db.answerPdfs.where("document_key").equals(documentKey).toArray();
