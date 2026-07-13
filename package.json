@@ -15,7 +15,6 @@
     "dexie": "^4.0.11",
     "js-yaml": "^4.1.0",
     "lucide-react": "^0.468.0",
-    "pdfjs-dist": "^6.1.200",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "vite": "^6.1.0"

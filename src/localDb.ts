@@ -441,6 +441,40 @@ const attemptMatchesProblem=(attempt:Attempt,problem:Problem)=>{
   return true;
 };
 
+const normalizeProblemId=(value:string)=>{
+  const raw=String(value||"").toUpperCase().replace(/[‐‑‒–—ー−]/g,"-").trim();
+  const white=raw.match(/^WB-(\d+)-([AS])-(\d+)$/);
+  if(white) return `WB-${Number(white[1])}-${white[2]}-${String(Number(white[3])).padStart(2,"0")}`;
+  const past=raw.match(/^PY-(\d{4})-Q(\d+)$/);
+  return past?`PY-${past[1]}-Q${Number(past[2])}`:raw;
+};
+const resolveCanonicalProblemId=(problemId:string,aliases:ProblemAlias[])=>{
+  let currentId=normalizeProblemId(problemId);
+  const visited=new Set<string>();
+  while(currentId&&!visited.has(currentId)){
+    visited.add(currentId);
+    const alias=aliases.find(item=>{
+      const row=item as ProblemAlias&{raw_problem_id?:string;corrected_problem_id?:string;canonical_problem_id?:string};
+      return normalizeProblemId(row.raw_problem_id||item.alias)===currentId;
+    }) as (ProblemAlias&{raw_problem_id?:string;corrected_problem_id?:string;canonical_problem_id?:string})|undefined;
+    const next=alias?.corrected_problem_id||alias?.canonical_problem_id||alias?.problem_id;
+    if(!next)break;
+    const normalizedNext=normalizeProblemId(next);
+    if(normalizedNext===currentId)break;
+    currentId=normalizedNext;
+  }
+  return currentId||problemId;
+};
+const expectedProblemMeta=(problemId:string)=>{
+  const id=normalizeProblemId(problemId),white=id.match(/^WB-(\d+)-([AS])-(\d{2})$/),past=id.match(/^PY-(\d{4})-Q(\d+)$/);
+  if(white){
+    const chapter=Number(white[1]),category=white[2] as "S"|"A",problem_number=Number(white[3]);
+    return {category,chapter,problem_number,display_label:`第${chapter}章${category}問${problem_number}`};
+  }
+  if(past) return {category:"past_exam" as const,chapter:null,problem_number:Number(past[2]),display_label:`${past[1]}年問${Number(past[2])}`};
+  return null;
+};
+
 async function initialize() {
   if(await db.meta.get("seeded")) return;
   if(await db.problems.count()){
@@ -1014,17 +1048,39 @@ async function diagnoseData():Promise<DataDiagnostic[]>{
   ]);
   const pmap=new Map(problems.map(problem=>[problem.problem_id,problem])),amap=new Map(answers.map(answer=>[answer.problem_id,answer]));
   const diagnostics:DataDiagnostic[]=[];
+  for(const problem of problems){
+    const expected=expectedProblemMeta(problem.problem_id);
+    if(expected){
+      if(problem.category!==expected.category) diagnostics.push({id:`problem-category-${problem.problem_id}`,severity:"critical",problem_id:problem.problem_id,record_type:"problem",message:"問題IDとS/A種別が一致していません。",current_value:String(problem.category),suggested_value:expected.category,reason:"problem_idから機械的に判定できます。",repairable:true,recommended_action:"repair"});
+      if((problem.chapter??null)!==expected.chapter) diagnostics.push({id:`problem-chapter-${problem.problem_id}`,severity:"critical",problem_id:problem.problem_id,record_type:"problem",message:"問題IDと章番号が一致していません。",current_value:String(problem.chapter??""),suggested_value:String(expected.chapter??""),reason:"problem_idから機械的に判定できます。",repairable:true,recommended_action:"repair"});
+      if(Number(problem.problem_number)!==expected.problem_number) diagnostics.push({id:`problem-number-${problem.problem_id}`,severity:"critical",problem_id:problem.problem_id,record_type:"problem",message:"問題IDと問番号が一致していません。",current_value:String(problem.problem_number),suggested_value:String(expected.problem_number),reason:"problem_idから機械的に判定できます。",repairable:true,recommended_action:"repair"});
+      if(problem.display_label&&problem.display_label!==expected.display_label) diagnostics.push({id:`problem-label-${problem.problem_id}`,severity:"warning",problem_id:problem.problem_id,record_type:"problem",message:"表示名が問題IDと一致していません。",current_value:problem.display_label,suggested_value:expected.display_label,reason:"第n章S/A問mの表示名はproblem_idから安全に補正できます。",repairable:true,recommended_action:"repair"});
+    }
+    if(!String(problem.theme||"").trim()) diagnostics.push({id:`problem-theme-${problem.problem_id}`,severity:"critical",problem_id:problem.problem_id,record_type:"problem",message:"themeが未設定です。問題内容を推測せず、metadata_review_neededとして扱ってください。",current_value:"",suggested_value:"要確認",reason:"問題内容の正本が不足しています。",repairable:true,recommended_action:"repair"});
+    if(!String(problem.canonical_problem_type||"").trim()) diagnostics.push({id:`problem-type-${problem.problem_id}`,severity:"warning",problem_id:problem.problem_id,record_type:"problem",message:"canonical_problem_typeが未設定です。",current_value:"",suggested_value:"要確認",reason:"出題型の確認が必要です。",repairable:true,recommended_action:"repair"});
+  }
   for(const attempt of attempts){
-    const problem=pmap.get(attempt.problem_id);
+    const canonicalId=resolveCanonicalProblemId(attempt.problem_id,aliases);
+    if(canonicalId!==attempt.problem_id) diagnostics.push({id:`attempt-alias-${attempt.id}`,severity:"warning",problem_id:attempt.problem_id,record_type:"attempt",message:"解答履歴のproblem_idがaliasです。表示・集計上はcanonical IDへ統合します。",current_value:attempt.problem_id,suggested_value:canonicalId,reason:"problem_aliasesに基づく補正です。",repairable:true,recommended_action:"repair"});
+    const problem=pmap.get(canonicalId)||pmap.get(attempt.problem_id);
     if(!problem) diagnostics.push({id:`attempt-${attempt.id}`,severity:"critical",problem_id:attempt.problem_id,record_type:"attempt",message:"問題IDが problem_master に存在しません。",repairable:false});
     else if(!attemptMatchesProblem(attempt,problem)) diagnostics.push({id:`attempt-content-${attempt.id}`,severity:"critical",problem_id:attempt.problem_id,record_type:"attempt",message:"採点内容がこの問題の canonical_keywords と強く矛盾します。元のGPT出力を保持したまま問題IDを確認してください。",suggested_problem_id:attempt.problem_id==="WB-6-S-04"?"WB-6-S-01":undefined,repairable:false});
   }
   for(const review of reviews){
-    const problem=pmap.get(review.problem_id),source=attempts.find(attempt=>attempt.id===review.generated_from_attempt_id);
+    const canonicalId=resolveCanonicalProblemId(review.problem_id,aliases);
+    if(canonicalId!==review.problem_id) diagnostics.push({id:`review-alias-${review.id}`,severity:"warning",problem_id:review.problem_id,record_type:"review",message:"復習予定のproblem_idがaliasです。表示・集計上はcanonical IDへ統合します。",current_value:review.problem_id,suggested_value:canonicalId,reason:"problem_aliasesに基づく補正です。",review_id:review.id,repairable:true,recommended_action:"repair"});
+    const problem=pmap.get(canonicalId)||pmap.get(review.problem_id),source=attempts.find(attempt=>attempt.id===review.generated_from_attempt_id);
     if(review.status==="ignored") continue;
     if(!problem) diagnostics.push({id:`review-${review.id}`,severity:"critical",problem_id:review.problem_id,record_type:"review",message:"復習の問題IDが problem_master に存在しません。",repairable:false});
-    if(review.task_origin==="review_attempt"&&!attempts.some(attempt=>attempt.problem_id===review.problem_id))
+    const ownAttemptExists=attempts.some(attempt=>resolveCanonicalProblemId(attempt.problem_id,aliases)===canonicalId);
+    if(review.task_origin==="review_attempt"&&!ownAttemptExists)
       diagnostics.push({id:`review-origin-${review.id}`,severity:"warning",problem_id:review.problem_id,record_type:"review",message:"履歴がないのに review_attempt になっています。",repairable:true});
+    if(review.task_origin==="first_attempt"&&ownAttemptExists)
+      diagnostics.push({id:`review-origin-first-${review.id}`,severity:"warning",problem_id:review.problem_id,record_type:"review",message:"履歴があるのに first_attempt になっています。",repairable:true});
+    if(review.task_origin==="linked_s_check"&&problem?.category!=="S")
+      diagnostics.push({id:`review-origin-linked-a-${review.id}`,severity:"critical",problem_id:review.problem_id,record_type:"review",message:"S問題ではないのに linked_s_check になっています。related_drillとして扱う候補です。",current_value:"linked_s_check",suggested_value:"related_drill",reason:"linked_s_checkはS問題確認専用です。",review_id:review.id,repairable:true,recommended_action:"repair"});
+    if((review.task_origin==="linked_s_check"||review.review_type==="s_check")&&!review.source_problem_id&&!source)
+      diagnostics.push({id:`review-origin-no-source-${review.id}`,severity:"critical",problem_id:review.problem_id,record_type:"review",message:"linked_s_checkなのにsource_problem_idがありません。",review_id:review.id,repairable:false,recommended_action:"hold"});
     if(review.review_type==="s_check"){
       const sourceId=review.source_problem_id||source?.problem_id||"",sourceProblem=pmap.get(sourceId);
       const validLinks=[...new Set([...(sourceProblem?.related_s_problem_ids||[]),...list(sourceProblem?.linked_s_problems||"")])];
@@ -1062,29 +1118,70 @@ async function diagnoseData():Promise<DataDiagnostic[]>{
 }
 
 async function repairDataIntegrity(silent=false){
-  const [problems,attempts,reviews,notes]=await Promise.all([db.problems.toArray(),db.attempts.toArray(),db.reviews.toArray(),db.weakNotes.toArray()]);
+  const [problems,attempts,reviews,notes,aliases]=await Promise.all([db.problems.toArray(),db.attempts.toArray(),db.reviews.toArray(),db.weakNotes.toArray(),db.problemAliases.toArray()]);
   const pmap=new Map(problems.map(problem=>[problem.problem_id,problem]));
-  let selfReferencesRemoved=0;
+  let selfReferencesRemoved=0,idCorrections=0,metadataRepairs=0;
   for(const problem of problems){
+    const expected=expectedProblemMeta(problem.problem_id);
+    if(expected){
+      const patch:Partial<Problem>&{rawDisplayLabel?:string;metadata_status?:string}={};
+      if(problem.category!==expected.category) patch.category=expected.category;
+      if((problem.chapter??null)!==expected.chapter) patch.chapter=expected.chapter;
+      if(Number(problem.problem_number)!==expected.problem_number) patch.problem_number=expected.problem_number;
+      if(problem.display_label&&problem.display_label!==expected.display_label){
+        patch.rawDisplayLabel=problem.display_label;
+        patch.display_label=expected.display_label;
+        patch.title=expected.display_label;
+      }
+      if(!String(problem.theme||"").trim()){
+        patch.theme="要確認";
+        patch.metadata_status="metadata_review_needed";
+      }
+      if(!String(problem.canonical_problem_type||"").trim()) patch.canonical_problem_type="要確認";
+      if(Object.keys(patch).length){
+        await db.problems.update(problem.problem_id,patch);
+        Object.assign(problem,patch);
+        metadataRepairs++;
+      }
+    }
     const related=[...new Set([...(problem.related_s_problem_ids||[]),...list(problem.linked_s_problems)])];
-    if(related.includes(problem.problem_id)){
-      const cleaned=related.filter(problemId=>problemId!==problem.problem_id);
+    const cleaned=related.filter(problemId=>resolveCanonicalProblemId(problemId,aliases)!==resolveCanonicalProblemId(problem.problem_id,aliases));
+    if(cleaned.length!==related.length){
       await db.problems.update(problem.problem_id,{related_s_problem_ids:cleaned,linked_s_problems:cleaned.join(";")});
       problem.related_s_problem_ids=cleaned;problem.linked_s_problems=cleaned.join(";");
       selfReferencesRemoved++;
     }
   }
+  for(const attempt of attempts){
+    const canonicalId=resolveCanonicalProblemId(attempt.problem_id,aliases);
+    if(canonicalId!==attempt.problem_id&&pmap.has(canonicalId)){
+      await db.attempts.update(attempt.id,{problem_id:canonicalId,raw_problem_id:attempt.raw_problem_id||attempt.problem_id,id_corrected:true,id_correction_reason:"problem_aliasesに基づきcanonical IDへ補正"});
+      idCorrections++;
+    }
+  }
   for(const note of notes){
-    const problem=pmap.get(note.problem_id);
+    const canonicalId=resolveCanonicalProblemId(note.problem_id,aliases);
+    const problem=pmap.get(canonicalId)||pmap.get(note.problem_id);
+    if(canonicalId!==note.problem_id&&pmap.has(canonicalId)) await db.weakNotes.update(note.id,{problem_id:canonicalId});
     if(problem&&note.theme!==problem.theme) await db.weakNotes.update(note.id,{theme:problem.theme});
   }
   for(const review of reviews){
-    const ownAttempts=attempts.filter(attempt=>attempt.problem_id===review.problem_id);
+    const canonicalId=resolveCanonicalProblemId(review.problem_id,aliases);
+    if(canonicalId!==review.problem_id&&pmap.has(canonicalId)){
+      await db.reviews.update(review.id,{problem_id:canonicalId,raw_problem_id:review.raw_problem_id||review.problem_id,id_corrected:true,id_correction_reason:"problem_aliasesに基づきcanonical IDへ補正"});
+      review.problem_id=canonicalId;idCorrections++;
+    }
+    const ownAttempts=attempts.filter(attempt=>resolveCanonicalProblemId(attempt.problem_id,aliases)===resolveCanonicalProblemId(review.problem_id,aliases));
     const source=attempts.find(attempt=>attempt.id===review.generated_from_attempt_id);
+    const targetProblem=pmap.get(review.problem_id);
+    if(review.task_origin==="linked_s_check"&&targetProblem?.category!=="S"){
+      await db.reviews.update(review.id,{task_origin:"related_drill"});
+      review.task_origin="related_drill";
+    }
     if(review.review_type==="s_check"){
       const sourceId=review.source_problem_id||source?.problem_id||"",sourceProblem=pmap.get(sourceId);
       const validLinks=[...new Set([...(sourceProblem?.related_s_problem_ids||[]),...list(sourceProblem?.linked_s_problems||"")])];
-      const integrity=relatedSIntegrity(sourceId,review.problem_id,validLinks);
+      const integrity=relatedSIntegrity(resolveCanonicalProblemId(sourceId,aliases),resolveCanonicalProblemId(review.problem_id,aliases),validLinks.map(id=>resolveCanonicalProblemId(id,aliases)));
       if(integrity.state==="self_reference"&&review.status!=="done"){
         if(sourceProblem){
           const withoutSelf=validLinks.filter(problemId=>problemId!==review.problem_id);
@@ -1099,6 +1196,8 @@ async function repairDataIntegrity(silent=false){
     }else await db.reviews.update(review.id,{task_origin:ownAttempts.length?"review_attempt":"first_attempt",attempt_exists:ownAttempts.length>0});
   }
   if(selfReferencesRemoved) await appendImportHistory("自己参照のため削除","integrity-repair",selfReferencesRemoved);
+  if(idCorrections) await appendImportHistory("canonical ID補正","integrity-repair",idCorrections);
+  if(metadataRepairs) await appendImportHistory("問題メタ情報補正","integrity-repair",metadataRepairs);
   if(!silent) await appendImportHistory("整合性修復","manual",reviews.length+notes.length);
   const diagnostics=await diagnoseData();
   return {diagnostics,self_references_removed:selfReferencesRemoved,remaining_review_needed:diagnostics.filter(item=>item.recommended_action==="hold").length};

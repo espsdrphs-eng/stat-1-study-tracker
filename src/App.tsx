@@ -1,15 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   AlertTriangle, Archive, ArrowDown, BarChart3, BookOpen, CalendarCheck, CalendarClock, Check, ChevronRight, ClipboardPaste,
   Clock3, Copy, Database, Download, Eye, EyeOff, Gauge, LayoutDashboard, ListChecks, Menu, NotebookPen,
   Pencil, Play, Plus, RefreshCw, Search, Settings, Sparkles, Target, Trash2, X
 } from "lucide-react";
 import yaml from "js-yaml";
-import * as pdfjsLib from "pdfjs-dist";
-import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist";
-import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { api, post } from "./api";
-import { ANSWER_PDF_DOCUMENTS, answerIndexExport, answerPdfRecord, csvFor, deleteAnswerPdf, exportBackup, inspectAnswerPdf, problemMasterExport, restoreBackup, saveAnswerPdf } from "./localDb";
+import { csvFor, exportBackup, problemMasterExport, restoreBackup } from "./localDb";
 import AdvancedImportView from "./AdvancedImportView";
 import { problemDisplayLabel } from "./importParser";
 import { createAttemptReviewPlan } from "./reviewRules";
@@ -25,10 +22,8 @@ import {
 import { removeTimingExpressions } from "./reviewTiming";
 import { EXAM_PHASES } from "./studyProgress";
 import { CHAPTER_META } from "./officialMaster";
-import { isProblemPack, masterDiff, parseAliasesPayload, parseAnswerIndexPayload, parseIntegratedMasterPayload, parseProblemMasterPayload } from "./masterData";
+import { isProblemPack, masterDiff, parseAliasesPayload, parseIntegratedMasterPayload, parseProblemMasterPayload } from "./masterData";
 import type { AnswerIndexEntry, Attempt, Bootstrap, Problem, ProblemAlias, Review, StudyUpdate, Task } from "./types";
-
-pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 
 type Page = "dashboard"|"today"|"problems"|"attempt"|"import"|"reviews"|"weak"|"past"|"sheets"|"settings";
 const pageTitles:Record<Page,string> = {
@@ -239,7 +234,6 @@ function ReviewPlanDetails({item,compact=false}:{item:Partial<Review&Task>;compa
   const template=reviewTemplate(item);
   const allowed=allowedReferenceLevel(item);
   const hasSavedFeedback=!!item.has_saved_gpt_feedback;
-  const hasOfficialAnswer=!!item.official_answer_text||!!item.official_answer_url||!!item.official_answer_pdf_registered;
   const hasPreviousAttempt=item.attempt_exists!==false;
   const reveal=(level:Exclude<ReferenceLevel,0>,panel:Exclude<OpenReferencePanel,null>)=>{
     const next=revealReference(reference,level);
@@ -295,7 +289,6 @@ function ReviewPlanDetails({item,compact=false}:{item:Partial<Review&Task>;compa
         {hasPreviousAttempt&&<button type="button" className={reference.previous_mistake?"viewed":""} onClick={()=>reveal(2,"previous_mistake")}><Eye size={14}/>{referenceButtonLabel("previous_mistake","前回ミスを見る")}</button>}
         {hasPreviousAttempt&&<button type="button" className={reference.previous_mistake?"viewed":""} onClick={()=>reveal(2,"correction_rule")}><Eye size={14}/>{referenceButtonLabel("correction_rule","修正ルール例を見る")}</button>}
         {hasSavedFeedback&&<button type="button" className={reference.saved_gpt_feedback?"viewed":""} onClick={()=>reveal(3,"saved_gpt_feedback")}><Eye size={14}/>{referenceButtonLabel("saved_gpt_feedback","保存済みGPT解説を見る")}</button>}
-        {hasOfficialAnswer&&<button type="button" className={reference.official_answer?"viewed":""} onClick={()=>reveal(4,"official_answer")}><Eye size={14}/>{referenceButtonLabel("official_answer",item.official_answer_pdf_registered?"模範解答情報を見る":"模範解答要約を見る")}</button>}
         <button type="button" className={reference.external_reference?"viewed":""} onClick={()=>reveal(5,"external_reference")}><Eye size={14}/>{referenceButtonLabel("external_reference","外部参照を記録")}</button>
       </div>
       {!hasPreviousAttempt&&<div className="no-attempt-note"><span>この問題の前回記録はありません。今回は関連確認または初回確認として扱います。</span></div>}
@@ -303,7 +296,6 @@ function ReviewPlanDetails({item,compact=false}:{item:Partial<Review&Task>;compa
       {openReferencePanel==="previous_mistake"&&<div className="revealed-reference mistake"><div className="revealed-reference-head"><span>前回ミスの詳細</span><button type="button" onClick={hideReference}><EyeOff size={13}/>隠す</button></div>{item.previous_error_point&&<p>{item.previous_error_point}</p>}{!item.previous_error_point&&<p>前回ミスの詳細記録はありません。</p>}</div>}
       {openReferencePanel==="correction_rule"&&<div className="revealed-reference rule"><div className="revealed-reference-head"><span>修正ルール例</span><button type="button" onClick={hideReference}><EyeOff size={13}/>隠す</button></div><p>{removeTimingExpressions(correctionRuleExample(item))}</p></div>}
       {openReferencePanel==="saved_gpt_feedback"&&hasSavedFeedback&&<div className="revealed-reference explanation"><div className="revealed-reference-head"><span>保存済みGPT解説</span><button type="button" onClick={hideReference}><EyeOff size={13}/>隠す</button></div><p>{item.previous_improvement_guidance||item.previous_required_derivation||item.previous_corrected_answer||removeTimingExpressions(item.previous_next_action)}</p></div>}
-      {openReferencePanel==="official_answer"&&hasOfficialAnswer&&<div className="revealed-reference answer"><div className="revealed-reference-head"><span>{item.official_answer_pdf_registered?"模範解答PDF":"模範解答要約"}</span><button type="button" onClick={hideReference}><EyeOff size={13}/>隠す</button></div>{item.answer_section_label&&<small>{item.answer_section_label}</small>}{item.official_answer_text&&<p>{item.official_answer_text}</p>}{item.official_answer_url&&<a href={item.official_answer_url} target="_blank" rel="noreferrer">登録済み公式解答を開く</a>}</div>}
       {openReferencePanel==="external_reference"&&<div className="revealed-reference explanation"><div className="revealed-reference-head"><span>外部参照</span><button type="button" onClick={hideReference}><EyeOff size={13}/>隠す</button></div><p>アプリ外のGPT・教材・解説を見たことを記録しました。表示を隠してから白紙で再現してください。</p></div>}
       {usedReference&&!openReferencePanel&&<div className="reference-hidden-status"><EyeOff size={14}/><span>{referenceLabels[reference.actual_reference_level]}を確認済み。参照内容は隠れています。</span></div>}
       <p className="reference-note">参照内容は何度でも開閉できます。一度見た参照段階は記録に残りますが、表示を隠してから白紙で再現してください。「前回ミス」はN・W・Cなどの補修では許可される場合があります。</p>
@@ -434,7 +426,7 @@ function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a
     {!data.today.warning&&<div className="time-guidance"><Clock3 size={16}/><span>{data.today.guidance}</span></div>}
     <section className="panel">
       <div className="table-wrap"><table><thead><tr><th>種類</th><th>問題</th><th>推奨モード</th><th>予定時間</th><th>理由</th><th/></tr></thead>
-      {triageGroups.map(group=><tbody key={group.key} className={`triage-group ${group.key}`}><tr className="triage-heading"><td colSpan={6}><strong>{group.label}</strong>{group.description&&<span>{group.description}</span>}</td></tr>{group.tasks.map((t,i)=><TodayTaskRows key={`${t.problem_id}-${i}`} task={t} problem={pmap[t.problem_id]} answerIndex={data.answerIndex} problemAliases={data.problemAliases} busy={busy} run={run} date={data.dashboard.today} onReview={setReviewTask} onOpenProblem={problem=>select(problem)} onPostpone={(item,initial)=>setPostponeTask({item,initial})}/>)}</tbody>)}</table></div>
+      {triageGroups.map(group=><tbody key={group.key} className={`triage-group ${group.key}`}><tr className="triage-heading"><td colSpan={6}><strong>{group.label}</strong>{group.description&&<span>{group.description}</span>}</td></tr>{group.tasks.map((t,i)=><TodayTaskRows key={`${t.problem_id}-${i}`} task={t} problem={pmap[t.problem_id]} problemAliases={data.problemAliases} busy={busy} run={run} date={data.dashboard.today} onReview={setReviewTask} onOpenProblem={problem=>select(problem)} onPostpone={(item,initial)=>setPostponeTask({item,initial})}/>)}</tbody>)}</table></div>
       {todayFilter==="completed"&&<div className="completed-task-list">{data.today.completedTasks.map((task,index)=><div key={`${task.problem_id}-${index}`}><Check size={16}/><strong>{task.title}</strong><span>{task.minutes}分・{task.reason}</span></div>)}{!data.today.completedTasks.length&&<Empty>今日の完了記録はまだありません</Empty>}</div>}
       {todayFilter!=="completed"&&!triageGroups.length&&<Empty>この区分の課題はありません</Empty>}
     </section>
@@ -472,163 +464,64 @@ function StudyPromptButtons({item}:{item:Partial<Review&Task>}) {
   </div>;
 }
 function resolveCanonicalProblemId(problemId:string,aliases:ProblemAlias[]):string {
-  const alias=aliases.find(item=>{
-    const row=item as ProblemAlias&{raw_problem_id?:string;corrected_problem_id?:string};
-    return row.raw_problem_id===problemId||item.alias===problemId;
-  }) as (ProblemAlias&{raw_problem_id?:string;corrected_problem_id?:string})|undefined;
-  return alias?.corrected_problem_id||alias?.problem_id||problemId;
+  let currentId=problemId;
+  const visited=new Set<string>();
+  while(currentId&&!visited.has(currentId)){
+    visited.add(currentId);
+    const alias=aliases.find(item=>{
+      const row=item as ProblemAlias&{raw_problem_id?:string;corrected_problem_id?:string;canonical_problem_id?:string};
+      return row.raw_problem_id===currentId||item.alias===currentId;
+    }) as (ProblemAlias&{raw_problem_id?:string;corrected_problem_id?:string;canonical_problem_id?:string})|undefined;
+    const next=alias?.corrected_problem_id||alias?.canonical_problem_id||alias?.problem_id;
+    if(!next||next===currentId)break;
+    currentId=next;
+  }
+  return currentId||problemId;
 }
-function resolveAnswerIndex(task:Task,answerIndex:AnswerIndexEntry[],aliases:ProblemAlias[]){
-  const canonicalId=resolveCanonicalProblemId(task.problem_id,aliases);
-  const map=new Map(answerIndex.map(answer=>[answer.problem_id,answer]));
-  const answer=map.get(task.problem_id)||map.get(canonicalId);
-  return {canonicalId,answer};
+function originLabel(origin:string){
+  return origin==="review_attempt"?"復習":origin==="first_attempt"?"初回":origin==="linked_s_check"?"関連確認":origin==="related_drill"?"関連補修":origin==="past_exam_followup"?"過去問補修":origin||"未設定";
 }
-type PdfRenderStatus="idle"|"loading_blob"|"loading_pdf"|"loading_page"|"rendering"|"success"|"error";
-const pdfStatusText:Record<PdfRenderStatus,string>={
-  idle:"待機中",loading_blob:"PDF本体を読み込んでいます",loading_pdf:"MathStat_Answers.pdfを解析しています",
-  loading_page:"ページを読み込んでいます",rendering:"Canvas描画中",success:"表示完了",error:"表示エラー"
-};
-async function waitForPdfWidth(element:HTMLElement){
-  for(let i=0;i<12;i++){if(element.clientWidth>0)return element.clientWidth;await new Promise(requestAnimationFrame)}
-  return element.clientWidth;
-}
-async function renderPdfCanvas(pdf:PDFDocumentProxy,pageNumber:number,canvas:HTMLCanvasElement,container:HTMLElement,taskRef:{current:RenderTask|null}){
-  if(pageNumber<1||pageNumber>pdf.numPages) throw new Error(`Page out of range: ${pageNumber}/${pdf.numPages}`);
-  const width=await waitForPdfWidth(container);
-  if(width<=0) throw new Error("PDF container width is zero");
-  taskRef.current?.cancel();
-  const page=await pdf.getPage(pageNumber),base=page.getViewport({scale:1});
-  const viewport=page.getViewport({scale:width/base.width});
-  const outputScale=window.devicePixelRatio||1;
-  canvas.width=Math.floor(viewport.width*outputScale);
-  canvas.height=Math.floor(viewport.height*outputScale);
-  canvas.style.width=`${Math.floor(viewport.width)}px`;
-  canvas.style.height=`${Math.floor(viewport.height)}px`;
-  const context=canvas.getContext("2d");
-  if(!context) throw new Error("Canvas 2D context is unavailable");
-  context.setTransform(1,0,0,1,0,0);
-  context.clearRect(0,0,canvas.width,canvas.height);
-  const renderTask=page.render({canvas,canvasContext:context,viewport,transform:outputScale!==1?[outputScale,0,0,outputScale,0,0]:undefined});
-  taskRef.current=renderTask;
-  try{await renderTask.promise}catch(error){if((error as Error).name!=="RenderingCancelledException")throw error}
-  finally{if(taskRef.current===renderTask)taskRef.current=null}
-}
-async function verifyPdfCanRender(documentKey:string,expectedPages:number){
-  const record=await answerPdfRecord(documentKey),buffer=await record.blob.arrayBuffer();
-  if(!buffer.byteLength) throw new Error("PDF ArrayBuffer is empty");
-  const pdf=await pdfjsLib.getDocument({data:new Uint8Array(buffer)}).promise;
-  if(pdf.numPages!==expectedPages) throw new Error(`PDFページ数が一致しません: ${pdf.numPages}/${expectedPages}`);
-  const canvas=document.createElement("canvas"),container=document.createElement("div");
-  container.style.width="160px";document.body.appendChild(container);container.appendChild(canvas);
-  const ref={current:null as RenderTask|null};
-  try{await renderPdfCanvas(pdf,1,canvas,container,ref)}finally{container.remove()}
-}
-function AnswerIndexCanvasPanel({task,answerIndex,problemAliases}:{task:Task;answerIndex:AnswerIndexEntry[];problemAliases:ProblemAlias[]}) {
-  const resolved=resolveAnswerIndex(task,answerIndex,problemAliases),answer=resolved.answer;
-  const pageStart=Number(answer?.page_start??answer?.open_page??task.answer_page_start??task.official_answer_page??1);
-  const initialPage=Number(answer?.open_page??answer?.page_start??task.official_answer_page??pageStart);
-  const [visible,setVisible]=useState(false),[page,setPage]=useState(initialPage),[status,setStatus]=useState<PdfRenderStatus>("idle");
-  const [pdf,setPdf]=useState<PDFDocumentProxy|null>(null),[error,setError]=useState(""),[reproduced,setReproduced]=useState(readReferenceClosed(task.id));
-  const [diag,setDiag]=useState<Record<string,unknown>|null>(null);
-  const containerRef=useRef<HTMLDivElement|null>(null),canvasRef=useRef<HTMLCanvasElement|null>(null),renderRef=useRef<RenderTask|null>(null);
-  const documentKey=answer?.document_key||task.answer_document_key||"",pageEnd=Number(answer?.page_end??task.answer_page_end??pageStart);
-  const answerText=answer?.answer_excerpt||task.answer_excerpt||task.official_answer_text||"",pdfName=answer?.pdf_file_name||task.official_answer_pdf_name||"MathStat_Answers.pdf";
-  const hasIndex=!!(answer||documentKey||answerText);
-  const markOfficialReference=()=>{if(task.id){rememberReferenceState(task.id,revealReference(readReferenceState(task.id),4));rememberReferenceClosed(task.id,false)}};
-  const draw=async(target:number,loaded=pdf)=>{
-    if(!loaded||!containerRef.current||!canvasRef.current)return;
-    setStatus("loading_page");setError("");
-    setStatus("rendering");
-    await renderPdfCanvas(loaded,target,canvasRef.current,containerRef.current,renderRef);
-    setDiag(prev=>({...prev,requested_page:target,container_width:containerRef.current?.clientWidth||0,canvas_width:canvasRef.current?.width||0,canvas_height:canvasRef.current?.height||0,pdf_num_pages:loaded.numPages,render_status:"success",last_render_error:""}));
-    setStatus("success");markOfficialReference();
-  };
-  const show=async()=>{
-    setVisible(true);setStatus("loading_blob");setError("");setReproduced(false);
-    await new Promise(requestAnimationFrame);
-    if(!documentKey){setStatus("error");setError("answer_index に document_key がありません");return}
-    try{
-      const record=await answerPdfRecord(documentKey),buffer=await record.blob.arrayBuffer();
-      const base={current_problem_id:task.problem_id,canonical_problem_id:resolved.canonicalId,answer_index_hit:!!answer,document_key:documentKey,
-        original_file_name:record.original_file_name,blob_exists:!!record.blob,blob_size:record.blob.size,blob_type:record.blob.type,
-        array_buffer_length:buffer.byteLength,requested_page:initialPage,container_width:containerRef.current?.clientWidth||0,worker_source:workerUrl,render_status:"loading_blob"};
-      setDiag(base);
-      if(!buffer.byteLength) throw new Error("PDF ArrayBuffer is empty");
-      setStatus("loading_pdf");
-      const loaded=await pdfjsLib.getDocument({data:new Uint8Array(buffer)}).promise;
-      setPdf(loaded);
-      const first=Math.max(1,Math.min(initialPage,loaded.numPages));
-      setPage(first);setDiag({...base,pdf_num_pages:loaded.numPages,requested_page:first,render_status:"loading_pdf"});
-      await draw(first,loaded);
-    }catch(reason){const message=(reason as Error).message||String(reason);setError(message);setStatus("error");setDiag(prev=>({...prev,render_status:"error",last_render_error:message}))}
-  };
-  const hide=()=>{setVisible(false);setStatus("idle");setError("")};
-  const move=(next:number)=>{const upper=pageEnd||pdf?.numPages||pageStart,bounded=Math.max(pageStart,Math.min(upper,next));setPage(bounded);void draw(bounded).catch(reason=>{const message=(reason as Error).message;setError(message);setStatus("error");setDiag(prev=>({...prev,render_status:"error",last_render_error:message}))})};
-  useEffect(()=>()=>renderRef.current?.cancel(),[]);
-  useEffect(()=>{if(!visible||!pdf||!containerRef.current)return;const observer=new ResizeObserver(entries=>{if((entries[0]?.contentRect.width||0)>0)void draw(page).catch(()=>undefined)});observer.observe(containerRef.current);return()=>observer.disconnect()},[visible,pdf,page]);
-  const copyDiagnostics=()=>diag&&navigator.clipboard?.writeText(JSON.stringify(diag,null,2));
-  const openSummary=()=>markOfficialReference();
-  const markReproduced=()=>{if(task.id)rememberReferenceClosed(task.id,true);setReproduced(true)};
-  return <section className="answer-index-panel">
-    <div className="answer-panel-head"><div><span>模範解答</span><strong>{task.problem_id}</strong></div>{hasIndex&&<small>範囲：PDF {pageStart}〜{pageEnd}ページ</small>}</div>
-    {!visible&&<div className="answer-hidden"><EyeOff size={18}/><p>模範解答は非表示です。</p>{hasIndex?<button type="button" className="primary small" onClick={show}><Eye size={14}/>模範解答を表示する</button>:<span>この問題の模範解答索引は未登録です。</span>}{answerText&&<details onToggle={event=>{if(event.currentTarget.open)openSummary()}}><summary>模範解答の概要を見る</summary><p>{answerText}</p></details>}</div>}
-    {visible&&<div className="answer-visible">
-      <div className="answer-view-toolbar"><span>現在：{page}ページ</span><div className="button-row"><button type="button" className="ghost small" disabled={page<=pageStart} onClick={()=>move(page-1)}>前へ</button><button type="button" className="ghost small" disabled={page>=(pageEnd||pdf?.numPages||pageStart)} onClick={()=>move(page+1)}>次へ</button><button type="button" className="ghost small" onClick={hide}><EyeOff size={14}/>解答を隠す</button></div></div>
-      <div className="pdf-canvas-shell" ref={containerRef}>{status!=="success"&&status!=="error"&&<div className="pdf-render-status"><Clock3 size={18}/><span>{pdfStatusText[status]}</span></div>}<canvas className="pdf-page-canvas" ref={canvasRef}/></div>
-      {status==="error"&&<div className="answer-missing-pdf"><AlertTriangle size={18}/><strong>模範解答PDFを表示できませんでした。</strong><span>problem_id：{task.problem_id}</span><span>canonical problem_id：{resolved.canonicalId}</span><span>document_key：{documentKey||"未設定"}</span><span>PDF：{pdfName}</span><span>要求ページ：{page}</span><span>PDF総ページ数：{String(diag?.pdf_num_pages||"不明")}</span><span>Blobサイズ：{String(diag?.blob_size||0)} bytes</span><span>表示領域幅：{String(diag?.container_width||containerRef.current?.clientWidth||0)}px</span><span>render_status：{status}</span><span>エラー：{error}</span><div className="button-row"><button type="button" className="primary small" onClick={show}>再試行</button><button type="button" className="ghost small" onClick={copyDiagnostics}>表示診断をコピー</button><button type="button" className="ghost small" onClick={hide}>解答を隠す</button></div>{answerText&&<details onToggle={event=>{if(event.currentTarget.open)openSummary()}}><summary>模範解答の概要を見る</summary><p>{answerText}</p></details>}</div>}
-      {status==="success"&&answerText&&<details className="answer-summary-fold" onToggle={event=>{if(event.currentTarget.open)openSummary()}}><summary>模範解答の概要を見る</summary><p>{answerText}</p></details>}
-      {diag&&<details className="pdf-diagnostics"><summary>PDF表示診断</summary><pre>{JSON.stringify(diag,null,2)}</pre></details>}
-      <label className="reference-reproduced"><input type="checkbox" checked={reproduced} onChange={markReproduced}/>表示を隠して白紙で再現した</label>
-    </div>}
-  </section>
-}
-function TodayTaskDetails({task,problem,onOpenProblem,answerIndex,problemAliases}:{task:Task;problem?:Problem;onOpenProblem:(problem:Problem)=>void;answerIndex:AnswerIndexEntry[];problemAliases:ProblemAlias[]}) {
+function TodayTaskDetails({task,problem,onOpenProblem,problemAliases}:{task:Task;problem?:Problem;onOpenProblem:(problem:Problem)=>void;problemAliases:ProblemAlias[]}) {
   const template=reviewTemplate(task);
   const origin=task.task_origin||((task.id||task.review_method)?"review_attempt":"first_attempt");
   const hasPrevious=task.attempt_exists!==false&&!!(task.previous_date||task.previous_error_point);
-  const answerAvailable=!!(task.official_answer_text||task.answer_excerpt||task.official_answer_pdf_registered);
-  const [tab,setTab]=useState<"task"|"answer">("task");
+  const canonicalId=resolveCanonicalProblemId(task.problem_id,problemAliases);
+  const displayLabel=problem?.display_label||problem?.title||task.title||task.problem_id;
+  const theme=problem?.theme||task.theme||"未設定";
+  const type=problem?.canonical_problem_type||task.canonical_problem_type||"未設定";
+  const questionExcerpt=(problem as Problem&{question_excerpt?:string})?.question_excerpt;
   return <div className="today-task-detail">
-    <div className="task-detail-tabs"><button className={tab==="task"?"active":""} type="button" onClick={()=>setTab("task")}>問題・課題</button><button className={tab==="answer"?"active":""} type="button" onClick={()=>setTab("answer")}>模範解答</button></div>
-    <div className={`today-answer-split tab-${tab}`}><section className="task-detail-pane">
-    <div className="today-task-info-grid">
-      <div><span>problem_id</span><strong>{task.problem_id}</strong></div>
-      <div><span>display_label</span><strong>{task.title}</strong></div>
-      <div><span>theme</span><strong>{task.theme||"未設定"}</strong></div>
-      <div><span>canonical_problem_type</span><strong>{task.canonical_problem_type||"未設定"}</strong></div>
-      <div><span>問題文・概要</span><strong>{(problem as Problem&{question_excerpt?:string})?.question_excerpt||"問題文は「問題詳細」から確認してください。全文が未登録の場合は、書籍またはGoodNotes上の問題文を確認してください。"}</strong></div>
-      <div><span>task_origin</span><strong>{origin}</strong></div>
-      <div><span>review_method</span><strong>{task.review_method||"初回演習"}</strong></div>
-      <div><span>使用シート</span><strong>{template.sheetLabel}</strong></div>
-      <div><span>推定時間</span><strong>{task.minutes}分</strong></div>
+    <div className="task-detail-head">
+      <div><small className="problem-id">{canonicalId!==task.problem_id?`${task.problem_id} → ${canonicalId}`:task.problem_id}</small><h3>{displayLabel}</h3><p>{theme}</p></div>
+      <div className="task-meta-line"><span>{originLabel(origin)}</span><span>{modes[task.mode]||task.mode}</span><span>{template.sheetLabel}</span><span>{task.minutes}分</span></div>
+    </div>
+    <div className="task-detail-grid">
+      <div><span>出題型</span><strong>{type}</strong></div>
+      <div><span>問題文・概要</span><strong>{questionExcerpt||"問題文と模範解答は、書籍またはGoodNotesで確認してください。"}</strong></div>
     </div>
     {origin==="first_attempt"&&<div className="first-attempt-note"><Badge tone="green">初回</Badge><div><strong>この問題は初回です</strong><span>{task.mode==="full"?"まずフル答案として、方針・出発式・主要計算・結論まで書いてください。":"指定モードで、方針・出発式・今回見る量を明確にしてから解いてください。"}</span></div></div>}
     {origin==="review_attempt"&&<div className="first-attempt-note review"><Badge tone="orange">復習</Badge><div><strong>前回記録：{hasPrevious?"あり":"なし"}</strong><span>{hasPrevious?`前回：${task.previous_score||task.previous_date}`:"前回ミスの詳細はありません。通常確認として扱います。"}</span></div></div>}
-    {origin==="linked_s_check"&&<div className="first-attempt-note linked"><Badge tone="blue">関連S</Badge><div><strong>この問題自体は初回確認です</strong><span>元問題の弱点から作られた関連確認です。元問題：{task.source_problem_id||"記録なし"}</span></div></div>}
+    {origin==="linked_s_check"&&<div className="first-attempt-note linked"><Badge tone="blue">関連確認</Badge><div><strong>この問題自体の前回記録：{hasPrevious?"あり":"なし"}</strong><span>元問題の弱点から作られた関連確認です。元問題：{task.source_problem_id||"記録なし"}</span></div></div>}
     <div className="today-specific-guide">
       <div><span>今日やる理由</span><strong>{task.reason}</strong></div>
-      <div><span>修正テーマ</span><strong>{correctionTheme(task)}</strong></div>
-      <div><span>今回の入口</span><strong>{referenceEntryPoint(task)}</strong></div>
-      <div><span>1行ヒント</span><strong>{oneLineHint(task)}</strong></div>
-      <div><span>前回記録の有無</span><strong>{hasPrevious?"あり":"なし"}</strong></div>
-      <div><span>模範解答要約の有無</span><strong>{answerAvailable?"あり":"なし"}</strong></div>
+      <div><span>今回見るポイント／直す点</span><strong>{correctionTheme({...task,theme,canonical_problem_type:type})}</strong></div>
+      <div><span>最初に書くもの</span><strong>{referenceEntryPoint({...task,theme,canonical_problem_type:type})}</strong></div>
+      <div><span>1行ヒント</span><strong>{oneLineHint({...task,theme,canonical_problem_type:type})}</strong></div>
     </div>
     <div className="today-card-actions">
       {problem&&<button type="button" className="ghost small" onClick={()=>onOpenProblem(problem)}><BookOpen size={14}/>問題詳細</button>}
       <SheetLink href={sheetHref(task.mode)} label="解答シート"/>
       <StudyPromptButtons item={task}/>
     </div>
-    </section><AnswerIndexCanvasPanel task={task} answerIndex={answerIndex} problemAliases={problemAliases}/></div>
   </div>;
 }
-function TodayTaskRows({task:t,problem,answerIndex,problemAliases,busy,run,date,onReview,onOpenProblem,onPostpone}:{task:Task;problem?:Problem;answerIndex:AnswerIndexEntry[];problemAliases:ProblemAlias[];busy:boolean;run:(a:()=>Promise<unknown>,s:string)=>void;date:string;onReview:(task:Task)=>void;onOpenProblem:(problem:Problem)=>void;onPostpone:(task:Task,action:ScheduleAction)=>void}) {
+function TodayTaskRows({task:t,problem,problemAliases,busy,run,date,onReview,onOpenProblem,onPostpone}:{task:Task;problem?:Problem;problemAliases:ProblemAlias[];busy:boolean;run:(a:()=>Promise<unknown>,s:string)=>void;date:string;onReview:(task:Task)=>void;onOpenProblem:(problem:Problem)=>void;onPostpone:(task:Task,action:ScheduleAction)=>void}) {
   const isReview=!!t.id&&!!t.review_type;
   const toggle=()=>isReview
     ?onReview(t)
     :run(()=>post("/api/today-check",{date,problem_id:t.problem_id,kind:t.kind,checked:!t.checked}),t.checked?"チェックを外しました":"解答済み・採点待ちにしました");
   return <><tr className={t.checked?"task-checked":""}><td><Badge tone={t.kind==="S確認"?"blue":t.error_type==="K"?"red":""}>{t.kind}</Badge></td><td><strong>{t.problem_id}</strong><small>{t.title}{t.checked&&<em className="grading-wait">採点待ち</em>}</small></td><td>{modes[t.mode]||t.mode}</td><td>{t.minutes}分</td><td>{t.reason}{t.postpone_count?` ・ 先送り${t.postpone_count}回（${t.postpone_reason}）`:""}</td><td><div className="task-actions"><SheetLink href={sheetHref(t.mode)} label="シート"/><label className="task-check"><input type="checkbox" checked={!!t.checked} disabled={busy} onChange={toggle}/><span>{isReview?"復習結果を記録":"解答済み"}</span></label></div><ScheduleQuickButtons item={t} busy={busy} select={action=>onPostpone(t,action)}/></td></tr>
-    <tr className="task-plan-row"><td colSpan={6}><TodayTaskDetails task={t} problem={problem} onOpenProblem={onOpenProblem} answerIndex={answerIndex} problemAliases={problemAliases}/>{(t.review_method||t.review_reason)&&<ReviewPlanDetails item={t} compact/>}</td></tr></>;
+    <tr className="task-plan-row"><td colSpan={6}><TodayTaskDetails task={t} problem={problem} onOpenProblem={onOpenProblem} problemAliases={problemAliases}/>{(t.review_method||t.review_reason)&&<ReviewPlanDetails item={t} compact/>}</td></tr></>;
 }
 
 function ProblemChip({problem,latest,rank,select}:{problem:Problem;latest?:Attempt;rank:string;select:(problem:Problem)=>void}){
@@ -697,8 +590,6 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport}:{problem:Problem;
   const validAttempts=attempts.filter(attempt=>attemptConsistentForDisplay(attempt,problem));
   const reviews=data.reviews.filter(a=>a.problem_id===problem.problem_id);
   const latest=validAttempts[0],nextReview=reviews.filter(r=>r.status!=="done").sort((a,b)=>a.due_date.localeCompare(b.due_date))[0];
-  const answer=data.answerIndex.find(item=>item.problem_id===problem.problem_id);
-  const pdfRegistered=!!answer&&(!!answer.document_key&&data.masterStatus.pdf_files.includes(answer.document_key)||!!answer.pdf_file_name&&data.masterStatus.pdf_files.includes(answer.pdf_file_name));
   const related=problem.related_s_problem_ids?.length?problem.related_s_problem_ids:String(problem.linked_s_problems||"").split(";").filter(Boolean);
   const editAttempt=(attempt:Attempt)=>{
     setEditing(attempt);
@@ -726,7 +617,6 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport}:{problem:Problem;
       {latest.improvement_guidance&&<div><span>次回の直し方</span><p>{latest.improvement_guidance}</p></div>}
     </div></details>}
     <div className="detail-grid"><section className="panel"><h3>問題情報</h3><dl><dt>役割</dt><dd>{problem.role}</dd><dt>出題型</dt><dd>{problem.canonical_problem_type||"—"}</dd><dt>難易度</dt><dd>{problem.difficulty!=null?`難${problem.difficulty}`:"—"}</dd><dt>推奨モード</dt><dd>{modes[problem.recommended_mode]}</dd><dt>関連S問題</dt><dd>{related.join(" / ")||"—"}</dd><dt>関連A問題</dt><dd>{problem.linked_a_problems||"—"}</dd><dt>関連過去問</dt><dd>{problem.linked_past_exams||"—"}</dd><dt>次回課題</dt><dd>{removeTimingExpressions(latest?.next_action)||"—"}</dd><dt>メモ</dt><dd>{problem.notes||"—"}</dd></dl>
-      {answer?.answer_available&&(answer.answer_excerpt||pdfRegistered)&&<div className="problem-answer-index"><strong>{pdfRegistered?"模範解答PDF登録済み":"模範解答要約"}</strong><span>{answer.section_label||answer.pdf_file_name||answer.document_key}</span>{answer.answer_excerpt&&<p>{answer.answer_excerpt}</p>}<small>PDF本文は「今日やること」画面の模範解答パネルで表示します。</small></div>}
     </section>
     <section className="panel"><h3>復習予定</h3>{nextReview?<><div className="history"><CalendarCheck/><div><strong>{nextReview.due_date}</strong><span>{reviewNames[nextReview.review_type]||nextReview.review_method}・{nextReview.status}</span></div></div><ReviewPlanDetails item={nextReview}/></>:<Empty>復習予定はありません</Empty>}</section></div>
     <section className="panel"><div className="panel-title"><h3>解答履歴</h3><span className="muted">{attempts.length}回</span></div>{attempts.length?<div className="table-wrap"><table><thead><tr><th>日付</th><th>モード</th><th>評価</th><th>K/W/N/C</th><th>ミス</th><th>次の行動</th><th>操作</th></tr></thead><tbody>{attempts.map(a=>{const consistent=attemptConsistentForDisplay(a,problem);return <tr key={a.id} className={!consistent?"inconsistent-record":""}><td>{a.date}{!consistent&&<small> ID要確認</small>}</td><td>{modes[a.mode]||a.mode}</td><td>{a.mark} / {a.score_label}{a.score_numeric!=null?` ${a.score_numeric}点`:""}</td><td>{(a.error_types||[a.error_type]).filter(error=>error!=="none").map(error=><ErrorBadge key={error} value={error}/>)}{!(a.error_types||[a.error_type]).some(error=>error!=="none")&&<ErrorBadge value="none"/>}</td><td>{a.error_point||"—"}</td><td>{removeTimingExpressions(a.next_action)||"—"}</td><td><div className="history-actions"><button className="small ghost" onClick={()=>editAttempt(a)}><Pencil size={13}/>編集</button><button className="small danger-button" disabled={busy} onClick={()=>removeAttempt(a)}><Trash2 size={13}/>削除</button></div></td></tr>})}</tbody></table></div>:<Empty>まだ学習記録がありません</Empty>}</section>
@@ -831,11 +721,7 @@ function ReviewsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>
       previous_improvement_guidance:source?.improvement_guidance||"",previous_required_derivation:source?.required_derivation||"",
       previous_corrected_answer:source?.corrected_answer||"",
       has_saved_gpt_feedback:!!(source?.improvement_guidance||source?.required_derivation||source?.corrected_answer||source?.result_summary),
-      official_answer_text:answer?.answer_available&&answer.answer_excerpt?answer.answer_excerpt:problem?.official_answer||"",
-      official_answer_url:problem?.official_answer_url||"",official_answer_pdf_name:answer?.pdf_file_name||"",
-      official_answer_pdf_registered:!!answer&&(!!answer.document_key&&data.masterStatus.pdf_files.includes(answer.document_key)||!!answer.pdf_file_name&&data.masterStatus.pdf_files.includes(answer.pdf_file_name)),
-      answer_section_label:answer?.section_label||"",official_answer_page:answer?.open_page??answer?.page_start??null,
-      answer_page_start:answer?.page_start,answer_page_end:answer?.page_end,answer_document_key:answer?.document_key,
+      official_answer_text:"",official_answer_url:"",
       canonical_problem_type:problem?.canonical_problem_type||problem?.theme||"",
       canonical_keywords:[...(problem?.canonical_keywords||[]),...(answer?.canonical_keywords||[])],
       answer_excerpt:answer?.answer_excerpt||""};
@@ -997,34 +883,17 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
   const [examDate,setExamDate]=useState(data.settings.exam_date);
   const [dailyMinutes,setDailyMinutes]=useState(String(data.settings.daily_study_minutes||150));
   const [problemPreview,setProblemPreview]=useState<{raw:unknown;version:string;added:number;changed:number;unchanged:number;total:number}|null>(null);
-  const [answerPreview,setAnswerPreview]=useState<{raw:unknown;version:string;total:number;added:number;changed:number;unchanged:number;unmatched:number}|null>(null);
   const [aliasPreview,setAliasPreview]=useState<{raw:unknown;version:string;total:number;added:number;changed:number;unchanged:number}|null>(null);
   const [integratedPreview,setIntegratedPreview]=useState<{raw:unknown;version:string;problemCount:number;answerCount:number;aliasCount:number;added:number;changed:number;unchanged:number}|null>(null);
   const [backupMasterWarning,setBackupMasterWarning]=useState<unknown|null>(null);
   const [showDiagnostics,setShowDiagnostics]=useState(false);
   const [masterError,setMasterError]=useState("");
-  const [pendingPdf,setPendingPdf]=useState<{file:File;inspection:{original_file_name:string;size:number;page_count:number;sha256:string};target:typeof ANSWER_PDF_DOCUMENTS[number]}|null>(null);
-  const mathstatDoc=ANSWER_PDF_DOCUMENTS[0];
   const saveBlob=(content:string,name:string,type:string)=>{
     const url=URL.createObjectURL(new Blob([content],{type}));const a=document.createElement("a");
     a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
   };
   const downloadJson=async()=>saveBlob(JSON.stringify(await exportBackup(),null,2),`stat-study-${todayString()}.json`,"application/json");
   const downloadCsv=async(table:"attempts"|"problems")=>saveBlob(await csvFor(table),`${table}-${todayString()}.csv`,"text/csv;charset=utf-8");
-  const inspectLocalPdf=async(file:File)=>{
-    setMasterError("");
-    try{setPendingPdf({file,inspection:await inspectAnswerPdf(file),target:mathstatDoc})}
-    catch(error){setPendingPdf(null);setMasterError((error as Error).message)}
-  };
-  const registerPendingPdf=async()=>{
-    if(!pendingPdf)return;
-    const file=pendingPdf.file,target=pendingPdf.target;
-    setPendingPdf(null);
-    await run(async()=>{
-      await saveAnswerPdf(file,{document_key:target.document_key});
-      await verifyPdfCanRender(target.document_key,target.expected_page_count);
-    },`${target.expected_file_name}をこのiPad内に保存しました`);
-  };
   const restore=async(file:File)=>{
     try{
       const parsed=JSON.parse(await file.text());
@@ -1069,14 +938,6 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
       setProblemPreview({raw,version:parsed.version,...diff});setMasterError("");
     }catch(error){setProblemPreview(null);setMasterError((error as Error).message)}
   };
-  const previewAnswerIndex=async(file:File)=>{
-    try{const raw=JSON.parse(await file.text()),parsed=parseAnswerIndexPayload(raw);
-      const diff=compareRows(data.answerIndex as unknown as Record<string,unknown>[],parsed.answers as unknown as Record<string,unknown>[],"problem_id");
-      const problemIds=new Set(data.problems.map(problem=>problem.problem_id));
-      const unmatched=parsed.answers.filter(answer=>!problemIds.has(answer.problem_id)).length;
-      setAnswerPreview({raw,version:parsed.version,total:parsed.answers.length,...diff,unmatched});setMasterError("");
-    }catch(error){setAnswerPreview(null);setMasterError((error as Error).message)}
-  };
   const previewAliases=async(file:File)=>{
     try{const raw=JSON.parse(await file.text()),parsed=parseAliasesPayload(raw);
       const diff=compareRows(data.problemAliases as unknown as Record<string,unknown>[],parsed.aliases as unknown as Record<string,unknown>[],"alias");
@@ -1094,40 +955,31 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
       setTimeout(()=>document.getElementById("problem-master-import")?.scrollIntoView({behavior:"smooth"}),0);
     }catch(error){setMasterError((error as Error).message)}
   };
-  const downloadMaster=async(kind:"problem"|"answer")=>{
-    const data=kind==="problem"?await problemMasterExport():await answerIndexExport();
-    saveBlob(JSON.stringify(data,null,2),kind==="problem"?"problem_master.json":"answer_index.json","application/json");
-  };
+  const downloadMaster=async()=>saveBlob(JSON.stringify(await problemMasterExport(),null,2),"problem_master.json","application/json");
   const resolveDiagnosticItem=(item:Bootstrap["masterStatus"]["diagnostics"][number],action:string,label:string)=>{
     if(!item.review_id)return;
     run(()=>post("/api/master/diagnostic/resolve",{review_id:item.review_id,action}),label);
   };
   const unresolvedLinks=data.masterStatus.diagnostics.filter(item=>item.recommended_action==="hold");
-  const mathstatPdfStatus=data.masterStatus.pdf_documents.find(pdf=>pdf.document_key===mathstatDoc.document_key);
-  const mathstatAnswerCount=data.answerIndex.filter(answer=>answer.document_key===mathstatDoc.document_key).length;
-  const pendingPdfMatches=!!pendingPdf&&pendingPdf.inspection.page_count===mathstatDoc.expected_page_count&&pendingPdf.inspection.sha256===mathstatDoc.expected_sha256;
   return <><section className="panel master-import-panel master-import-primary" id="problem-master-import"><div className="panel-title"><div><span className="eyebrow">CANONICAL DATA</span><h3>問題マスター取り込み</h3></div><Badge tone="green">バックアップ復元とは別機能</Badge></div>
-      <p>ChatGPTで作成した problem_master / answer_index JSON を読み込み、問題ID・テーマ・模範解答索引・GPT取り込み補正に使います。通常のバックアップ復元とは別機能です。</p>
+      <p>ChatGPTで作成した problem_master / aliases JSON を読み込み、問題ID・表示名・テーマ・GPT取り込み補正に使います。統合JSON内の answer_index は互換データとして保存できますが、日常画面では使いません。通常のバックアップ復元とは別機能です。</p>
       <div className="master-import-actions">
         <label className={`master-file-button primary ${busy?"disabled":""}`}><Database size={16}/>統合JSONを読み込む<input disabled={busy} type="file" accept=".json,application/json" onChange={event=>{const file=event.target.files?.[0];if(file)void previewIntegrated(file);event.target.value=""}}/></label>
         <label className={`master-file-button ghost ${busy?"disabled":""}`}>problem_master.jsonを読み込む<input disabled={busy} type="file" accept=".json,application/json" onChange={event=>{const file=event.target.files?.[0];if(file)void previewProblemMaster(file);event.target.value=""}}/></label>
-        <label className={`master-file-button ghost ${busy?"disabled":""}`}>answer_index.jsonを読み込む<input disabled={busy} type="file" accept=".json,application/json" onChange={event=>{const file=event.target.files?.[0];if(file)void previewAnswerIndex(file);event.target.value=""}}/></label>
         <label className={`master-file-button ghost ${busy?"disabled":""}`}>aliases.jsonを読み込む<input disabled={busy} type="file" accept=".json,application/json" onChange={event=>{const file=event.target.files?.[0];if(file)void previewAliases(file);event.target.value=""}}/></label>
       </div>
       {masterError&&<div className="match-warning"><AlertTriangle size={17}/><span>{masterError}</span></div>}
       {integratedPreview&&<div className="pack-preview"><div className="panel-title"><div><span className="eyebrow">IMPORT PREVIEW</span><h4>統合JSONの差分確認</h4></div><Badge>{integratedPreview.version}</Badge></div>
-        <div className="pack-counts"><span>問題マスター<strong>{integratedPreview.problemCount}件</strong></span><span>解答索引<strong>{integratedPreview.answerCount}件</strong></span><span>エイリアス<strong>{integratedPreview.aliasCount}件</strong></span></div>
+        <div className="pack-counts"><span>問題マスター<strong>{integratedPreview.problemCount}件</strong></span><span>互換データ<strong>{integratedPreview.answerCount}件</strong></span><span>エイリアス<strong>{integratedPreview.aliasCount}件</strong></span></div>
         <div className="pack-diff"><span>新規追加 <strong>{integratedPreview.added}件</strong></span><span>更新 <strong>{integratedPreview.changed}件</strong></span><span>変更なし <strong>{integratedPreview.unchanged}件</strong></span><span>削除 <strong>0件</strong></span></div>
         <div className="button-row"><button className="primary" disabled={busy} onClick={()=>{const preview=integratedPreview;setIntegratedPreview(null);run(()=>post("/api/master/integrated/import",preview.raw),"統合問題マスターを取り込み、整合性を診断しました")}}>取り込む</button><button className="ghost" onClick={()=>setIntegratedPreview(null)}>キャンセル</button></div>
       </div>}
-      {(problemPreview||answerPreview||aliasPreview)&&<div className="individual-previews">
+      {(problemPreview||aliasPreview)&&<div className="individual-previews">
         {problemPreview&&<div className="master-diff"><strong>問題マスター：{problemPreview.version}・{problemPreview.total}件</strong><span>追加 {problemPreview.added}／更新 {problemPreview.changed}／変更なし {problemPreview.unchanged}／削除 0</span><div className="button-row"><button className="primary small" disabled={busy} onClick={()=>{const preview=problemPreview;setProblemPreview(null);run(()=>post("/api/master/problem/import",preview.raw),"問題マスターを取り込み、整合性を診断しました")}}>取り込む</button><button className="ghost small" onClick={()=>setProblemPreview(null)}>キャンセル</button></div></div>}
-        {answerPreview&&<div className="master-diff"><strong>解答索引：{answerPreview.version}・{answerPreview.total}件</strong><span>読み込み {answerPreview.total}／新規 {answerPreview.added}／更新 {answerPreview.changed}／変更なし {answerPreview.unchanged}／未照合 {answerPreview.unmatched}</span><div className="button-row"><button className="primary small" disabled={busy} onClick={()=>{const preview=answerPreview;setAnswerPreview(null);run(()=>post("/api/master/answer/import",preview.raw),`解答索引を更新しました。読み込み：${preview.total}件／新規：${preview.added}件／更新：${preview.changed}件／変更なし：${preview.unchanged}件／未照合：${preview.unmatched}件`)}}>取り込む</button><button className="ghost small" onClick={()=>setAnswerPreview(null)}>キャンセル</button></div></div>}
         {aliasPreview&&<div className="master-diff"><strong>エイリアス：{aliasPreview.version}・{aliasPreview.total}件</strong><span>追加 {aliasPreview.added}／更新 {aliasPreview.changed}／変更なし {aliasPreview.unchanged}／削除 0</span><div className="button-row"><button className="primary small" disabled={busy} onClick={()=>{const preview=aliasPreview;setAliasPreview(null);run(()=>post("/api/master/aliases/import",preview.raw),"問題エイリアスを取り込みました")}}>取り込む</button><button className="ghost small" onClick={()=>setAliasPreview(null)}>キャンセル</button></div></div>}
       </div>}
       <div className="master-status-row">
         <article><span>問題マスター</span><strong>登録済み {data.masterStatus.problem_count}件</strong><small>最終更新：{data.masterStatus.problem_updated_at?new Date(data.masterStatus.problem_updated_at).toLocaleDateString("ja-JP"):"未登録"}<br/>バージョン：{data.masterStatus.problem_version}</small></article>
-        <article><span>解答索引</span><strong>登録済み {data.masterStatus.answer_count}件</strong><small>PDF本体：{data.masterStatus.pdf_files.length?`${data.masterStatus.pdf_files.length}件・端末内`:"未登録"}<br/>要約・キーワード：{data.masterStatus.answer_count?"登録済み":"未登録"}</small></article>
         <article><span>エイリアス</span><strong>登録済み {data.masterStatus.alias_count}件</strong><small>最終更新：{data.masterStatus.alias_updated_at?new Date(data.masterStatus.alias_updated_at).toLocaleDateString("ja-JP"):"未登録"}<br/>バージョン：{data.masterStatus.alias_version}</small></article>
       </div>
     </section>
@@ -1137,14 +989,12 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
     </section>
     <section className="panel"><div className="setting-icon"><Database/></div><h3>iPad内に保存</h3><p>記録はSafari／ホーム画面アプリ内のIndexedDBに保存されます。外部APIやクラウドには送信しません。</p><dl><dt>問題</dt><dd>{data.problems.length}件</dd><dt>解答履歴</dt><dd>{data.attempts.length}件</dd><dt>復習予定</dt><dd>{data.reviews.length}件</dd></dl></section>
     <section className="panel"><div className="setting-icon"><CalendarCheck/></div><h3>試験日と毎日の学習時間</h3><p>試験日から学習段階を判定し、毎日の目標時間に合わせて課題数を調整します。初期値は150分です。</p><Field label="統計検定1級の受験日"><input type="date" value={examDate} onChange={event=>setExamDate(event.target.value)}/></Field><Field label="1日の最低学習時間（分）"><input type="number" min="30" max="600" value={dailyMinutes} onChange={event=>setDailyMinutes(event.target.value)}/></Field><button className="primary setting-save" disabled={busy} onClick={()=>run(()=>post("/api/settings",{exam_date:examDate,daily_study_minutes:Number(dailyMinutes||150)}),"試験日と学習時間を保存し、計画を調整しました")}>保存する</button></section></div>
-    <section className="panel master-tools-panel"><div className="panel-title"><div><span className="eyebrow">MASTER TOOLS</span><h3>正本の書き出し・模範解答PDF</h3></div><Badge tone="green">PDFは端末内のみ</Badge></div>
-      <div className="button-row"><button className="ghost small" onClick={()=>downloadMaster("problem")}><Download size={14}/>現在のproblem_masterを書き出す</button><button className="ghost small" onClick={()=>downloadMaster("answer")}><Download size={14}/>現在のanswer_indexを書き出す</button></div>
-      <div className="local-pdf-box"><div><strong>白本・模範解答PDF</strong><span>PDFはGitHubへ置かず、この端末のIndexedDBに document_key 付きで保存します。</span></div><label className={`restore-button ${busy?"disabled":""}`}><BookOpen size={15}/>PDFを端末内に登録<input disabled={busy} type="file" accept="application/pdf,.pdf" onChange={event=>{const file=event.target.files?.[0];if(file)void inspectLocalPdf(file);event.target.value=""}}/></label></div>
-      <div className="pdf-document-status"><article><span>{mathstatDoc.display_name}</span><strong>{mathstatPdfStatus?"登録済み":"未登録"}</strong><small>ファイル：{mathstatPdfStatus?.original_file_name||mathstatDoc.expected_file_name}<br/>document_key：{mathstatDoc.document_key}<br/>ページ数：{mathstatPdfStatus?.page_count||mathstatDoc.expected_page_count}<br/>answer_index対応：{mathstatPdfStatus?.answer_count||mathstatAnswerCount}問<br/>表示確認：今日やること画面の模範解答パネルでCanvas表示</small><div className="button-row"><label className={`ghost small restore-button ${busy?"disabled":""}`}>差し替える<input disabled={busy} type="file" accept="application/pdf,.pdf" onChange={event=>{const file=event.target.files?.[0];if(file)void inspectLocalPdf(file);event.target.value=""}}/></label><button className="danger-button small" disabled={!mathstatPdfStatus||busy} onClick={()=>run(()=>deleteAnswerPdf(mathstatDoc.document_key),"白本・模範解答PDFを削除しました")}>削除</button></div></article></div>
+    <section className="panel master-tools-panel"><div className="panel-title"><div><span className="eyebrow">MASTER TOOLS</span><h3>問題マスター書き出し</h3></div><Badge tone="green">PDF管理なし</Badge></div>
+      <p className="muted">問題文と模範解答は、書籍またはGoodNotes・外部PDFビューアで確認します。このアプリは問題管理、計画、GPT採点結果、復習予定に集中します。</p>
+      <div className="button-row"><button className="ghost small" onClick={downloadMaster}><Download size={14}/>現在のproblem_masterを書き出す</button></div>
     </section>
-    {pendingPdf&&<Modal title="PDF登録先の確認" close={()=>setPendingPdf(null)}><div className="pdf-register-confirm"><dl><dt>ファイル</dt><dd>{pendingPdf.file.name}</dd><dt>種類</dt><dd>{pendingPdf.target.display_name}</dd><dt>登録先document_key</dt><dd>{pendingPdf.target.document_key}</dd><dt>ページ数</dt><dd>{pendingPdf.inspection.page_count}</dd><dt>SHA-256</dt><dd>{pendingPdf.inspection.sha256}</dd></dl>{pendingPdfMatches?<div className="match-ok"><Check size={17}/>登録先PDFと一致しています。</div>:<div className="match-warning"><AlertTriangle size={17}/><div><strong>選択したPDFは登録先と一致しない可能性があります。</strong><span>期待：{pendingPdf.target.expected_file_name} / {pendingPdf.target.expected_page_count}ページ</span><span>選択：{pendingPdf.file.name} / {pendingPdf.inspection.page_count||"不明"}ページ</span></div></div>}<div className="button-row"><button className="primary" disabled={!pendingPdfMatches||busy} onClick={registerPendingPdf}>この登録先へ保存</button><label className="ghost restore-button">別PDFを選ぶ<input type="file" accept="application/pdf,.pdf" onChange={event=>{const file=event.target.files?.[0];if(file)void inspectLocalPdf(file);event.target.value=""}}/></label><button className="ghost" onClick={()=>setPendingPdf(null)}>キャンセル</button></div>{!pendingPdfMatches&&<small>DataMath_Answer 2.pdf などページ数が違うPDFは、白本・模範解答PDFとして登録できません。</small>}</div></Modal>}
     <section className="panel diagnostic-panel"><div className="panel-title"><div><span className="eyebrow">CONSISTENCY</span><h3>整合性診断結果</h3></div><Badge tone={data.masterStatus.diagnostics.some(item=>item.severity==="critical")?"red":data.masterStatus.diagnostics.length?"orange":"green"}>要確認 {data.masterStatus.diagnostics.length}件</Badge></div>
-      {!data.masterStatus.diagnostics.length?<p>problem_master / answer_index と学習履歴は整合しています。</p>:<>
+      {!data.masterStatus.diagnostics.length?<p>problem_master と学習履歴は整合しています。</p>:<>
         {!!unresolvedLinks.length&&<div className="diagnostic-remains"><AlertTriangle size={18}/><div><strong>自動補正できる項目は修復済みです。</strong><span>残り{unresolvedLinks.length}件は、関連S指定の真偽を自動判断できないため要確認です。今日の復習予定には含めていません。</span></div></div>}
         <div className="diagnostic-summary">{data.masterStatus.diagnostics.slice(0,3).map(item=><div key={item.id}><strong>{item.problem_id||item.record_type}</strong><span>{item.message}</span></div>)}</div>
         {showDiagnostics&&<div className="diagnostic-list diagnostic-detail-list">{data.masterStatus.diagnostics.slice(0,50).map(item=><div className={item.severity} key={item.id}>

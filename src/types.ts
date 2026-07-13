@@ -29,6 +29,7 @@ export type MasterImportLog = {
 export type DataDiagnostic = {
   id:string; severity:"info"|"warning"|"critical"; problem_id?:string; record_type:string;
   message:string; suggested_problem_id?:string; repairable:boolean;
+  current_value?:string; suggested_value?:string; reason?:string;
   review_id?:number; source_problem_id?:string; target_problem_id?:string;
   current_related_ids?:string[]; canonical_related_ids?:string[];
   recommended_action?:"repair"|"remove"|"add_to_master"|"hold"|"ignore";
@@ -53,6 +54,7 @@ export type Attempt = {
   reference_closed_reproduction?:boolean; saved_gpt_feedback?:boolean; external_reference?:boolean;
   task_origin?:"first_attempt"|"review_attempt"|"linked_s_check"|"related_drill"|"past_exam_followup";
   source_problem_id?:string; attempt_exists?:boolean;
+  raw_problem_id?:string; id_corrected?:boolean; id_correction_reason?:string;
   raw_gpt_problem_id?:string; raw_gpt_theme?:string; auto_corrected?:boolean;
   correction_fields?:string[]; correction_reason?:string; consistency_score?:number;
 };
@@ -72,6 +74,7 @@ export type Review = {
   postponed_at?:string; postponed_to?:string; postpone_reason?:string; triage_override?:"must";
   task_origin?:"first_attempt"|"review_attempt"|"linked_s_check"|"related_drill"|"past_exam_followup";
   source_problem_id?:string; attempt_exists?:boolean; review_goal_public?:string; source_error_summary?:string;
+  raw_problem_id?:string; id_corrected?:boolean; id_correction_reason?:string;
 };
 export type TodayPlanSnapshot = {
   date:string;task_ids:string[];start_of_day_planned_minutes:number;
