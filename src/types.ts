@@ -10,6 +10,7 @@ export type Problem = {
   canonical_title?:string; canonical_problem_type?:string; canonical_keywords?:string[];
   roadmap_rank?:string; source_book?:string; related_a_problem_ids?:string[];
   related_past_exam_ids?:string[]; answer_available?:boolean; master_version?:string;
+  metadata_status?:"ok"|"review_needed"|"metadata_review_needed";
 };
 export type AnswerIndexEntry = {
   problem_id:string; answer_available:boolean; pdf_file_name?:string; page_start?:number|null;
@@ -33,6 +34,9 @@ export type DataDiagnostic = {
   review_id?:number; source_problem_id?:string; target_problem_id?:string;
   current_related_ids?:string[]; canonical_related_ids?:string[];
   recommended_action?:"repair"|"remove"|"add_to_master"|"hold"|"ignore";
+  task_id?:string; canonical_problem_id?:string; master_theme?:string; saved_derived_text?:string;
+  derived_provenance?:string; target_attempt_id?:number; source_attempt_id?:number;
+  effective_mode?:string; sheet_type?:string; due_date?:string; review_after_days?:number|null;
 };
 export type ProblemRelation = {
   relationId:string; sourceProblemId:string; targetProblemId:string;
@@ -83,6 +87,14 @@ export type Review = {
   task_origin?:"first_attempt"|"review_attempt"|"linked_s_check"|"related_drill"|"past_exam_followup";
   source_problem_id?:string; attempt_exists?:boolean; review_goal_public?:string; source_error_summary?:string;
   raw_problem_id?:string; id_corrected?:boolean; id_correction_reason?:string;
+  inferred_mode?:"check"|"skeleton"|"main_calc"|"full"|"scan5";
+  mode_override?:"check"|"skeleton"|"main_calc"|"full"|"scan5";
+  effective_mode?:"check"|"skeleton"|"main_calc"|"full"|"scan5";
+  sheet_type?:"check_sheet"|"skeleton_sheet"|"main_calc_sheet"|"full_answer_sheet"|"scan5_sheet";
+  sheet_name?:string; derived_from_problem_id?:string; derived_from_attempt_id?:number;
+  derived_from_master_version?:string; derived_generated_at?:string; derived_stale?:boolean;
+  derived_fields?:Record<string,{value:unknown;provenance:{problemId:string;attemptId?:number;evaluationId?:number;relationId?:string;masterVersion:string;generatedAt:string}}>;
+  raw_due_date?:string; due_date_correction_reason?:string; review_needed_reason?:string;
 };
 export type TodayPlanSnapshot = {
   date:string;task_ids:string[];start_of_day_planned_minutes:number;
@@ -118,6 +130,12 @@ export type Task = {
   postponed_at?:string; postponed_to?:string; postpone_reason?:string; postpone_count?:number;
   task_origin?:"first_attempt"|"review_attempt"|"linked_s_check"|"related_drill"|"past_exam_followup";
   source_problem_id?:string; attempt_exists?:boolean; review_goal_public?:string; source_error_summary?:string;
+  inferred_mode?:"check"|"skeleton"|"main_calc"|"full"|"scan5";
+  mode_override?:"check"|"skeleton"|"main_calc"|"full"|"scan5";
+  effective_mode?:"check"|"skeleton"|"main_calc"|"full"|"scan5";
+  sheet_type?:"check_sheet"|"skeleton_sheet"|"main_calc_sheet"|"full_answer_sheet"|"scan5_sheet";
+  consistency_warnings?:Array<{code:string;message:string;repairable:boolean;blocksSpecificGuidance?:boolean}>;
+  review_needed?:boolean;
 };
 export type WeaknessInsight = {
   theme:string; score:number; level:"重点"|"注意"|"観察"; confidence:"参考"|"暫定"|"分析可能";
@@ -149,7 +167,8 @@ export type Bootstrap = {
     problem_updated_at:string;answer_updated_at:string;alias_updated_at:string;alias_version:string;alias_count:number;
     pdf_files:string[];pdf_documents:{document_key:string;kind?:string;source_book?:string;original_file_name?:string;
       display_name?:string;page_count?:number;sha256?:string;registered_at?:string;file_name?:string;answer_count:number}[];
-    diagnostics:DataDiagnostic[];import_history:string[]};
+    diagnostics:DataDiagnostic[];import_history:string[];
+    review_rebuild_summary?:{repaired_at:string;stale_count:number;regenerated_count:number;review_needed_count:number;source_target_mix_count:number;date_corrected_count:number}};
   today:{tasks:Task[];totalLoad:number;plannedMinutes:number;remainingMinutes:number;actualMinutes:number;
     targetMinutes:number;capacityPercent:number;warning:string;guidance:string;
     triageMinutes?:{must:number;if_time:number;tomorrow:number};

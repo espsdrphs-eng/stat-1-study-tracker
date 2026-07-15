@@ -11,6 +11,7 @@ import { summarizeTodayTime } from "./todayPlan.ts";
 import { removeTimingExpressions, sanitizeStudyUpdateTiming } from "./reviewTiming.ts";
 import { buildProgressPlan, daysUntilExam } from "./studyProgress.ts";
 import { calculateExamReadinessMetrics } from "./examReadiness.ts";
+import { correctedDueDate, resolveReviewCard } from "./reviewCardResolver.ts";
 import { CHAPTER_META, officialProblemEntries, PAST_EXAM_YEAR_ORDER, STRATEGY_A_PLUS_ORDER, STRATEGY_S_ORDER, strategyRankFor } from "./officialMaster.ts";
 import { REVIEW_RUBRIC_VERSION } from "./gradingPrompt.ts";
 import { allowedReferenceLevel, referenceDecision, type ReferenceLevel } from "./reviewExperience.ts";
@@ -540,10 +541,28 @@ const planFields=(plan:ReviewPlan)=>({
 type ReviewInsert=Omit<Review,"id">;
 async function addOrReplaceReview(review:ReviewInsert){
   const pending=(await db.reviews.where("problem_id").equals(review.problem_id).toArray()).filter(item=>item.status!=="done");
-  const scheduled=pending.filter(item=>item.status!=="deferred");
-  const dueDate=[review.due_date,...scheduled.map(item=>item.due_date)].sort()[0];
   if(pending.length) await db.reviews.bulkDelete(pending.map(item=>item.id));
-  return Number(await db.reviews.add({id:undefined as unknown as number,...review,due_date:dueDate}));
+  const [problem,attempts,aliases,examMeta]=await Promise.all([
+    db.problems.get(review.problem_id),db.attempts.toArray(),db.problemAliases.toArray(),db.meta.get("exam_date")
+  ]);
+  if(!problem){
+    return Number(await db.reviews.add({id:undefined as unknown as number,...review,status:"review_needed",review_needed_reason:"problem_masterに対象問題がありません"}));
+  }
+  const card=resolveReviewCard({item:review,problems:[problem],attempts,aliases,today:todayString(),examDate:examMeta?.value||""});
+  const provenance={
+    reviewGoal:card.reviewGoal,correctionTheme:card.correctionTheme,entryHint:card.entryHint,
+    oneLineHint:card.oneLineHint,todayActions:card.todayActions,completionConditions:card.completionConditions
+  };
+  return Number(await db.reviews.add({
+    id:undefined as unknown as number,...review,problem_id:card.canonicalProblemId,
+    inferred_mode:card.inferredMode,mode_override:card.modeOverride,effective_mode:card.effectiveMode,
+    sheet_type:card.sheetType,sheet_name:card.sheetLabel,
+    derived_from_problem_id:card.canonicalProblemId,derived_from_attempt_id:card.targetAttempt?.id,
+    derived_from_master_version:problem.master_version||"unversioned",derived_generated_at:new Date().toISOString(),
+    derived_stale:false,derived_fields:provenance,
+    status:card.reviewNeeded?"review_needed":review.status,
+    review_needed_reason:card.reviewNeeded?card.consistencyWarnings.map(item=>item.message).join(" "):undefined
+  }));
 }
 
 async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
@@ -1044,8 +1063,8 @@ async function importIntegratedMaster(raw:unknown){
 }
 
 async function diagnoseData():Promise<DataDiagnostic[]>{
-  const [problems,attempts,reviews,notes,answers,aliases]=await Promise.all([
-    db.problems.toArray(),db.attempts.toArray(),db.reviews.toArray(),db.weakNotes.toArray(),db.answerIndex.toArray(),db.problemAliases.toArray()
+  const [problems,attempts,reviews,notes,answers,aliases,examMeta]=await Promise.all([
+    db.problems.toArray(),db.attempts.toArray(),db.reviews.toArray(),db.weakNotes.toArray(),db.answerIndex.toArray(),db.problemAliases.toArray(),db.meta.get("exam_date")
   ]);
   const pmap=new Map(problems.map(problem=>[problem.problem_id,problem])),amap=new Map(answers.map(answer=>[answer.problem_id,answer]));
   const diagnostics:DataDiagnostic[]=[];
@@ -1099,6 +1118,24 @@ async function diagnoseData():Promise<DataDiagnostic[]>{
         message:`${sourceId} からの関連S指定が problem_master と矛盾しています。`,
         repairable:false,recommended_action:"hold"
       });
+    }
+    const card=resolveReviewCard({item:review,problems,attempts,aliases,today:todayString(),examDate:examMeta?.value||""});
+    if(!review.derived_from_problem_id||!review.derived_fields){
+      diagnostics.push({id:`review-derived-legacy-${review.id}`,severity:"warning",problem_id:review.problem_id,canonical_problem_id:card.canonicalProblemId,
+        record_type:"review_card",message:"派生文章に由来情報がない旧データです。共通Resolverで安全に再生成できます。",review_id:review.id,
+        task_id:String(review.id),master_theme:card.theme,saved_derived_text:review.review_goal_public||review.review_instruction||"",
+        target_attempt_id:card.targetAttempt?.id,source_attempt_id:card.sourceAttempt?.id,effective_mode:card.effectiveMode,sheet_type:card.sheetType,
+        due_date:review.due_date,review_after_days:review.interval_days,repairable:true,recommended_action:"repair"});
+    }
+    for(const warning of card.consistencyWarnings.filter(item=>[
+      "attempt_problem_mismatch","mode_sheet_mismatch","due_date_interval_mismatch","source_target_self_reference","metadata_review_needed"
+    ].includes(item.code))){
+      diagnostics.push({id:`review-card-${warning.code}-${review.id}`,severity:warning.blocksSpecificGuidance?"critical":"warning",
+        problem_id:review.problem_id,canonical_problem_id:card.canonicalProblemId,record_type:"review_card",message:warning.message,
+        review_id:review.id,task_id:String(review.id),master_theme:card.theme,saved_derived_text:review.review_goal_public||review.review_instruction||"",
+        derived_provenance:review.derived_from_problem_id?`${review.derived_from_problem_id} / Attempt ${review.derived_from_attempt_id||"なし"}`:"なし",
+        target_attempt_id:card.targetAttempt?.id,source_attempt_id:card.sourceAttempt?.id,effective_mode:card.effectiveMode,sheet_type:card.sheetType,
+        due_date:review.due_date,review_after_days:review.interval_days,repairable:warning.repairable,recommended_action:warning.repairable?"repair":"hold"});
     }
   }
   for(const note of notes){
@@ -1202,6 +1239,50 @@ async function repairDataIntegrity(silent=false){
   if(!silent) await appendImportHistory("整合性修復","manual",reviews.length+notes.length);
   const diagnostics=await diagnoseData();
   return {diagnostics,self_references_removed:selfReferencesRemoved,remaining_review_needed:diagnostics.filter(item=>item.recommended_action==="hold").length};
+}
+
+async function rebuildReviewCards(){
+  const [problems,attempts,reviews,aliases,examMeta]=await Promise.all([
+    db.problems.toArray(),db.attempts.toArray(),db.reviews.toArray(),db.problemAliases.toArray(),db.meta.get("exam_date")
+  ]);
+  let staleCount=0,regeneratedCount=0,reviewNeededCount=0,sourceTargetMixCount=0,dateCorrectedCount=0;
+  const now=new Date().toISOString(),today=todayString();
+  for(const review of reviews){
+    const card=resolveReviewCard({item:review,problems,attempts,aliases,today,examDate:examMeta?.value||"",now});
+    const hasLegacyDerived=!!(review.review_goal_public||review.review_instruction||review.review_steps?.length||review.sheet_name);
+    const stale=!review.derived_from_problem_id||!review.derived_fields||
+      review.derived_from_problem_id!==card.canonicalProblemId||review.derived_from_attempt_id!==card.targetAttempt?.id||
+      review.derived_from_master_version!==(problems.find(problem=>problem.problem_id===card.canonicalProblemId)?.master_version||"unversioned")||
+      card.consistencyWarnings.some(item=>["mode_sheet_mismatch","stored_mode_stale","due_date_interval_mismatch","attempt_problem_mismatch"].includes(item.code));
+    if(stale||hasLegacyDerived) staleCount++;
+    if(card.reviewNeeded) reviewNeededCount++;
+    if(card.consistencyWarnings.some(item=>["attempt_problem_mismatch","source_target_self_reference"].includes(item.code))) sourceTargetMixCount++;
+    const resolvedDue=correctedDueDate(card),dueChanged=resolvedDue!==review.due_date;
+    if(dueChanged) dateCorrectedCount++;
+    const problem=problems.find(entry=>entry.problem_id===card.canonicalProblemId);
+    const derivedFields={reviewGoal:card.reviewGoal,correctionTheme:card.correctionTheme,entryHint:card.entryHint,
+      oneLineHint:card.oneLineHint,todayActions:card.todayActions,completionConditions:card.completionConditions};
+    await db.reviews.update(review.id,{
+      problem_id:problem?card.canonicalProblemId:review.problem_id,
+      raw_problem_id:problem&&card.canonicalProblemId!==review.problem_id?(review.raw_problem_id||review.problem_id):review.raw_problem_id,
+      id_corrected:problem&&card.canonicalProblemId!==review.problem_id?true:review.id_corrected,
+      id_correction_reason:problem&&card.canonicalProblemId!==review.problem_id?"problem_aliasesに基づきcanonical IDへ補正":review.id_correction_reason,
+      inferred_mode:card.inferredMode,mode_override:card.modeOverride,effective_mode:card.effectiveMode,
+      sheet_type:card.sheetType,sheet_name:card.sheetLabel,
+      derived_from_problem_id:card.canonicalProblemId,derived_from_attempt_id:card.targetAttempt?.id,
+      derived_from_master_version:problem?.master_version||"unversioned",derived_generated_at:now,derived_stale:false,
+      derived_fields:derivedFields,
+      raw_due_date:dueChanged?(review.raw_due_date||review.due_date):review.raw_due_date,
+      due_date:resolvedDue,due_date_correction_reason:dueChanged?`Attempt日と復習間隔から再計算（${card.reviewAfterDays}日）`:review.due_date_correction_reason,
+      review_needed_reason:card.reviewNeeded?card.consistencyWarnings.filter(item=>item.blocksSpecificGuidance).map(item=>item.message).join(" "):undefined
+    });
+    regeneratedCount++;
+  }
+  await appendImportHistory("復習カードを安全に再構築","review-card-resolver",regeneratedCount);
+  const summary={repaired_at:now,stale_count:staleCount,regenerated_count:regeneratedCount,review_needed_count:reviewNeededCount,
+    source_target_mix_count:sourceTargetMixCount,date_corrected_count:dateCorrectedCount};
+  await db.meta.put({key:"review_card_rebuild_summary",value:JSON.stringify(summary)});
+  return {...summary,diagnostics:await diagnoseData()};
 }
 
 async function resolveDiagnostic(body:Record<string,unknown>){
@@ -1356,7 +1437,8 @@ async function bootstrap():Promise<Bootstrap>{
     db.answerIndex.toArray(),db.answerPdfs.toArray(),db.problemAliases.toArray()
   ]);
   const today=todayString(),week=addDays(today,-6),fortnight=addDays(today,-13);
-  const pmap=new Map(problems.map(p=>[p.problem_id,p]));
+  const pmap=new Map(problems.map(p=>[resolveCanonicalProblemId(p.problem_id,problemAliases),p]));
+  const problemForId=(problemId:string)=>pmap.get(resolveCanonicalProblemId(problemId,problemAliases));
   const answerMap=new Map(answerIndex.map(answer=>[answer.problem_id,answer]));
   const pdfNames=new Set(answerPdfs.map(pdf=>pdf.file_name));
   const pdfDocumentKeys=new Set(answerPdfs.map(pdf=>pdf.document_key).filter(Boolean) as string[]);
@@ -1366,16 +1448,26 @@ async function bootstrap():Promise<Bootstrap>{
     exam_date:metaEntries.find(entry=>entry.key==="exam_date")?.value||"",
     daily_study_minutes:Math.max(30,Number(metaEntries.find(entry=>entry.key==="daily_study_minutes")?.value||150))
   };
-  const reviews=rawReviews.map(review=>{
-    const status=["pending","overdue"].includes(review.status)&&review.due_date<today?"overdue":review.status;
-    if(review.review_method) return {...review,status};
-    const problem=pmap.get(review.problem_id);
+  const baseReviews=rawReviews.map(review=>{
+    if(review.review_method) return review;
+    const problem=problemForId(review.problem_id);
     const source=attemptMap.get(review.generated_from_attempt_id);
     const linked=problem?[...(problem.related_s_problem_ids||[]),...list(problem.linked_s_problems)]:[];
     const legacyPlan=review.review_type==="s_check"
       ?createSReviewPlan((smap.get(review.problem_id)?.state||"check") as SState)
       :source?createAttemptReviewPlan(source,linked,0):null;
-    return legacyPlan?{...review,status,duration_minutes:legacyPlan.estimated_minutes,reason:legacyPlan.review_reason,...planFields(legacyPlan)}:{...review,status};
+    return legacyPlan?{...review,duration_minutes:legacyPlan.estimated_minutes,reason:legacyPlan.review_reason,...planFields(legacyPlan)}:review;
+  });
+  const reviews=baseReviews.map(review=>{
+    const card=resolveReviewCard({item:review,problems,attempts,aliases:problemAliases,today,examDate:settings.exam_date});
+    const resolvedDue=correctedDueDate(card);
+    const status=["pending","overdue"].includes(review.status)&&resolvedDue<today?"overdue":review.status;
+    return {...review,problem_id:card.canonicalProblemId,due_date:resolvedDue,status,
+      inferred_mode:card.inferredMode,effective_mode:card.effectiveMode,mode_override:card.modeOverride,
+      sheet_type:card.sheetType,sheet_name:card.sheetLabel,
+      consistency_warnings:card.consistencyWarnings,review_needed:card.reviewNeeded,
+      derived_fields:{reviewGoal:card.reviewGoal,correctionTheme:card.correctionTheme,entryHint:card.entryHint,
+        oneLineHint:card.oneLineHint,todayActions:card.todayActions,completionConditions:card.completionConditions}};
   }).sort((a,b)=>a.due_date.localeCompare(b.due_date)||Number(a.manual_order||0)-Number(b.manual_order||0)||a.id-b.id);
   const a14=new Set(attempts.filter(a=>a.date>=fortnight&&pmap.get(a.problem_id)?.category==="A").map(a=>a.problem_id)).size;
   const skeleton=attempts.filter(a=>a.date>=fortnight&&a.mode==="skeleton");
@@ -1442,20 +1534,19 @@ async function bootstrap():Promise<Bootstrap>{
       daysRemaining:progress.daysRemaining,examDateIsEstimate:!settings.exam_date}
   };
   const dueReviews=reviews.filter(r=>["pending","overdue"].includes(r.status)&&r.due_date<=today).map(r=>{
-    const p=pmap.get(r.problem_id)!;const originSource=attempts.find(a=>a.id===r.generated_from_attempt_id);
-    const ownSource=attempts.find(attempt=>attempt.problem_id===r.problem_id&&p&&attemptMatchesProblem(attempt,p));
+    const p=problemForId(r.problem_id)!;const originSource=attempts.find(a=>a.id===r.generated_from_attempt_id);
+    const ownSource=attempts.find(attempt=>resolveCanonicalProblemId(attempt.problem_id,problemAliases)===resolveCanonicalProblemId(r.problem_id,problemAliases)&&p&&attemptMatchesProblem(attempt,p));
     const linkedS=r.task_origin==="linked_s_check"||r.review_type==="s_check";
     const source=linkedS?ownSource:originSource,answer=answerMap.get(r.problem_id);
     const defaultMinutes=r.estimated_minutes||r.duration_minutes||20;
     const minutes=source?.is_review_attempt&&source.time_minutes>0?Math.max(3,Math.round((defaultMinutes+source.time_minutes)/2)):defaultMinutes;
-    const reviewMode=r.requires_full_answer?"exam_90min":r.review_type==="main_calc_retry"?"main_calc":
-      ["careless_check","light_check"].includes(r.review_type)||(/軽い骨格確認|軽い想起チェック|月1回の軽い/.test(r.review_method||""))||
-      r.review_type==="s_check"&&(/3分|5分チェック|5分骨格確認/.test(r.review_method||""))?"check":"skeleton";
+    const card=resolveReviewCard({item:r,problems,attempts,aliases:problemAliases,today,examDate:settings.exam_date});
+    const reviewMode=card.effectiveMode;
     return {...r,task_origin:linkedS?"linked_s_check":r.task_origin||(source?"review_attempt":"first_attempt"),
       source_problem_id:linkedS?(r.source_problem_id||originSource?.problem_id):r.source_problem_id,
       attempt_exists:!!source,review_goal_public:linkedS?"元問題で崩れた基礎型を確認する":r.review_goal_public,
       source_error_summary:linkedS?originSource?.error_point:"",
-      title:p?.display_label||p?.title||(r.generated_from_past_session_id?`${r.problem_id.replace("-SESSION","")} 過去問演習`:r.problem_id),theme:p?.theme||"",error_type:source?.error_type,
+      error_type:source?.error_type,
       previous_date:source?.date,previous_score:source?`${source.score_text||source.score_label}${source.score_numeric!=null?` ${source.score_numeric}点`:""}`:"",
       previous_errors:source?.error_types||[source?.error_type||"none"],previous_error_point:source?.error_point||"",previous_next_action:source?.next_action||"",
       previous_improvement_guidance:source?.improvement_guidance||"",previous_required_derivation:source?.required_derivation||"",
@@ -1466,11 +1557,13 @@ async function bootstrap():Promise<Bootstrap>{
       official_answer_pdf_registered:!!answer&&(!!answer.document_key&&pdfDocumentKeys.has(answer.document_key)||!!answer.pdf_file_name&&pdfNames.has(answer.pdf_file_name)),
       answer_section_label:answer?.section_label||"",official_answer_page:answer?.open_page??answer?.page_start??null,
       answer_page_start:answer?.page_start,answer_page_end:answer?.page_end,answer_document_key:answer?.document_key,
-      canonical_problem_type:p?.canonical_problem_type||p?.theme||"",
       canonical_keywords:[...(p?.canonical_keywords||[]),...(answer?.canonical_keywords||[])],
       answer_excerpt:answer?.answer_excerpt||"",
       kind:r.review_type==="s_check"?"S確認":r.generated_from_past_session_id?"過去問復習":"復習",reason:r.status==="overdue"?`期限切れ（${r.due_date}）`:"本日が復習日",
-      mode:reviewMode,minutes,estimated_minutes:minutes,load:loadFor(reviewMode)};
+      title:card.displayLabel,theme:card.theme,canonical_problem_type:card.canonicalProblemType,
+      mode:reviewMode,effective_mode:reviewMode,sheet_type:card.sheetType,
+      consistency_warnings:card.consistencyWarnings,review_needed:card.reviewNeeded,
+      minutes,estimated_minutes:minutes,load:loadFor(reviewMode)};
   }).sort((a,b)=>(a.status==="overdue"&&a.error_type==="K"?0:1)-(b.status==="overdue"&&b.error_type==="K"?0:1)||
     Number(a.manual_order||0)-Number(b.manual_order||0));
   const activeS=new Set(reviews.filter(r=>r.review_type==="s_check"&&["pending","overdue","deferred"].includes(r.status)).map(r=>r.problem_id));
@@ -1668,7 +1761,8 @@ async function bootstrap():Promise<Bootstrap>{
     alias_updated_at:metaEntries.find(entry=>entry.key==="problem_alias_updated_at")?.value||"",
     alias_version:metaEntries.find(entry=>entry.key==="problem_alias_version")?.value||"未設定",
     alias_count:problemAliases.length,
-    pdf_files:[...new Set([...pdfNames,...pdfDocumentKeys])],pdf_documents:pdfDocuments,diagnostics,import_history:importHistory
+    pdf_files:[...new Set([...pdfNames,...pdfDocumentKeys])],pdf_documents:pdfDocuments,diagnostics,import_history:importHistory,
+    review_rebuild_summary:(()=>{try{return JSON.parse(metaEntries.find(entry=>entry.key==="review_card_rebuild_summary")?.value||"null")||undefined}catch{return undefined}})()
   };
   return {problems:problems.sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.category.localeCompare(b.category)||a.problem_number-b.problem_number),attempts,reviews,roadmap,weakNotes,pastSessions,answerIndex,problemAliases,dashboard,settings,masterStatus,
     today:{tasks,totalLoad,plannedMinutes:plannedTotal,remainingMinutes,actualMinutes,targetMinutes:settings.daily_study_minutes,capacityPercent,warning,guidance,
@@ -1706,6 +1800,8 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     return await importAliases(body) as T;
   } else if(path==="/api/master/repair"){
     return await repairDataIntegrity() as T;
+  } else if(path==="/api/reviews/rebuild"){
+    return await rebuildReviewCards() as T;
   } else if(path==="/api/master/diagnostic/resolve"){
     return await resolveDiagnostic(body) as T;
   } else if(path==="/api/today/recalculate"){
