@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useRegisterSW } from "virtual:pwa-register/react";
 import {
   AlertTriangle, Archive, ArrowDown, BarChart3, BookOpen, CalendarCheck, CalendarClock, Check, ChevronRight, ClipboardPaste,
   Clock3, Copy, Database, Download, Eye, EyeOff, Gauge, LayoutDashboard, ListChecks, Menu, NotebookPen,
@@ -6,7 +7,7 @@ import {
 } from "lucide-react";
 import yaml from "js-yaml";
 import { api, post } from "./api";
-import { csvFor, exportBackup, problemMasterExport, restoreBackup } from "./localDb";
+import { closeLocalDatabase, csvFor, exportBackup, problemMasterExport, restoreBackup } from "./localDb";
 import AdvancedImportView from "./AdvancedImportView";
 import { problemDisplayLabel } from "./importParser";
 import { createAttemptReviewPlan } from "./reviewRules";
@@ -25,6 +26,7 @@ import { sheetUsageForPhase, type ExamPhase } from "./examReadiness";
 import { resolveReviewCard, type ResolvedReviewCard } from "./reviewCardResolver";
 import { CHAPTER_META } from "./officialMaster";
 import { isProblemPack, masterDiff, parseAliasesPayload, parseIntegratedMasterPayload, parseProblemMasterPayload } from "./masterData";
+import { isIndexedDbSchemaError, schemaErrorMessage, type IndexedDbSchemaDiagnostic } from "./dbSchema";
 import type { AnswerIndexEntry, Attempt, Bootstrap, Problem, ProblemAlias, Review, StudyUpdate, Task } from "./types";
 
 type Page = "dashboard"|"today"|"problems"|"attempt"|"import"|"reviews"|"weak"|"past"|"sheets"|"settings";
@@ -72,6 +74,7 @@ function SheetLink({href,label="シートを見る",primary=false}:{href:string;
     </div>}</>;
 }
 export default function App() {
+  const {needRefresh:[needRefresh,setNeedRefresh],updateServiceWorker}=useRegisterSW();
   const [data,setData]=useState<Bootstrap|null>(null);
   const [page,setPage]=useState<Page>("dashboard");
   const [menu,setMenu]=useState(false);
@@ -80,12 +83,35 @@ export default function App() {
   const [refreshing,setRefreshing]=useState(false);
   const [message,setMessage]=useState("");
   const [error,setError]=useState("");
-  const load=async()=>{setError("");try{setData(await api<Bootstrap>("/api/bootstrap"));}catch(e){setError((e as Error).message)}};
-  const refresh=async()=>{setRefreshing(true);setError("");try{setData(await api<Bootstrap>("/api/bootstrap"));setMessage("データを更新しました")}catch(e){setError((e as Error).message)}finally{setRefreshing(false)}};
-  useEffect(()=>{load()},[]);
-  const run=async(action:()=>Promise<unknown>,success:string)=>{setBusy(true);setError("");try{await action();setMessage(success);await load();return true}catch(e){setError((e as Error).message);return false}finally{setBusy(false)}};
+  const [schemaIssue,setSchemaIssue]=useState<IndexedDbSchemaDiagnostic|null>(null);
+  const [databaseNotice,setDatabaseNotice]=useState<{title:string;message:string;reload?:boolean}|null>(null);
+  const handleFailure=(reason:unknown)=>{
+    if(isIndexedDbSchemaError(reason))setSchemaIssue(reason.diagnostic);
+    setError(schemaErrorMessage(reason));
+  };
+  const load=async()=>{setError("");try{setData(await api<Bootstrap>("/api/bootstrap"));}catch(e){handleFailure(e)}};
+  const refresh=async()=>{setRefreshing(true);setError("");try{setData(await api<Bootstrap>("/api/bootstrap"));setMessage("最新データを再読み込みしました")}catch(e){handleFailure(e)}finally{setRefreshing(false)}};
+  useEffect(()=>{
+    load();
+    const blocked=(event:Event)=>setDatabaseNotice({...((event as CustomEvent).detail||{}),reload:false});
+    const changed=(event:Event)=>setDatabaseNotice({...((event as CustomEvent).detail||{}),reload:true});
+    window.addEventListener("stat1-db-blocked",blocked);window.addEventListener("stat1-db-versionchange",changed);
+    return()=>{window.removeEventListener("stat1-db-blocked",blocked);window.removeEventListener("stat1-db-versionchange",changed)};
+  },[]);
+  const run=async(action:()=>Promise<unknown>,success:string)=>{setBusy(true);setError("");try{await action();setMessage(success);await load();return true}catch(e){handleFailure(e);return false}finally{setBusy(false)}};
+  const repairDatabase=async()=>{
+    const ok=await run(()=>post("/api/database/repair",{}),"データベースを安全に更新しました");
+    if(ok)setSchemaIssue(null);
+  };
+  const safelyUpdateApp=async()=>{
+    const hasDraft=!!sessionStorage.getItem("stat1:gpt-import-draft:v1");
+    if(hasDraft&&!window.confirm("未保存のGPT取り込み内容があります。内容は一時保存済みです。アプリを更新しますか？"))return;
+    closeLocalDatabase();
+    await updateServiceWorker(true);
+  };
   const go=(next:Page)=>{setPage(next);setMenu(false);setSelected(null)};
-  if(!data) return <div className="boot"><div className="spinner"/><strong>学習データを準備しています</strong>{error&&<p>{error}</p>}</div>;
+  if(!data) return <div className="boot"><div className="spinner"/><strong>学習データを準備しています</strong>{error&&<p>{error}</p>}{schemaIssue&&<div className="boot-repair"><span>不足している保存先：{schemaIssue.missingStores.join("、")||"確認中"}</span><button className="primary" disabled={busy} onClick={repairDatabase}>データベースを安全に更新</button><button className="ghost" onClick={()=>navigator.clipboard.writeText(JSON.stringify(schemaIssue,null,2))}>診断情報をコピー</button></div>}</div>;
+  const writeBusy=busy||!data.databaseStatus.valid;
   return <div className="app-shell">
     <aside className={`sidebar ${menu?"open":""}`}>
       <div className="brand"><div className="brand-mark">1</div><div><strong>統計一級</strong><span>STUDY TRACKER</span></div><button className="mobile-close" onClick={()=>setMenu(false)}><X/></button></div>
@@ -97,15 +123,19 @@ export default function App() {
     <main>
       <header><button className="menu-btn" onClick={()=>setMenu(true)}><Menu/></button><div><span className="eyebrow">{data.dashboard.today.replaceAll("-",".")}</span><h1>{selected?selected.problem_id:pageTitles[page]}</h1></div><button className={`icon-btn ${refreshing?"spinning":""}`} onClick={refresh} title="更新" disabled={refreshing}><RefreshCw size={19}/></button></header>
       {(message||error)&&<div className={`toast ${error?"danger":""}`} onClick={()=>{setMessage("");setError("")}}>{error||message}<X size={16}/></div>}
+      {schemaIssue&&<div className="modal-backdrop" role="presentation"><section className="modal database-schema-dialog" role="dialog" aria-modal="true" aria-label="データベース更新"><div className="modal-head"><div><span className="eyebrow">SAFE DATABASE UPDATE</span><h2>保存先データベースの更新が必要です</h2></div><button onClick={()=>setSchemaIssue(null)} aria-label="閉じる"><X/></button></div><p>既存の学習履歴は削除せず、不足している保存先だけを作成・検証します。</p><dl><dt>不足している保存先</dt><dd>{schemaIssue.missingStores.join("、")||"確認中"}</dd><dt>現在のDBバージョン</dt><dd>{schemaIssue.databaseVersion}</dd><dt>必要なDBバージョン</dt><dd>{schemaIssue.requiredDatabaseVersion}</dd><dt>保存処理</dt><dd>{schemaIssue.operation}</dd></dl><div className="button-row"><button className="primary" disabled={busy} onClick={repairDatabase}>データベースを安全に更新</button><button className="ghost" onClick={()=>navigator.clipboard.writeText(JSON.stringify(schemaIssue,null,2))}><Copy size={15}/>診断情報をコピー</button><button className="ghost" onClick={()=>setSchemaIssue(null)}>キャンセル</button></div></section></div>}
+      {databaseNotice&&<div className="update-banner" role="alert"><div><strong>{databaseNotice.title}</strong><span>{databaseNotice.message}</span></div>{databaseNotice.reload?<button className="primary small" onClick={()=>location.reload()}>安全に再読み込み</button>:<button className="ghost small" onClick={()=>setDatabaseNotice(null)}>閉じる</button>}</div>}
+      {needRefresh&&<div className="update-banner" role="alert"><div><strong>新しいバージョンがあります</strong><span>未保存内容を確認してから、安全に更新できます。</span></div><button className="primary small" onClick={safelyUpdateApp}>安全に更新</button><button className="ghost small" onClick={()=>setNeedRefresh(false)}>後で</button></div>}
+      {!data.databaseStatus.valid&&<div className="update-banner database-required" role="alert"><div><strong>アプリのデータベース更新が必要です</strong><span>既存履歴は閲覧できますが、安全のため書き込み操作を一時停止しています。不足：{data.databaseStatus.missingStores.join("、")}</span></div><button className="primary small" disabled={busy} onClick={repairDatabase}>安全に更新</button></div>}
       <div className="content">
         {selected?<ProblemDetail problem={selected} data={data} run={run} busy={busy} onBack={()=>setSelected(null)} onImport={()=>{setSelected(null);setPage("import")}}/>:
         page==="dashboard"?<DashboardView data={data} go={go} select={setSelected}/>:
-        page==="today"?<TodayView data={data} busy={busy} run={run} go={go} select={setSelected}/>:
-        page==="problems"?<ProblemsView data={data} select={setSelected} run={run} busy={busy}/>:
-        page==="attempt"?<AttemptView problems={data.problems} run={run} busy={busy}/>:
-        page==="import"?<AdvancedImportView problems={data.problems} answerIndex={data.answerIndex} problemAliases={data.problemAliases} attempts={data.attempts} reviews={data.reviews} run={run} busy={busy}/>:
-        page==="reviews"?<ReviewsView data={data} run={run} busy={busy}/>:
-        page==="weak"?<WeakView data={data} run={run} busy={busy}/>:
+        page==="today"?<TodayView data={data} busy={writeBusy} run={run} go={go} select={setSelected}/>:
+        page==="problems"?<ProblemsView data={data} select={setSelected} run={run} busy={writeBusy}/>:
+        page==="attempt"?<AttemptView problems={data.problems} run={run} busy={writeBusy}/>:
+        page==="import"?<AdvancedImportView problems={data.problems} answerIndex={data.answerIndex} problemAliases={data.problemAliases} attempts={data.attempts} reviews={data.reviews} run={run} busy={writeBusy}/>:
+        page==="reviews"?<ReviewsView data={data} run={run} busy={writeBusy}/>:
+        page==="weak"?<WeakView data={data} run={run} busy={writeBusy}/>:
         page==="past"?<PastView data={data} go={go}/>:
         page==="sheets"?<AnswerSheetsView/>:
         <SettingsView data={data} run={run} busy={busy}/>}
@@ -1040,6 +1070,7 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
       <div className="button-row"><button className="primary" disabled={busy} onClick={()=>run(()=>post("/api/reviews/rebuild",{}),"復習カードを安全に再構築しました")}>復習カードを安全に再構築する</button><button className="secondary" disabled={busy||!data.masterStatus.diagnostics.some(item=>item.repairable)} onClick={()=>run(()=>post("/api/master/repair",{}),"自動修復可能な不整合を一括補正しました")}>問題・関連データを一括補正</button><button className="ghost" disabled={!data.masterStatus.diagnostics.length} onClick={()=>setShowDiagnostics(true)}>個別確認する</button><button className="ghost" disabled={!data.masterStatus.diagnostics.length} onClick={()=>setShowDiagnostics(false)}>後で確認する</button></div>
       {!!data.masterStatus.import_history.length&&<details><summary>取り込み履歴</summary><ul>{data.masterStatus.import_history.map((row,index)=><li key={index}>{row}</li>)}</ul></details>}
     </section>
+    <section className="panel database-integrity-panel"><div className="panel-title"><div><span className="eyebrow">LOCAL DATABASE</span><h3>データベース整合性</h3></div><Badge tone={data.databaseStatus.valid?"green":"red"}>{data.databaseStatus.valid?"正常":"更新が必要"}</Badge></div><div className="database-status-grid"><span>DB名</span><strong>{data.databaseStatus.databaseName}</strong><span>DBバージョン</span><strong>{data.databaseStatus.databaseVersion}</strong><span>アプリ要求バージョン</span><strong>{data.databaseStatus.requiredDatabaseVersion}</strong><span>アプリschema</span><strong>{data.databaseStatus.appSchemaVersion}</strong><span>build</span><strong>{data.databaseStatus.buildVersion}</strong><span>存在する保存先</span><strong>{data.databaseStatus.existingStores.join("、")}</strong><span>不足</span><strong>{data.databaseStatus.missingStores.join("、")||"なし"}</strong><span>余分な旧保存先</span><strong>{data.databaseStatus.extraStores.join("、")||"なし"}</strong><span>最終migration</span><strong>{data.databaseStatus.lastMigration}</strong><span>結果</span><strong>{data.databaseStatus.migrationResult}</strong><span>保持件数</span><strong>Attempt {data.databaseStatus.counts.attempts}件・Evaluation {data.databaseStatus.counts.evaluations}件・ReviewPlan {data.databaseStatus.counts.reviewPlans}件</strong></div><div className="button-row"><button className="secondary" disabled={busy} onClick={()=>run(()=>post("/api/database/repair",{}),"データベースを診断し、不足storeを安全に補修しました")}>不足している保存先を作成</button><button className="ghost" disabled={busy} onClick={()=>run(()=>api("/api/bootstrap"),"データベースを診断しました")}>診断する</button><button className="ghost" onClick={downloadJson}><Download size={15}/>バックアップを書き出す</button></div></section>
     <section className="panel install-guide"><div className="setting-icon"><Plus/></div><div><h3>iPadへインストール</h3><p>Safariで公開URLを開き、共有ボタン →「ホーム画面に追加」を選びます。初回表示後はオフラインでも起動できます。</p></div><Badge tone="green">オフライン対応</Badge></section>
     <section className="panel"><div className="panel-title"><div><span className="eyebrow">INITIAL ROADMAP</span><h3>A問題ロードマップ</h3></div><Badge>{data.roadmap.length}題</Badge></div><div className="roadmap">{Object.entries(data.roadmap.reduce((acc,r)=>{(acc[r.block_name]??=[]).push(r);return acc},{} as Record<string,typeof data.roadmap>)).map(([block,rows])=><div className="roadmap-block" key={block}><h4>{block}</h4><div>{rows.map(r=><span key={r.id}><b>{r.order_index}</b>{r.problem_id}<small>{modes[r.expected_mode]}・{r.load_score}</small></span>)}</div></div>)}</div></section>
   </>

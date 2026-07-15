@@ -17,6 +17,10 @@ import { REVIEW_RUBRIC_VERSION } from "./gradingPrompt.ts";
 import { allowedReferenceLevel, referenceDecision, type ReferenceLevel } from "./reviewExperience.ts";
 import { applyCanonicalMaster, parseAliasesPayload, parseAnswerIndexPayload, parseIntegratedMasterPayload, parseProblemMasterPayload, relatedSIntegrity } from "./masterData.ts";
 import { finalizeStudyUpdateForSave } from "./studyCycle.ts";
+import {
+  APP_SCHEMA_VERSION, createSchemaDiagnostic, DB_NAME, DB_VERSION,
+  GPT_SAVE_REQUIRED_STORES, IndexedDbSchemaError, LATEST_STORE_SCHEMAS, REQUIRED_APP_STORES, STORES
+} from "./dbSchema.ts";
 
 type SMemory = { problem_id:string; state:"stable"|"check"|"forgotten"|"collapsed"; last_touched?:string; k_trigger_count:number };
 type StoredAttempt = Attempt;
@@ -63,7 +67,7 @@ class StudyDatabase extends Dexie {
   problemAliases!: EntityTable<ProblemAlias,"alias">;
   importLogs!: EntityTable<MasterImportLog,"id">;
   constructor() {
-    super("stat-1-study-tracker");
+    super(DB_NAME);
     this.version(1).stores({
       problems:"&problem_id,category,chapter,priority,completion_status",
       attempts:"++id,problem_id,date,error_type,mark,[problem_id+date]",
@@ -377,10 +381,78 @@ class StudyDatabase extends Dexie {
         pdf.registered_at=pdf.registered_at||pdf.uploaded_at;
       });
     });
+    this.version(DB_VERSION).stores(LATEST_STORE_SCHEMAS).upgrade(async tx=>{
+      const now=new Date().toISOString();
+      const attempts=await tx.table(STORES.attempts).count();
+      const reviews=await tx.table(STORES.reviews).count();
+      await tx.table(STORES.meta).bulkPut([
+        {key:"db_schema_version",value:String(DB_VERSION)},
+        {key:"app_schema_version",value:APP_SCHEMA_VERSION},
+        {key:"last_migration",value:`v12→v${DB_VERSION}`},
+        {key:"last_migration_result",value:`成功：既存Attempt ${attempts}件、既存Review ${reviews}件を保持`},
+        {key:"last_migration_at",value:now}
+      ]);
+    });
   }
 }
 
 export const db = new StudyDatabase();
+export const closeLocalDatabase=()=>db.close();
+
+const schemaEvent=(name:string,detail:unknown)=>{
+  if(typeof window!=="undefined") window.dispatchEvent(new CustomEvent(name,{detail}));
+};
+db.on("blocked",()=>schemaEvent("stat1-db-blocked",{
+  title:"データベース更新が保留されています",
+  message:"このアプリを開いている他のSafariタブやホーム画面アプリを閉じてください。"
+}));
+db.on("versionchange",()=>{
+  db.close();
+  schemaEvent("stat1-db-versionchange",{
+    title:"アプリが更新されました",
+    message:"安全に再読み込みしてデータベース更新を完了してください。"
+  });
+});
+
+const currentStoreNames=()=>{
+  try{return Array.from(db.backendDB().objectStoreNames)}catch{return db.tables.map(table=>table.name)}
+};
+
+export async function databaseSchemaStatus(requestedStores:string[]=REQUIRED_APP_STORES,operation="databaseDiagnostic"){
+  if(!db.isOpen()) await db.open();
+  const existingStores=currentStoreNames();
+  const meta=await db.meta.bulkGet(["last_migration","last_migration_result","last_migration_at"]);
+  const diagnostic=createSchemaDiagnostic({databaseName:db.name,databaseVersion:db.verno,requestedStores,existingStores,operation,
+    migrationVersion:meta[0]?.value||`v${DB_VERSION}`});
+  return {
+    ...diagnostic,
+    valid:diagnostic.missingStores.length===0,
+    extraStores:existingStores.filter(store=>!REQUIRED_APP_STORES.includes(store as typeof REQUIRED_APP_STORES[number])),
+    lastMigration:meta[0]?.value||"未実行",
+    migrationResult:meta[1]?.value||"未記録",
+    migratedAt:meta[2]?.value||"",
+    counts:{attempts:await db.attempts.count(),evaluations:await db.attempts.count(),reviewPlans:await db.reviews.count()}
+  };
+}
+
+async function assertDatabaseSchema(operation:string,requiredStores:string[]){
+  const status=await databaseSchemaStatus(requiredStores,operation);
+  if(!status.valid) throw new IndexedDbSchemaError(status);
+  return status;
+}
+
+export async function repairDatabaseSchema(){
+  db.close();
+  await db.open();
+  const status=await databaseSchemaStatus(REQUIRED_APP_STORES,"repairDatabaseSchema");
+  if(!status.valid) throw new IndexedDbSchemaError(status);
+  await db.meta.bulkPut([
+    {key:"last_migration",value:`v${DB_VERSION} schema verification`},
+    {key:"last_migration_result",value:"成功：不足storeなし。既存データを保持"},
+    {key:"last_migration_at",value:new Date().toISOString()}
+  ]);
+  return databaseSchemaStatus();
+}
 
 const roadmapSeed:[number,number,string,string][] = [
   [6,5,"MLE・AIC・制約付き推定","full"],[6,19,"回帰","full"],[6,20,"回帰","full"],
@@ -565,7 +637,8 @@ async function addOrReplaceReview(review:ReviewInsert){
   }));
 }
 
-async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
+type PendingCorrectionLog=Omit<CorrectionLog,"id">;
+async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorrectionLogs:PendingCorrectionLog[]=[]){
   input={...input,...sanitizeStudyUpdateTiming(input)};
   const problem=await db.problems.get(input.problem_id);
   if(!problem) throw new Error(`未登録の問題IDです: ${input.problem_id}`);
@@ -628,8 +701,8 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
     auto_corrected:!!input.auto_corrected,correction_fields:input.correction_fields||[],
     correction_reason:input.correction_reason||"",consistency_score:input.consistency_score
   }));
-  if(input.auto_corrected) await db.correctionLogs.add({
-    id:undefined,auto_corrected:true,correction_fields:input.correction_fields||[],
+  if(input.auto_corrected) pendingCorrectionLogs.push({
+    auto_corrected:true,correction_fields:input.correction_fields||[],
     raw_gpt_problem_id:String(input.raw_gpt_problem_id||input.problem_id),corrected_problem_id:input.problem_id,
     raw_gpt_theme:String(input.raw_gpt_theme||""),corrected_theme:problem.theme,
     correction_reason:String(input.correction_reason||"problem_master に基づき補正"),
@@ -721,6 +794,14 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>) {
     await db.sMemory.put({problem_id:input.problem_id,state:sState,last_touched:date,k_trigger_count:old?.k_trigger_count||0});
   }
   return id;
+}
+
+async function persistCorrectionLogs(logs:PendingCorrectionLog[]){
+  if(!logs.length)return;
+  try{await db.correctionLogs.bulkAdd(logs as CorrectionLog[])}
+  catch(error){
+    try{await db.meta.put({key:"last_auxiliary_log_error",value:`${new Date().toISOString()}｜${error instanceof Error?error.message:String(error)}`})}catch{/* 学習記録本体は保存済みのため再throwしない */}
+  }
 }
 
 const editedErrors=(value:unknown,fallback="none")=>{
@@ -1752,6 +1833,7 @@ async function bootstrap():Promise<Bootstrap>{
     page_count:pdf.page_count,sha256:pdf.sha256,registered_at:pdf.registered_at||pdf.uploaded_at,file_name:pdf.file_name,
     answer_count:answerIndex.filter(answer=>answer.document_key&&pdf.document_key?answer.document_key===pdf.document_key:answer.pdf_file_name===pdf.original_file_name||answer.pdf_file_name===pdf.file_name).length
   }));
+  const databaseStatus=await databaseSchemaStatus();
   const masterStatus={
     problem_count:problems.length,answer_count:answerIndex.length,
     problem_version:metaEntries.find(entry=>entry.key==="problem_master_version")?.value||"未設定",
@@ -1764,7 +1846,7 @@ async function bootstrap():Promise<Bootstrap>{
     pdf_files:[...new Set([...pdfNames,...pdfDocumentKeys])],pdf_documents:pdfDocuments,diagnostics,import_history:importHistory,
     review_rebuild_summary:(()=>{try{return JSON.parse(metaEntries.find(entry=>entry.key==="review_card_rebuild_summary")?.value||"null")||undefined}catch{return undefined}})()
   };
-  return {problems:problems.sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.category.localeCompare(b.category)||a.problem_number-b.problem_number),attempts,reviews,roadmap,weakNotes,pastSessions,answerIndex,problemAliases,dashboard,settings,masterStatus,
+  return {problems:problems.sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.category.localeCompare(b.category)||a.problem_number-b.problem_number),attempts,reviews,roadmap,weakNotes,pastSessions,answerIndex,problemAliases,dashboard,settings,masterStatus,databaseStatus,
     today:{tasks,totalLoad,plannedMinutes:plannedTotal,remainingMinutes,actualMinutes,targetMinutes:settings.daily_study_minutes,capacityPercent,warning,guidance,
       planned_minutes_total:plannedTotal,completed_minutes_today:actualMinutes,remaining_minutes_today:remainingMinutes,
       postponed_minutes_today:postponedMinutes,target_minutes_today:settings.daily_study_minutes,
@@ -1790,7 +1872,9 @@ export async function localGet<T>(path:string):Promise<T>{
 
 export async function localPost<T>(path:string,body:any):Promise<T>{
   await initialize();
-  if(path==="/api/master/integrated/import"){
+  if(path==="/api/database/repair"){
+    return await repairDatabaseSchema() as T;
+  } else if(path==="/api/master/integrated/import"){
     return await importIntegratedMaster(body) as T;
   } else if(path==="/api/master/problem/import"){
     return await importProblemMaster(body) as T;
@@ -1816,17 +1900,23 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
       related_s_problem_ids:list(body.linked_s_problems),linked_past_exam_ids:list(body.linked_past_exams)});
     if(body.category==="S") await db.sMemory.put({problem_id:body.problem_id,state:"stable",k_trigger_count:0});
   } else if(path==="/api/attempts") {
-    await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.answerIndex,db.correctionLogs],()=>saveAttempt(body));
+    await assertDatabaseSchema("saveGptEvaluation",GPT_SAVE_REQUIRED_STORES);
+    const logs:PendingCorrectionLog[]=[];
+    await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.answerIndex,db.problemAliases],()=>saveAttempt(body,logs));
+    await persistCorrectionLogs(logs);
   } else if(path==="/api/import") {
-    await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.answerIndex,db.correctionLogs],async()=>{for(const update of body.updates) await saveAttempt(update)});
+    await assertDatabaseSchema("saveGptEvaluationBatch",GPT_SAVE_REQUIRED_STORES);
+    const logs:PendingCorrectionLog[]=[];
+    await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.answerIndex,db.problemAliases],async()=>{for(const update of body.updates) await saveAttempt(update,logs)});
+    await persistCorrectionLogs(logs);
   } else if(/^\/api\/attempts\/\d+\/update$/.test(path)) {
-    await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta],
+    await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.problemAliases],
       ()=>updateAttemptAnalysis(Number(path.split("/")[3]),body));
   } else if(/^\/api\/attempts\/\d+\/delete$/.test(path)) {
-    await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta],
+    await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.problemAliases],
       ()=>deleteAttemptAnalysis(Number(path.split("/")[3])));
   } else if(/^\/api\/reviews\/\d+\/complete$/.test(path)) {
-    await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta],
+    await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.problemAliases],
       ()=>completeReview(Number(path.split("/")[3]),body));
   } else if(/^\/api\/reviews\/\d+\/postpone$/.test(path)) {
     await db.transaction("rw",[db.reviews,db.meta],()=>postponeReview(Number(path.split("/")[3]),body));
@@ -1861,7 +1951,7 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     if(!note) throw new Error("弱点ノートが見つかりません");
     await db.weakNotes.update(id,applyWeakNoteQuizResult(note,body.result==="remembered"?"remembered":"retry"));
   } else if(path==="/api/past-sessions") {
-    await db.transaction("rw",db.pastSessions,db.reviews,db.meta,async()=>{
+    await db.transaction("rw",[db.pastSessions,db.reviews,db.meta,db.problems,db.attempts,db.problemAliases],async()=>{
       const session={...body,id:undefined as unknown as number,year:Number(body.year),selection_time_minutes:Number(body.selection_time_minutes||0),completed_questions_count:Number(body.completed_questions_count||0)};
       const sessionId=Number(await db.pastSessions.add(session));
       const plan=createPastReviewPlan(session);
@@ -1880,11 +1970,11 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
 export async function exportBackup(){
   await initialize();
   return {
-    version:2,exported_at:new Date().toISOString(),
+    version:3,exported_at:new Date().toISOString(),
     problems:await db.problems.toArray(),attempts:await db.attempts.toArray(),reviews:await db.reviews.toArray(),
     roadmap:await db.roadmap.toArray(),weakNotes:await db.weakNotes.toArray(),pastSessions:await db.pastSessions.toArray(),
     sMemory:await db.sMemory.toArray(),answerIndex:await db.answerIndex.toArray(),correctionLogs:await db.correctionLogs.toArray(),
-    problemAliases:await db.problemAliases.toArray(),importLogs:await db.importLogs.toArray()
+    problemAliases:await db.problemAliases.toArray(),importLogs:await db.importLogs.toArray(),meta:await db.meta.toArray()
   };
 }
 
@@ -1900,6 +1990,7 @@ export async function restoreBackup(data:any){
     if(Array.isArray(data.correctionLogs)) await db.correctionLogs.bulkAdd(data.correctionLogs);
     if(Array.isArray(data.problemAliases)) await db.problemAliases.bulkAdd(data.problemAliases);
     if(Array.isArray(data.importLogs)) await db.importLogs.bulkAdd(data.importLogs);
+    if(Array.isArray(data.meta)) await db.meta.bulkPut(data.meta);
     await db.meta.put({key:"seeded",value:"1"});
   });
 }

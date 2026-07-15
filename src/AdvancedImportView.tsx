@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AlertTriangle, BookOpen, CalendarCheck, Check, ClipboardPaste, Copy, Database, NotebookPen, Pencil, X } from "lucide-react";
 import { post } from "./api";
 import { applyProblemMaster, parseStudyText, problemDisplayLabel, todayString } from "./importParser";
@@ -81,15 +81,24 @@ function Pill({children,tone=""}:{children:React.ReactNode;tone?:string}){
 export default function AdvancedImportView({problems,answerIndex,problemAliases,attempts,reviews,run,busy}:{
   problems:Problem[];answerIndex:AnswerIndexEntry[];problemAliases:ProblemAlias[];attempts:Attempt[];reviews:Review[];run:(action:()=>Promise<unknown>,success:string)=>Promise<boolean>;busy:boolean;
 }){
-  const [text,setText]=useState("");
-  const [updates,setUpdates]=useState<StudyUpdate[]>([]);
+  const draftKey="stat1:gpt-import-draft:v1";
+  const readDraft=()=>{try{return JSON.parse(sessionStorage.getItem(draftKey)||"null") as {text?:string;updates?:StudyUpdate[]}|null}catch{return null}};
+  const initialDraft=readDraft();
+  const [text,setText]=useState(initialDraft?.text||"");
+  const [updates,setUpdates]=useState<StudyUpdate[]>(initialDraft?.updates||[]);
   const [structured,setStructured]=useState(false);
   const [editing,setEditing]=useState(false);
   const [error,setError]=useState("");
   const [gradingCopied,setGradingCopied]=useState(false);
   const [saved,setSaved]=useState<{count:number;ids:string[];at:string}|null>(null);
   const [highlightedField,setHighlightedField]=useState("");
+  const [saveFailed,setSaveFailed]=useState(false);
   const gradingPrompt=buildGradingPrompt(todayString());
+
+  useEffect(()=>{
+    if(text||updates.length) sessionStorage.setItem(draftKey,JSON.stringify({text,updates,savedAt:new Date().toISOString()}));
+    else sessionStorage.removeItem(draftKey);
+  },[text,updates]);
 
   const parse=()=>{
     setError("");
@@ -154,8 +163,11 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
 
   const saveUpdates=async()=>{
     const snapshot=updates.map(update=>sanitizeStudyUpdateTiming(finalizeStudyUpdateForSave(update)));
+    sessionStorage.setItem(draftKey,JSON.stringify({text,updates:snapshot,savedAt:new Date().toISOString()}));
     const ok=await run(()=>post("/api/import",{updates:snapshot}),`${snapshot.length}件を保存しました`);
-    if(!ok)return;
+    if(!ok){setSaveFailed(true);return}
+    setSaveFailed(false);
+    sessionStorage.removeItem(draftKey);
     setText("");
     setUpdates([]);
     setStructured(false);
@@ -283,6 +295,7 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
         <button disabled={busy||!canSave} className="primary wide-btn" onClick={saveUpdates}>
           <Database size={17}/>{updates.length}件を保存する
         </button>
+        {saveFailed&&<div className="database-save-failure"><AlertTriangle size={18}/><div><strong>学習内容はまだ保存されていません</strong><span>解析済みの入力内容はこの画面と一時保存領域に保持しています。データベース更新後、もう一度保存してください。</span><div className="button-row"><button type="button" className="primary small" disabled={busy} onClick={async()=>{const ok=await run(()=>post("/api/database/repair",{}),"データベースを安全に更新しました");if(ok)setSaveFailed(false)}}>データベースを更新する</button><button type="button" className="ghost small" onClick={()=>navigator.clipboard.writeText(JSON.stringify({study_updates:updates},null,2))}><Copy size={14}/>入力内容をコピー</button></div></div></div>}
         {!canSave&&<div className="save-blocked"><strong>保存できません。</strong>
           {allMissing.length?<><span>不足項目：</span><ul>{allMissing.slice(0,8).map(item=><li key={`${item.index}-${item.key}`}><code>{item.key}</code>：{item.message}</li>)}</ul></>:<span>問題ID候補の確認が必要です。</span>}
         </div>}

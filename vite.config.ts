@@ -7,8 +7,8 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
-      registerType: "autoUpdate",
-      injectRegister: "auto",
+      registerType: "prompt",
+      injectRegister: null,
       includeAssets: ["app-icon.svg"],
       manifest: {
         name: "統計一級 学習管理",

@@ -243,3 +243,12 @@ header h1{font-size:28px;font-weight:700;letter-spacing:-.02em;color:var(--text-
 .review-consistency-details ul{margin:8px 0 0;padding-left:20px}
 .review-rebuild-summary{display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:16px;padding:12px 14px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface-subtle);font-size:13px;color:var(--text-secondary)}
 .review-rebuild-summary strong{color:var(--text-primary)}
+.database-save-failure{display:flex;gap:12px;align-items:flex-start;margin-top:14px;padding:14px 16px;border:1px solid var(--warning);border-radius:var(--radius-md);background:var(--warning-soft);color:var(--text-primary)}
+.database-save-failure>div{display:grid;gap:6px;min-width:0}.database-save-failure span{font-size:13px;color:var(--text-secondary)}
+.database-schema-dialog{max-width:680px}.database-schema-dialog dl,.database-status-grid{display:grid;grid-template-columns:minmax(150px,.45fr) minmax(0,1fr);gap:10px 18px;margin:18px 0}
+.database-schema-dialog dt,.database-status-grid>span{color:var(--text-secondary);font-size:13px}.database-schema-dialog dd,.database-status-grid>strong{margin:0;overflow-wrap:anywhere}
+.database-integrity-panel{margin-top:24px}.database-status-grid{padding:16px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface-subtle)}
+.update-banner{position:fixed;z-index:1200;left:calc(50% + 130px);transform:translateX(-50%);bottom:24px;width:min(760px,calc(100vw - 48px));display:flex;align-items:center;gap:12px;padding:14px 16px;border:1px solid var(--border-strong);border-radius:var(--radius-lg);background:rgba(255,255,255,.96);box-shadow:var(--shadow-md);backdrop-filter:blur(14px)}
+.update-banner>div{display:grid;gap:3px;min-width:0;margin-right:auto}.update-banner span{font-size:13px;color:var(--text-secondary)}
+@media(max-width:900px){.database-schema-dialog dl,.database-status-grid{grid-template-columns:1fr}.update-banner{left:50%;bottom:12px;flex-wrap:wrap}.update-banner>div{flex-basis:100%}}
+.boot-repair{display:grid;gap:10px;width:min(520px,calc(100vw - 32px));padding:16px;border:1px solid var(--warning);border-radius:var(--radius-md);background:var(--warning-soft)}

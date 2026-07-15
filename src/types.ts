@@ -169,6 +169,12 @@ export type Bootstrap = {
       display_name?:string;page_count?:number;sha256?:string;registered_at?:string;file_name?:string;answer_count:number}[];
     diagnostics:DataDiagnostic[];import_history:string[];
     review_rebuild_summary?:{repaired_at:string;stale_count:number;regenerated_count:number;review_needed_count:number;source_target_mix_count:number;date_corrected_count:number}};
+  databaseStatus:{
+    databaseName:string;databaseVersion:number;requiredDatabaseVersion:number;requestedStores:string[];
+    existingStores:string[];missingStores:string[];extraStores:string[];operation:string;appSchemaVersion:string;
+    buildVersion:string;migrationVersion:string;valid:boolean;lastMigration:string;migrationResult:string;migratedAt:string;
+    counts:{attempts:number;evaluations:number;reviewPlans:number};
+  };
   today:{tasks:Task[];totalLoad:number;plannedMinutes:number;remainingMinutes:number;actualMinutes:number;
     targetMinutes:number;capacityPercent:number;warning:string;guidance:string;
     triageMinutes?:{must:number;if_time:number;tomorrow:number};
