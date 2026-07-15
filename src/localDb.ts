@@ -10,6 +10,7 @@ import { triageTodayTasks } from "./studyTriage.ts";
 import { summarizeTodayTime } from "./todayPlan.ts";
 import { removeTimingExpressions, sanitizeStudyUpdateTiming } from "./reviewTiming.ts";
 import { buildProgressPlan, daysUntilExam } from "./studyProgress.ts";
+import { calculateExamReadinessMetrics } from "./examReadiness.ts";
 import { CHAPTER_META, officialProblemEntries, PAST_EXAM_YEAR_ORDER, STRATEGY_A_PLUS_ORDER, STRATEGY_S_ORDER, strategyRankFor } from "./officialMaster.ts";
 import { REVIEW_RUBRIC_VERSION } from "./gradingPrompt.ts";
 import { allowedReferenceLevel, referenceDecision, type ReferenceLevel } from "./reviewExperience.ts";
@@ -1329,6 +1330,23 @@ export async function deleteAnswerPdf(documentKey:string){
   if(rows.length) await db.answerPdfs.bulkDelete(rows.map(row=>row.file_name));
 }
 
+function diagnosticsPreview(problems:Problem[],attempts:Attempt[],reviews:Review[],aliases:ProblemAlias[]){
+  const pmap=new Map(problems.map(problem=>[resolveCanonicalProblemId(problem.problem_id,aliases),problem]));
+  let criticalCount=0;
+  for(const problem of problems){
+    const expected=expectedProblemMeta(problem.problem_id);
+    if(expected&&(
+      problem.category!==expected.category||
+      (problem.chapter??null)!==expected.chapter||
+      Number(problem.problem_number)!==expected.problem_number||
+      (problem.display_label||problem.title)!==expected.display_label
+    )) criticalCount++;
+  }
+  for(const attempt of attempts) if(!pmap.has(resolveCanonicalProblemId(attempt.problem_id,aliases))) criticalCount++;
+  for(const review of reviews) if(!pmap.has(resolveCanonicalProblemId(review.problem_id,aliases))) criticalCount++;
+  return {criticalCount};
+}
+
 async function bootstrap():Promise<Bootstrap>{
   await initialize();
   await ensureBuiltInCanonical();
@@ -1390,6 +1408,20 @@ async function bootstrap():Promise<Bootstrap>{
   const themeCounts=new Map<string,number>();
   weakNotes.filter(w=>!w.is_resolved).forEach(w=>themeCounts.set(w.theme,(themeCounts.get(w.theme)||0)+1));
   const weaknessAnalysis=analyzeWeaknesses(problems,attempts,reviews,weakNotes,today);
+  const readiness=calculateExamReadinessMetrics({problems,attempts,pastSessions,aliases:problemAliases,today});
+  const stableBlockingIssues=[
+    ...(diagnosticsPreview(problems,attempts,reviews,problemAliases).criticalCount?["問題ID・表示名の重大不一致が残っています。"]:[]),
+    ...(!readiness.sampleSizes.unseen?["未見・長期未実施問題の得点記録がまだありません。"]:[]),
+    ...(!readiness.sampleSizes.timed?["時間制限付きfull/過去問の記録がまだありません。"]:[]),
+    ...(!scans.length?["5問スキャンの記録がまだありません。"]:[]),
+  ];
+  const stableRelease={
+    isStable:stableBlockingIssues.length===0,
+    blockingIssues:stableBlockingIssues,
+    message:stableBlockingIssues.length===0
+      ?"現在は学習運用安定版です。新機能追加より、A問題・過去問・本番演習を優先してください。"
+      :"学習運用安定版までの残タスクがあります。新機能追加より、記録と診断の不足を先に埋めてください。"
+  };
   const dashboard={
     today,weekA:new Set(attempts.filter(a=>a.date>=week&&pmap.get(a.problem_id)?.category==="A").map(a=>a.problem_id)).size,
     weekPast:pastAttempts.filter(attempt=>attempt.date>=week).length,kRecurrence:kRepeat,
@@ -1402,6 +1434,7 @@ async function bootstrap():Promise<Bootstrap>{
     nextTheme:[...themeCounts.entries()].sort((a,b)=>b[1]-a[1])[0]?.[0]||"ロードマップ先頭のA問題",
     analysisConfidence:weaknessAnalysis.confidence,analysisAttemptCount:weaknessAnalysis.attemptCount,
     weaknessInsights:weaknessAnalysis.insights,
+    readiness,stableRelease,
     pace:{label:progress.label,checks,items:progress.checks,a14,pastSkeleton,kRepeat,
       skeletonRate:skeleton.length?Math.round(skeletonGood/skeleton.length*100):0,weakUpdates,delayed3,
       suggestion:progress.suggestion,phase:progress.phase,phaseLabel:progress.phaseLabel,summary:progress.summary,

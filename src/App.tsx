@@ -21,6 +21,7 @@ import {
 } from "./reviewExperience";
 import { removeTimingExpressions } from "./reviewTiming";
 import { EXAM_PHASES } from "./studyProgress";
+import { sheetUsageForPhase, type ExamPhase } from "./examReadiness";
 import { CHAPTER_META } from "./officialMaster";
 import { isProblemPack, masterDiff, parseAliasesPayload, parseIntegratedMasterPayload, parseProblemMasterPayload } from "./masterData";
 import type { AnswerIndexEntry, Attempt, Bootstrap, Problem, ProblemAlias, Review, StudyUpdate, Task } from "./types";
@@ -122,6 +123,10 @@ function nextQueueTask(data:Bootstrap){
   if(review) return {task:{problem_id:review.problem_id,title:review.problem_id,kind:"復習",reason:review.status==="overdue"?"期限切れの復習待ち":"復習待ち",mode:review.requires_full_answer?"full":review.review_type==="main_calc_retry"?"main_calc":"skeleton",minutes:review.estimated_minutes||review.duration_minutes||15,load:0,status:review.status,review_method:review.review_method} as Task,source:`復習予定 > ${review.status==="overdue"?"期限切れ":"未完了"} > 最優先`};
   return {task:null,source:"今日は完了"};
 }
+function readinessValue(value:number|null,sample:number,unit="%"){
+  if(value==null) return {value:"—",hint:"記録待ち"};
+  return {value,unit,hint:`対象${sample}件`};
+}
 function DashboardView({data,go,select}:{data:Bootstrap;go:(p:Page)=>void;select:(p:Problem)=>void}) {
   const d=data.dashboard;
   const pmap=Object.fromEntries(data.problems.map(problem=>[problem.problem_id,problem]));
@@ -141,6 +146,19 @@ function DashboardView({data,go,select}:{data:Bootstrap;go:(p:Page)=>void;select
         {nextProblem&&<button className="ghost" onClick={()=>select(nextProblem)}><BookOpen size={18}/>この問題を開く</button>}</div>
     </section>
     {data.today.warning&&<div className="warning"><AlertTriangle/><div><strong>予定時間を調整してください</strong><p>{data.today.warning}</p></div></div>}
+    <section className="panel readiness-panel">
+      <div className="panel-title"><div><span className="eyebrow">EXAM READINESS</span><h3>本番得点に直結する指標</h3></div><Badge tone={d.stableRelease.isStable?"green":"orange"}>{d.stableRelease.isStable?"学習運用安定版":"運用調整中"}</Badge></div>
+      <div className="metrics-grid readiness-grid">
+        {(()=>{const m=readinessValue(d.readiness.unseenScoreRate,d.readiness.sampleSizes.unseen);return <Metric label="未見・長期未実施得点率" value={m.value} unit={m.unit} hint={m.hint}/>})()}
+        {(()=>{const m=readinessValue(d.readiness.timedCompletionRate,d.readiness.sampleSizes.timed);return <Metric label="時間内完走率" value={m.value} unit={m.unit} hint={m.hint} tone={(d.readiness.timedCompletionRate??100)<60?"amber":""}/>})()}
+        {(()=>{const m=readinessValue(d.readiness.selectionSuccessRate,d.readiness.sampleSizes.scans);return <Metric label="5問スキャン選題成功率" value={m.value} unit={m.unit} hint={m.hint}/>})()}
+        {(()=>{const m=readinessValue(d.readiness.pastExamScoreRate,d.readiness.sampleSizes.pastExams);return <Metric label="過去問得点" value={m.value} unit={m.unit} hint={m.hint}/>})()}
+        {(()=>{const m=readinessValue(d.readiness.kRecurrenceRate,d.readiness.sampleSizes.kReviews);return <Metric label="K再発率" value={m.value} unit={m.unit} hint={m.hint} tone={(d.readiness.kRecurrenceRate??0)>25?"red":""}/>})()}
+        {(()=>{const m=readinessValue(d.readiness.repeatedWRate,d.readiness.sampleSizes.wReviews);return <Metric label="同一W再発率" value={m.value} unit={m.unit} hint={m.hint} tone={(d.readiness.repeatedWRate??0)>25?"amber":""}/>})()}
+      </div>
+      <p className="stable-release-message">{d.stableRelease.message}</p>
+      {!!d.stableRelease.blockingIssues.length&&<ul className="stable-blockers">{d.stableRelease.blockingIssues.map(item=><li key={item}>{item}</li>)}</ul>}
+    </section>
     <section className="section-head"><div><span className="eyebrow">OVERVIEW</span><h2>今週の学習状況</h2></div><span className="muted">直近7日間</span></section>
     <div className="metrics-grid">
       <Metric label="今日これから" value={data.today.active_remaining_minutes} unit="分" hint={`完了${data.today.completed_minutes_today}分・先送り候補${data.today.postpone_candidate_minutes}分は除外`} tone={data.today.warning?"red":""}/>
@@ -168,8 +186,8 @@ function DashboardView({data,go,select}:{data:Bootstrap;go:(p:Page)=>void;select
         <details className="danger-criteria"><summary>「危険」の判定基準</summary><ul>{d.pace.dangerCriteria.map(item=><li key={item}>{item}</li>)}</ul><small>危険は不合格確定ではなく、今週の配分を復習・復旧優先へ切り替えるサインです。</small></details>
       </section>
     </div>
-    <section className="panel exam-roadmap"><div className="panel-title"><div><span className="eyebrow">136 DAY ROADMAP</span><h3>本番までの過去問導入計画</h3></div><Badge>{d.pace.phaseLabel}</Badge></div>
-      <div>{EXAM_PHASES.map(phase=><article className={d.pace.daysRemaining>=phase.from&&d.pace.daysRemaining<=phase.to?"active":""} key={phase.title}><strong>{phase.to===999?"残り136〜100日":`残り${phase.to}〜${phase.from}日`}</strong><span>{phase.title}</span><small>{phase.allocation}</small><p>{phase.summary}</p></article>)}</div>
+    <section className="panel exam-roadmap"><div className="panel-title"><div><span className="eyebrow">4 MONTH ROADMAP</span><h3>残り4か月の得点最大化フェーズ</h3></div><Badge>{d.pace.phaseLabel}</Badge></div>
+      <div>{EXAM_PHASES.map(phase=><article className={d.pace.daysRemaining>=phase.from&&d.pace.daysRemaining<=phase.to?"active":""} key={phase.title}><strong>{phase.to===999?"残り91日以上":`残り${phase.to}〜${phase.from}日`}</strong><span>{phase.title}</span><small>{phase.allocation}</small><p>{phase.summary}</p></article>)}</div>
     </section>
     <section className="section-head weakness-heading">
       <div><span className="eyebrow">WEAKNESS ANALYSIS</span><h2>苦手分析と対策</h2></div>
@@ -417,6 +435,9 @@ function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a
     {key:"tomorrow",label:"先送り候補",count:data.today.triageCounts.tomorrow,minutes:data.today.triageMinutes?.tomorrow||0},
     {key:"completed",label:"完了済み",count:data.today.triageCounts.completed,minutes:data.today.completed_minutes_today}
   ] as const;
+  const examPhase:ExamPhase=data.dashboard.pace.phase==="integration"?"A_and_past_parallel":
+    data.dashboard.pace.phase==="past_practice"?"past_exam_main":
+    data.dashboard.pace.phase==="final"?"final_stabilization":"foundation_to_A";
   return <>
     <div className="page-intro"><div><p>課題を終えたらチェックを付け、GPTの採点結果を取り込んでください。</p><div className="button-row"><button className="text-btn" onClick={()=>go("import")}><ClipboardPaste size={15}/>GPT採点結果を取り込む</button><button className="text-btn" onClick={()=>setRecalculateConfirm(true)}><RefreshCw size={15}/>今日の予定を再計算する</button></div></div><div className={`load-pill ${data.today.warning?"over":""}`}><Gauge/><div><span>今日の実行見込み／目標</span><strong>{data.today.active_total_if_done} / {data.today.target_minutes_today}分</strong><small>完了 {data.today.completed_minutes_today}分 + これから {data.today.active_remaining_minutes}分</small><small>先送り候補 {data.today.postpone_candidate_minutes}分は含めない</small></div></div></div>
     {data.today.warning&&<div className="warning"><AlertTriangle/><div><strong>今日の実行見込みが目標を超えています</strong><p>{data.today.warning}</p></div></div>}
@@ -426,7 +447,7 @@ function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a
     {!data.today.warning&&<div className="time-guidance"><Clock3 size={16}/><span>{data.today.guidance}</span></div>}
     <section className="panel">
       <div className="table-wrap"><table><thead><tr><th>種類</th><th>問題</th><th>推奨モード</th><th>予定時間</th><th>理由</th><th/></tr></thead>
-      {triageGroups.map(group=><tbody key={group.key} className={`triage-group ${group.key}`}><tr className="triage-heading"><td colSpan={6}><strong>{group.label}</strong>{group.description&&<span>{group.description}</span>}</td></tr>{group.tasks.map((t,i)=><TodayTaskRows key={`${t.problem_id}-${i}`} task={t} problem={pmap[t.problem_id]} problemAliases={data.problemAliases} busy={busy} run={run} date={data.dashboard.today} onReview={setReviewTask} onOpenProblem={problem=>select(problem)} onPostpone={(item,initial)=>setPostponeTask({item,initial})}/>)}</tbody>)}</table></div>
+      {triageGroups.map(group=><tbody key={group.key} className={`triage-group ${group.key}`}><tr className="triage-heading"><td colSpan={6}><strong>{group.label}</strong>{group.description&&<span>{group.description}</span>}</td></tr>{group.tasks.map((t,i)=><TodayTaskRows key={`${t.problem_id}-${i}`} task={t} problem={pmap[t.problem_id]} problemAliases={data.problemAliases} busy={busy} run={run} date={data.dashboard.today} onReview={setReviewTask} onOpenProblem={problem=>select(problem)} onPostpone={(item,initial)=>setPostponeTask({item,initial})} examPhase={examPhase}/>)}</tbody>)}</table></div>
       {todayFilter==="completed"&&<div className="completed-task-list">{data.today.completedTasks.map((task,index)=><div key={`${task.problem_id}-${index}`}><Check size={16}/><strong>{task.title}</strong><span>{task.minutes}分・{task.reason}</span></div>)}{!data.today.completedTasks.length&&<Empty>今日の完了記録はまだありません</Empty>}</div>}
       {todayFilter!=="completed"&&!triageGroups.length&&<Empty>この区分の課題はありません</Empty>}
     </section>
@@ -481,7 +502,7 @@ function resolveCanonicalProblemId(problemId:string,aliases:ProblemAlias[]):stri
 function originLabel(origin:string){
   return origin==="review_attempt"?"復習":origin==="first_attempt"?"初回":origin==="linked_s_check"?"関連確認":origin==="related_drill"?"関連補修":origin==="past_exam_followup"?"過去問補修":origin||"未設定";
 }
-function TodayTaskDetails({task,problem,onOpenProblem,problemAliases}:{task:Task;problem?:Problem;onOpenProblem:(problem:Problem)=>void;problemAliases:ProblemAlias[]}) {
+function TodayTaskDetails({task,problem,onOpenProblem,problemAliases,examPhase}:{task:Task;problem?:Problem;onOpenProblem:(problem:Problem)=>void;problemAliases:ProblemAlias[];examPhase:ExamPhase}) {
   const template=reviewTemplate(task);
   const origin=task.task_origin||((task.id||task.review_method)?"review_attempt":"first_attempt");
   const hasPrevious=task.attempt_exists!==false&&!!(task.previous_date||task.previous_error_point);
@@ -507,6 +528,7 @@ function TodayTaskDetails({task,problem,onOpenProblem,problemAliases}:{task:Task
       <div><span>今回見るポイント／直す点</span><strong>{correctionTheme({...task,theme,canonical_problem_type:type})}</strong></div>
       <div><span>最初に書くもの</span><strong>{referenceEntryPoint({...task,theme,canonical_problem_type:type})}</strong></div>
       <div><span>1行ヒント</span><strong>{oneLineHint({...task,theme,canonical_problem_type:type})}</strong></div>
+      <div><span>この時期のシート運用</span><strong>{sheetUsageForPhase(task.mode,examPhase)}</strong></div>
     </div>
     <div className="today-card-actions">
       {problem&&<button type="button" className="ghost small" onClick={()=>onOpenProblem(problem)}><BookOpen size={14}/>問題詳細</button>}
@@ -515,13 +537,13 @@ function TodayTaskDetails({task,problem,onOpenProblem,problemAliases}:{task:Task
     </div>
   </div>;
 }
-function TodayTaskRows({task:t,problem,problemAliases,busy,run,date,onReview,onOpenProblem,onPostpone}:{task:Task;problem?:Problem;problemAliases:ProblemAlias[];busy:boolean;run:(a:()=>Promise<unknown>,s:string)=>void;date:string;onReview:(task:Task)=>void;onOpenProblem:(problem:Problem)=>void;onPostpone:(task:Task,action:ScheduleAction)=>void}) {
+function TodayTaskRows({task:t,problem,problemAliases,busy,run,date,onReview,onOpenProblem,onPostpone,examPhase}:{task:Task;problem?:Problem;problemAliases:ProblemAlias[];busy:boolean;run:(a:()=>Promise<unknown>,s:string)=>void;date:string;onReview:(task:Task)=>void;onOpenProblem:(problem:Problem)=>void;onPostpone:(task:Task,action:ScheduleAction)=>void;examPhase:ExamPhase}) {
   const isReview=!!t.id&&!!t.review_type;
   const toggle=()=>isReview
     ?onReview(t)
     :run(()=>post("/api/today-check",{date,problem_id:t.problem_id,kind:t.kind,checked:!t.checked}),t.checked?"チェックを外しました":"解答済み・採点待ちにしました");
   return <><tr className={t.checked?"task-checked":""}><td><Badge tone={t.kind==="S確認"?"blue":t.error_type==="K"?"red":""}>{t.kind}</Badge></td><td><strong>{t.problem_id}</strong><small>{t.title}{t.checked&&<em className="grading-wait">採点待ち</em>}</small></td><td>{modes[t.mode]||t.mode}</td><td>{t.minutes}分</td><td>{t.reason}{t.postpone_count?` ・ 先送り${t.postpone_count}回（${t.postpone_reason}）`:""}</td><td><div className="task-actions"><SheetLink href={sheetHref(t.mode)} label="シート"/><label className="task-check"><input type="checkbox" checked={!!t.checked} disabled={busy} onChange={toggle}/><span>{isReview?"復習結果を記録":"解答済み"}</span></label></div><ScheduleQuickButtons item={t} busy={busy} select={action=>onPostpone(t,action)}/></td></tr>
-    <tr className="task-plan-row"><td colSpan={6}><TodayTaskDetails task={t} problem={problem} onOpenProblem={onOpenProblem} problemAliases={problemAliases}/>{(t.review_method||t.review_reason)&&<ReviewPlanDetails item={t} compact/>}</td></tr></>;
+    <tr className="task-plan-row"><td colSpan={6}><TodayTaskDetails task={t} problem={problem} onOpenProblem={onOpenProblem} problemAliases={problemAliases} examPhase={examPhase}/>{(t.review_method||t.review_reason)&&<ReviewPlanDetails item={t} compact/>}</td></tr></>;
 }
 
 function ProblemChip({problem,latest,rank,select}:{problem:Problem;latest?:Attempt;rank:string;select:(problem:Problem)=>void}){

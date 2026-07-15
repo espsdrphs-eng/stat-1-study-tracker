@@ -33,11 +33,31 @@ export function taskPriority(task:Task,problem?:Problem,today="",sourceProblem?:
 
 export function triageTodayTasks(tasks:Task[],targetMinutes:number,problems:Problem[],today=""){
   const problemMap=new Map(problems.map(problem=>[problem.problem_id,problem]));
+  const enforceDailyLimits=(assigned:Task[])=>{
+    let mainCount=0,longMustCount=0;
+    return assigned.map(task=>{
+      const priority=taskPriority(task,problemMap.get(task.problem_id),today,task.source_problem_id?problemMap.get(task.source_problem_id):undefined);
+      const isMain=["full","exam_90min"].includes(task.mode)||task.minutes>=25;
+      const isLong=task.minutes>=35;
+      if(task.triage!=="must") return task;
+      if(task.task_origin==="related_drill"&&priority>2) return {...task,triage:"tomorrow" as TriageKey};
+      if(priority<=1) return task;
+      if(isMain){
+        mainCount++;
+        if(mainCount>2) return {...task,triage:"if_time" as TriageKey};
+      }
+      if(isLong){
+        longMustCount++;
+        if(longMustCount>=3) return {...task,triage:"if_time" as TriageKey};
+      }
+      return task;
+    });
+  };
   if(tasks.reduce((sum,task)=>sum+task.minutes,0)<=targetMinutes){
-    const assigned=tasks.map(task=>{
+    const assigned=enforceDailyLimits(tasks.map(task=>{
       const priority=taskPriority(task,problemMap.get(task.problem_id),today,task.source_problem_id?problemMap.get(task.source_problem_id):undefined);
       return {...task,triage:(priority<=3?"must":priority>=7?"tomorrow":"if_time") as TriageKey};
-    });
+    }));
     return {tasks:assigned,minutes:{
       must:assigned.filter(task=>task.triage==="must").reduce((sum,task)=>sum+task.minutes,0),
       if_time:assigned.filter(task=>task.triage==="if_time").reduce((sum,task)=>sum+task.minutes,0),
@@ -61,8 +81,13 @@ export function triageTodayTasks(tasks:Task[],targetMinutes:number,problems:Prob
       buckets.set(row.index,"tomorrow");tomorrowMinutes+=row.task.minutes;
     }
   }
+  const assigned=enforceDailyLimits(tasks.map((task,index)=>({...task,triage:buckets.get(index)||"tomorrow"})));
   return {
-    tasks:tasks.map((task,index)=>({...task,triage:buckets.get(index)||"tomorrow"})),
-    minutes:{must:mustMinutes,if_time:ifTimeMinutes,tomorrow:tomorrowMinutes}
+    tasks:assigned,
+    minutes:{
+      must:assigned.filter(task=>task.triage==="must").reduce((sum,task)=>sum+task.minutes,0),
+      if_time:assigned.filter(task=>task.triage==="if_time").reduce((sum,task)=>sum+task.minutes,0),
+      tomorrow:assigned.filter(task=>task.triage==="tomorrow").reduce((sum,task)=>sum+task.minutes,0)
+    }
   };
 }

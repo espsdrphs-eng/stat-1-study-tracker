@@ -34,6 +34,14 @@ export type DataDiagnostic = {
   current_related_ids?:string[]; canonical_related_ids?:string[];
   recommended_action?:"repair"|"remove"|"add_to_master"|"hold"|"ignore";
 };
+export type ProblemRelation = {
+  relationId:string; sourceProblemId:string; targetProblemId:string;
+  relationType:"prerequisite"|"remediation"|"extension";
+  sourceIssue?:string; targetFocus:string; reason:string;
+  relationSource:"problem_master"|"user_confirmed"|"gpt_suggestion";
+  status:"confirmed"|"candidate"|"rejected";
+  createdAt:string; updatedAt:string;
+};
 export type Attempt = {
   id:number; problem_id:string; date:string; mode:string; time_minutes:number; mark:string;
   score_label:string; error_type:string; error_point:string; next_action:string; memo:string;
@@ -123,6 +131,12 @@ export type Dashboard = {
   dangerChapters:{chapter:number;count:number}[]; nextTheme:string;
   analysisConfidence:"参考"|"暫定"|"分析可能"; analysisAttemptCount:number;
   weaknessInsights:WeaknessInsight[];
+  readiness:{
+    unseenScoreRate:number|null;timedCompletionRate:number|null;selectionSuccessRate:number|null;
+    pastExamScoreRate:number|null;kRecurrenceRate:number|null;repeatedWRate:number|null;
+    sampleSizes:{unseen:number;timed:number;scans:number;pastExams:number;kReviews:number;wReviews:number};
+  };
+  stableRelease:{isStable:boolean;blockingIssues:string[];message:string};
   pace:{label:string;checks:boolean[];items:{label:string;detail:string;status:"ok"|"warning"|"pending"}[];
     a14:number;pastSkeleton:number;kRepeat:number;skeletonRate:number;weakUpdates:number;delayed3:number;
     suggestion:string;dangerCriteria:string[];phase:string;phaseLabel:string;summary:string;allocation:string;nextPhase:string;daysRemaining:number;examDateIsEstimate:boolean};
