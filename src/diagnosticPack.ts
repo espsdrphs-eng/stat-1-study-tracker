@@ -6,6 +6,8 @@ import { resolveCanonicalProblemId } from "./examReadiness.ts";
 import { buildReviewGradingPrompt } from "./gradingPrompt.ts";
 import { metadataQuality } from "./metadataQuality.ts";
 import { getSheetType, resolveReviewCard, type ResolvedReviewCard } from "./reviewCardResolver.ts";
+import { LEARNING_POLICY_VERSION, resolveLearningPolicy } from "./learningPolicyResolver.ts";
+import { simulateThirtyDays } from "./learningSimulation.ts";
 import type { Attempt, Problem, ProblemAlias, Review, TodayPlanSnapshot } from "./types.ts";
 
 type JsonRecord=Record<string,unknown>;
@@ -79,6 +81,10 @@ function errorsFor(attempt?:Attempt){
 }
 
 function buildPromptAudit(review:Review,card:ResolvedReviewCard){
+  const prescription=card.prescription||resolveLearningPolicy({problemId:card.canonicalProblemId,source:{
+    mode:card.effectiveMode,review_scope:card.effectiveReviewScope,targeted_parts:card.targetedParts,
+    error_types:card.errorTypes,assessment_timing:review.assessment_timing||"delayed_retrieval",
+    learning_purpose:review.learning_purpose||"error_repair"}});
   const screenConditions=card.completionConditions.value;
   const scope=card.effectiveReviewScope;
   const prompt=buildReviewGradingPrompt({
@@ -93,6 +99,8 @@ function buildPromptAudit(review:Review,card:ResolvedReviewCard){
     actualReferenceLevel:review.actual_reference_level,referenceClosedReproduction:review.reference_closed_reproduction,
     reviewScope:scope,targetedParts:card.targetedParts,completionConditions:screenConditions,
     allowedErrorTypes:card.allowedErrorTypes,requiresKEvidence:card.requiresKEvidence,
+    learningPurpose:prescription.learningPurpose,learningStage:prescription.learningStage,
+    assessmentTiming:prescription.assessmentTiming,targetKind:prescription.targetKind,
   });
   const warnings:Array<{code:string;message:string}>=[];
   const consistencyWarnings=card.consistencyWarnings.map(item=>({code:item.code,message:item.message}));
@@ -114,6 +122,8 @@ function buildPromptAudit(review:Review,card:ResolvedReviewCard){
     generatedPromptGradingScope:scope,promptRequiredGradingItems:screenConditions,
     kJudgmentConditions:prompt.split("\n").filter(line=>/K：|K\/W\/N\/C|K判定/.test(line)),
     effectiveMode:card.effectiveMode,sheetType:card.sheetType,mismatchWarnings:warnings,
+    learningPrescription:prescription,policyVersion:prescription.policyVersion,
+    assessmentTiming:prescription.assessmentTiming,learningPurpose:prescription.learningPurpose,
     consistencyWarnings,storedSheetType:review.sheet_type||null,expectedSheetType:expectedSheet,
   };
 }
@@ -303,11 +313,19 @@ export async function createDiagnosticPack():Promise<DiagnosticPackResult>{
   const commit=typeof __APP_COMMIT__!=="undefined"?__APP_COMMIT__:"unknown";
   const testReport=typeof __APP_TEST_REPORT__!=="undefined"?__APP_TEST_REPORT__:"ビルド時検証情報なし";
   const appInfo={commit,buildVersion:APP_BUILD_VERSION,databaseVersion:db.verno,requiredDatabaseVersion:DB_VERSION,
+    learningPolicyVersion:LEARNING_POLICY_VERSION,
     schemaVersion:APP_SCHEMA_VERSION,problemMasterVersion:metaRows.find(row=>row.key==="problem_master_version")?.value||"unversioned",
     deployedAt:deployAt,exportedAt:new Date().toISOString(),privacy:{pdfIncluded:false,imageIncluded:false,binaryIncluded:false,
       freeFormMemoIncluded:false,rawGptTextIncluded:false},
     physicalModel:{attempts:"答案とGPT評価",reviews:"復習タスクと復習計画",problemRelations:"独立storeなし"}};
-  const plannerAudit=buildPlannerAudit(snapshotRows,reviews,attempts,Math.max(30,Number(settings.daily_study_minutes||150)));
+  const plannerAudit={...buildPlannerAudit(snapshotRows,reviews,attempts,Math.max(30,Number(settings.daily_study_minutes||150))),
+    thirtyDaySimulation:simulateThirtyDays({startDate:today,targetMinutes:Math.max(30,Number(settings.daily_study_minutes||150)),
+      problems,tasks:reviews.filter(review=>review.status!=="done").map(review=>{
+        const card=cards.get(review.id)!;return {id:review.id,problem_id:card.canonicalProblemId,title:card.displayLabel,
+          kind:review.review_type,reason:review.reason||"",mode:card.effectiveMode,minutes:card.estimatedMinutes,load:1,
+          due_date:review.due_date,deduplication_key:review.deduplication_key,review_scope:card.effectiveReviewScope,
+          task_origin:card.taskOrigin,error_type:card.primaryErrorType} as import("./types.ts").Task;
+      }),pastSessions})};
   const pendingAudits=promptAudits.filter((_,index)=>["pending","overdue","deferred"].includes(reviews[index]?.status));
   const countWarning=(code:string)=>pendingAudits.filter(item=>item.mismatchWarnings.some(warning=>warning.code===code)).length;
   const promptAuditFile={generatedAt:new Date().toISOString(),summary:{tasks:promptAudits.length,pendingTasks:pendingAudits.length,

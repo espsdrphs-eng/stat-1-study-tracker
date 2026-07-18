@@ -1,5 +1,6 @@
 import type { Attempt, Problem, ProblemAlias, Review, Task } from "./types.ts";
 import { resolveCanonicalProblemId } from "./examReadiness.ts";
+import { resolveLearningPolicy, type LearningPrescription } from "./learningPolicyResolver.ts";
 import { metadataQuality, safeGenericGuidance, type MetadataQuality } from "./metadataQuality.ts";
 import { resolveReviewScope, sheetTypeForMode, type EffectiveReviewScope } from "./reviewScopeResolver.ts";
 import {
@@ -70,6 +71,7 @@ export type ResolvedReviewCard={
   sourceProblem?:{problemId:string;displayLabel:string;sourceIssue:string};
   consistencyWarnings:ConsistencyWarning[];
   reviewNeeded:boolean;
+  prescription:LearningPrescription;
 };
 
 type ReviewCardInput=Partial<Review&Task> & {
@@ -207,8 +209,23 @@ export function resolveReviewCard({
   const inferred=origin==="first_attempt"&&isReviewMode(plannedMode)?plannedMode:inferReviewMode(errors,item);
   const overrideRaw=item.mode_override||item.modeOverride;
   const override=isReviewMode(overrideRaw)?overrideRaw:undefined;
-  const scope=resolveReviewScope({item:{...item,effective_mode:override||inferred},targetAttempt});
-  const effective=scope.effectiveMode;
+  const prescription=resolveLearningPolicy({
+    problemId:canonicalId,problem,
+    source:{...targetAttempt,...item,mode_override:override} as Partial<Attempt&Review&Task>,
+    learningPurpose:item.learning_purpose,
+    learningStage:item.learning_stage,
+    assessmentTiming:item.assessment_timing,
+    targetedParts:item.targeted_parts,
+  });
+  const effective=(override||(prescription.mode==="exam_90min"?"full":prescription.mode)) as ReviewMode;
+  const scope={
+    effectiveMode:effective,
+    effectiveReviewScope:prescription.reviewScope as EffectiveReviewScope,
+    targetedParts:prescription.targetedParts,
+    completionConditions:prescription.completionConditions,
+    allowedErrorTypes:[...prescription.allowedErrorTypes] as ResolverErrorType[],
+    requiresKEvidence:prescription.requiresKEvidence,
+  };
   if(storedSheetMismatch(item,effective)) warnings.push({code:"mode_sheet_mismatch",message:`復習形式を${modeLabels[effective]}、使用シートを${sheetLabels[getSheetType(effective)]}へ統一しました。`,repairable:true});
   if(item.mode&&isReviewMode(item.mode)&&item.mode!==effective&&!override){
     warnings.push({code:"stored_mode_stale",message:`保存済みモードではなく、K/W/N/Cから${modeLabels[effective]}を再判定しました。`,repairable:true});
@@ -281,7 +298,7 @@ export function resolveReviewCard({
     todayActions:make(actions),completionConditions:make(completion),dueDate,reviewAfterDays:interval,daysUntilDue:dueDate?differenceInCalendarDays(dueDate,today):null,
     targetAttempt,sourceAttempt,
     sourceProblem:sourceProblem?{problemId:sourceCanonical,displayLabel:sourceProblem.display_label||sourceProblem.title||sourceCanonical,sourceIssue}:undefined,
-    consistencyWarnings:warnings,reviewNeeded:blocked,
+    consistencyWarnings:warnings,reviewNeeded:blocked,prescription:{...prescription,mode:effective,sheetType:getSheetType(effective)},
   };
 }
 

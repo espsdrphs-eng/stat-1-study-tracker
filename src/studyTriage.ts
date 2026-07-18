@@ -35,6 +35,7 @@ export function triageTodayTasks(tasks:Task[],targetMinutes:number,problems:Prob
   const bucket=new Map<number,TriageKey>();
   const mustLimit=Math.max(0,Math.floor(targetMinutes*.9));
   let mustCount=0,optionalCount=0,mustMinutes=0,optionalMinutes=0,activeLinked=0,activeMain=0,activeSupplement=0,activeShort=0;
+  const activeProblemIds=new Set<string>();
   const traits=(task:Task)=>{
     const problem=problemMap.get(task.problem_id),errors=errorsFor(task);
     return {
@@ -46,9 +47,9 @@ export function triageTodayTasks(tasks:Task[],targetMinutes:number,problems:Prob
   };
   const allowedByMix=(task:Task)=>{
     const row=traits(task);
-    return (!row.linked||activeLinked<1)&&(!row.main||activeMain<2)&&(!row.supplement||activeSupplement<1)&&(!row.short||activeShort<1);
+    return !activeProblemIds.has(task.problem_id)&&(!row.linked||activeLinked<1)&&(!row.main||activeMain<2)&&(!row.supplement||activeSupplement<1)&&(!row.short||activeShort<1);
   };
-  const activate=(task:Task)=>{const row=traits(task);if(row.linked)activeLinked++;if(row.main)activeMain++;if(row.supplement)activeSupplement++;if(row.short)activeShort++};
+  const activate=(task:Task)=>{const row=traits(task);activeProblemIds.add(task.problem_id);if(row.linked)activeLinked++;if(row.main)activeMain++;if(row.supplement)activeSupplement++;if(row.short)activeShort++};
   for(const row of ranked){
     const {task}=row;
     const canMust=mustCount<3&&mustMinutes+task.minutes<=mustLimit&&allowedByMix(task)&&row.priority<=4;

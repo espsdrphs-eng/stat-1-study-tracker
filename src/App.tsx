@@ -193,6 +193,9 @@ function DashboardView({data,go,select}:{data:Bootstrap;go:(p:Page)=>void;select
       </div>
       <p className="stable-release-message">{d.stableRelease.message}</p>
       {!!d.stableRelease.blockingIssues.length&&<ul className="stable-blockers">{d.stableRelease.blockingIssues.map(item=><li key={item}>{item}</li>)}</ul>}
+      <div className="weekly-soft-quota"><strong>今週の不足候補</strong>{d.weeklyQuota.candidates.length
+        ?d.weeklyQuota.candidates.map(item=><span key={item.kind}>{item.kind==="full_skeleton"?"全体統合":item.kind==="timed_full"?"時間制限答案":"5問スキャン"}・{item.minutes}分</span>)
+        :<span>今週の最低構成を満たしています</span>}<small>soft quotaのため、今日の上限を超えて自動追加しません。</small></div>
     </section>
     <section className="section-head"><div><span className="eyebrow">OVERVIEW</span><h2>今週の学習状況</h2></div><span className="muted">直近7日間</span></section>
     <div className="metrics-grid">
@@ -327,12 +330,15 @@ function ReviewPlanDetails({item:rawItem,compact=false,resolved}:{item:Partial<R
     gptExplanation:reference.saved_gpt_feedback,externalReference:reference.external_reference,
     reviewScope:resolved?.effectiveReviewScope,targetedParts:resolved?.targetedParts,
     completionConditions:resolved?.completionConditions.value,allowedErrorTypes:resolved?.allowedErrorTypes,
-    requiresKEvidence:resolved?.requiresKEvidence
+    requiresKEvidence:resolved?.requiresKEvidence,learningPurpose:resolved?.prescription.learningPurpose,
+    learningStage:resolved?.prescription.learningStage,assessmentTiming:resolved?.prescription.assessmentTiming,
+    targetKind:resolved?.prescription.targetKind
   }):"";
   return <div className={`review-plan ${compact?"compact":""}`}>
     {resolved?.reviewNeeded&&<div className="review-consistency-warning"><AlertTriangle size={18}/><div><strong>要確認</strong><span>問題情報または復習履歴に不整合があります。誤った具体的な指示は表示していません。</span></div></div>}
     {!!resolved?.consistencyWarnings.length&&!resolved.reviewNeeded&&<details className="review-consistency-details"><summary>自動整合済み {resolved.consistencyWarnings.length}件</summary><ul>{resolved.consistencyWarnings.map(warning=><li key={warning.code}>{warning.message}</li>)}</ul></details>}
     <div className="today-move"><span>今日の一手</span><strong>{resolved?.todayActions.value.join(" → ")||todayMove(item)}</strong></div>
+    {resolved&&<div className="task-policy-meta"><span>学習段階：{resolved.prescription.learningStage}</span><span>目的：{resolved.prescription.learningPurpose}</span><span>{resolved.prescription.assessmentTiming==="same_session_correction"?"答案直後の5分修正":"時間を空けた再現"}</span></div>}
     <div className="review-plan-summary">
       {item.due_date&&<div><span>次回復習</span><strong>{resolved?`${resolved.dueDate}${resolved.daysUntilDue==null?"":resolved.daysUntilDue===0?"（今日）":resolved.daysUntilDue>0?`（あと${resolved.daysUntilDue}日）`:`（${Math.abs(resolved.daysUntilDue)}日超過）`}`:item.due_date}</strong></div>}
       <div><span>復習方法</span><strong>{resolved?.reviewMethodLabel||item.review_method||"—"}</strong></div>
@@ -525,7 +531,9 @@ function StudyPromptButtons({item,resolved}:{item:Partial<Review&Task>;resolved?
     requiresFullAnswer:item.requires_full_answer,linkedSProblemIds:item.linked_s_problem_ids,
     reviewScope:resolved?.effectiveReviewScope,targetedParts:resolved?.targetedParts,
     completionConditions:resolved?.completionConditions.value,allowedErrorTypes:resolved?.allowedErrorTypes,
-    requiresKEvidence:resolved?.requiresKEvidence
+    requiresKEvidence:resolved?.requiresKEvidence,learningPurpose:resolved?.prescription.learningPurpose,
+    learningStage:resolved?.prescription.learningStage,assessmentTiming:resolved?.prescription.assessmentTiming,
+    targetKind:resolved?.prescription.targetKind
   }):"";
   const repairPrompt=buildRepairPrompt({
     problemId:item.problem_id||"",displayLabel:item.title||item.problem_id,theme:item.theme,

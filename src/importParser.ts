@@ -281,6 +281,17 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
     unresolved_carryover:unresolvedCarryover,
     review_scope:scalar(raw.review_scope) as StudyUpdate["review_scope"],
     targeted_parts:stringArray(raw.targeted_parts),k_evidence:stringArray(raw.k_evidence),
+    learning_purpose:["error_repair","integration_check","transfer_check","exam_performance"].includes(scalar(raw.learning_purpose))
+      ?scalar(raw.learning_purpose) as StudyUpdate["learning_purpose"]:undefined,
+    learning_stage:["acquisition","repair","integration","discrimination","transfer","performance","stable"].includes(scalar(raw.learning_stage))
+      ?scalar(raw.learning_stage) as StudyUpdate["learning_stage"]:undefined,
+    assessment_timing:["same_session_correction","delayed_retrieval","independent_performance"].includes(scalar(raw.assessment_timing))
+      ?scalar(raw.assessment_timing) as StudyUpdate["assessment_timing"]:undefined,
+    target_kind:["mathematical_patch","skeleton_expression_patch"].includes(scalar(raw.target_kind))
+      ?scalar(raw.target_kind) as StudyUpdate["target_kind"]:undefined,
+    time_limit_minutes:raw.time_limit_minutes==null?undefined:Number(raw.time_limit_minutes),
+    conclusion_reached:raw.conclusion_reached==null?undefined:booleanValue(raw.conclusion_reached),
+    incomplete_reason:scalar(raw.incomplete_reason)||undefined,
     error_types:errors.length?errors:["none"],primary_error_type:primary,secondary_error_type:secondary,
     review_after_days:days,review_reason:shortestError==="none"?"ミス分類なしのため14日後":`${shortestError}が含まれるため${days}日後`,
     review_method:reviewMethod,

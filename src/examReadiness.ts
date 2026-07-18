@@ -1,4 +1,5 @@
 import type { Attempt, PastSession, Problem, ProblemAlias } from "./types.ts";
+import { examScoreEligibility } from "./scoreEligibility.ts";
 
 export type ExamPhase =
   | "foundation_to_A"
@@ -114,11 +115,15 @@ export function calculateExamReadinessMetrics(args: {
     const daysSince = previous
       ? Math.floor((new Date(`${attempt.date}T12:00:00`).getTime() - new Date(`${previous.date}T12:00:00`).getTime()) / 86400000)
       : Infinity;
-    if ((!previous || daysSince >= 30) && noReference(attempt) && validScore(attempt)) transferAttempts.push(attempt);
+    const eligibility=attempt.exam_score_eligible===true||examScoreEligibility(attempt,problem).eligible;
+    const eligibilityResult=examScoreEligibility(attempt,problem);
+    if ((!previous || daysSince >= 30) && eligibility && noReference(attempt) && validScore(attempt)&&
+      Number(attempt.time_minutes||0)<=Number(attempt.time_limit_minutes||eligibilityResult.timeLimitMinutes||0)) transferAttempts.push(attempt);
     const mode = attempt.mode || "";
     const timeLimit = mode === "exam_90min" ? 90 : mode === "full" ? 35 : problem?.category === "past_exam" ? 30 : 0;
-    if ((mode === "full" || mode === "exam_90min" || problem?.category === "past_exam") && timeLimit) timedAttempts.push(attempt);
-    if (problem?.category === "past_exam" && validScore(attempt)) pastExamAttempts.push(attempt);
+    if (eligibility&&(mode === "full" || mode === "exam_90min" || problem?.category === "past_exam") && timeLimit) timedAttempts.push(attempt);
+    if (eligibility&&problem?.category === "past_exam" && validScore(attempt)&&
+      Number(attempt.time_minutes||0)<=Number(attempt.time_limit_minutes||eligibilityResult.timeLimitMinutes||0)) pastExamAttempts.push(attempt);
     const errors = new Set([...(attempt.error_types || []), attempt.primary_error_type || attempt.error_type || ""].filter(Boolean));
     if (errors.has("K")) kGroups.set(canonicalId, (kGroups.get(canonicalId) || 0) + 1);
     if (errors.has("W")) {
@@ -153,9 +158,11 @@ export function calculateExamReadinessMetrics(args: {
     return null;
   }).filter((value): value is number => value != null);
 
-  const timedSessions=pastSessions.filter(session=>["timed_single","past_exam","exam_90min"].includes(session.session_type)&&Number(session.actual_minutes||session.selection_time_minutes||0)>0);
+  const sessionEligible=(session:PastSession)=>session.examScoreEligible!==0&&session.examScoreEligible!=="false"&&
+    Number(session.actual_reference_level||0)===0&&session.evaluation_scope!=="conditional_full";
+  const timedSessions=pastSessions.filter(session=>sessionEligible(session)&&["timed_single","past_exam","exam_90min"].includes(session.session_type)&&Number(session.actual_minutes||session.selection_time_minutes||0)>0);
   const timedSessionSuccesses=timedSessions.filter(session=>Number(session.actual_minutes||session.selection_time_minutes||0)<=Number(session.time_limit_minutes||(session.session_type==="exam_90min"?90:35))&&Number(session.score_numeric||0)>=60);
-  const pastSessionScores=pastSessions.filter(session=>["past_exam","exam_90min"].includes(session.session_type)&&Number.isFinite(Number(session.score_numeric))&&String(session.score_numeric)!=="").map(session=>Number(session.score_numeric));
+  const pastSessionScores=pastSessions.filter(session=>sessionEligible(session)&&["past_exam","exam_90min"].includes(session.session_type)&&Number.isFinite(Number(session.score_numeric))&&String(session.score_numeric)!=="").map(session=>Number(session.score_numeric));
 
   const kDenominator = [...kGroups.values()].length;
   const wDenominator = [...wGroups.values()].length;

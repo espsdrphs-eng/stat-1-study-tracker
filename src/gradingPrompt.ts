@@ -18,6 +18,7 @@ export type ReviewPromptContext={
   allowedReferenceLevel?:number;actualReferenceLevel?:number;referenceClosedReproduction?:boolean;
   reviewScope?:EffectiveReviewScope;targetedParts?:string[];completionConditions?:string[];
   allowedErrorTypes?:string[];requiresKEvidence?:boolean;
+  learningPurpose?:string;learningStage?:string;assessmentTiming?:string;targetKind?:string;
 };
 
 export type FirstAttemptPromptContext={
@@ -343,6 +344,10 @@ study_update:
   linked_s_problems: []
   grading_confidence: 90
   rubric_version: "${REVIEW_RUBRIC_VERSION}"
+  learning_purpose: "${context.learningPurpose||"error_repair"}"
+  learning_stage: "${context.learningStage||"repair"}"
+  assessment_timing: "${context.assessmentTiming||"delayed_retrieval"}"
+  target_kind: "${context.targetKind||""}"
   review_scope: "${scope}"
   targeted_parts: ${targets.length?`\n${targets.map(part=>`    - "${part.replaceAll('"','\\"')}"`).join("\n")}`:"[]"}
   evaluation_scope: "${fullScope?"full":"conditional_full"}"

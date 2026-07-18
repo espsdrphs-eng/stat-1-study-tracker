@@ -256,3 +256,5 @@ header h1{font-size:28px;font-weight:700;letter-spacing:-.02em;color:var(--text-
 .diagnostic-export-panel .compact-list{margin:0 0 16px;padding-left:20px;color:var(--text-secondary);font-size:13px;line-height:1.7}
 .diagnostic-export-result{display:flex;gap:10px;align-items:flex-start;margin-top:14px;padding:12px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--success-soft);color:var(--success)}
 .diagnostic-export-result div{display:grid;gap:3px;min-width:0}.diagnostic-export-result span,.diagnostic-export-result small{color:var(--text-secondary)}
+.task-policy-meta{display:flex;flex-wrap:wrap;gap:6px 14px;margin:8px 0;color:var(--text-secondary);font-size:12px}.task-policy-meta span{white-space:nowrap}
+.weekly-soft-quota{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;margin-top:14px;padding:12px 14px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface-subtle);font-size:13px}.weekly-soft-quota span{color:var(--text-primary)}.weekly-soft-quota small{width:100%;color:var(--text-muted)}

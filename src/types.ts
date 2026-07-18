@@ -46,6 +46,10 @@ export type ProblemRelation = {
   status:"confirmed"|"candidate"|"rejected";
   createdAt:string; updatedAt:string;
 };
+export type LearningPurpose="error_repair"|"integration_check"|"transfer_check"|"exam_performance";
+export type LearningStage="acquisition"|"repair"|"integration"|"discrimination"|"transfer"|"performance"|"stable";
+export type AssessmentTiming="same_session_correction"|"delayed_retrieval"|"independent_performance";
+export type TargetKind="mathematical_patch"|"skeleton_expression_patch";
 export type Attempt = {
   id:number; problem_id:string; date:string; mode:string; time_minutes:number; mark:string;
   score_label:string; error_type:string; error_point:string; next_action:string; memo:string;
@@ -59,7 +63,7 @@ export type Attempt = {
   uncertain_points?:string[]; generated_from_review_id?:number; is_review_attempt?:boolean;
   evaluation_scope?:string; graded_parts?:string[]; assumed_correct_parts?:string[];
   unresolved_carryover?:string[];
-  review_scope?:"targeted_patch"|"full_skeleton"|"main_calc_target"|"check_only"|"full_answer";
+  review_scope?:"targeted_patch"|"full_skeleton"|"main_calc_target"|"check_only"|"full_answer"|"scan5";
   targeted_parts?:string[]; k_evidence?:string[]; k_evidence_valid?:boolean;
   effective_error_types?:string[];
   hint_used?:boolean; hint_level?:string; after_hint_reproduced?:boolean;
@@ -72,6 +76,10 @@ export type Attempt = {
   raw_problem_id?:string; id_corrected?:boolean; id_correction_reason?:string;
   raw_gpt_problem_id?:string; raw_gpt_theme?:string; auto_corrected?:boolean;
   correction_fields?:string[]; correction_reason?:string; consistency_score?:number;
+  learning_purpose?:LearningPurpose; learning_stage?:LearningStage; assessment_timing?:AssessmentTiming;
+  task_score?:number|null; exam_score?:number|null; exam_score_eligible?:boolean;
+  time_limit_minutes?:number; conclusion_reached?:boolean; incomplete_reason?:string;
+  retention_eligible?:boolean; problem_type_key?:string; transfer_evidence?:boolean;
 };
 export type Review = {
   id:number; problem_id:string; due_date:string; review_type:string; status:string; generated_from_attempt_id:number;
@@ -98,9 +106,14 @@ export type Review = {
   derived_from_master_version?:string; derived_generated_at?:string; derived_stale?:boolean;
   derived_fields?:Record<string,{value:unknown;provenance:{problemId:string;attemptId?:number;evaluationId?:number;relationId?:string;masterVersion:string;generatedAt:string}}>;
   raw_due_date?:string; due_date_correction_reason?:string; review_needed_reason?:string;
-  review_scope?:"targeted_patch"|"full_skeleton"|"main_calc_target"|"check_only"|"full_answer";
-  effective_review_scope?:"targeted_patch"|"full_skeleton"|"main_calc_target"|"check_only"|"full_answer";
+  review_scope?:"targeted_patch"|"full_skeleton"|"main_calc_target"|"check_only"|"full_answer"|"scan5";
+  effective_review_scope?:"targeted_patch"|"full_skeleton"|"main_calc_target"|"check_only"|"full_answer"|"scan5";
   targeted_parts?:string[]; scope_completion_conditions?:string[];
+  learning_purpose?:LearningPurpose; learning_stage?:LearningStage; assessment_timing?:AssessmentTiming;
+  target_kind?:TargetKind; required_evidence?:string[];
+  policy_version?:string; source_attempt_id?:number; deduplication_key?:string;
+  earliest_date?:string; preferred_date?:string; latest_date?:string;
+  retention_eligible?:boolean; success_transition?:string; failure_transition?:string;
 };
 export type TodayPlanSnapshot = {
   date:string;task_ids:string[];start_of_day_planned_minutes:number;
@@ -142,9 +155,14 @@ export type Task = {
   sheet_type?:"check_sheet"|"skeleton_sheet"|"main_calc_sheet"|"full_answer_sheet"|"scan5_sheet";
   consistency_warnings?:Array<{code:string;message:string;repairable:boolean;blocksSpecificGuidance?:boolean}>;
   review_needed?:boolean;
-  review_scope?:"targeted_patch"|"full_skeleton"|"main_calc_target"|"check_only"|"full_answer";
-  effective_review_scope?:"targeted_patch"|"full_skeleton"|"main_calc_target"|"check_only"|"full_answer";
+  review_scope?:"targeted_patch"|"full_skeleton"|"main_calc_target"|"check_only"|"full_answer"|"scan5";
+  effective_review_scope?:"targeted_patch"|"full_skeleton"|"main_calc_target"|"check_only"|"full_answer"|"scan5";
   targeted_parts?:string[]; scope_completion_conditions?:string[];
+  learning_purpose?:LearningPurpose; learning_stage?:LearningStage; assessment_timing?:AssessmentTiming;
+  target_kind?:TargetKind; required_evidence?:string[];
+  policy_version?:string; source_attempt_id?:number; deduplication_key?:string;
+  earliest_date?:string; preferred_date?:string; latest_date?:string;
+  retention_eligible?:boolean;success_transition?:string;failure_transition?:string;
 };
 export type WeaknessInsight = {
   theme:string; score:number; level:"重点"|"注意"|"観察"; confidence:"参考"|"暫定"|"分析可能";
@@ -164,6 +182,9 @@ export type Dashboard = {
     sampleSizes:{unseen:number;timed:number;scans:number;pastExams:number;kReviews:number;wReviews:number};
   };
   stableRelease:{isStable:boolean;blockingIssues:string[];message:string};
+  weeklyQuota:{fullSkeleton:number;timedFull:number;scan5:number;
+    deficits:{fullSkeleton:boolean;timedFull:boolean;scan5:boolean};
+    candidates:Array<{kind:"full_skeleton"|"timed_full"|"scan5";minutes:number}>};
   pace:{label:string;checks:boolean[];items:{label:string;detail:string;status:"ok"|"warning"|"pending"}[];
     a14:number;pastSkeleton:number;kRepeat:number;skeletonRate:number;weakUpdates:number;delayed3:number;
     suggestion:string;dangerCriteria:string[];phase:string;phaseLabel:string;summary:string;allocation:string;nextPhase:string;daysRemaining:number;examDateIsEstimate:boolean};
@@ -234,6 +255,9 @@ export type StudyUpdate = {
   problem_id_confirmed?:boolean; problem_id_source?:"yaml"|"manual"|"alias"|"text";
   ignored_problem_candidates?:Array<{problem_id:string;reason:string}>;
   answer_excerpt?:string; canonical_keywords?:string[]; canonical_problem_type?:string;
+  learning_purpose?:LearningPurpose; learning_stage?:LearningStage; assessment_timing?:AssessmentTiming;
+  target_kind?:TargetKind; task_score?:number|null; exam_score?:number|null; exam_score_eligible?:boolean;
+  time_limit_minutes?:number; conclusion_reached?:boolean; incomplete_reason?:string;
   raw_import_data?:Record<string,unknown>; raw_time_minutes?:number|string; raw_score_label?:string;
   raw_reference_closed_reproduction?:boolean;
 };
