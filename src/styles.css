@@ -252,3 +252,6 @@ header h1{font-size:28px;font-weight:700;letter-spacing:-.02em;color:var(--text-
 .update-banner>div{display:grid;gap:3px;min-width:0;margin-right:auto}.update-banner span{font-size:13px;color:var(--text-secondary)}
 @media(max-width:900px){.database-schema-dialog dl,.database-status-grid{grid-template-columns:1fr}.update-banner{left:50%;bottom:12px;flex-wrap:wrap}.update-banner>div{flex-basis:100%}}
 .boot-repair{display:grid;gap:10px;width:min(520px,calc(100vw - 32px));padding:16px;border:1px solid var(--warning);border-radius:var(--radius-md);background:var(--warning-soft)}
+.diagnostic-export-panel .compact-list{margin:0 0 16px;padding-left:20px;color:var(--text-secondary);font-size:13px;line-height:1.7}
+.diagnostic-export-result{display:flex;gap:10px;align-items:flex-start;margin-top:14px;padding:12px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--success-soft);color:var(--success)}
+.diagnostic-export-result div{display:grid;gap:3px;min-width:0}.diagnostic-export-result span,.diagnostic-export-result small{color:var(--text-secondary)}

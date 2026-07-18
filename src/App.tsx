@@ -8,6 +8,7 @@ import {
 import yaml from "js-yaml";
 import { api, post } from "./api";
 import { closeLocalDatabase, csvFor, exportBackup, problemMasterExport, restoreBackup } from "./localDb";
+import { createDiagnosticPack } from "./diagnosticPack";
 import AdvancedImportView from "./AdvancedImportView";
 import { problemDisplayLabel } from "./importParser";
 import { createAttemptReviewPlan } from "./reviewRules";
@@ -951,8 +952,12 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
   const [backupMasterWarning,setBackupMasterWarning]=useState<unknown|null>(null);
   const [showDiagnostics,setShowDiagnostics]=useState(false);
   const [masterError,setMasterError]=useState("");
-  const saveBlob=(content:string,name:string,type:string)=>{
-    const url=URL.createObjectURL(new Blob([content],{type}));const a=document.createElement("a");
+  const [diagnosticExporting,setDiagnosticExporting]=useState(false);
+  const [diagnosticResult,setDiagnosticResult]=useState<{readOnlyVerified:boolean;problemCount:number;reviewCount:number;issueCount:number}|null>(null);
+  const [diagnosticError,setDiagnosticError]=useState("");
+  const saveBlob=(content:string|Blob,name:string,type:string)=>{
+    const payload=content instanceof Blob?content:new Blob([content],{type});
+    const url=URL.createObjectURL(payload);const a=document.createElement("a");
     a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
   };
   const downloadJson=async()=>saveBlob(JSON.stringify(await exportBackup(),null,2),`stat-study-${todayString()}.json`,"application/json");
@@ -1019,6 +1024,16 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
     }catch(error){setMasterError((error as Error).message)}
   };
   const downloadMaster=async()=>saveBlob(JSON.stringify(await problemMasterExport(),null,2),"problem_master.json","application/json");
+  const downloadDiagnosticPack=async()=>{
+    if(diagnosticExporting)return;
+    setDiagnosticExporting(true);setDiagnosticResult(null);setDiagnosticError("");
+    try{
+      const result=await createDiagnosticPack();
+      saveBlob(result.blob,result.fileName,"application/zip");
+      setDiagnosticResult(result.summary);
+    }catch(error){setDiagnosticError(error instanceof Error?error.message:String(error))}
+    finally{setDiagnosticExporting(false)}
+  };
   const resolveDiagnosticItem=(item:Bootstrap["masterStatus"]["diagnostics"][number],action:string,label:string)=>{
     if(!item.review_id)return;
     run(()=>post("/api/master/diagnostic/resolve",{review_id:item.review_id,action}),label);
@@ -1049,6 +1064,12 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
     <div className="settings-grid"><section className="panel"><div className="setting-icon"><Download/></div><h3>バックアップ・書き出し</h3><p>iPadの「ファイル」に定期的に保存してください。機種変更時にも復元できます。</p><div className="button-row"><button className="primary" onClick={downloadJson}><Download size={16}/>全データ JSON</button><button className="ghost" onClick={()=>downloadCsv("attempts")}>学習履歴 CSV</button><button className="ghost" onClick={()=>downloadCsv("problems")}>問題マスター CSV</button></div>
       <label className={`restore-button ${busy?"disabled":""}`}><Database size={16}/>JSONバックアップを復元<input disabled={busy} type="file" accept="application/json,.json" onChange={e=>{const file=e.target.files?.[0];if(file)restore(file);e.target.value=""}}/></label>
       {backupMasterWarning!==null&&<div className="backup-master-warning"><AlertTriangle size={18}/><div><strong>これはアプリ全体のバックアップではなく、問題マスター用JSONの可能性があります。「問題マスター取り込み」から読み込んでください。</strong><div className="button-row"><button className="primary small" onClick={moveBackupToMaster}>問題マスター取り込みへ移動</button><button className="ghost small" onClick={()=>setBackupMasterWarning(null)}>キャンセル</button></div></div></div>}
+    </section>
+    <section className="panel diagnostic-export-panel"><div className="setting-icon"><Archive/></div><h3>診断パックを書き出す</h3><p>外部レビュー用に、実データ・DB構造・復習カードと採点プロンプトの差・今日の計画をZIPへまとめます。答案画像、PDF、保存済みBlob、個人情報は含めません。</p>
+      <ul className="compact-list"><li>全テーブルの件数と主キーを生成前後で照合</li><li>WB-6-A-20・review 175の生成経路を個別追跡</li><li>データ移行・復習再生成・今日の計画変更は行いません</li></ul>
+      <button className="primary" disabled={busy||diagnosticExporting} onClick={()=>void downloadDiagnosticPack()}><Archive size={16}/>{diagnosticExporting?"読み取り・照合中…":"診断パックを書き出す"}</button>
+      {diagnosticError&&<div className="match-warning"><AlertTriangle size={17}/><span>{diagnosticError}</span></div>}
+      {diagnosticResult&&<div className="diagnostic-export-result"><Check size={17}/><div><strong>diagnostic-pack.zipを書き出しました</strong><span>問題 {diagnosticResult.problemCount}件・復習 {diagnosticResult.reviewCount}件・検出事項 {diagnosticResult.issueCount}件</span><small>{diagnosticResult.readOnlyVerified?"生成前後の件数・主キー・今日の計画は一致しています。":"生成前後の照合に失敗しました。"}</small></div></div>}
     </section>
     <section className="panel"><div className="setting-icon"><Database/></div><h3>iPad内に保存</h3><p>記録はSafari／ホーム画面アプリ内のIndexedDBに保存されます。外部APIやクラウドには送信しません。</p><dl><dt>問題</dt><dd>{data.problems.length}件</dd><dt>解答履歴</dt><dd>{data.attempts.length}件</dd><dt>復習予定</dt><dd>{data.reviews.length}件</dd></dl></section>
     <section className="panel"><div className="setting-icon"><CalendarCheck/></div><h3>試験日と毎日の学習時間</h3><p>試験日から学習段階を判定し、毎日の目標時間に合わせて課題数を調整します。初期値は150分です。</p><Field label="統計検定1級の受験日"><input type="date" value={examDate} onChange={event=>setExamDate(event.target.value)}/></Field><Field label="1日の最低学習時間（分）"><input type="number" min="30" max="600" value={dailyMinutes} onChange={event=>setDailyMinutes(event.target.value)}/></Field><button className="primary setting-save" disabled={busy} onClick={()=>run(()=>post("/api/settings",{exam_date:examDate,daily_study_minutes:Number(dailyMinutes||150)}),"試験日と学習時間を保存し、計画を調整しました")}>保存する</button></section></div>
