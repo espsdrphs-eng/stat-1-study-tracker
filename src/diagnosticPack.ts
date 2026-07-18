@@ -4,7 +4,8 @@ import { db } from "./localDb.ts";
 import { APP_BUILD_VERSION, APP_SCHEMA_VERSION, DB_NAME, DB_VERSION } from "./dbSchema.ts";
 import { resolveCanonicalProblemId } from "./examReadiness.ts";
 import { buildReviewGradingPrompt } from "./gradingPrompt.ts";
-import { getSheetType, resolveReviewCard, type ResolvedReviewCard, type ReviewMode } from "./reviewCardResolver.ts";
+import { metadataQuality } from "./metadataQuality.ts";
+import { getSheetType, resolveReviewCard, type ResolvedReviewCard } from "./reviewCardResolver.ts";
 import type { Attempt, Problem, ProblemAlias, Review, TodayPlanSnapshot } from "./types.ts";
 
 type JsonRecord=Record<string,unknown>;
@@ -77,35 +78,9 @@ function errorsFor(attempt?:Attempt){
   return errors.length?errors:["none"];
 }
 
-function inferredReviewScope(card:ResolvedReviewCard){
-  if(card.effectiveMode==="full") return "full";
-  if(card.effectiveMode==="scan5") return "scan5";
-  if(card.errorTypes.includes("K")) return "full_skeleton";
-  if(card.errorTypes.some(error=>["N","W","C"].includes(error))) return "targeted_patch";
-  return "targeted_check";
-}
-
-function gradingScopeForMode(mode:ReviewMode){
-  if(mode==="full") return {name:"full",items:["方針","出発式","条件","主要計算","結論"]};
-  if(mode==="skeleton") return {name:"full_skeleton",items:["方針・入口","出発式","今見る量","先に確認すること","使う道具","解答の流れ","最後に示すこと","計算へ進む境界"]};
-  if(mode==="main_calc") return {name:"targeted_calculation",items:["指定計算","直前の式","必要条件","範囲","添字"]};
-  if(mode==="scan5") return {name:"scan5",items:["5問の型","選ぶ3問","捨てる2問","選題理由"]};
-  return {name:"targeted_check",items:["型","初手","今見る量","注意点"]};
-}
-
-function targetedParts(attempt:Attempt|undefined,review:Review){
-  const candidates=[
-    ...(attempt?.required_work_shown||[]),...(attempt?.graded_parts||[]),
-    attempt?.error_point,attempt?.next_action,review.source_error_summary,review.review_instruction,
-  ].map(item=>String(item||"").trim()).filter(Boolean);
-  return [...new Set(candidates)];
-}
-
 function buildPromptAudit(review:Review,card:ResolvedReviewCard){
-  const source=card.targetAttempt||card.sourceAttempt;
   const screenConditions=card.completionConditions.value;
-  const scope=inferredReviewScope(card);
-  const generatedScope=gradingScopeForMode(card.effectiveMode);
+  const scope=card.effectiveReviewScope;
   const prompt=buildReviewGradingPrompt({
     reviewId:review.id,problemId:card.canonicalProblemId,title:card.displayLabel,theme:card.theme,
     date:new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Tokyo"}).format(new Date()),mode:card.effectiveMode,
@@ -116,27 +91,30 @@ function buildPromptAudit(review:Review,card:ResolvedReviewCard){
     reviewInstruction:review.review_instruction,reviewSteps:review.review_steps,requiresFullAnswer:card.effectiveMode==="full",
     linkedSProblemIds:review.linked_s_problem_ids,timeMinutes:card.estimatedMinutes,allowedReferenceLevel:review.allowed_reference_level,
     actualReferenceLevel:review.actual_reference_level,referenceClosedReproduction:review.reference_closed_reproduction,
+    reviewScope:scope,targetedParts:card.targetedParts,completionConditions:screenConditions,
+    allowedErrorTypes:card.allowedErrorTypes,requiresKEvidence:card.requiresKEvidence,
   });
-  const parts=targetedParts(source,review);
-  const warnings=[...card.consistencyWarnings.map(item=>({code:item.code,message:item.message}))];
-  if(scope==="targeted_patch"&&generatedScope.name==="full_skeleton") warnings.push({
+  const warnings:Array<{code:string;message:string}>=[];
+  const consistencyWarnings=card.consistencyWarnings.map(item=>({code:item.code,message:item.message}));
+  if(scope==="targeted_patch"&&/骨格全体（方針|骨格8項目すべて/.test(prompt)) warnings.push({
     code:"targeted_patch_requires_full_skeleton",message:"画面は局所補修ですが、生成プロンプトは骨格8項目すべてを採点対象にしています。"
   });
-  if(scope==="targeted_patch"&&generatedScope.items.length>Math.max(1,screenConditions.length)) warnings.push({
+  if(!screenConditions.every(condition=>prompt.includes(condition))) warnings.push({
     code:"prompt_scope_wider_than_screen",message:"画面の完了条件より、プロンプトの採点項目が広い可能性があります。"
   });
-  if(scope==="targeted_patch"&&prompt.includes("K/W/N/C")&&generatedScope.name==="full_skeleton") warnings.push({
+  if(scope==="targeted_patch"&&!card.allowedErrorTypes.includes("K")&&!prompt.includes("指定範囲外の空欄や未記入を誤りの根拠にしない")) warnings.push({
     code:"out_of_scope_blank_can_be_k",message:"指定範囲外の骨格項目の空欄をK判定に利用できる文面です。"
   });
   const expectedSheet=getSheetType(card.effectiveMode);
-  if(review.sheet_type&&review.sheet_type!==expectedSheet) warnings.push({code:"mode_sheet_mismatch",message:`${card.effectiveMode}に対し保存済みシートは${review.sheet_type}です。`});
+  if(review.sheet_type&&review.sheet_type!==expectedSheet)consistencyWarnings.push({code:"mode_sheet_mismatch",message:`保存済み${review.sheet_type}は表示時に${expectedSheet}へ解決されます。`});
   return {
     taskId:String(review.id),problemId:review.problem_id,canonicalProblemId:card.canonicalProblemId,
-    sourceAttemptId:review.generated_from_attempt_id||null,reviewScope:scope,targetedParts:parts,
+    sourceAttemptId:review.generated_from_attempt_id||null,reviewScope:scope,targetedParts:card.targetedParts,
     screenCompletionConditions:screenConditions,generatedPrompt:prompt,
-    generatedPromptGradingScope:generatedScope.name,promptRequiredGradingItems:generatedScope.items,
+    generatedPromptGradingScope:scope,promptRequiredGradingItems:screenConditions,
     kJudgmentConditions:prompt.split("\n").filter(line=>/K：|K\/W\/N\/C|K判定/.test(line)),
     effectiveMode:card.effectiveMode,sheetType:card.sheetType,mismatchWarnings:warnings,
+    consistencyWarnings,storedSheetType:review.sheet_type||null,expectedSheetType:expectedSheet,
   };
 }
 
@@ -153,7 +131,7 @@ function relationRows(problems:Problem[],aliases:ProblemAlias[]){
       for(const targetRaw of [...new Set(rawItems.filter(Boolean))]){
         const target=resolveCanonicalProblemId(targetRaw,aliases);
         rows.push({relationId:`master:${source}:${target}:${relationType}`,sourceProblemId:source,targetProblemId:target,
-          relationType,targetFocus:"problem_masterの既存関連指定",reason:"problem_masterから読み取り",relationSource:"problem_master",status:"confirmed"});
+          relationType,targetFocus:"要確認",reason:"problem_masterの既存指定だけでは補修根拠が不足",relationSource:"problem_master",status:"candidate"});
       }
     }
   }
@@ -177,9 +155,11 @@ function buildConsistencyReport(problems:Problem[],attempts:Attempt[],reviews:Re
     }
     if(!problem.theme||!problem.canonical_problem_type) rowIssues.push("metadata_missing");
     if(problem.theme===problem.canonical_problem_type) rowIssues.push("theme_and_problem_type_identical_review_recommended");
+    const quality=metadataQuality(problem);
+    if(quality==="generic")rowIssues.push("metadata_generic_safe_guidance_only");
     const row={problemId:problem.problem_id,displayLabel:problem.display_label,type:problem.category,chapter:problem.chapter,
       problemNumber:problem.problem_number,theme:problem.theme,canonicalProblemType:problem.canonical_problem_type,
-      canonicalKeywords:problem.canonical_keywords||[],issues:rowIssues};
+      canonicalKeywords:problem.canonical_keywords||[],metadataQuality:quality,issues:rowIssues};
     problemChecks.push(row);rowIssues.forEach(code=>issues.push({scope:"problem",problemId:problem.problem_id,code}));
   }
   for(const review of reviews){
@@ -236,7 +216,7 @@ function logicalReviewPlan(review:Review){
 
 function parseSnapshot(row:{key:string;value:string}){try{return JSON.parse(row.value) as TodayPlanSnapshot}catch{return {parseError:true,rawValue:row.value}}}
 
-function buildPlannerAudit(snapshotRows:Array<{key:string;value:string}>,reviews:Review[],attempts:Attempt[]){
+function buildPlannerAudit(snapshotRows:Array<{key:string;value:string}>,reviews:Review[],attempts:Attempt[],targetMinutes:number){
   const snapshots=snapshotRows.map(row=>({key:row.key,snapshot:parseSnapshot(row)}));
   const latest=snapshots.sort((a,b)=>a.key.localeCompare(b.key)).at(-1);
   const snapshot=latest?.snapshot as TodayPlanSnapshot|undefined;
@@ -245,6 +225,8 @@ function buildPlannerAudit(snapshotRows:Array<{key:string;value:string}>,reviews
   const remaining=tasks.filter(task=>!completed.includes(task)&&task.triage!=="tomorrow");
   const candidates=tasks.filter(task=>task.triage==="tomorrow"&&!task.postponed_to);
   const postponed=tasks.filter(task=>!!task.postponed_to);
+  const must=remaining.filter(task=>task.triage==="must"),optional=remaining.filter(task=>task.triage==="if_time");
+  const mustMinutes=must.reduce((sum,task)=>sum+Number(task.minutes||0),0),optionalMinutes=optional.reduce((sum,task)=>sum+Number(task.minutes||0),0);
   return {generatedAt:new Date().toISOString(),latestSnapshotKey:latest?.key||null,startOfDayPlan:snapshot?{
     date:snapshot.date,taskIds:snapshot.task_ids,startOfDayPlannedMinutes:snapshot.start_of_day_planned_minutes,
     initialBucket:snapshot.initial_bucket,initialEstimatedMinutes:snapshot.initial_estimated_minutes}:null,
@@ -256,6 +238,9 @@ function buildPlannerAudit(snapshotRows:Array<{key:string;value:string}>,reviews
       sources:{startOfDay:"meta today-plan-snapshot:* / start_of_day_planned_minutes",current:"snapshot.tasks",
         completion:"snapshot task checked/status",actualTime:"attempts.time_minutes (別表 learning-data.json)"}},
     automaticRecalculationHistory:{available:false,events:[],note:"専用の自動再計算履歴テーブルはありません。snapshotのcreated_atと保存値のみを出力しています。"},
+    executionLimits:{targetMinutes,mustCount:must.length,optionalCount:optional.length,mustMinutes,activeMinutes:mustMinutes+optionalMinutes,
+      activeLinkedSCount:[...must,...optional].filter(task=>task.task_origin==="linked_s_check").length,
+      compliant:must.length<=3&&optional.length<=2&&mustMinutes<=Math.floor(targetMinutes*.9)&&mustMinutes+optionalMinutes<=targetMinutes&&[...must,...optional].filter(task=>task.task_origin==="linked_s_check").length<=1},
     allSnapshots:snapshots,attemptCount:attempts.length,reviewCount:reviews.length};
 }
 
@@ -294,9 +279,9 @@ export type DiagnosticPackResult={blob:Blob;fileName:string;summary:{files:strin
 export async function createDiagnosticPack():Promise<DiagnosticPackResult>{
   if(!db.isOpen()) throw new Error("データベースが開かれていません。画面を再読み込みしてからもう一度お試しください。");
   const before=await databaseFingerprint();
-  const [problems,aliases,attempts,reviews,weakNotes,metaRows,importLogs,correctionLogs]=await Promise.all([
+  const [problems,aliases,attempts,reviews,weakNotes,pastSessions,metaRows,importLogs,correctionLogs]=await Promise.all([
     db.problems.toArray(),db.problemAliases.toArray(),db.attempts.toArray(),db.reviews.toArray(),db.weakNotes.toArray(),
-    db.meta.toArray(),db.importLogs.toArray(),db.correctionLogs.toArray()
+    db.pastSessions.toArray(),db.meta.toArray(),db.importLogs.toArray(),db.correctionLogs.toArray()
   ]);
   const today=new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Tokyo"}).format(new Date());
   const examDate=metaRows.find(row=>row.key==="exam_date")?.value||"";
@@ -311,7 +296,7 @@ export async function createDiagnosticPack():Promise<DiagnosticPackResult>{
       reviewPlans:"reviewsの予定フィールドから作った論理ビュー",problemRelations:"problem_masterの既存関連指定から作った読み取り専用ビュー"},
     problemMaster:problems,aliases,attempts,evaluations:attempts.map(logicalEvaluation),reviewTasks:reviews,
     reviewPlans:reviews.map(logicalReviewPlan),todayPlanSnapshot:snapshotRows.map(row=>({key:row.key,value:parseSnapshot(row)})),
-    problemRelations:relations,weakNotes,settings};
+    problemRelations:relations,weakNotes,pastSessions,settings};
   const counts=Object.fromEntries(Object.entries(before.tables).map(([name,row])=>[name,row.count]));
   const migrationRows=metaRows.filter(row=>/migration/i.test(row.key));
   const deployAt=typeof __APP_DEPLOYED_AT__!=="undefined"?__APP_DEPLOYED_AT__:"unknown";
@@ -322,8 +307,14 @@ export async function createDiagnosticPack():Promise<DiagnosticPackResult>{
     deployedAt:deployAt,exportedAt:new Date().toISOString(),privacy:{pdfIncluded:false,imageIncluded:false,binaryIncluded:false,
       freeFormMemoIncluded:false,rawGptTextIncluded:false},
     physicalModel:{attempts:"答案とGPT評価",reviews:"復習タスクと復習計画",problemRelations:"独立storeなし"}};
-  const plannerAudit=buildPlannerAudit(snapshotRows,reviews,attempts);
-  const promptAuditFile={generatedAt:new Date().toISOString(),summary:{tasks:promptAudits.length,mismatches:promptAudits.filter(item=>item.mismatchWarnings.length).length},
+  const plannerAudit=buildPlannerAudit(snapshotRows,reviews,attempts,Math.max(30,Number(settings.daily_study_minutes||150)));
+  const pendingAudits=promptAudits.filter((_,index)=>["pending","overdue","deferred"].includes(reviews[index]?.status));
+  const countWarning=(code:string)=>pendingAudits.filter(item=>item.mismatchWarnings.some(warning=>warning.code===code)).length;
+  const promptAuditFile={generatedAt:new Date().toISOString(),summary:{tasks:promptAudits.length,pendingTasks:pendingAudits.length,
+    mismatches:pendingAudits.filter(item=>item.mismatchWarnings.length).length,
+    targeted_patch_requires_full_skeleton:countWarning("targeted_patch_requires_full_skeleton"),
+    out_of_scope_blank_can_be_k:countWarning("out_of_scope_blank_can_be_k"),
+    screen_prompt_completion_mismatch:countWarning("prompt_scope_wider_than_screen")},
     tasks:promptAudits,wb_6_a_20_review_175:wb620Trace(reviews,attempts,cards,promptAudits,problems,aliases)};
   const after=await databaseFingerprint();
   const readOnlyVerified=stableStringify(before)===stableStringify(after);
@@ -343,4 +334,4 @@ export async function createDiagnosticPack():Promise<DiagnosticPackResult>{
   return {blob,fileName:`diagnostic-pack-${today}.zip`,summary:{files:Object.keys(zip.files),readOnlyVerified,problemCount:problems.length,reviewCount:reviews.length,issueCount:consistency.issues.length}};
 }
 
-export const diagnosticAuditInternals={inferredReviewScope,gradingScopeForMode,targetedParts,buildPromptAudit,stableStringify};
+export const diagnosticAuditInternals={buildPromptAudit,stableStringify};

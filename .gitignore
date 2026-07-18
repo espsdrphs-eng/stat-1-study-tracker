@@ -6,3 +6,4 @@ data/*.db-wal
 *.log
 *.tsbuildinfo
 .tools/
+outputs/

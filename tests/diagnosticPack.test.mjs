@@ -11,6 +11,7 @@ const baseCard={
   taskId:"175",problemId:"WB-6-A-20",canonicalProblemId:"WB-6-A-20",displayLabel:"第6章A問20",
   theme:"回帰・分散分解",canonicalProblemType:"回帰モデルの推定",taskOrigin:"review_attempt",
   errorTypes:["N"],primaryErrorType:"N",inferredMode:"skeleton",effectiveMode:"skeleton",
+  effectiveReviewScope:"targeted_patch",targetedParts:["分散分解の説明"],allowedErrorTypes:["W","N","C"],requiresKEvidence:false,metadataQuality:"verified",
   reviewMethodLabel:"骨格確認",sheetType:"skeleton_sheet",sheetLabel:"骨格答案シート",estimatedMinutes:15,
   reviewGoal:{value:"省略した説明だけ補う",provenance},correctionTheme:{value:"分散分解の説明を補う",provenance},
   entryHint:{value:"残差平方和から始める",provenance},oneLineHint:{value:"対象式を書いて説明を補う",provenance},
@@ -22,15 +23,16 @@ const baseCard={
     next_action:"不足した説明だけを書く",memo:""}
 };
 
-test("局所補修なのに骨格全項目を要求するプロンプトを検出する",()=>{
+test("局所補修は画面と同じ範囲だけをプロンプトへ渡す",()=>{
   const review={id:175,problem_id:"WB-6-A-20",due_date:"2026-07-20",review_type:"skeleton",status:"pending",
     generated_from_attempt_id:401,interval_days:2,review_method:"骨格確認",review_instruction:"不足した説明だけ補う",
     review_steps:["不足した説明を書く"],effective_mode:"skeleton",sheet_type:"skeleton_sheet"};
   const audit=diagnosticAuditInternals.buildPromptAudit(review,baseCard);
   assert.equal(audit.reviewScope,"targeted_patch");
-  assert.equal(audit.generatedPromptGradingScope,"full_skeleton");
-  assert.ok(audit.mismatchWarnings.some(item=>item.code==="targeted_patch_requires_full_skeleton"));
-  assert.ok(audit.mismatchWarnings.some(item=>item.code==="out_of_scope_blank_can_be_k"));
+  assert.equal(audit.generatedPromptGradingScope,"targeted_patch");
+  assert.equal(audit.mismatchWarnings.some(item=>item.code==="targeted_patch_requires_full_skeleton"),false);
+  assert.equal(audit.mismatchWarnings.some(item=>item.code==="out_of_scope_blank_can_be_k"),false);
+  assert.match(audit.generatedPrompt,/指定範囲外の空欄や未記入を誤りの根拠にしない/);
 });
 
 test("modeと保存済みシートの不一致を監査する",()=>{
@@ -38,7 +40,8 @@ test("modeと保存済みシートの不一致を監査する",()=>{
     generated_from_attempt_id:401,interval_days:2,effective_mode:"skeleton",sheet_type:"check_sheet"};
   const audit=diagnosticAuditInternals.buildPromptAudit(review,baseCard);
   assert.equal(audit.sheetType,"skeleton_sheet");
-  assert.ok(audit.mismatchWarnings.some(item=>item.code==="mode_sheet_mismatch"));
+  assert.ok(audit.consistencyWarnings.some(item=>item.code==="mode_sheet_mismatch"));
+  assert.equal(audit.mismatchWarnings.length,0);
 });
 
 test("安定化文字列はオブジェクトのキー順に依存しない",()=>{

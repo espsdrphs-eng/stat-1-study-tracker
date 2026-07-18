@@ -1,5 +1,8 @@
 export const GRADING_RUBRIC_VERSION="STAT1-GRADE-v5";
-export const REVIEW_RUBRIC_VERSION="STAT1-REVIEW-v8";
+export const REVIEW_RUBRIC_VERSION="STAT1-REVIEW-v9";
+
+import { removeTimingExpressions } from "./reviewTiming.ts";
+import type { EffectiveReviewScope } from "./reviewScopeResolver.ts";
 
 export type ReviewPromptContext={
   reviewId?:number;problemId:string;title?:string;theme?:string;date:string;mode:string;
@@ -13,6 +16,8 @@ export type ReviewPromptContext={
   referenceLevel?:number;noHint?:boolean;oneLineHint?:boolean;previousMistake?:boolean;
   officialAnswer?:boolean;gptExplanation?:boolean;externalReference?:boolean;
   allowedReferenceLevel?:number;actualReferenceLevel?:number;referenceClosedReproduction?:boolean;
+  reviewScope?:EffectiveReviewScope;targetedParts?:string[];completionConditions?:string[];
+  allowedErrorTypes?:string[];requiresKEvidence?:boolean;
 };
 
 export type FirstAttemptPromptContext={
@@ -83,6 +88,8 @@ N：ノート不足・説明不足・再現性不足
 C：符号・係数・範囲・条件などのケアレス
 none：大きな問題なし
 
+Kは、今回答案中に型・方針・出発式・主役の量・道具・大きな流れの崩れを示す記述がある場合だけです。Kの場合は、その答案中の記述をk_evidenceへ引用してください。
+
 【出力】
 最後に、以下のYAMLを必ず出してください。
 アプリ取り込み用なので、YAML内ではLaTeXを使わず、自然な日本語またはプレーンテキストで書いてください。
@@ -106,6 +113,7 @@ study_update:
   error_types:
     - "N"
   primary_error_type: "N"
+  k_evidence: []
   main_theme: "${context.theme||""}"
   themes:
     - "${context.theme||""}"
@@ -169,7 +177,7 @@ rubric_version: ${GRADING_RUBRIC_VERSION}
 3. 採点対象部分は推測で正解扱いにしない。問題文・答案・参考解答から確認できない部分は uncertain_points に入れる。
 4. 各減点について、答案のどの記述を根拠にしたかを明記する。
 5. K/W/N/Cを複数選択してよい。
-   K：方針・入口、出発式、今見る量、条件、道具、解答の流れが崩れた
+   K：方針・入口、出発式、主役の量、道具、結論への大きな流れが崩れた。答案中の引用をk_evidenceへ必ず入れる
    W：計算・展開・積分・和・整理など作業部分で落ちた
    N：途中式や説明不足により答案として再現できない
    C：符号・係数・条件確認などのケアレスミス
@@ -203,6 +211,8 @@ study_update:
     - "K"
     - "W"
   primary_error_type: "K"
+  k_evidence:
+    - "K判定の根拠となる今回答案中の記述"
   error_point: "最重要の失点箇所"
   next_action: "日付を書かず、次に行う具体的な復習だけを書く"
   improvement_guidance: |
@@ -238,15 +248,10 @@ exam_selection_rank や「本番で選ぶか」の判定は出力しないでく
 }
 
 export function buildReviewGradingPrompt(context:ReviewPromptContext){
-  const steps=(context.reviewSteps||[]).map((step,index)=>`  ${index+1}. ${step}`).join("\n")||"  前回の課題に対応する部分を自力で再現する";
-  const previousErrors=context.previousErrors||[];
-  const minimumConditions=[
-    previousErrors.includes("K")?"K：方針・入口、出発式、今見る量、条件、道具、解答の流れ、最後に示すことを設計図として再現する。最終式は不要。":"",
-    previousErrors.includes("N")?"N：前回省略した式・説明を答案上に追加し、各式変形が成り立つ理由も短く説明する。正しい骨格や暗記した式だけの再掲では未達。":"",
-    previousErrors.includes("W")?"W：前回失敗した計算・積分・和・式変形を、途中式付きで正しく完了する。答だけ一致しても未達。":"",
-    previousErrors.includes("C")?"C：前回の符号・係数・条件ミスを再発させず、該当箇所を正しく書く。":""
-  ].filter(Boolean).join("\n")||"前回指定された課題を答案上で自力再現する。";
-  const fullScope=context.requiresFullAnswer||context.mode==="full"||context.mode==="exam_90min";
+  const scope=context.reviewScope||(context.requiresFullAnswer||context.mode==="full"||context.mode==="exam_90min"?"full_answer":context.mode==="main_calc"?"main_calc_target":context.mode==="check"?"check_only":"full_skeleton");
+  const targets=(context.targetedParts||[]).filter(Boolean);
+  const conditions=(context.completionConditions||[]).filter(Boolean);
+  const fullScope=scope==="full_answer";
   const hintLevel=context.hintLevel||"none";
   const hintUsed=hintLevel!=="none";
   const hintLabels:Record<string,string>={
@@ -255,19 +260,20 @@ export function buildReviewGradingPrompt(context:ReviewPromptContext){
   };
   const inferredReferenceLevel:Record<string,number>={none:0,minimal_hint:1,previous_mistake:2,saved_gpt_feedback:3,official_answer:4,external_reference:5};
   const actualReferenceLevel=Math.min(5,Math.max(0,Number(context.actualReferenceLevel??context.referenceLevel??inferredReferenceLevel[hintLevel]??0)));
-  const defaultAllowed=fullScope?0:previousErrors.some(error=>["K","N","W","C"].includes(error))?2:1;
+  const defaultAllowed=fullScope?0:(context.previousErrors||[]).some(error=>["K","N","W","C"].includes(error))?2:1;
   const allowedReferenceLevel=Math.min(5,Math.max(0,Number(context.allowedReferenceLevel??defaultAllowed)));
   const referenceClosed=context.referenceClosedReproduction??context.afterHintReproduced??false;
-  const modeScope=fullScope
-    ?"フル答案：全範囲を答案から採点する。未提出部分を正しいと仮定しない。"
-    :context.mode==="main_calc"
-      ?"主要計算：指定計算と、その直前の式・必要条件・範囲・添字だけを採点する。問題全体、骨格、最終結論は要求しない。"
-      :context.mode==="skeleton"
-        ?"骨格：方針・入口、出発式、今見る量、先に確認すること、使う道具、解答の流れ、最後に示すこと、計算へ進む境界だけを採点する。最終式・計算完了・完成答案は要求しない。"
-        :"チェック：型、初手、今見る量、注意点だけを採点する。それ以外は要求しない。";
+  const scopeRule:Record<EffectiveReviewScope,string>={
+    targeted_patch:"targetedPartsだけを採点する。指定範囲外の空欄・省略・未提出をK/W/N/Cの根拠にしない。骨格全項目を要求しない。",
+    full_skeleton:"骨格全体（方針、出発式、主役の量、条件、道具、流れ、最後に示すこと）を採点する。最終式・計算完了は要求しない。",
+    main_calc_target:"指定計算と開始式・必要条件だけを採点する。問題全体や骨格全項目を要求しない。",
+    check_only:"指定された型・初手・主役の量・注意点だけを採点する。",
+    full_answer:"答案全体を採点し、未提出部分を正しいと仮定しない。",
+  };
+  const allowed=(context.allowedErrorTypes||["K","W","N","C"]).join(" / ");
+  const targetText=targets.length?targets.map((part,index)=>`${index+1}. ${part}`).join("\n"):"指定なし";
+  const conditionText=conditions.length?conditions.map((condition,index)=>`${index+1}. ${condition}`).join("\n"):"指定範囲を自力で再現する";
   return `あなたは統計検定1級・統計数理の復習答案採点者です。
-今回は初見答案の採点ではありません。前回の反省点が修正されたかを比較して判定してください。
-
 rubric_version: ${REVIEW_RUBRIC_VERSION}
 
 【今回の問題】
@@ -275,73 +281,38 @@ rubric_version: ${REVIEW_RUBRIC_VERSION}
 問題名：${context.title||""}
 テーマ：${context.theme||""}
 復習モード：${context.mode}
-フル答案の要求：${context.requiresFullAnswer?"必要":"不要。指定部分以外の省略は減点しない"}
-採点範囲：${modeScope}
+復習範囲：${scope}
+採点規則：${scopeRule[scope]}
 
-【前回の採点結果】
-前回日：${context.previousDate||"不明"}
-前回評価：${context.previousScore||"不明"}
-前回K/W/N/C：${context.previousErrors?.join(" + ")||"不明"}
-前回の反省点：${context.previousErrorPoint||"記録なし"}
-前回決めた次回課題：${removeTimingExpressions(context.previousNextAction)||"記録なし"}
-前回提示された直し方：${context.previousImprovementGuidance||"記録なし"}
-前回、省略せずに書くべきとされた途中計算：${context.previousRequiredDerivation||"記録なし"}
+【targetedParts】
+${targetText}
 
-【今回の復習指示】
-方法：${context.reviewMethod||"必要部分の再現"}
-見るポイント：${context.reviewInstruction||"前回のミスが修正されたか"}
-手順：
-${steps}
-関連S問題：${context.linkedSProblemIds?.join(" / ")||"なし"}
+【前回から残った課題】
+${context.previousErrorPoint||removeTimingExpressions(context.previousNextAction)||"記録なし"}
 
-【入力】
+【今回の最低クリア条件】
+${conditionText}
+
+【参照状況】
 今回かかった時間（分）：${context.timeMinutes||""}
 参照した内容：${hintLabels[hintLevel]}
 許可された参照段階：${allowedReferenceLevel}
 実際の参照段階：${actualReferenceLevel}
 参照表示を隠してから白紙で再現したか：${hintUsed?(referenceClosed?"はい":"いいえ"):"該当なし"}
+
+【今回の答案】
 今回の答案：
 模範解答・参考解答（あれば）：
 
-【ヒント・解答の利用ルール】
-1. 最初は必ず何も見ずに取り組む。骨格は3分、主要計算は5分、フル答案・90分演習は制限時間終了まで参照しない。
-2. 1行ヒントは、上記時間考えても出発式または次の一手が出ない場合に限る。見るのは定義・使う定理・次の一手のうち1つだけとする。
-3. 前回フィードバックは、自分の答案を一度書き切った後に、前回課題の確認目的で見てよい。見ながら答案を完成させない。
-4. 解答・模範答案は、自分の答案と採点対象時間を確定した後にだけ見る。見た後の書き写しを今回の得点に含めない。
-5. 何か参照した場合は、参照欄の表示を隠してから該当部分を白紙で再現する。一度見た参照段階は履歴として残し、表示を隠しても下げない。白紙再現を行わなければsuccessは禁止する。
-6. フル答案・90分演習の点数は参照前の答案だけで決める。参照後の再現は別の補修結果として扱う。
-
-【比較採点ルール】
-1. 初回採点と同じフル答案ルーブリックを使う。モードによって変えるのは答案に要求する証拠範囲だけで、正しさの基準は変えない。
-2. ${modeScope}
-3. score_numeric と score_label は、提出対象外を正しいと仮定した「条件付きフル答案評価」とする。ただしフル答案では仮定を置かない。
-4. 前回の反省点が今回修正されたかを、答案中の根拠を示して判定する。
-5. 復習指示の対象外は減点しない。ただし、前回未解決のK/W/N/Cは必ず採点対象に含め、正しいと仮定してはならない。
-6. 前回と同じミス、改善した点、新たに発生したミスを分けて書く。
-7. review_outcome は次で判定する。
-   success：最低クリア条件を満たした。ヒントなしなら自力成功。ヒントありなら、参照表示を隠した後に白紙から再現できた場合だけ補助あり成功
-   partial：前回より実質的に改善したが、必要な式・説明の一部がまだ不足した
-   failed：前回と同じ答案・同じ省略のまま、または前回の主要課題を答案上で改善できなかった
-8. K/W/N/Cは今回残ったミスだけを複数選択する。修正済みなら none とする。
-9. grading_confidenceは0〜100。答案から確認できない部分はuncertain_pointsへ入れる。
-10. fullでは答案全体、main_calcでは指定計算だけ、skeletonでは最終式を含まない設計図だけ、checkでは確認項目だけの修正版を示す。モード外を要求しない。
-11. skeletonでは最終式や完成答案を求めない。ゴールは「MLEを示す」「棄却域の形にする」など種類・方向だけでよい。具体的な端点・推定量・積分結果まで要求しない。
-12. 次回の直し方を「今回改善したので残す部分」「まだ置き換える部分」「次回何も見ずに書く部分」に分ける。
-13. 説明は【比較採点】【修正版答案】【省略してはいけない途中計算】【次回の直し方】の順にする。
-14. 骨格が正しいことは、前回N/Wだった箇所を省略してよい理由にはならない。前回と全く同じ答案で省略も同じならsuccessは禁止する。
-15. resolution_evidenceには、改善を示す今回答案の式または文章をそのまま引用する。一般的な評価文は禁止する。
-16. required_work_shownには、今回答案で実際に確認できた途中式・作業を1項目ずつ入れる。
-17. N/Wの復習では、今回の復習対象に指定された範囲・条件・式変形が未提示なら基準を緩めない。暗記した結果だけの再掲はsuccessにしない。一方、対象外の骨格・無関係な計算・最終結論は要求しない。
-18. result_summary、error_point、next_actionは各1〜2文で簡潔にする。細かな判定根拠はresolution_evidenceとrequired_work_shownへ分離する。
-19. unresolved_carryoverには前回から残った課題だけを入れ、すべて解消した場合だけ空配列にする。
-20. 参照を使った場合でも、actual_reference_level が allowed_reference_level 以下で、参照表示を隠した後に白紙再現できていればsuccessを認める。前回ミスを見ただけで自動的にpartialへ下げない。
-21. actual_reference_level が allowed_reference_level を超えた場合だけ次回間隔を短くする。保存済みGPT解説・公式解答・外部参照まで見た場合、または参照表示を隠した後に白紙再現していない場合はsuccessにしない。
-22. next_actionには日付や復習間隔を書かない。「何をするか」だけを書く。復習間隔はreview_after_daysにのみ入れる。
-23. review_after_daysは今回残ったerror_typesから決める。Kあり=1、Nあり=2、Wあり=3、Cあり=7、none=14。複数なら最短を採用する。
-24. 最後に次のYAMLをコードブロックで出力する。LaTeXは避け、できるだけ日本語で書く。
-
-【今回の最低クリア条件】
-${minimumConditions}
+【判定ルール】
+1. 採点対象は上記の復習範囲とtargetedPartsだけ。画面の最低クリア条件と同じ条件を使う。
+2. 許可する誤り分類：${allowed}。指定範囲外の空欄や未記入を誤りの根拠にしない。
+3. Kは、今回答案から「型・方針・入口・出発式・主役の量・必要な道具・結論への大きな流れ」の崩れを確認できる場合だけ。Kを返す場合は答案中の根拠をk_evidenceへ引用する。引用がなければKを返さない。${context.allowedErrorTypes&&!context.allowedErrorTypes.includes("K")?"今回はKが採点範囲外なのでKを返さない。":""}
+4. 計算過程の失敗はW、条件・理由・再現性不足はN、記号・添字・次元・符号・転記はCとする。
+5. 参照が許可範囲内で、表示を隠して白紙再現できればsuccess可。許可超過または白紙再現なしはsuccess不可。
+6. next_actionに日付を書かない。review_after_daysはK=1、N=2、W=3、C=7、none=14（複数は最短）。
+7. result_summary、error_point、next_actionは各1〜2文。解消済みの履歴や長い一般論を繰り返さない。
+8. 最後に次のYAMLをコードブロックで出力する。
 
 study_update:
   problem_id: "${context.problemId}"
@@ -355,6 +326,7 @@ study_update:
   error_types:
     - "none"
   primary_error_type: "none"
+  k_evidence: []
   error_point: "今回まだ残った課題。なければ空文字"
   next_action: "日付を書かず、次に確認する内容だけを書く"
   improvement_guidance: |
@@ -371,6 +343,8 @@ study_update:
   linked_s_problems: []
   grading_confidence: 90
   rubric_version: "${REVIEW_RUBRIC_VERSION}"
+  review_scope: "${scope}"
+  targeted_parts: ${targets.length?`\n${targets.map(part=>`    - "${part.replaceAll('"','\\"')}"`).join("\n")}`:"[]"}
   evaluation_scope: "${fullScope?"full":"conditional_full"}"
   graded_parts:
     - "今回の答案から実際に採点した部分"
@@ -403,7 +377,5 @@ ${fullScope?"  assumed_correct_parts: []":"  assumed_correct_parts:\n    - \"提
     - "今回答案で確認できた途中式または作業2"
   weak_notes: []
 
-一般的な模範解答ではなく、今回貼り付けた答案の記号と流れに対応させてください。
-まず4つの見出しで説明し、最後にYAMLだけを出力してください。`;
+今回の答案と指定範囲だけを根拠に、短く説明してからYAMLを出力してください。`;
 }
-import { removeTimingExpressions } from "./reviewTiming.ts";

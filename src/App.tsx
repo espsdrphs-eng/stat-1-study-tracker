@@ -137,7 +137,7 @@ export default function App() {
         page==="import"?<AdvancedImportView problems={data.problems} answerIndex={data.answerIndex} problemAliases={data.problemAliases} attempts={data.attempts} reviews={data.reviews} run={run} busy={writeBusy}/>:
         page==="reviews"?<ReviewsView data={data} run={run} busy={writeBusy}/>:
         page==="weak"?<WeakView data={data} run={run} busy={writeBusy}/>:
-        page==="past"?<PastView data={data} go={go}/>:
+        page==="past"?<PastView data={data} go={go} run={run} busy={writeBusy}/>:
         page==="sheets"?<AnswerSheetsView/>:
         <SettingsView data={data} run={run} busy={busy}/>}
       </div>
@@ -159,7 +159,7 @@ function nextQueueTask(data:Bootstrap){
   return {task:null,source:"今日は完了"};
 }
 function readinessValue(value:number|null,sample:number,unit="%"){
-  if(value==null) return {value:"—",hint:"記録待ち"};
+  if(value==null) return {value:"未計測",hint:"対象0件",unit:""};
   return {value,unit,hint:`対象${sample}件`};
 }
 function DashboardView({data,go,select}:{data:Bootstrap;go:(p:Page)=>void;select:(p:Problem)=>void}) {
@@ -324,7 +324,10 @@ function ReviewPlanDetails({item:rawItem,compact=false,resolved}:{item:Partial<R
     actualReferenceLevel:reference.actual_reference_level,referenceClosedReproduction,
     noHint:reference.no_hint,oneLineHint:reference.one_line_hint,
     previousMistake:reference.previous_mistake,officialAnswer:reference.official_answer,
-    gptExplanation:reference.saved_gpt_feedback,externalReference:reference.external_reference
+    gptExplanation:reference.saved_gpt_feedback,externalReference:reference.external_reference,
+    reviewScope:resolved?.effectiveReviewScope,targetedParts:resolved?.targetedParts,
+    completionConditions:resolved?.completionConditions.value,allowedErrorTypes:resolved?.allowedErrorTypes,
+    requiresKEvidence:resolved?.requiresKEvidence
   }):"";
   return <div className={`review-plan ${compact?"compact":""}`}>
     {resolved?.reviewNeeded&&<div className="review-consistency-warning"><AlertTriangle size={18}/><div><strong>要確認</strong><span>問題情報または復習履歴に不整合があります。誤った具体的な指示は表示していません。</span></div></div>}
@@ -487,7 +490,7 @@ function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a
     data.dashboard.pace.phase==="past_practice"?"past_exam_main":
     data.dashboard.pace.phase==="final"?"final_stabilization":"foundation_to_A";
   return <>
-    <div className="page-intro"><div><p>課題を終えたらチェックを付け、GPTの採点結果を取り込んでください。</p><div className="button-row"><button className="text-btn" onClick={()=>go("import")}><ClipboardPaste size={15}/>GPT採点結果を取り込む</button><button className="text-btn" onClick={()=>setRecalculateConfirm(true)}><RefreshCw size={15}/>今日の予定を再計算する</button></div></div><div className={`load-pill ${data.today.warning?"over":""}`}><Gauge/><div><span>今日の実行見込み／目標</span><strong>{data.today.active_total_if_done} / {data.today.target_minutes_today}分</strong><small>完了 {data.today.completed_minutes_today}分 + これから {data.today.active_remaining_minutes}分</small><small>先送り候補 {data.today.postpone_candidate_minutes}分は含めない</small></div></div></div>
+    <div className="page-intro"><div><p>課題を終えたらチェックを付け、GPTの採点結果を取り込んでください。</p><div className="button-row"><button className="text-btn" onClick={()=>go("import")}><ClipboardPaste size={15}/>GPT採点結果を取り込む</button><button className="text-btn" onClick={()=>setRecalculateConfirm(true)}><RefreshCw size={15}/>今日の計画を再整理</button></div></div><div className={`load-pill ${data.today.warning?"over":""}`}><Gauge/><div><span>今日の実行見込み／目標</span><strong>{data.today.active_total_if_done} / {data.today.target_minutes_today}分</strong><small>完了 {data.today.completed_minutes_today}分 + これから {data.today.active_remaining_minutes}分</small><small>先送り候補 {data.today.postpone_candidate_minutes}分は含めない</small></div></div></div>
     {data.today.warning&&<div className="warning"><AlertTriangle/><div><strong>今日の実行見込みが目標を超えています</strong><p>{data.today.warning}</p></div></div>}
     <div className="schedule-organizer today-overview"><div><strong>今日の課題</strong><span>朝の計画 {data.today.start_of_day_planned_minutes}分・これから {data.today.active_remaining_minutes}分</span></div><div className="triage-summary four">
       {summary.map(item=><button type="button" className={`${item.key} ${todayFilter===item.key?"active":""}`} onClick={()=>setTodayFilter(item.key)} key={item.key}><span>{item.label}</span><strong>{item.count}件 / {item.minutes}分</strong></button>)}
@@ -501,13 +504,13 @@ function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a
     </section>
     {reviewTask&&<ReviewOutcomeModal item={reviewTask} busy={busy} close={()=>setReviewTask(null)} save={saveReview}/>}
     {postponeTask&&<PostponeReviewModal item={postponeTask.item} initial={postponeTask.initial} busy={busy} close={()=>setPostponeTask(null)} save={postponeReview}/>}
-    {recalculateConfirm&&<Modal title="今日の予定を再計算する" close={()=>setRecalculateConfirm(false)}><div className="postpone-review"><p>問題マスターの補正内容に基づき、今日の予定時間と分類を再計算します。現在の今日の計画が変わります。</p><div className="form-actions"><button className="ghost" onClick={()=>setRecalculateConfirm(false)}>キャンセル</button><button className="primary" disabled={busy} onClick={()=>{setRecalculateConfirm(false);run(()=>post("/api/today/recalculate",{}),"今日の予定時間と分類を再計算しました")}}>再計算する</button></div></div></Modal>}
+    {recalculateConfirm&&<Modal title="今日の計画を再整理" close={()=>setRecalculateConfirm(false)}><div className="postpone-review"><p>期限到来タスクは削除せず、必ずやる最大3件・余裕があれば最大2件・目標時間内へ分類し直します。完了状態・実績時間・タスクIDは変わりません。</p><div className="form-actions"><button className="ghost" onClick={()=>setRecalculateConfirm(false)}>キャンセル</button><button className="primary" disabled={busy} onClick={()=>{setRecalculateConfirm(false);run(()=>post("/api/today/recalculate",{}),"今日の実行計画を再整理しました")}}>再整理する</button></div></div></Modal>}
   </>
 }
 function copyText(text:string,label:string,setCopied:(value:string)=>void){
   return navigator.clipboard.writeText(text).then(()=>{setCopied(label);setTimeout(()=>setCopied(""),1800)});
 }
-function StudyPromptButtons({item}:{item:Partial<Review&Task>}) {
+function StudyPromptButtons({item,resolved}:{item:Partial<Review&Task>;resolved?:ResolvedReviewCard}) {
   const [copied,setCopied]=useState("");
   const firstPrompt=buildFirstAttemptGradingPrompt({
     problemId:item.problem_id||"",displayLabel:item.title||item.problem_id,theme:item.theme,
@@ -519,7 +522,10 @@ function StudyPromptButtons({item}:{item:Partial<Review&Task>}) {
     previousErrorPoint:item.previous_error_point,previousNextAction:item.previous_next_action,
     previousImprovementGuidance:item.previous_improvement_guidance,previousRequiredDerivation:item.previous_required_derivation,
     reviewMethod:item.review_method,reviewInstruction:item.review_instruction,reviewSteps:item.review_steps,
-    requiresFullAnswer:item.requires_full_answer,linkedSProblemIds:item.linked_s_problem_ids
+    requiresFullAnswer:item.requires_full_answer,linkedSProblemIds:item.linked_s_problem_ids,
+    reviewScope:resolved?.effectiveReviewScope,targetedParts:resolved?.targetedParts,
+    completionConditions:resolved?.completionConditions.value,allowedErrorTypes:resolved?.allowedErrorTypes,
+    requiresKEvidence:resolved?.requiresKEvidence
   }):"";
   const repairPrompt=buildRepairPrompt({
     problemId:item.problem_id||"",displayLabel:item.title||item.problem_id,theme:item.theme,
@@ -582,7 +588,7 @@ function TodayTaskDetails({task,problem,onOpenProblem,problemAliases,examPhase,r
     <div className="today-card-actions">
       {problem&&<button type="button" className="ghost small" onClick={()=>onOpenProblem(problem)}><BookOpen size={14}/>問題詳細</button>}
       <SheetLink href={sheetHref(resolved?.effectiveMode||task.mode)} label="解答シート"/>
-      <StudyPromptButtons item={{...task,problem_id:canonicalId,title:displayLabel,theme,canonical_problem_type:type,mode:resolved?.effectiveMode||task.mode,
+      <StudyPromptButtons resolved={resolved} item={{...task,problem_id:canonicalId,title:displayLabel,theme,canonical_problem_type:type,mode:resolved?.effectiveMode||task.mode,
         previous_date:resolved?.targetAttempt?.date||task.previous_date,previous_errors:resolved?.errorTypes||task.previous_errors,
         previous_error_point:resolved?.targetAttempt?.error_point||task.previous_error_point,previous_next_action:resolved?.targetAttempt?.next_action||task.previous_next_action}}/>
     </div>
@@ -717,7 +723,7 @@ function AttemptView({problems,run,busy}:{problems:Problem[];run:(a:()=>Promise<
   const [form,setForm]=useState<StudyUpdate&{time_minutes:string;memo:string}>({...blankUpdate(),time_minutes:"",memo:""});
   const chosen=problems.find(p=>p.problem_id===form.problem_id);
   const related=chosen?.related_s_problem_ids?.length?chosen.related_s_problem_ids:String(chosen?.linked_s_problems||"").split(";").filter(Boolean);
-  const previewPlan=createAttemptReviewPlan(form,related);
+  const previewPlan=createAttemptReviewPlan(form,[]);
   const days=previewPlan.interval_days||14;
   const submit=(e:React.FormEvent)=>{e.preventDefault();run(()=>post("/api/attempts",form),`記録を保存しました。${days}日後に復習を設定しました`);setForm({...blankUpdate(),time_minutes:"",memo:""})};
   return <div className="form-layout"><form className="panel record-form" onSubmit={submit}><div className="panel-title"><div><span className="eyebrow">NEW ATTEMPT</span><h3>学習記録を入力</h3></div></div>
@@ -800,7 +806,7 @@ function WeakView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:
   const [copied,setCopied]=useState(false);
   const [editing,setEditing]=useState<Attempt|null>(null);
   const [form,setForm]=useState<Record<string,string>>({});
-  const trend=analyzeWeakTrends(data.problems,data.attempts,data.weakNotes);
+  const trend=analyzeWeakTrends(data.problems,data.attempts,data.weakNotes,"",data.problemAliases);
   const topThemes=trend.themes.slice(0,8),maxTheme=Math.max(1,...topThemes.map(theme=>theme.score));
   const themeSignature=topThemes.map(theme=>theme.label).join("|");
   useEffect(()=>{setSelected(current=>current.length?current.filter(theme=>topThemes.some(row=>row.label===theme)):topThemes.slice(0,3).map(theme=>theme.label))},[themeSignature]);
@@ -810,7 +816,7 @@ function WeakView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:
   let stop=0;
   const donutParts=["K","W","N","C"].map(error=>{const start=stop;stop+=errorTotal?errorCounts[error]/errorTotal*100:0;return `${errorColors[error]} ${start}% ${stop}%`});
   const weekly=trend.weeks,maxWeek=Math.max(1,...weekly.map(week=>week.count));
-  const quizPrompt=buildQuizPrompt(selected,data.problems,data.attempts,data.weakNotes,5);
+  const quizPrompt=buildQuizPrompt(selected,data.problems,data.attempts,data.weakNotes,5,data.problemAliases);
   const copyPrompt=async()=>{await navigator.clipboard.writeText(quizPrompt);setCopied(true);setTimeout(()=>setCopied(false),1800)};
   const dominantError=[...trend.errors].sort((a,b)=>b.score-a.score)[0]?.error||"—";
   const analysisAttempts=data.attempts.filter(attempt=>(attempt.error_types||[attempt.error_type]).some(error=>error!=="none"));
@@ -872,7 +878,8 @@ function WeakView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:
   </>;
 }
 
-function PastView({data,go}:{data:Bootstrap;go:(p:Page)=>void}) {
+function PastView({data,go,run,busy}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean}) {
+  const [session,setSession]=useState({session_type:"timed_single",date:todayString(),year:"2025",time_limit_minutes:"35",actual_minutes:"",score_numeric:"",initialSelectedProblemIds:"",finalSelectedProblemIds:"",selection_result:"questionable"});
   const pastProblems=data.problems.filter(problem=>problem.category==="past_exam");
   const pmap=new Map(pastProblems.map(problem=>[problem.problem_id,problem]));
   const attempts=data.attempts.filter(attempt=>pmap.has(attempt.problem_id));
@@ -890,6 +897,17 @@ function PastView({data,go}:{data:Bootstrap;go:(p:Page)=>void}) {
       <Metric label="復習待ち" value={pending.length} unit="件" hint="過去問の未完了予定"/>
       <Metric label="苦手テーマ" value={themes.size} unit="件" hint="失点したテーマ"/>
     </div>
+    <details className="panel past-session-quick"><summary>本番力を記録する</summary><form className="form-grid" onSubmit={event=>{event.preventDefault();run(()=>post("/api/past-sessions",{...session,
+      year:Number(session.year),actual_minutes:Number(session.actual_minutes||0),time_limit_minutes:Number(session.time_limit_minutes||0),score_numeric:Number(session.score_numeric||0),
+      selected_questions:session.initialSelectedProblemIds,final_selected_problem_ids:session.finalSelectedProblemIds,
+      completed_questions_count:session.session_type==="past_exam"?3:1}),"本番力の記録を保存しました")}}>
+      <Field label="記録種別"><select value={session.session_type} onChange={event=>setSession({...session,session_type:event.target.value})}><option value="timed_single">時間制限・単問</option><option value="scan5">5問スキャン</option><option value="past_exam">過去問</option></select></Field>
+      <Field label="実施日"><input type="date" value={session.date} onChange={event=>setSession({...session,date:event.target.value})}/></Field>
+      <Field label="年度"><input inputMode="numeric" value={session.year} onChange={event=>setSession({...session,year:event.target.value})}/></Field>
+      {session.session_type!=="scan5"&&<><Field label="制限時間（分）"><input type="number" value={session.time_limit_minutes} onChange={event=>setSession({...session,time_limit_minutes:event.target.value})}/></Field><Field label="実際時間（分）"><input required type="number" value={session.actual_minutes} onChange={event=>setSession({...session,actual_minutes:event.target.value})}/></Field><Field label="得点率"><input required type="number" min="0" max="100" value={session.score_numeric} onChange={event=>setSession({...session,score_numeric:event.target.value})}/></Field></>}
+      {session.session_type==="scan5"&&<><Field label="最初に選んだ3問" wide><input value={session.initialSelectedProblemIds} onChange={event=>setSession({...session,initialSelectedProblemIds:event.target.value})} placeholder="IDを ; 区切り"/></Field><Field label="解いた後に選ぶ3問" wide><input value={session.finalSelectedProblemIds} onChange={event=>setSession({...session,finalSelectedProblemIds:event.target.value})}/></Field><Field label="選題結果"><select value={session.selection_result} onChange={event=>setSession({...session,selection_result:event.target.value})}><option value="good">妥当</option><option value="questionable">要確認</option><option value="failed">選題ミス</option></select></Field></>}
+      <div className="form-actions wide"><button className="primary" disabled={busy}>記録する</button></div>
+    </form></details>
     <section className="section-head"><div><span className="eyebrow">REPAIR TARGETS</span><h2>過去問で明らかになった要復習箇所</h2></div></section>
     <div className="past-result-list">{errorAttempts.map(attempt=>{
       const problem=pmap.get(attempt.problem_id)!;

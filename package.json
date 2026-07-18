@@ -8,7 +8,10 @@
     "build": "tsc -b && vite build",
     "start": "vite preview --host 0.0.0.0 --port 4174",
     "check": "tsc -b",
-    "test": "node --experimental-strip-types --test tests/*.test.mjs"
+    "test": "node --experimental-strip-types --test tests/*.test.mjs",
+    "test:browser-save": "node tools/browser-gpt-save.mjs",
+    "test:browser-layout": "node tools/browser-layout-check.mjs",
+    "diagnostic:regenerate": "node tools/regenerate-diagnostic-from-pack.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.5.2",
@@ -26,6 +29,7 @@
     "@types/react": "^19.0.8",
     "@types/react-dom": "^19.0.3",
     "fake-indexeddb": "^6.2.5",
+    "playwright-core": "^1.61.1",
     "typescript": "~5.7.2",
     "vite-plugin-pwa": "^0.21.1"
   }

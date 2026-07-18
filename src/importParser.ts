@@ -279,6 +279,8 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
     resolution_evidence:resolutionEvidence,answer_change_summary:answerChangeSummary,required_work_shown:requiredWorkShown,
     evaluation_scope:evaluationScope,graded_parts:gradedParts,assumed_correct_parts:assumedCorrectParts,
     unresolved_carryover:unresolvedCarryover,
+    review_scope:scalar(raw.review_scope) as StudyUpdate["review_scope"],
+    targeted_parts:stringArray(raw.targeted_parts),k_evidence:stringArray(raw.k_evidence),
     error_types:errors.length?errors:["none"],primary_error_type:primary,secondary_error_type:secondary,
     review_after_days:days,review_reason:shortestError==="none"?"ミス分類なしのため14日後":`${shortestError}が含まれるため${days}日後`,
     review_method:reviewMethod,

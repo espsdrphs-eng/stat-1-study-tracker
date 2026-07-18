@@ -646,7 +646,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
   const answer=await db.answerIndex.get(problem.problem_id);
   input=finalizeStudyUpdateForSave(applyCanonicalMaster(input,problem,answer,await db.problems.toArray(),await db.answerIndex.toArray())) as StudyUpdate&Record<string,unknown>;
   if(input.requires_problem_confirmation) throw new Error(`取り込み内容は ${input.suggested_problem_id||"別の問題"} の可能性があります。問題IDを確認してください`);
-  if(input.generated_from_review_id&&[REVIEW_RUBRIC_VERSION,"STAT1-REVIEW-v7","STAT1-REVIEW-v6","STAT1-REVIEW-v5","STAT1-REVIEW-v4"].includes(input.rubric_version||"")){
+  if(input.generated_from_review_id&&[REVIEW_RUBRIC_VERSION,"STAT1-REVIEW-v8","STAT1-REVIEW-v7","STAT1-REVIEW-v6","STAT1-REVIEW-v5","STAT1-REVIEW-v4"].includes(input.rubric_version||"")){
     const review=await db.reviews.get(input.generated_from_review_id);
     const source=review?await db.attempts.get(review.generated_from_attempt_id):undefined;
     const previousErrors=source?normalizedErrors(source):[];
@@ -687,7 +687,9 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     uncertain_points:input.uncertain_points||[],generated_from_review_id:input.generated_from_review_id,
     is_review_attempt:!!input.generated_from_review_id,evaluation_scope:input.evaluation_scope||"",
     graded_parts:input.graded_parts||[],assumed_correct_parts:input.assumed_correct_parts||[],
-    unresolved_carryover:input.unresolved_carryover||[],hint_used:!!input.hint_used,
+    unresolved_carryover:input.unresolved_carryover||[],review_scope:input.review_scope,
+    targeted_parts:input.targeted_parts||[],k_evidence:input.k_evidence||[],
+    k_evidence_valid:input.k_evidence_valid==null?undefined:!!input.k_evidence_valid,effective_error_types:input.effective_error_types||[],hint_used:!!input.hint_used,
     hint_level:input.hint_level||"none",after_hint_reproduced:!!input.after_hint_reproduced,
     reference_level:actualReferenceLevel,actual_reference_level:actualReferenceLevel,
     allowed_reference_level:allowedReference,reference_closed_reproduction:referenceClosed,
@@ -728,7 +730,9 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
   let consecutivePerfect=0;
   for(const attempt of [...attempts].reverse()){if(attempt.mark==="◎") consecutivePerfect++;else break}
   const sState:SState=input.mark==="◎"||input.mark==="○"?"stable":input.mark==="×"?"forgotten":"check";
-  const basePlan=problem.category==="S"?createSReviewPlan(sState):createAttemptReviewPlan(input,related,consecutivePerfect);
+  // problem_masterの関連指定やGPT候補だけでは関連課題を自動生成しない。
+  // confirmedかつ具体的なsourceIssue/targetFocusを持つrelationは、確認UIから別途タスク化する。
+  const basePlan=problem.category==="S"?createSReviewPlan(sState):createAttemptReviewPlan(input,[],consecutivePerfect);
   const exceedsAllowed=actualReferenceLevel>allowedReference;
   const plan=input.generated_from_review_id&&exceedsAllowed&&actualReferenceLevel>=3
     ?{...basePlan,interval_days:3,review_reason:"許可範囲を超えて保存済み解説・公式解答・外部資料を参照したため、3日後に再確認する。"}
@@ -738,12 +742,14 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
   await addOrReplaceReview({
     problem_id:input.problem_id,due_date:await reviewDueDate(date,plan.interval_days||14),
     review_type:plan.review_type,status:"pending",generated_from_attempt_id:id,duration_minutes:plan.estimated_minutes,
-    reason:plan.review_reason,task_origin:"review_attempt",attempt_exists:true,...planFields(plan)
+    reason:plan.review_reason,task_origin:"review_attempt",attempt_exists:true,
+    review_scope:input.review_scope,targeted_parts:input.targeted_parts,
+    ...planFields(plan)
   });
   if(plan.completion_candidate) await db.problems.update(input.problem_id,{completion_status:"completion_candidate"});
-  const weakCandidates=input.weak_notes?.length?input.weak_notes:input.weak_note?[input.weak_note]:
+  const weakCandidates=primary==="none"?[]:input.weak_notes?.length?input.weak_notes:input.weak_note?[input.weak_note]:
     primary!=="none"&&localizedErrorPoint?[{theme:input.theme||problem.theme,error_type:primary,mistake:localizedErrorPoint,correction_rule:japaneseizeMathText(input.correction_rule||localizedNextAction)}]:[];
-  for(const weak of weakCandidates) await db.weakNotes.add({
+  for(const weak of weakCandidates.filter(weak=>weak.error_type!=="none")) await db.weakNotes.add({
     id:undefined as unknown as number,date,problem_id:input.problem_id,error_type:weak.error_type||primary,
     theme:problem.theme,mistake:japaneseizeMathText(weak.mistake),
     correction_rule:japaneseizeMathText(weak.correction_rule||input.correction_rule||localizedNextAction),is_resolved:0,
@@ -755,40 +761,6 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     });
   }
   if(primary!=="none") await db.problems.update(input.problem_id,{completion_status:"review_pending"});
-  if(errors.includes("K")||errors.includes("N")){
-    const linkedState:SState=errors.includes("K")?"collapsed":"check";
-    const sPlan=createSReviewPlan(linkedState);
-    for(const sid of related){
-      if(!await db.problems.get(sid)) continue;
-      await addOrReplaceReview({
-        problem_id:sid,due_date:await reviewDueDate(date,sPlan.interval_days||1),
-        review_type:"s_check",status:"pending",generated_from_attempt_id:id,duration_minutes:sPlan.estimated_minutes,
-        reason:sPlan.review_reason,task_origin:"linked_s_check",source_problem_id:input.problem_id,
-        attempt_exists:(await db.attempts.where("problem_id").equals(sid).count())>0,
-        review_goal_public:"元問題で崩れた基礎型を確認する",...planFields(sPlan)
-      });
-      const memory=await db.sMemory.get(sid);
-      await db.sMemory.put({problem_id:sid,state:linkedState,last_touched:memory?.last_touched,k_trigger_count:(memory?.k_trigger_count||0)+1});
-    }
-    if(errors.includes("K")&&problem.chapter!=null){
-      const allAttempts=await db.attempts.toArray();
-      const pmap=new Map((await db.problems.toArray()).map(p=>[p.problem_id,p]));
-      const chapterK=allAttempts.filter(a=>a.error_type==="K"&&pmap.get(a.problem_id)?.chapter===problem.chapter).length;
-      if(chapterK>=2){
-        const chapterS=(await db.problems.where("category").equals("S").toArray()).filter(p=>p.chapter===problem.chapter);
-        const collapsedPlan=createSReviewPlan("collapsed");
-        for(const s of chapterS){
-          await addOrReplaceReview({
-            problem_id:s.problem_id,due_date:await reviewDueDate(date,1),
-            review_type:"s_check",status:"pending",generated_from_attempt_id:id,duration_minutes:collapsedPlan.estimated_minutes,
-            reason:collapsedPlan.review_reason,task_origin:"linked_s_check",source_problem_id:input.problem_id,
-            attempt_exists:(await db.attempts.where("problem_id").equals(s.problem_id).count())>0,
-            review_goal_public:"同じ章でKが重なったため基礎型を確認する",...planFields(collapsedPlan)
-          });
-        }
-      }
-    }
-  }
   if(problem.category==="S"){
     const old=await db.sMemory.get(input.problem_id);
     await db.sMemory.put({problem_id:input.problem_id,state:sState,last_touched:date,k_trigger_count:old?.k_trigger_count||0});
@@ -853,7 +825,7 @@ async function updateAttemptAnalysis(id:number,body:Record<string,unknown>){
   const related=[...(problem.related_s_problem_ids||[]),...list(problem.linked_s_problems)];
   const plan=problem.category==="S"
     ?createSReviewPlan(updated.mark==="◎"||updated.mark==="○"?"stable":updated.mark==="×"?"forgotten":"check")
-    :createAttemptReviewPlan(updated,related,0);
+    :createAttemptReviewPlan(updated,[],0);
   await addOrReplaceReview({problem_id:attempt.problem_id,due_date:await reviewDueDate(date,plan.interval_days||14),
     review_type:plan.review_type,status:"pending",generated_from_attempt_id:id,duration_minutes:plan.estimated_minutes,
     reason:plan.review_reason,task_origin:"review_attempt",attempt_exists:true,...planFields(plan)});
@@ -863,13 +835,15 @@ async function updateAttemptAnalysis(id:number,body:Record<string,unknown>){
     correction_rule:japaneseizeMathText(String(body.correction_rule||oldNotes[0]?.correction_rule||nextAction)),
     is_resolved:0,source_text:oldNotes[0]?.source_text||"",auto_generated:true,generated_from_attempt_id:id
   });
-  if((errors.includes("K")||errors.includes("N"))&&related.length){
+  // 汎用の problem_master 関連指定だけでは補修タスクを自動生成しない。
+  // confirmed 関係をユーザーが選んだ場合だけ、別の明示操作で最大1件作る。
+  if(false&&(errors.includes("K")||errors.includes("N"))&&related.length){
     const state:SState=errors.includes("K")?"collapsed":"check",sPlan=createSReviewPlan(state);
     for(const sid of [...new Set(related)]){
       if(!await db.problems.get(sid)) continue;
       await addOrReplaceReview({problem_id:sid,due_date:await reviewDueDate(date,sPlan.interval_days||1),
         review_type:"s_check",status:"pending",generated_from_attempt_id:id,duration_minutes:sPlan.estimated_minutes,
-        reason:sPlan.review_reason,task_origin:"linked_s_check",source_problem_id:attempt.problem_id,
+        reason:sPlan.review_reason,task_origin:"linked_s_check",source_problem_id:attempt!.problem_id,
         attempt_exists:(await db.attempts.where("problem_id").equals(sid).count())>0,
         review_goal_public:"元問題で崩れた基礎型を確認する",...planFields(sPlan)});
     }
@@ -896,7 +870,7 @@ async function deleteAttemptAnalysis(id:number){
   if(latest&&problem){
     const plan=problem.category==="S"
       ?createSReviewPlan(latest.mark==="◎"||latest.mark==="○"?"stable":latest.mark==="×"?"forgotten":"check")
-      :createAttemptReviewPlan(latest,related,0);
+      :createAttemptReviewPlan(latest,[],0);
     await addOrReplaceReview({problem_id:latest.problem_id,due_date:await reviewDueDate(latest.date,plan.interval_days||14),
       review_type:plan.review_type,status:"pending",generated_from_attempt_id:latest.id,duration_minutes:plan.estimated_minutes,
       reason:plan.review_reason,task_origin:"review_attempt",attempt_exists:true,...planFields(plan)});
@@ -934,7 +908,7 @@ async function completeReview(id:number,body:Record<string,unknown>){
   const related=[...(problem.related_s_problem_ids||[]),...list(problem.linked_s_problems)];
   const successful=outcome.result==="success";
   const plan=linkedS?createSReviewPlan(successful?"stable":outcome.result==="partial"?"check":"forgotten"):
-    createAdaptiveReviewPlan(source,review,outcome,related);
+    createAdaptiveReviewPlan(source,review,outcome,[]);
   const sourceErrors=linkedS?[]:(source.error_types||[source.error_type]).filter(error=>error!=="none");
   const errors=successful?[]:sourceErrors.length?sourceErrors:["K"];
   const date=todayString(),mark=successful?(outcome.hint_used?"○":"◎"):outcome.result==="partial"?"△":"×";
@@ -981,13 +955,14 @@ async function completeReview(id:number,body:Record<string,unknown>){
     mistake:source.error_point,correction_rule:source.next_action||plan.review_instruction||"",is_resolved:0,
     source_text:"",auto_generated:true,generated_from_attempt_id:attemptId
   });
-  if(plan.requires_s_check){
+  // 復習完了時も、旧式の関連S一括生成は停止する（既存記録は保持）。
+  if(false&&plan.requires_s_check){
     const sPlan=createSReviewPlan(errors.includes("K")?"collapsed":"check");
     for(const sid of plan.linked_s_problem_ids||[]){
       if(!await db.problems.get(sid)) continue;
       await addOrReplaceReview({problem_id:sid,due_date:await reviewDueDate(date,sPlan.interval_days||1),review_type:"s_check",
         status:"pending",generated_from_attempt_id:attemptId,duration_minutes:sPlan.estimated_minutes,
-        reason:sPlan.review_reason,task_origin:"linked_s_check",source_problem_id:review.problem_id,
+        reason:sPlan.review_reason,task_origin:"linked_s_check",source_problem_id:review!.problem_id,
         attempt_exists:(await db.attempts.where("problem_id").equals(sid).count())>0,
         review_goal_public:"元問題で崩れた基礎型を確認する",...planFields(sPlan)});
     }
@@ -1559,7 +1534,7 @@ async function bootstrap():Promise<Bootstrap>{
   const pastSkeleton=attempts.filter(a=>a.date>=fortnight&&pmap.get(a.problem_id)?.category==="past_exam").length;
   const delayed3=reviews.filter(r=>r.status==="overdue"&&r.due_date<addDays(today,-3)).length;
   const weakUpdates=weakNotes.filter(w=>w.date>=week).length;
-  const scans=pastSessions.filter(s=>s.session_type==="scan_5_questions"),exams=pastSessions.filter(s=>s.session_type==="exam_90min");
+  const scans=pastSessions.filter(s=>["scan_5_questions","scan5"].includes(s.session_type)),exams=pastSessions.filter(s=>["exam_90min","past_exam"].includes(s.session_type));
   const studyDays14=new Set(attempts.filter(a=>a.date>=fortnight).map(a=>a.date)).size;
   const actualMinutes14=attempts.filter(a=>a.date>=fortnight).reduce((sum,a)=>sum+Math.max(0,Number(a.time_minutes||0)),0);
   const sCore14=new Set(attempts.filter(a=>a.date>=fortnight&&["SS","S"].includes(pmap.get(a.problem_id)?.strategy_rank||"")).map(a=>a.problem_id)).size;
@@ -1889,8 +1864,17 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
   } else if(path==="/api/master/diagnostic/resolve"){
     return await resolveDiagnostic(body) as T;
   } else if(path==="/api/today/recalculate"){
-    await db.meta.delete(`today-plan-snapshot:${todayString()}`);
-    await appendImportHistory("今日の予定を再計算","manual",1);
+    const today=todayString(),key=`today-plan-snapshot:${today}`;
+    const row=await db.meta.get(key);
+    if(row?.value){
+      const snapshot=JSON.parse(row.value) as TodayPlanSnapshot;
+      const target=Math.max(30,Number((await db.meta.get("daily_study_minutes"))?.value||150)),problems=await db.problems.toArray();
+      const reorganized=triageTodayTasks(snapshot.tasks,target,problems,today).tasks;
+      snapshot.tasks=snapshot.tasks.map((task,index)=>({...task,triage:reorganized[index]?.triage||"tomorrow"}));
+      snapshot.initial_bucket=Object.fromEntries(snapshot.tasks.map(task=>[taskSnapshotId(task),task.triage||"tomorrow"]));
+      await db.meta.put({key,value:JSON.stringify(snapshot)});
+    }
+    await appendImportHistory("今日の計画を再整理","manual",1);
     return {ok:true} as T;
   } else if(path==="/api/problems"){
     const chapter=body.chapter?Number(body.chapter):null,number=Number(body.problem_number),difficulty=body.difficulty?Number(body.difficulty):null;

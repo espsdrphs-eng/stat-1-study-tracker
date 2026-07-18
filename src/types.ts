@@ -59,6 +59,9 @@ export type Attempt = {
   uncertain_points?:string[]; generated_from_review_id?:number; is_review_attempt?:boolean;
   evaluation_scope?:string; graded_parts?:string[]; assumed_correct_parts?:string[];
   unresolved_carryover?:string[];
+  review_scope?:"targeted_patch"|"full_skeleton"|"main_calc_target"|"check_only"|"full_answer";
+  targeted_parts?:string[]; k_evidence?:string[]; k_evidence_valid?:boolean;
+  effective_error_types?:string[];
   hint_used?:boolean; hint_level?:string; after_hint_reproduced?:boolean;
   reference_level?:number; no_hint?:boolean; one_line_hint?:boolean; previous_mistake?:boolean;
   official_answer?:boolean; gpt_explanation?:boolean;
@@ -95,6 +98,9 @@ export type Review = {
   derived_from_master_version?:string; derived_generated_at?:string; derived_stale?:boolean;
   derived_fields?:Record<string,{value:unknown;provenance:{problemId:string;attemptId?:number;evaluationId?:number;relationId?:string;masterVersion:string;generatedAt:string}}>;
   raw_due_date?:string; due_date_correction_reason?:string; review_needed_reason?:string;
+  review_scope?:"targeted_patch"|"full_skeleton"|"main_calc_target"|"check_only"|"full_answer";
+  effective_review_scope?:"targeted_patch"|"full_skeleton"|"main_calc_target"|"check_only"|"full_answer";
+  targeted_parts?:string[]; scope_completion_conditions?:string[];
 };
 export type TodayPlanSnapshot = {
   date:string;task_ids:string[];start_of_day_planned_minutes:number;
@@ -136,6 +142,9 @@ export type Task = {
   sheet_type?:"check_sheet"|"skeleton_sheet"|"main_calc_sheet"|"full_answer_sheet"|"scan5_sheet";
   consistency_warnings?:Array<{code:string;message:string;repairable:boolean;blocksSpecificGuidance?:boolean}>;
   review_needed?:boolean;
+  review_scope?:"targeted_patch"|"full_skeleton"|"main_calc_target"|"check_only"|"full_answer";
+  effective_review_scope?:"targeted_patch"|"full_skeleton"|"main_calc_target"|"check_only"|"full_answer";
+  targeted_parts?:string[]; scope_completion_conditions?:string[];
 };
 export type WeaknessInsight = {
   theme:string; score:number; level:"重点"|"注意"|"観察"; confidence:"参考"|"暫定"|"分析可能";
@@ -214,6 +223,9 @@ export type StudyUpdate = {
   reference_closed_reproduction?:boolean; saved_gpt_feedback?:boolean; external_reference?:boolean;
   evaluation_scope?:string; graded_parts?:string[]; assumed_correct_parts?:string[];
   unresolved_carryover?:string[];
+  review_scope?:"targeted_patch"|"full_skeleton"|"main_calc_target"|"check_only"|"full_answer";
+  targeted_parts?:string[]; completion_conditions?:string[];
+  k_evidence?:string[]; k_evidence_valid?:boolean; effective_error_types?:string[];
   master_matched?:boolean; status?:string; math_localized?:boolean;
   main_theme?:string; raw_gpt_problem_id?:string; raw_gpt_theme?:string;
   auto_corrected?:boolean; correction_fields?:string[]; corrected_problem_id?:string;

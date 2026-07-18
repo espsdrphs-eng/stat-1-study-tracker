@@ -139,7 +139,7 @@ export function calculateExamReadinessMetrics(args: {
       !["×", "ﾃ・"].includes(attempt.mark || "");
   });
 
-  const scanSessions = pastSessions.filter(session => session.session_type === "scan_5_questions");
+  const scanSessions = pastSessions.filter(session => ["scan_5_questions", "scan5"].includes(session.session_type));
   const scanScores = scanSessions.map(session => {
     const initial = parseProblemList(session.initialSelectedProblemIds || session.selected_questions);
     const final = parseProblemList(session.finalSelectedProblemIds || session.final_selected_problem_ids);
@@ -153,21 +153,25 @@ export function calculateExamReadinessMetrics(args: {
     return null;
   }).filter((value): value is number => value != null);
 
+  const timedSessions=pastSessions.filter(session=>["timed_single","past_exam","exam_90min"].includes(session.session_type)&&Number(session.actual_minutes||session.selection_time_minutes||0)>0);
+  const timedSessionSuccesses=timedSessions.filter(session=>Number(session.actual_minutes||session.selection_time_minutes||0)<=Number(session.time_limit_minutes||(session.session_type==="exam_90min"?90:35))&&Number(session.score_numeric||0)>=60);
+  const pastSessionScores=pastSessions.filter(session=>["past_exam","exam_90min"].includes(session.session_type)&&Number.isFinite(Number(session.score_numeric))&&String(session.score_numeric)!=="").map(session=>Number(session.score_numeric));
+
   const kDenominator = [...kGroups.values()].length;
   const wDenominator = [...wGroups.values()].length;
 
   return {
     unseenScoreRate: scoreAverage(transferAttempts),
-    timedCompletionRate: timedAttempts.length ? Math.round(timedSuccesses.length / timedAttempts.length * 100) : null,
+    timedCompletionRate: timedAttempts.length+timedSessions.length ? Math.round((timedSuccesses.length+timedSessionSuccesses.length) / (timedAttempts.length+timedSessions.length) * 100) : null,
     selectionSuccessRate: scanScores.length ? Math.round(scanScores.reduce((sum, value) => sum + value, 0) / scanScores.length * 100) : null,
-    pastExamScoreRate: scoreAverage(pastExamAttempts),
+    pastExamScoreRate: pastExamAttempts.length||pastSessionScores.length?Math.round(([...pastExamAttempts.map(attempt=>Number(attempt.score_numeric||0)),...pastSessionScores].reduce((sum,value)=>sum+value,0))/(pastExamAttempts.length+pastSessionScores.length)):null,
     kRecurrenceRate: kDenominator ? Math.round([...kGroups.values()].filter(count => count >= 2).length / kDenominator * 100) : null,
     repeatedWRate: wDenominator ? Math.round([...wGroups.values()].filter(count => count >= 2).length / wDenominator * 100) : null,
     sampleSizes: {
       unseen: transferAttempts.length,
-      timed: timedAttempts.length,
+      timed: timedAttempts.length+timedSessions.length,
       scans: scanScores.length,
-      pastExams: pastExamAttempts.length,
+      pastExams: pastExamAttempts.length+pastSessionScores.length,
       kReviews: kDenominator,
       wReviews: wDenominator,
     },

@@ -1,5 +1,7 @@
 # 統計検定1級 学習管理
 
+安定運用の正本は [docs/STABLE_LEARNING_SPEC.md](docs/STABLE_LEARNING_SPEC.md) です。
+
 iPad単体で使えるオフライン対応PWAです。学習記録はiPad内のIndexedDBに保存され、外部APIや常時稼働PCは使いません。
 
 公開URL: https://espsdrphs-eng.github.io/stat-1-study-tracker/

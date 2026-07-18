@@ -27,3 +27,12 @@ test("未見得点率・時間内完走率・選題成功率を計算する", ()
   assert.equal(metrics.selectionSuccessRate, 67);
   assert.equal(metrics.kRecurrenceRate, 100);
 });
+
+test("pastSessionsが0件なら本番指標は0%ではなく未計測値null", () => {
+  const metrics = calculateExamReadinessMetrics({ problems: [], attempts: [], pastSessions: [], aliases: [], today: "2026-07-18" });
+  assert.equal(metrics.unseenScoreRate, null);
+  assert.equal(metrics.timedCompletionRate, null);
+  assert.equal(metrics.selectionSuccessRate, null);
+  assert.equal(metrics.pastExamScoreRate, null);
+  assert.equal(metrics.sampleSizes.scans, 0);
+});

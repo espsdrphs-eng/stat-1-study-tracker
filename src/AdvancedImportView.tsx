@@ -214,7 +214,7 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
           const related=update.related_s_problem_ids||[];
           const errors=(update.error_types?.length?update.error_types:[update.primary_error_type||update.error_type||"none"]).filter(Boolean);
           const realErrors=errors.filter(error=>error!=="none");
-          const reviewPlan=createAttemptReviewPlan(update,related);
+          const reviewPlan=createAttemptReviewPlan(update,[]);
           const dateWarnings=[...new Set([...(update.date_expression_warnings||[]),...timingWarnings(update)])];
           const missing=missingRequiredFields(update);
           const isReviewImport=!!update.generated_from_review_id||update.rubric_version===REVIEW_RUBRIC_VERSION;

@@ -1,5 +1,7 @@
 import type { Attempt, Problem, ProblemAlias, Review, Task } from "./types.ts";
 import { resolveCanonicalProblemId } from "./examReadiness.ts";
+import { metadataQuality, safeGenericGuidance, type MetadataQuality } from "./metadataQuality.ts";
+import { resolveReviewScope, sheetTypeForMode, type EffectiveReviewScope } from "./reviewScopeResolver.ts";
 import {
   completionChecklist,
   correctionTheme,
@@ -45,6 +47,11 @@ export type ResolvedReviewCard={
   inferredMode:ReviewMode;
   modeOverride?:ReviewMode;
   effectiveMode:ReviewMode;
+  effectiveReviewScope:EffectiveReviewScope;
+  targetedParts:string[];
+  allowedErrorTypes:ResolverErrorType[];
+  requiresKEvidence:boolean;
+  metadataQuality:MetadataQuality;
   reviewMethodLabel:string;
   sheetType:SheetType;
   sheetLabel:string;
@@ -99,13 +106,7 @@ function isReviewMode(value:unknown):value is ReviewMode{
 }
 
 export function getSheetType(mode:ReviewMode):SheetType{
-  switch(mode){
-    case "check":return "check_sheet";
-    case "skeleton":return "skeleton_sheet";
-    case "main_calc":return "main_calc_sheet";
-    case "full":return "full_answer_sheet";
-    case "scan5":return "scan5_sheet";
-  }
+  return sheetTypeForMode(mode);
 }
 
 function normalizeErrors(attempt?:Attempt):ResolverErrorType[]{
@@ -206,7 +207,8 @@ export function resolveReviewCard({
   const inferred=origin==="first_attempt"&&isReviewMode(plannedMode)?plannedMode:inferReviewMode(errors,item);
   const overrideRaw=item.mode_override||item.modeOverride;
   const override=isReviewMode(overrideRaw)?overrideRaw:undefined;
-  const effective=override||inferred;
+  const scope=resolveReviewScope({item:{...item,effective_mode:override||inferred},targetAttempt});
+  const effective=scope.effectiveMode;
   if(storedSheetMismatch(item,effective)) warnings.push({code:"mode_sheet_mismatch",message:`復習形式を${modeLabels[effective]}、使用シートを${sheetLabels[getSheetType(effective)]}へ統一しました。`,repairable:true});
   if(item.mode&&isReviewMode(item.mode)&&item.mode!==effective&&!override){
     warnings.push({code:"stored_mode_stale",message:`保存済みモードではなく、K/W/N/Cから${modeLabels[effective]}を再判定しました。`,repairable:true});
@@ -257,17 +259,25 @@ export function resolveReviewCard({
   const fallback="問題情報または前回記録の確認が必要です";
   const make=<T,>(value:T):DerivedField<T>=>({value,provenance:pv});
   const specific=(factory:()=>string)=>blocked?fallback:factory();
-  const actions=blocked?[fallback]:safeReviewActions(generatedItem);
-  const completion=blocked?[fallback]:completionChecklist(generatedItem);
+  const quality=metadataQuality(problem);
+  const generic=safeGenericGuidance(problem,targetAttempt);
+  const actions=blocked?[fallback]:quality==="generic"
+    ?scope.targetedParts.slice(0,3).map(part=>`指定箇所「${part}」を確認する`).concat(scope.targetedParts.length?[]:["前回指定された箇所を確認する"])
+    :safeReviewActions(generatedItem);
+  const completion=blocked?[fallback]:scope.completionConditions;
   const sourceIssue=sourceAttempt?.error_point||item.source_error_summary||"元問題の弱点を確認";
   return {
     taskId:String(item.id??`${canonicalId}:${item.review_type||item.kind||"task"}`),problemId:String(item.problem_id||""),canonicalProblemId:canonicalId,
     displayLabel:master.display_label||master.title||canonicalId,theme:master.theme||"要確認",canonicalProblemType:master.canonical_problem_type||"要確認",
     taskOrigin:origin,errorTypes:errors,primaryErrorType:errors[0],inferredMode:inferred,modeOverride:override,effectiveMode:effective,
+    effectiveReviewScope:scope.effectiveReviewScope,targetedParts:scope.targetedParts,
+    allowedErrorTypes:scope.allowedErrorTypes,requiresKEvidence:scope.requiresKEvidence,metadataQuality:quality,
     reviewMethodLabel:modeLabels[effective],sheetType:getSheetType(effective),sheetLabel:sheetLabels[getSheetType(effective)],
     estimatedMinutes:Number(item.estimated_minutes||item.minutes||item.duration_minutes||5),
-    reviewGoal:make(specific(()=>reviewAim(generatedItem))),correctionTheme:make(specific(()=>correctionTheme(generatedItem))),
-    entryHint:make(specific(()=>referenceEntryPoint(generatedItem))),oneLineHint:make(specific(()=>oneLineHint(generatedItem))),
+    reviewGoal:make(specific(()=>quality==="generic"?"前回指定された箇所を確認する":reviewAim(generatedItem))),
+    correctionTheme:make(specific(()=>quality==="generic"?generic.correctionTheme:correctionTheme(generatedItem))),
+    entryHint:make(specific(()=>quality==="generic"?generic.entryHint:referenceEntryPoint(generatedItem))),
+    oneLineHint:make(specific(()=>quality==="generic"?generic.oneLineHint:oneLineHint(generatedItem))),
     todayActions:make(actions),completionConditions:make(completion),dueDate,reviewAfterDays:interval,daysUntilDue:dueDate?differenceInCalendarDays(dueDate,today):null,
     targetAttempt,sourceAttempt,
     sourceProblem:sourceProblem?{problemId:sourceCanonical,displayLabel:sourceProblem.display_label||sourceProblem.title||sourceCanonical,sourceIssue}:undefined,

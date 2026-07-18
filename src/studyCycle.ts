@@ -1,6 +1,7 @@
 import type { Attempt, Problem, StudyUpdate } from "./types.ts";
 import { reviewDaysForErrors, sanitizeStudyUpdateTiming } from "./reviewTiming.ts";
 import { todayString } from "./importParser.ts";
+import { effectiveErrorsForAutomation, validKEvidence } from "./reviewScopeResolver.ts";
 
 export type ProblemType = "S" | "A" | "past_exam";
 
@@ -209,9 +210,11 @@ export function prepareImportedStudyUpdate(
 
 export function finalizeStudyUpdateForSave(update:StudyUpdate):StudyUpdate {
   const errors = normalizedErrorTypes(update);
-  const days = reviewDaysForErrors(errors.filter(error => error !== "none"));
+  const effective = effectiveErrorsForAutomation(errors.filter(error => error !== "none"),update.rubric_version,update.k_evidence);
+  const automationErrors = (effective.length ? effective : ["none"]) as ErrorType[];
+  const days = reviewDaysForErrors(effective);
   const primary = errors.find(error => error !== "none") || "none";
-  const reviewMethod = reviewMethodForErrors(errors);
+  const reviewMethod = reviewMethodForErrors(automationErrors);
   const timed = sanitizeStudyUpdateTiming({
     ...update,
     mode: normalizeStudyMode(update.mode),
@@ -221,13 +224,16 @@ export function finalizeStudyUpdateForSave(update:StudyUpdate):StudyUpdate {
     review_after_days: days,
     review_method: reviewMethod,
     error_point: primary === "none" && !String(update.error_point || "").trim() ? "大きな問題なし" : update.error_point,
-    weak_notes: primary === "none" ? update.weak_notes || [] : update.weak_notes
+    weak_notes: primary === "none" ? [] : update.weak_notes,
+    effective_error_types: automationErrors,
+    k_evidence_valid: !errors.includes("K") || validKEvidence(update.k_evidence)
   });
   return {
     ...timed,
     review_after_days: days,
     review_method: reviewMethod,
     error_types: errors,
+    effective_error_types: automationErrors,
     error_type: primary,
     primary_error_type: primary
   };

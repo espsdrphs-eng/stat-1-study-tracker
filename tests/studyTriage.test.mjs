@@ -11,18 +11,19 @@ const problem=(problem_id,category="A",strategy_rank="A")=>({
   linked_s_problems:"",linked_a_problems:"",notes:"",completion_status:"active",strategy_rank
 });
 
-test("予定超過時はK、N、過去問直結Aを必須にする",()=>{
+test("予定超過時も補修は最大1件、実行枠は上限内にする",()=>{
   const tasks=[
     task("K",20,"K"),task("N",20,"N"),task("APLUS",20,"none","A+演習"),
     task("W",20,"W"),task("C",10,"C"),task("S",10,"none","S点検")
   ];
   const problems=[problem("K"),problem("N"),problem("APLUS","A","A+"),problem("W"),problem("C"),problem("S","S","S")];
   const result=triageTodayTasks(tasks,80,problems);
-  assert.deepEqual(result.tasks.slice(0,3).map(row=>row.triage),["must","must","must"]);
-  assert.equal(result.tasks[3].triage,"if_time");
-  assert.equal(result.tasks[4].triage,"tomorrow");
-  assert.equal(result.tasks[5].triage,"tomorrow");
-  assert.deepEqual(result.minutes,{must:60,if_time:20,tomorrow:20});
+  assert.equal(result.tasks[0].triage,"must");
+  assert.equal(result.tasks[1].triage,"tomorrow");
+  assert.ok(result.tasks.filter(row=>row.triage==="must").length<=3);
+  assert.ok(result.tasks.filter(row=>row.triage==="if_time").length<=2);
+  assert.ok(result.minutes.must<=72);
+  assert.ok(result.minutes.must+result.minutes.if_time<=80);
 });
 
 test("仕分け優先度はK、N、必修A、W、C、none、Sメンテの順",()=>{
@@ -55,4 +56,18 @@ test("関連S確認は通常後回しだが、重要A由来なら優先する",(
   const linked={problem_id:s.problem_id,title:"S4",kind:"S確認",reason:"関連",mode:"check",minutes:5,load:.2,task_origin:"linked_s_check"};
   assert.equal(taskPriority({...linked,source_problem_id:ordinary.problem_id},s,"2026-07-06",ordinary),8);
   assert.equal(taskPriority({...linked,source_problem_id:important.problem_id},s,"2026-07-06",important),2);
+});
+
+test("17件318分を必須3件・任意2件・150分以内へ整理する",()=>{
+  const tasks=Array.from({length:17},(_,index)=>({
+    ...task(`P${index+1}`,index<2?35:index<6?20:14,index===0?"K":index===1?"N":index===2?"W":"none",index<8?"A演習":"Sメンテ"),
+    mode:index<2?"full":index<6?"skeleton":"check",task_origin:index===6||index===7?"linked_s_check":"review_attempt"
+  }));
+  const problems=tasks.map((row,index)=>problem(row.problem_id,index<8?"A":"S",index<4?"A+":"A"));
+  const result=triageTodayTasks(tasks,150,problems,"2026-07-18");
+  const must=result.tasks.filter(row=>row.triage==="must"),optional=result.tasks.filter(row=>row.triage==="if_time");
+  assert.ok(must.length<=3);assert.ok(optional.length<=2);
+  assert.ok(result.minutes.must<=135);assert.ok(result.minutes.must+result.minutes.if_time<=150);
+  assert.ok(result.tasks.filter(row=>row.triage!=="tomorrow"&&row.task_origin==="linked_s_check").length<=1);
+  assert.equal(result.tasks.length,17);
 });

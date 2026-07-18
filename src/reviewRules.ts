@@ -53,8 +53,8 @@ const definitions:Record<string,{
   }
 };
 
-export function normalizedErrors(input:Pick<StudyUpdate,"error_types"|"primary_error_type"|"error_type">|Attempt){
-  const values=input.error_types?.length?input.error_types:[input.primary_error_type||input.error_type];
+export function normalizedErrors(input:Pick<StudyUpdate,"error_types"|"effective_error_types"|"primary_error_type"|"error_type">|Attempt){
+  const values=input.effective_error_types?.length?input.effective_error_types:input.error_types?.length?input.error_types:[input.primary_error_type||input.error_type];
   return [...new Set(values.map(String).filter(value=>priority.includes(value)))].sort((a,b)=>priority.indexOf(a)-priority.indexOf(b));
 }
 
@@ -170,7 +170,7 @@ export function createSReviewPlan(state:SState):ReviewPlan{
 }
 
 export function createPastReviewPlan(session:PastSession|Record<string,unknown>):ReviewPlan{
-  const scan=session.session_type==="scan_5_questions";
+  const scan=session.session_type==="scan_5_questions"||session.session_type==="scan5";
   const result=String(session.selection_result||"questionable");
   const completed=Number(session.completed_questions_count||0);
   if(scan){
