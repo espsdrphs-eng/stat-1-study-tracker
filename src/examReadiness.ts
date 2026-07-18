@@ -1,5 +1,6 @@
 import type { Attempt, PastSession, Problem, ProblemAlias } from "./types.ts";
 import { examScoreEligibility } from "./scoreEligibility.ts";
+import { excludeLegacyKFromPlanning } from "./legacyKPolicy.ts";
 
 export type ExamPhase =
   | "foundation_to_A"
@@ -125,6 +126,7 @@ export function calculateExamReadinessMetrics(args: {
     if (eligibility&&problem?.category === "past_exam" && validScore(attempt)&&
       Number(attempt.time_minutes||0)<=Number(attempt.time_limit_minutes||eligibilityResult.timeLimitMinutes||0)) pastExamAttempts.push(attempt);
     const errors = new Set([...(attempt.error_types || []), attempt.primary_error_type || attempt.error_type || ""].filter(Boolean));
+    if(excludeLegacyKFromPlanning(attempt))errors.delete("K");
     if (errors.has("K")) kGroups.set(canonicalId, (kGroups.get(canonicalId) || 0) + 1);
     if (errors.has("W")) {
       const theme = problem?.theme || attempt.raw_gpt_theme || canonicalId;

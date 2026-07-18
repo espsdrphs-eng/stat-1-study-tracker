@@ -1,7 +1,8 @@
 import type { Attempt, Problem, StudyUpdate } from "./types.ts";
 import { reviewDaysForErrors, sanitizeStudyUpdateTiming } from "./reviewTiming.ts";
 import { todayString } from "./importParser.ts";
-import { effectiveErrorsForAutomation, validKEvidence } from "./reviewScopeResolver.ts";
+import { effectiveErrorsForAutomation } from "./reviewScopeResolver.ts";
+import { classifyKPolicyValidity } from "./legacyKPolicy.ts";
 
 export type ProblemType = "S" | "A" | "past_exam";
 
@@ -210,7 +211,7 @@ export function prepareImportedStudyUpdate(
 
 export function finalizeStudyUpdateForSave(update:StudyUpdate):StudyUpdate {
   const errors = normalizedErrorTypes(update);
-  const effective = effectiveErrorsForAutomation(errors.filter(error => error !== "none"),update.rubric_version,update.k_evidence);
+  const effective = effectiveErrorsForAutomation(errors.filter(error => error !== "none"),update.rubric_version,update.k_evidence,update);
   const automationErrors = (effective.length ? effective : ["none"]) as ErrorType[];
   const days = reviewDaysForErrors(effective);
   const primary = errors.find(error => error !== "none") || "none";
@@ -226,7 +227,7 @@ export function finalizeStudyUpdateForSave(update:StudyUpdate):StudyUpdate {
     error_point: primary === "none" && !String(update.error_point || "").trim() ? "大きな問題なし" : update.error_point,
     weak_notes: primary === "none" ? [] : update.weak_notes,
     effective_error_types: automationErrors,
-    k_evidence_valid: !errors.includes("K") || validKEvidence(update.k_evidence)
+    k_evidence_valid: !errors.includes("K") || classifyKPolicyValidity({...update,error_types:errors})==="valid"
   });
   return {
     ...timed,

@@ -217,6 +217,7 @@ export function resolveReviewCard({
     assessmentTiming:item.assessment_timing,
     targetedParts:item.targeted_parts,
   });
+  const planningErrors=(prescription.effectiveErrorTypes.length?prescription.effectiveErrorTypes:["none"]) as ResolverErrorType[];
   const effective=(override||(prescription.mode==="exam_90min"?"full":prescription.mode)) as ReviewMode;
   const scope={
     effectiveMode:effective,
@@ -264,8 +265,8 @@ export function resolveReviewCard({
     review_steps:[],
     review_goal_public:undefined,
     requires_full_answer:effective==="full",
-    error_type:errors[0],
-    previous_errors:errors,
+    error_type:planningErrors[0],
+    previous_errors:planningErrors,
     previous_date:targetAttempt?.date,
     previous_error_point:targetAttempt?.error_point||"",
     previous_next_action:targetAttempt?.next_action||"",
@@ -286,7 +287,7 @@ export function resolveReviewCard({
   return {
     taskId:String(item.id??`${canonicalId}:${item.review_type||item.kind||"task"}`),problemId:String(item.problem_id||""),canonicalProblemId:canonicalId,
     displayLabel:master.display_label||master.title||canonicalId,theme:master.theme||"要確認",canonicalProblemType:master.canonical_problem_type||"要確認",
-    taskOrigin:origin,errorTypes:errors,primaryErrorType:errors[0],inferredMode:inferred,modeOverride:override,effectiveMode:effective,
+    taskOrigin:origin,errorTypes:planningErrors,primaryErrorType:planningErrors[0],inferredMode:inferred,modeOverride:override,effectiveMode:effective,
     effectiveReviewScope:scope.effectiveReviewScope,targetedParts:scope.targetedParts,
     allowedErrorTypes:scope.allowedErrorTypes,requiresKEvidence:scope.requiresKEvidence,metadataQuality:quality,
     reviewMethodLabel:modeLabels[effective],sheetType:getSheetType(effective),sheetLabel:sheetLabels[getSheetType(effective)],

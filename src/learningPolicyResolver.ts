@@ -1,7 +1,7 @@
 import type {
   AssessmentTiming, Attempt, LearningPurpose, LearningStage, Problem, Review, TargetKind, Task,
 } from "./types.ts";
-import { effectiveErrorsForAutomation } from "./reviewScopeResolver.ts";
+import { classifyKPolicyValidity, mathematicalPatchTargets, planningErrorsForSource, type KPolicyValidity } from "./legacyKPolicy.ts";
 
 export const LEARNING_POLICY_VERSION="STAT1-LEARNING-v1";
 
@@ -24,6 +24,8 @@ export interface LearningPrescription {
   completionConditions:string[];
   requiredEvidence:string[];
   allowedErrorTypes:Array<"K"|"W"|"N"|"C">;
+  effectiveErrorTypes:Array<"K"|"W"|"N"|"C">;
+  kPolicyValidity:KPolicyValidity;
   requiresKEvidence:boolean;
   successTransition?:string;
   failureTransition?:string;
@@ -103,10 +105,18 @@ function modeForScope(scope:PolicyReviewScope,source?:PolicySource):PolicyMode{
 export function resolveLearningPolicy(input:LearningPolicyInput):LearningPrescription{
   const source=input.source;
   const raw=rawErrors(source);
-  const effective=effectiveErrorsForAutomation(raw,source?.rubric_version,source?.k_evidence);
+  const kPolicyValidity=classifyKPolicyValidity({...source,error_types:raw});
+  let effective=planningErrorsForSource({...source,error_types:raw}) as Array<"K"|"W"|"N"|"C">;
   const purpose=input.learningPurpose||inferPurpose(source,effective);
   const timing=input.assessmentTiming||inferTiming(source,purpose);
-  const targetedParts=parts(input);
+  const initialParts=parts(input);
+  const mathematicalTargets=mathematicalPatchTargets(source||{},input.targetedParts||[]);
+  const mathematicalRepair=purpose==="error_repair"&&kPolicyValidity==="invalid_legacy_k"&&mathematicalTargets.length>0;
+  if(mathematicalRepair){
+    if(effective.includes("W"))effective=effective.filter(error=>error!=="N");
+    else if(effective.includes("C"))effective=["C"];
+  }
+  const targetedParts=mathematicalRepair?mathematicalTargets:initialParts;
   const primary=effective.includes("K")?"K":effective.includes("N")?"N":effective.includes("W")?"W":effective.includes("C")?"C":"none";
   let stage:LearningStage=input.learningStage||source?.learning_stage||(
     purpose==="error_repair"?"repair":purpose==="integration_check"?"integration":purpose==="transfer_check"?"transfer":"performance"
@@ -120,8 +130,8 @@ export function resolveLearningPolicy(input:LearningPolicyInput):LearningPrescri
     reviewScope="full_skeleton";mode="skeleton";estimatedMinutes=15;stage="transfer";
   }else if(purpose==="integration_check"){
     reviewScope="full_skeleton";mode="skeleton";estimatedMinutes=12;stage="integration";
-  }else if(primary==="W"){
-    reviewScope="main_calc_target";mode="main_calc";estimatedMinutes=timing==="same_session_correction"?5:12;
+  }else if(primary==="W"||mathematicalRepair){
+    reviewScope=primary==="W"?"main_calc_target":"targeted_patch";mode=primary==="W"?"main_calc":"check";estimatedMinutes=timing==="same_session_correction"?5:primary==="C"?7:12;
     targetKind="mathematical_patch";allowedReferenceLevel=timing==="same_session_correction"?2:0;
   }else if(primary==="C"){
     reviewScope="check_only";mode="check";estimatedMinutes=5;targetKind="mathematical_patch";
@@ -136,6 +146,12 @@ export function resolveLearningPolicy(input:LearningPolicyInput):LearningPrescri
     mode=modeForScope(requestedScope,source);
     estimatedMinutes=requestedScope==="targeted_patch"?10:requestedScope==="main_calc_target"?12:
       requestedScope==="full_skeleton"?15:requestedScope==="check_only"?5:requestedScope==="scan5"?10:35;
+  }
+  if(mathematicalRepair&&purpose==="error_repair"){
+    reviewScope=primary==="W"?"main_calc_target":"targeted_patch";
+    mode=primary==="W"?"main_calc":"check";
+    targetKind="mathematical_patch";
+    estimatedMinutes=timing==="same_session_correction"?5:primary==="C"?7:12;
   }
   if(timing==="same_session_correction"){
     estimatedMinutes=Math.min(5,estimatedMinutes);
@@ -153,13 +169,13 @@ export function resolveLearningPolicy(input:LearningPolicyInput):LearningPrescri
     ?targets.map(target=>`${target}を今回答案で示す`)
     :completionConditions;
   const allowedErrorTypes:Array<"K"|"W"|"N"|"C">=reviewScope==="targeted_patch"
-    ?(primary==="K"?["K","N","C"]:["N","C"])
+    ?(targetKind==="mathematical_patch"?(primary==="C"?["C"]:primary==="W"?["W","N","C"]:["N","C"]):primary==="K"?["K","N","C"]:["N","C"])
     :reviewScope==="main_calc_target"?(["W","N","C"] as Array<"K"|"W"|"N"|"C">)
     :(["K","W","N","C"] as Array<"K"|"W"|"N"|"C">);
   return {
     problemId:input.problemId,learningPurpose:purpose,learningStage:stage,assessmentTiming:timing,
     reviewScope,targetKind,targetedParts:targets,mode,sheetType:sheet(mode),allowedReferenceLevel,
-    estimatedMinutes,completionConditions,requiredEvidence,allowedErrorTypes,
+    estimatedMinutes,completionConditions,requiredEvidence,allowedErrorTypes,effectiveErrorTypes:effective,kPolicyValidity,
     requiresKEvidence:allowedErrorTypes.includes("K"),
     successTransition:timing==="same_session_correction"?"delayed_retrieval":purpose==="error_repair"?"integration_check":purpose==="integration_check"?"transfer_check":purpose==="transfer_check"?"exam_performance":"stable",
     failureTransition:"error_repair",

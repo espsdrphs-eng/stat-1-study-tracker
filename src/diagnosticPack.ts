@@ -8,6 +8,8 @@ import { metadataQuality } from "./metadataQuality.ts";
 import { getSheetType, resolveReviewCard, type ResolvedReviewCard } from "./reviewCardResolver.ts";
 import { LEARNING_POLICY_VERSION, resolveLearningPolicy } from "./learningPolicyResolver.ts";
 import { simulateThirtyDays } from "./learningSimulation.ts";
+import { analyzeLegacyKReorganization } from "./legacyKRepair.ts";
+import { classifyKPolicyValidity } from "./legacyKPolicy.ts";
 import type { Attempt, Problem, ProblemAlias, Review, TodayPlanSnapshot } from "./types.ts";
 
 type JsonRecord=Record<string,unknown>;
@@ -21,7 +23,7 @@ const EXCLUDED_KEYS=new Set([
 const SETTINGS_KEYS=new Set([
   "exam_date","daily_study_minutes","problem_master_version","problem_master_updated_at",
   "problem_aliases_version","problem_aliases_updated_at","stable_release","last_migration",
-  "last_migration_result","last_migration_at","review_rebuild_summary"
+  "last_migration_result","last_migration_at","review_rebuild_summary","legacy_k_reorganization_summary"
 ]);
 
 function sanitize(value:unknown):unknown{
@@ -266,7 +268,8 @@ function wb620Trace(reviews:Review[],attempts:Attempt[],cards:Map<number,Resolve
       const card=cards.get(review.id)!,audit=promptAudits.find(item=>item.taskId===String(review.id))!,source=attempts.find(item=>item.id===review.generated_from_attempt_id);
       return {reviewId:review.id,rawProblemId:review.problem_id,canonicalProblemId:card.canonicalProblemId,
         problemMaster:master||null,sourceAttempt:source||null,sourceEvaluation:source?logicalEvaluation(source):null,
-        previousErrorTypes:errorsFor(source),reviewScope:audit.reviewScope,targetedParts:audit.targetedParts,
+        previousErrorTypes:errorsFor(source),kPolicyValidity:source?classifyKPolicyValidity(source):null,
+        reviewScope:audit.reviewScope,targetedParts:audit.targetedParts,
         minimumPassConditions:audit.generatedPrompt.match(/【今回の最低クリア条件】\n([\s\S]*?)\n\nstudy_update:/)?.[1]?.split("\n").filter(Boolean)||[],
         screenCompletionConditions:audit.screenCompletionConditions,generatedGradingPrompt:audit.generatedPrompt,
         promptRequiredGradingItems:audit.promptRequiredGradingItems,kJudgmentConditions:audit.kJudgmentConditions,
@@ -299,7 +302,11 @@ export async function createDiagnosticPack():Promise<DiagnosticPackResult>{
   for(const review of reviews) cards.set(review.id,resolveReviewCard({item:review,problems,attempts,aliases,today,examDate,now:new Date().toISOString()}));
   const promptAudits=reviews.map(review=>buildPromptAudit(review,cards.get(review.id)!));
   const relations=relationRows(problems,aliases);
-  const consistency=buildConsistencyReport(problems,attempts,reviews,aliases,relations,cards,promptAudits);
+  const baseConsistency=buildConsistencyReport(problems,attempts,reviews,aliases,relations,cards,promptAudits);
+  const legacyK=analyzeLegacyKReorganization({attempts,reviews,problems});
+  const consistency={...baseConsistency,legacyKPolicy:{invalid_legacy_k_count:legacyK.invalidLegacyKCount,
+    needs_review_count:legacyK.needsReviewCount,superseded_task_count:legacyK.supersededTaskCount,
+    resolved_task_count:legacyK.resolvedTaskCount,classifications:legacyK.classifications,taskActions:legacyK.taskActions}};
   const snapshotRows=metaRows.filter(row=>row.key.startsWith("today-plan-snapshot:"));
   const settings=Object.fromEntries(metaRows.filter(row=>SETTINGS_KEYS.has(row.key)).map(row=>[row.key,row.value]));
   const learningData={_modelMapping:{evaluations:"attemptsの評価フィールドから作った論理ビュー",reviewTasks:"reviews物理テーブル",

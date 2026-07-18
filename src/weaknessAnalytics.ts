@@ -1,4 +1,5 @@
 import type { Attempt, Problem, Review, WeakNote, WeaknessInsight } from "./types.ts";
+import { excludeLegacyKFromPlanning } from "./legacyKPolicy.ts";
 
 const errorWeight:Record<string,number>={K:5,N:3,W:2,C:1};
 const repairRules:[string,string[],string[]][]=[
@@ -19,7 +20,8 @@ const repairRules:[string,string[],string[]][]=[
 
 const unique=(values:string[])=>[...new Set(values.filter(Boolean))];
 const confidenceFor=(count:number):WeaknessInsight["confidence"]=>count>=15?"分析可能":count>=5?"暫定":"参考";
-const errorsFor=(attempt:Attempt)=>unique((attempt.error_types?.length?attempt.error_types:[attempt.primary_error_type||attempt.error_type]).filter(x=>x in errorWeight));
+const errorsFor=(attempt:Attempt)=>unique((attempt.error_types?.length?attempt.error_types:[attempt.primary_error_type||attempt.error_type])
+  .filter(x=>x in errorWeight&&!(x==="K"&&excludeLegacyKFromPlanning(attempt))));
 
 function recommendedProblems(theme:string,problemIds:string[],problems:Problem[]){
   const matchedRules=repairRules.filter(([trigger])=>theme.includes(trigger)||trigger.includes(theme));

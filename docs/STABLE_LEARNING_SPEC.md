@@ -18,6 +18,8 @@
 
 Kは今回答案に「型、方針・入口、出発式、主役量、道具、大きな流れ」の崩れを示す引用 `k_evidence` がある場合だけ自動計画へ反映します。計算失敗はW、条件・理由・再現不足はN、記号・符号・次元・転記はCです。根拠のないKはraw値として保持しますが、1日復習やfull skeletonの根拠にしません。
 
+旧Kは `valid`、`invalid_legacy_k`、`needs_review` に分類します。`invalid_legacy_k` は履歴値を保持したまま計画・再発率・弱点順位・carryoverから除外し、`needs_review` は推測で無効化しません。数学的な `error_repair` へ骨格欄の不足を継承せず、骨格全体の確認が必要なら後日の `integration_check` として分離します。未完了タスクの再整理はプレビュー後に明示操作で行い、旧Kだけのタスクは削除せず `superseded` とします。
+
 ## 即時修正と遅延復習
 
 `same_session_correction` は答案直後に対象部分だけを5分以内で直します。同日にfull/full skeletonを追加せず、成功しても定着成功にしません。K/N/W/Cは別に `delayed_retrieval` を1/2/3/7日後に作り、その結果だけをerror repairの定着判定へ使います。

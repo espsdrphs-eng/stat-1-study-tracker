@@ -1,4 +1,5 @@
 import type { Attempt, Review, Task } from "./types.ts";
+import { classifyKPolicyValidity, type KPolicySource } from "./legacyKPolicy.ts";
 
 export type EffectiveReviewScope="targeted_patch"|"full_skeleton"|"main_calc_target"|"check_only"|"full_answer";
 export type EffectiveReviewMode="check"|"skeleton"|"main_calc"|"full"|"scan5";
@@ -109,10 +110,14 @@ export function validKEvidence(value:unknown){
   return rows.some(row=>row.trim().length>=6&&!/^(なし|不明|空欄)$/.test(row.trim()));
 }
 
-export function effectiveErrorsForAutomation(errors:string[],rubricVersion:string|undefined,kEvidence:unknown){
+export function effectiveErrorsForAutomation(errors:string[],rubricVersion:string|undefined,kEvidence:unknown,context?:KPolicySource){
   const normalized=[...new Set(errors.filter(error=>["K","W","N","C"].includes(error)))];
-  if(["STAT1-REVIEW-v9","STAT1-GRADE-v5"].includes(String(rubricVersion||""))&&normalized.includes("K")&&!validKEvidence(kEvidence)){
-    return normalized.filter(error=>error!=="K");
+  if(!normalized.includes("K"))return normalized;
+  if(context){
+    const validity=classifyKPolicyValidity({...context,error_types:normalized,rubric_version:rubricVersion,k_evidence:Array.isArray(kEvidence)?kEvidence.map(String):[]});
+    if(validity==="invalid_legacy_k")return normalized.filter(error=>error!=="K");
+    return normalized;
   }
+  if(["STAT1-REVIEW-v9","STAT1-GRADE-v5"].includes(String(rubricVersion||""))&&!validKEvidence(kEvidence))return normalized.filter(error=>error!=="K");
   return normalized;
 }

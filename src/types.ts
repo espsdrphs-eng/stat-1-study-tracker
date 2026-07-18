@@ -50,6 +50,7 @@ export type LearningPurpose="error_repair"|"integration_check"|"transfer_check"|
 export type LearningStage="acquisition"|"repair"|"integration"|"discrimination"|"transfer"|"performance"|"stable";
 export type AssessmentTiming="same_session_correction"|"delayed_retrieval"|"independent_performance";
 export type TargetKind="mathematical_patch"|"skeleton_expression_patch";
+export type KPolicyValidity="valid"|"invalid_legacy_k"|"needs_review";
 export type Attempt = {
   id:number; problem_id:string; date:string; mode:string; time_minutes:number; mark:string;
   score_label:string; error_type:string; error_point:string; next_action:string; memo:string;
@@ -80,6 +81,8 @@ export type Attempt = {
   task_score?:number|null; exam_score?:number|null; exam_score_eligible?:boolean;
   time_limit_minutes?:number; conclusion_reached?:boolean; incomplete_reason?:string;
   retention_eligible?:boolean; problem_type_key?:string; transfer_evidence?:boolean;
+  policy_validity?:KPolicyValidity; exclude_from_planning?:boolean;
+  exclude_from_recurrence_metrics?:boolean; superseded_by_policy_version?:string;
 };
 export type Review = {
   id:number; problem_id:string; due_date:string; review_type:string; status:string; generated_from_attempt_id:number;
@@ -114,6 +117,9 @@ export type Review = {
   policy_version?:string; source_attempt_id?:number; deduplication_key?:string;
   earliest_date?:string; preferred_date?:string; latest_date?:string;
   retention_eligible?:boolean; success_transition?:string; failure_transition?:string;
+  policy_validity?:KPolicyValidity; exclude_from_planning?:boolean;
+  exclude_from_recurrence_metrics?:boolean; superseded_by_policy_version?:string;
+  superseded_reason?:string;
 };
 export type TodayPlanSnapshot = {
   date:string;task_ids:string[];start_of_day_planned_minutes:number;
@@ -198,7 +204,10 @@ export type Bootstrap = {
     pdf_files:string[];pdf_documents:{document_key:string;kind?:string;source_book?:string;original_file_name?:string;
       display_name?:string;page_count?:number;sha256?:string;registered_at?:string;file_name?:string;answer_count:number}[];
     diagnostics:DataDiagnostic[];import_history:string[];
-    review_rebuild_summary?:{repaired_at:string;stale_count:number;regenerated_count:number;review_needed_count:number;source_target_mix_count:number;date_corrected_count:number}};
+    review_rebuild_summary?:{repaired_at:string;stale_count:number;regenerated_count:number;review_needed_count:number;source_target_mix_count:number;date_corrected_count:number};
+    legacy_k_summary?:{analyzed_at:string;invalid_legacy_k_count:number;needs_review_count:number;
+      superseded_task_count:number;resolved_task_count:number;policy_version:string;preview?:boolean};
+  };
   databaseStatus:{
     databaseName:string;databaseVersion:number;requiredDatabaseVersion:number;requestedStores:string[];
     existingStores:string[];missingStores:string[];extraStores:string[];operation:string;appSchemaVersion:string;

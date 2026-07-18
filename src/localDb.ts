@@ -17,10 +17,12 @@ import { REVIEW_RUBRIC_VERSION } from "./gradingPrompt.ts";
 import { allowedReferenceLevel, referenceDecision, type ReferenceLevel } from "./reviewExperience.ts";
 import { applyCanonicalMaster, parseAliasesPayload, parseAnswerIndexPayload, parseIntegratedMasterPayload, parseProblemMasterPayload, relatedSIntegrity } from "./masterData.ts";
 import { finalizeStudyUpdateForSave } from "./studyCycle.ts";
-import { resolveLearningPolicy } from "./learningPolicyResolver.ts";
+import { LEARNING_POLICY_VERSION, resolveLearningPolicy } from "./learningPolicyResolver.ts";
 import { quotaCandidatesWithinCapacity, taskDraftFromPrescription, weeklySoftQuota } from "./taskScheduler.ts";
 import { examScoreEligibility, taskScoreForAttempt } from "./scoreEligibility.ts";
 import { resolveReviewTransition } from "./reviewTransition.ts";
+import { analyzeLegacyKReorganization } from "./legacyKRepair.ts";
+import { classifyKPolicyValidity, excludeLegacyKFromPlanning } from "./legacyKPolicy.ts";
 import {
   APP_SCHEMA_VERSION, createSchemaDiagnostic, DB_NAME, DB_VERSION,
   GPT_SAVE_REQUIRED_STORES, IndexedDbSchemaError, LATEST_STORE_SCHEMAS, REQUIRED_APP_STORES, STORES
@@ -666,6 +668,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
   const correctedAnswer=japaneseizeMathText(input.corrected_answer||"");
   const primary=input.primary_error_type||input.error_type||"none";
   const errors=input.error_types?.length?input.error_types:[primary];
+  const kPolicyValidity=classifyKPolicyValidity(input);
   const hasRealError=errors.some(error=>["K","W","N","C"].includes(String(error)));
   const localizedErrorPoint=japaneseizeMathText(input.error_point||(hasRealError?"":"大きな問題なし"));
   const actualMinutes=Number(input.actual_minutes??input.time_minutes??0);
@@ -725,6 +728,9 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     ,conclusion_reached:input.conclusion_reached,incomplete_reason:input.incomplete_reason
     ,retention_eligible:assessmentTiming==="delayed_retrieval"
     ,problem_type_key:problem.metadata_status==="ok"?problem.canonical_problem_type:undefined
+    ,policy_validity:kPolicyValidity,exclude_from_planning:kPolicyValidity==="invalid_legacy_k"
+    ,exclude_from_recurrence_metrics:kPolicyValidity==="invalid_legacy_k"
+    ,superseded_by_policy_version:kPolicyValidity==="invalid_legacy_k"?LEARNING_POLICY_VERSION:undefined
   }));
   if(input.auto_corrected) pendingCorrectionLogs.push({
     auto_corrected:true,correction_fields:input.correction_fields||[],
@@ -965,7 +971,7 @@ async function completeReview(id:number,body:Record<string,unknown>){
     verifiedTransferTargetAvailable:false});
   const plan=linkedS?createSReviewPlan(successful?"stable":outcome.result==="partial"?"check":"forgotten"):
     createAdaptiveReviewPlan(source,review,outcome,[]);
-  const sourceErrors=linkedS?[]:(source.error_types||[source.error_type]).filter(error=>error!=="none");
+  const sourceErrors=linkedS?[]:currentPrescription.effectiveErrorTypes;
   const errors=successful?[]:sourceErrors.length?sourceErrors:["K"];
   const date=todayString(),mark=successful?(outcome.hint_used?"○":"◎"):outcome.result==="partial"?"△":"×";
   const attemptId=Number(await db.attempts.add({
@@ -1007,7 +1013,7 @@ async function completeReview(id:number,body:Record<string,unknown>){
       error_types:successful?["none"]:errors,learning_purpose:transition.nextPurpose,
       assessment_timing:transition.nextTiming||"delayed_retrieval"},learningPurpose:transition.nextPurpose,
       assessmentTiming:transition.nextTiming||"delayed_retrieval",targetedParts:review.targeted_parts});
-    const nextDraft=taskDraftFromPrescription({prescription:nextPrescription,sourceAttemptId:attemptId,sourceDate:date,errors:successful?[]:errors});
+    const nextDraft=taskDraftFromPrescription({prescription:nextPrescription,sourceAttemptId:attemptId,sourceDate:date,errors:nextPrescription.effectiveErrorTypes});
     const nextInterval=Math.max(0,Math.round((Date.parse(nextDraft.dueDate)-Date.parse(date))/86400000));
     await addOrReplaceReview({problem_id:review.problem_id,due_date:await reviewDueDate(date,nextInterval),
       review_type:nextPrescription.reviewScope,status:"pending",generated_from_attempt_id:attemptId,duration_minutes:nextPrescription.estimatedMinutes,
@@ -1417,6 +1423,46 @@ async function rebuildReviewCards(){
   return {...summary,diagnostics:await diagnoseData()};
 }
 
+async function legacyKReorganizationPreview(){
+  const [attempts,reviews,problems]=await Promise.all([db.attempts.toArray(),db.reviews.toArray(),db.problems.toArray()]);
+  const result=analyzeLegacyKReorganization({attempts,reviews,problems});
+  return {invalid_legacy_k_count:result.invalidLegacyKCount,needs_review_count:result.needsReviewCount,
+    superseded_task_count:result.supersededTaskCount,resolved_task_count:result.resolvedTaskCount,
+    policy_version:LEARNING_POLICY_VERSION,preview:true};
+}
+
+async function reorganizeLegacyKTasks(){
+  const [attemptsBefore,reviewsBefore,problems,snapshotRows]=await Promise.all([
+    db.attempts.toArray(),db.reviews.toArray(),db.problems.toArray(),db.meta.filter(row=>row.key.startsWith("today-plan-snapshot:")).toArray()
+  ]);
+  const attemptKeys=attemptsBefore.map(row=>row.id).sort((a,b)=>a-b).join(",");
+  const reviewKeys=reviewsBefore.map(row=>row.id).sort((a,b)=>a-b).join(",");
+  const completedBefore=reviewsBefore.filter(row=>row.status==="done").map(row=>row.id).sort((a,b)=>a-b).join(",");
+  const actualMinutesBefore=attemptsBefore.reduce((sum,row)=>sum+Number(row.time_minutes||0),0);
+  const snapshotsBefore=JSON.stringify(snapshotRows.map(row=>[row.key,row.value]));
+  const result=analyzeLegacyKReorganization({attempts:attemptsBefore,reviews:reviewsBefore,problems});
+  for(const row of result.classifications){
+    await db.attempts.update(row.attemptId,{policy_validity:row.validity,
+      exclude_from_planning:row.validity==="invalid_legacy_k",exclude_from_recurrence_metrics:row.validity==="invalid_legacy_k",
+      superseded_by_policy_version:row.validity==="invalid_legacy_k"?LEARNING_POLICY_VERSION:undefined});
+  }
+  for(const action of result.taskActions)await db.reviews.update(action.reviewId,action.patch);
+  const summary={analyzed_at:new Date().toISOString(),invalid_legacy_k_count:result.invalidLegacyKCount,
+    needs_review_count:result.needsReviewCount,superseded_task_count:result.supersededTaskCount,
+    resolved_task_count:result.resolvedTaskCount,policy_version:LEARNING_POLICY_VERSION,preview:false};
+  await db.meta.put({key:"legacy_k_reorganization_summary",value:JSON.stringify(summary)});
+  const [attemptsAfter,reviewsAfter,snapshotRowsAfter]=await Promise.all([
+    db.attempts.toArray(),db.reviews.toArray(),db.meta.filter(row=>row.key.startsWith("today-plan-snapshot:")).toArray()
+  ]);
+  const safe=attemptKeys===attemptsAfter.map(row=>row.id).sort((a,b)=>a-b).join(",")&&
+    reviewKeys===reviewsAfter.map(row=>row.id).sort((a,b)=>a-b).join(",")&&
+    completedBefore===reviewsAfter.filter(row=>row.status==="done").map(row=>row.id).sort((a,b)=>a-b).join(",")&&
+    actualMinutesBefore===attemptsAfter.reduce((sum,row)=>sum+Number(row.time_minutes||0),0)&&
+    snapshotsBefore===JSON.stringify(snapshotRowsAfter.map(row=>[row.key,row.value]));
+  if(!safe)throw new Error("旧K再整理の安全性検証に失敗しました。履歴・完了状態・今日の計画は変更していません。");
+  return {...summary,data_preserved:true};
+}
+
 async function resolveDiagnostic(body:Record<string,unknown>){
   const reviewId=Number(body.review_id),action=String(body.action||"hold");
   const review=await db.reviews.get(reviewId);
@@ -1605,7 +1651,7 @@ async function bootstrap():Promise<Bootstrap>{
   const skeleton=attempts.filter(a=>a.date>=fortnight&&a.mode==="skeleton");
   const skeletonGood=skeleton.filter(a=>["◎","○"].includes(a.mark)).length;
   const kGroups=new Map<string,number>();
-  attempts.filter(a=>a.date>=fortnight&&a.error_type==="K").forEach(a=>kGroups.set(a.problem_id,(kGroups.get(a.problem_id)||0)+1));
+  attempts.filter(a=>a.date>=fortnight&&a.error_type==="K"&&!excludeLegacyKFromPlanning(a)).forEach(a=>kGroups.set(a.problem_id,(kGroups.get(a.problem_id)||0)+1));
   const kRepeat=[...kGroups.values()].filter(n=>n>1).length;
   const pastSkeleton=attempts.filter(a=>a.date>=fortnight&&pmap.get(a.problem_id)?.category==="past_exam").length;
   const delayed3=reviews.filter(r=>r.status==="overdue"&&r.due_date<addDays(today,-3)).length;
@@ -1628,7 +1674,7 @@ async function bootstrap():Promise<Bootstrap>{
   const checks=progress.checks.map(item=>item.status==="ok");
   const pastAttempts=attempts.filter(attempt=>pmap.get(attempt.problem_id)?.category==="past_exam");
   const chapterCounts=new Map<number,number>();
-  attempts.filter(a=>a.date>=fortnight&&a.error_type==="K").forEach(a=>{const c=pmap.get(a.problem_id)?.chapter;if(c!=null)chapterCounts.set(c,(chapterCounts.get(c)||0)+1)});
+  attempts.filter(a=>a.date>=fortnight&&a.error_type==="K"&&!excludeLegacyKFromPlanning(a)).forEach(a=>{const c=pmap.get(a.problem_id)?.chapter;if(c!=null)chapterCounts.set(c,(chapterCounts.get(c)||0)+1)});
   const themeCounts=new Map<string,number>();
   weakNotes.filter(w=>!w.is_resolved).forEach(w=>themeCounts.set(w.theme,(themeCounts.get(w.theme)||0)+1));
   const weaknessAnalysis=analyzeWeaknesses(problems,attempts,reviews,weakNotes,today);
@@ -1681,7 +1727,7 @@ async function bootstrap():Promise<Bootstrap>{
       source_problem_id:linkedS?(r.source_problem_id||originSource?.problem_id):r.source_problem_id,
       attempt_exists:!!source,review_goal_public:linkedS?"元問題で崩れた基礎型を確認する":r.review_goal_public,
       source_error_summary:linkedS?originSource?.error_point:"",
-      error_type:source?.error_type,
+      error_type:card.prescription.effectiveErrorTypes[0]||"none",
       previous_date:source?.date,previous_score:source?`${source.score_text||source.score_label}${source.score_numeric!=null?` ${source.score_numeric}点`:""}`:"",
       previous_errors:source?.error_types||[source?.error_type||"none"],previous_error_point:source?.error_point||"",previous_next_action:source?.next_action||"",
       previous_improvement_guidance:source?.improvement_guidance||"",previous_required_derivation:source?.required_derivation||"",
@@ -1899,6 +1945,7 @@ async function bootstrap():Promise<Bootstrap>{
     alias_count:problemAliases.length,
     pdf_files:[...new Set([...pdfNames,...pdfDocumentKeys])],pdf_documents:pdfDocuments,diagnostics,import_history:importHistory,
     review_rebuild_summary:(()=>{try{return JSON.parse(metaEntries.find(entry=>entry.key==="review_card_rebuild_summary")?.value||"null")||undefined}catch{return undefined}})()
+    ,legacy_k_summary:(()=>{try{return JSON.parse(metaEntries.find(entry=>entry.key==="legacy_k_reorganization_summary")?.value||"null")||undefined}catch{return undefined}})()
   };
   return {problems:problems.sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.category.localeCompare(b.category)||a.problem_number-b.problem_number),attempts,reviews,roadmap,weakNotes,pastSessions,answerIndex,problemAliases,dashboard,settings,masterStatus,databaseStatus,
     today:{tasks,totalLoad,plannedMinutes:plannedTotal,remainingMinutes,actualMinutes,targetMinutes:settings.daily_study_minutes,capacityPercent,warning,guidance,
@@ -1940,6 +1987,10 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     return await repairDataIntegrity() as T;
   } else if(path==="/api/reviews/rebuild"){
     return await rebuildReviewCards() as T;
+  } else if(path==="/api/legacy-k/preview"){
+    return await legacyKReorganizationPreview() as T;
+  } else if(path==="/api/legacy-k/reorganize"){
+    return await db.transaction("rw",[db.attempts,db.reviews,db.problems,db.meta],()=>reorganizeLegacyKTasks()) as T;
   } else if(path==="/api/master/diagnostic/resolve"){
     return await resolveDiagnostic(body) as T;
   } else if(path==="/api/today/recalculate"){
