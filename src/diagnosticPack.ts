@@ -302,7 +302,7 @@ export async function createDiagnosticPack():Promise<DiagnosticPackResult>{
   const examDate=metaRows.find(row=>row.key==="exam_date")?.value||"";
   let storedRelations:ProblemRelation[]=[];try{storedRelations=JSON.parse(metaRows.find(row=>row.key==="problem-relations")?.value||"[]")}catch{/* 診断は読み取り専用 */}
   const cards=new Map<number,ResolvedReviewCard>();
-  for(const review of reviews){const origin=resolveReviewOrigin({review,attempts,aliases,relations:storedRelations});
+  for(const review of reviews){const origin=resolveReviewOrigin({review,attempts,aliases,relations:storedRelations,problems});
     cards.set(review.id,resolveReviewCard({item:{...review,origin_verified:origin.valid},problems,attempts,aliases,today,examDate,now:new Date().toISOString()}));}
   const promptAudits=reviews.map(review=>buildPromptAudit(review,cards.get(review.id)!));
   const relations=[...relationRows(problems,aliases),...storedRelations];
@@ -317,7 +317,12 @@ export async function createDiagnosticPack():Promise<DiagnosticPackResult>{
     resolved_task_count:legacyK.resolvedTaskCount,classifications:legacyK.classifications,taskActions:legacyK.taskActions},
     sourceOriginPolicy:{source_mismatch_count:sourceRepair.mismatchCount,verified_relation_count:sourceRepair.verifiedRelationCount,
       superseded_count:sourceRepair.supersededCount,regenerated_count:sourceRepair.regeneratedCount,
-      needs_review_count:sourceRepair.needsReviewCount,unchanged_completed_count:sourceRepair.unchangedCompletedCount,actions:sourceRepair.actions},
+      needs_review_count:sourceRepair.needsReviewCount,unchanged_completed_count:sourceRepair.unchangedCompletedCount,
+      active_source_mismatch:sourceRepair.activeSourceMismatchCount,
+      pending_verified_link_needs_migration:sourceRepair.pendingVerifiedLinkNeedsMigrationCount,
+      invalid_legacy_cards_to_supersede:sourceRepair.invalidLegacyCardsToSupersedeCount,
+      historical_completed_linked_reviews:sourceRepair.historicalCompletedLinkedReviewsCount,
+      unresolved_needs_review:sourceRepair.unresolvedNeedsReviewCount,actions:sourceRepair.actions},
     pastExamAudit};
   const snapshotRows=metaRows.filter(row=>row.key.startsWith("today-plan-snapshot:"));
   const settings=Object.fromEntries(metaRows.filter(row=>SETTINGS_KEYS.has(row.key)).map(row=>[row.key,row.value]));

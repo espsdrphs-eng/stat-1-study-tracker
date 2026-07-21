@@ -6,6 +6,7 @@ const source=process.argv[2];
 if(!source)throw new Error("usage: node tools/regenerate-diagnostic-from-pack.mjs <diagnostic-pack.zip> [output.zip]");
 const output=process.argv[3]||"outputs/diagnostic-pack-2026-07-18-stable.zip";
 const applySourceRepair=process.argv.includes("--apply-source-repair");
+const applyLegacyRepair=process.argv.includes("--apply-legacy-k");
 const inputZip=await JSZip.loadAsync(await readFile(source));
 const learning=JSON.parse(await inputZip.file("learning-data.json").async("string"));
 
@@ -37,7 +38,8 @@ const fingerprint=async()=>({attempts:await db.attempts.count(),reviews:await db
   scoreTime:(await db.attempts.toArray()).map(row=>`${row.id}:${row.score_numeric}:${row.time_minutes}`).sort(),
   snapshots:(await db.meta.filter(row=>row.key.startsWith("today-plan-snapshot:")).toArray()).map(row=>[row.key,row.value]).sort()});
 const before=await fingerprint();
-let repairResult=null,secondRepairPreview=null;
+let legacyRepairResult=null,repairResult=null,secondRepairPreview=null;
+if(applyLegacyRepair)legacyRepairResult=await localPost("/api/legacy-k/reorganize",{});
 if(applySourceRepair){
   repairResult=await localPost("/api/source-mismatch/reorganize",{});
   secondRepairPreview=await localPost("/api/source-mismatch/preview",{});
@@ -54,5 +56,5 @@ if(!preserved)throw new Error(`diagnostic fixture data changed unsafely: ${JSON.
 await mkdir(output.replace(/[\\/][^\\/]+$/,"")||".",{recursive:true});
 await writeFile(output,Buffer.from(await result.blob.arrayBuffer()));
 console.log(JSON.stringify({status:"PASS",source,output,before:{attempts:before.attempts,reviews:before.reviews,problems:before.problems,weakNotes:before.weakNotes},
-  after:{attempts:after.attempts,reviews:after.reviews,problems:after.problems,weakNotes:after.weakNotes},repairResult,secondRepairPreview,preserved,readOnlyVerified:result.summary.readOnlyVerified},null,2));
+  after:{attempts:after.attempts,reviews:after.reviews,problems:after.problems,weakNotes:after.weakNotes},legacyRepairResult,repairResult,secondRepairPreview,preserved,readOnlyVerified:result.summary.readOnlyVerified},null,2));
 await db.close();

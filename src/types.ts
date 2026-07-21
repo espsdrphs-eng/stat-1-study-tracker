@@ -43,10 +43,10 @@ export type ProblemRelation = {
   relationType:"prerequisite"|"remediation"|"extension";
   sourceIssue?:string; targetFocus:string; reason:string;
   relationSource:"problem_master"|"user_confirmed"|"gpt_suggestion";
-  status:"confirmed"|"candidate"|"rejected";
+  status:"confirmed"|"verified"|"candidate"|"rejected";
   createdAt:string; updatedAt:string;
 };
-export type ReviewOrigin="direct_attempt"|"verified_linked_problem"|"integration_schedule"|"transfer_schedule"|"past_exam_attempt";
+export type ReviewOrigin="direct_attempt"|"verified_linked_problem"|"integration_schedule"|"transfer_schedule"|"past_exam_attempt"|"historical_completed";
 export type PastExamSessionKind="scan_only"|"scan_plus_one"|"selected_three_timed"|"retrospective_review";
 export type PastExamStage="discrimination"|"calibration"|"simulation";
 export type ScanSetSource="past_exam_year"|"mixed_a_problems"|"custom_set";
@@ -235,6 +235,9 @@ export type Bootstrap = {
       superseded_task_count:number;resolved_task_count:number;policy_version:string;preview?:boolean};
     source_mismatch_summary?:{reorganized_at:string;source_mismatch_count:number;verified_relation_count:number;
       superseded_count:number;regenerated_count:number;needs_review_count:number;unchanged_completed_count:number;
+      active_source_mismatch?:number;pending_verified_link_needs_migration?:number;
+      invalid_legacy_cards_to_supersede?:number;historical_completed_linked_reviews?:number;
+      unresolved_needs_review?:number;verified_relation_migrated?:number;
       policy_version:string;preview?:boolean};
   };
   databaseStatus:{

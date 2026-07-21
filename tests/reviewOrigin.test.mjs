@@ -2,14 +2,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { analyzeSourceMismatchRepair, resolveReviewOrigin } from "../src/reviewOrigin.ts";
 
-test("verified relation is regenerated from targetFocus only",()=>{
+test("verified relation is migrated in place from targetFocus only",()=>{
   const source=attempt(70,"WB-6-A-20"),row=review();
   const relation={relationId:"r1",sourceProblemId:"WB-6-A-20",targetProblemId:"WB-6-S-01",relationType:"remediation",sourceIssue:"domain",targetFocus:"transformed domain",reason:"verified remediation",relationSource:"user_confirmed",status:"confirmed",createdAt:"",updatedAt:""};
   const result=analyzeSourceMismatchRepair({reviews:[row],attempts:[source],problems:[problem("WB-6-S-01")],aliases:[],relations:[relation]});
-  assert.equal(result.actions[0].action,"regenerate");
-  assert.deepEqual(result.actions[0].replacement.targeted_parts,["transformed domain"]);
-  assert.equal(result.actions[0].replacement.origin,"verified_linked_problem");
-  assert.equal(result.actions[0].replacement.relation_id,"r1");
+  assert.equal(result.actions[0].action,"migrate_verified");
+  assert.deepEqual(result.actions[0].patch.targeted_parts,["transformed domain"]);
+  assert.equal(result.actions[0].patch.origin,"verified_linked_problem");
+  assert.equal(result.actions[0].patch.relation_id,"r1");
 });
 
 const problem=id=>({id:1,problem_id:id,source_type:"whitebook",category:id.includes("-S-")?"S":"A",chapter:6,problem_number:Number(id.slice(-2)),title:id,theme:"回帰",priority:"core",role:"training",recommended_mode:"skeleton",linked_past_exams:"",linked_s_problems:"",linked_a_problems:"",notes:"",completion_status:"active",canonical_problem_type:"回帰",canonical_keywords:["回帰"],metadata_status:"ok"});
@@ -33,19 +33,51 @@ test("異なる問題にはverified relationが必要で同じ章だけでは通
   assert.equal(resolveReviewOrigin({review:row,attempts:[source],aliases:[],relations:[relation]}).valid,true);
 });
 
+test("problem_masterの正式な関連指定をverified_masterとして解決する",()=>{
+  const sourceProblem={...problem("WB-2-S-06"),master_version:"v7",related_s_problem_ids:["WB-2-S-07"]};
+  const targetProblem=problem("WB-2-S-07"),source=attempt(52,"WB-2-S-06",["N"]);
+  const row=review({id:115,problem_id:"WB-2-S-07",generated_from_attempt_id:52,source_attempt_id:undefined,source_problem_id:"WB-2-S-06"});
+  const result=analyzeSourceMismatchRepair({reviews:[row],attempts:[source],problems:[sourceProblem,targetProblem],aliases:[],relations:[]});
+  assert.equal(result.pendingVerifiedLinkNeedsMigrationCount,1);
+  assert.equal(result.actions[0].action,"migrate_verified");
+  assert.equal(result.actions[0].patch.relation_id,"master:v7:WB-2-S-06:WB-2-S-07:remediation");
+});
+
+test("完了済みlinked Sはhistorical_completedとしてactive errorへ数えない",()=>{
+  const row=review({id:2,status:"done",problem_id:"WB-2-S-07",source_problem_id:"WB-2-S-06"});
+  const result=analyzeSourceMismatchRepair({reviews:[row],attempts:[attempt(70,"WB-2-S-06")],problems:[problem("WB-2-S-07")],aliases:[],relations:[]});
+  assert.equal(result.historicalCompletedLinkedReviewsCount,1);
+  assert.equal(result.activeSourceMismatchCount,0);
+  assert.equal(result.actions.length,0);
+});
+
 test("source mismatchを単純rebindせず古いカードをsupersededにする",()=>{
   const foreign=attempt(70,"WB-6-A-20"),own=attempt(80,"WB-6-S-01",["N"]);
   const result=analyzeSourceMismatchRepair({reviews:[review()],attempts:[foreign,own],problems:[problem("WB-6-S-01")],aliases:[],relations:[]});
   assert.equal(result.actions[0].action,"regenerate");
   assert.equal(result.actions[0].patch.status,"superseded");
   assert.equal(result.actions[0].replacement.generated_from_attempt_id,80);
+  assert.equal(result.actions[0].replacement.source_attempt_id,80);
+  assert.equal(result.actions[0].replacement.derived_from_attempt_id,80);
+  assert.equal(result.actions[0].replacement.derived_fields.reviewGoal.provenance.attemptId,80);
   assert.notEqual(result.actions[0].replacement.generated_from_attempt_id,70);
+  assert.notEqual(result.actions[0].replacement.reason,review().reason);
 });
 
 test("invalid legacy Kしかないtargetから新規カードを作らない",()=>{
   const foreign=attempt(70,"WB-6-A-20"),own={...attempt(80,"WB-6-S-01",["K"]),rubric_version:"STAT1-REVIEW-v8",k_evidence:[],error_point:"骨格シートのゴール欄が空欄"};
   const result=analyzeSourceMismatchRepair({reviews:[review()],attempts:[foreign,own],problems:[problem("WB-6-S-01")],aliases:[],relations:[]});
   assert.equal(result.actions[0].action,"supersede");assert.equal(result.regeneratedCount,0);
+});
+
+test("invalid legacy Kのcross-target pendingは関係があっても現行triggerなしならsuperseded",()=>{
+  const source={...attempt(71,"WB-6-A-19",["K"]),policy_validity:"invalid_legacy_k",exclude_from_planning:true};
+  const row=review({policy_validity:"invalid_legacy_k",superseded_by_policy_version:"STAT1-v9"});
+  const relation={relationId:"master:v1:a:s:remediation",sourceProblemId:"WB-6-A-19",targetProblemId:"WB-6-S-01",relationType:"remediation",sourceIssue:"old K",targetFocus:"基礎",reason:"master",relationSource:"problem_master",status:"confirmed",createdAt:"",updatedAt:""};
+  const result=analyzeSourceMismatchRepair({reviews:[row],attempts:[source],problems:[problem("WB-6-S-01")],aliases:[],relations:[relation]});
+  assert.equal(result.invalidLegacyCardsToSupersedeCount,1);
+  assert.equal(result.actions[0].action,"supersede");
+  assert.equal(result.actions[0].patch.exclude_from_planning,true);
 });
 
 test("対象Attemptなし・relationなしはsuperseded",()=>{

@@ -1237,7 +1237,7 @@ async function diagnoseData():Promise<DataDiagnostic[]>{
     const problem=pmap.get(canonicalId)||pmap.get(review.problem_id),source=attempts.find(attempt=>attempt.id===review.generated_from_attempt_id);
     if(review.status==="ignored") continue;
     if(!["done","completed","cancelled","superseded"].includes(review.status)){
-      const origin=resolveReviewOrigin({review,attempts,aliases,relations});
+      const origin=resolveReviewOrigin({review,attempts,aliases,relations,problems});
       if(!origin.valid)diagnostics.push({id:`review-source-origin-${review.id}`,severity:"critical",problem_id:review.problem_id,
         canonical_problem_id:origin.targetProblemId,record_type:"source_mismatch",message:origin.reason,review_id:review.id,
         source_problem_id:origin.sourceProblemId,target_problem_id:origin.targetProblemId,source_attempt_id:origin.sourceAttempt?.id,
@@ -1491,6 +1491,12 @@ async function sourceMismatchPreview(){
   return {source_mismatch_count:result.mismatchCount,verified_relation_count:result.verifiedRelationCount,
     superseded_count:result.supersededCount,regenerated_count:result.regeneratedCount,
     needs_review_count:result.needsReviewCount,unchanged_completed_count:result.unchangedCompletedCount,
+    active_source_mismatch:result.activeSourceMismatchCount,
+    pending_verified_link_needs_migration:result.pendingVerifiedLinkNeedsMigrationCount,
+    invalid_legacy_cards_to_supersede:result.invalidLegacyCardsToSupersedeCount,
+    historical_completed_linked_reviews:result.historicalCompletedLinkedReviewsCount,
+    unresolved_needs_review:result.unresolvedNeedsReviewCount,
+    verified_relation_migrated:result.verifiedRelationMigratedCount,
     policy_version:REVIEW_ORIGIN_POLICY_VERSION,preview:true,
     causes:result.actions.reduce<Record<string,number>>((map,row)=>({...map,[row.reason]:(map[row.reason]||0)+1}),{})};
 }
@@ -1510,8 +1516,14 @@ async function reorganizeSourceMismatches(){
     if(action.replacement)await addOrReplaceReview(action.replacement);
   }
   const summary={reorganized_at:new Date().toISOString(),source_mismatch_count:result.mismatchCount,
-    verified_relation_count:result.verifiedRelationCount,superseded_count:result.actions.filter(row=>row.action==="supersede"||row.action==="needs_review"||row.action==="regenerate").length,
+    verified_relation_count:result.verifiedRelationCount,superseded_count:result.supersededCount,
     regenerated_count:result.regeneratedCount,needs_review_count:result.needsReviewCount,unchanged_completed_count:result.unchangedCompletedCount,
+    active_source_mismatch:result.activeSourceMismatchCount,
+    pending_verified_link_needs_migration:result.pendingVerifiedLinkNeedsMigrationCount,
+    invalid_legacy_cards_to_supersede:result.invalidLegacyCardsToSupersedeCount,
+    historical_completed_linked_reviews:result.historicalCompletedLinkedReviewsCount,
+    unresolved_needs_review:result.unresolvedNeedsReviewCount,
+    verified_relation_migrated:result.verifiedRelationMigratedCount,
     policy_version:REVIEW_ORIGIN_POLICY_VERSION,preview:false};
   await db.meta.put({key:"source_mismatch_reorganization_summary",value:JSON.stringify(summary)});
   const [reviewsAfter,attemptsAfter,snapshotsAfter]=await Promise.all([db.reviews.toArray(),db.attempts.toArray(),db.meta.filter(row=>row.key.startsWith("today-plan-snapshot:")).toArray()]);
@@ -1521,7 +1533,9 @@ async function reorganizeSourceMismatches(){
     scoreTime===attemptsAfter.map(row=>`${row.id}:${row.score_numeric}:${row.time_minutes}`).sort().join("|")&&
     snapshotJson===JSON.stringify(snapshotsAfter.map(row=>[row.key,row.value]));
   if(!safe)throw new Error("source mismatch修復の安全性検証に失敗しました。transactionを取り消します。");
-  return {...summary,data_preserved:true};
+  const afterResult=analyzeSourceMismatchRepair({reviews:reviewsAfter,attempts:attemptsAfter,problems,aliases,relations});
+  if(afterResult.activeSourceMismatchCount!==0)throw new Error(`出所修復後も現在対応が必要なカードが${afterResult.activeSourceMismatchCount}件残っています。transactionを取り消します。`);
+  return {...summary,active_source_mismatch_after:afterResult.activeSourceMismatchCount,data_preserved:true};
 }
 
 async function resolveDiagnostic(body:Record<string,unknown>){
@@ -1700,7 +1714,7 @@ async function bootstrap():Promise<Bootstrap>{
     return legacyPlan?{...review,duration_minutes:legacyPlan.estimated_minutes,reason:legacyPlan.review_reason,...planFields(legacyPlan)}:review;
   });
   const reviews=baseReviews.map(review=>{
-    const originResolution=resolveReviewOrigin({review,attempts,aliases:problemAliases,relations:storedRelations});
+    const originResolution=resolveReviewOrigin({review,attempts,aliases:problemAliases,relations:storedRelations,problems});
     const resolvedReview={...review,origin_verified:originResolution.valid};
     const card=resolveReviewCard({item:resolvedReview,problems,attempts,aliases:problemAliases,today,examDate:settings.exam_date});
     const resolvedDue=correctedDueDate(card);
@@ -1713,7 +1727,7 @@ async function bootstrap():Promise<Bootstrap>{
         oneLineHint:card.oneLineHint,todayActions:card.todayActions,completionConditions:card.completionConditions}};
   }).sort((a,b)=>a.due_date.localeCompare(b.due_date)||Number(a.manual_order||0)-Number(b.manual_order||0)||a.id-b.id);
   const reviewIsExecutable=(review:Review)=>!review.exclude_from_planning&&
-    resolveReviewOrigin({review,attempts,aliases:problemAliases,relations:storedRelations}).valid;
+    resolveReviewOrigin({review,attempts,aliases:problemAliases,relations:storedRelations,problems}).valid;
   const a14=new Set(attempts.filter(a=>a.date>=fortnight&&pmap.get(a.problem_id)?.category==="A").map(a=>a.problem_id)).size;
   const skeleton=attempts.filter(a=>a.date>=fortnight&&a.mode==="skeleton");
   const skeletonGood=skeleton.filter(a=>["◎","○"].includes(a.mark)).length;
@@ -2174,10 +2188,34 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     return await savePastExamSession(body,Number(path.split("/")[3])) as T;
   } else if(/^\/api\/past-sessions\/\d+\/analysis$/.test(path)){
     const id=Number(path.split("/")[3]),session=await db.pastSessions.get(id);
-    if(!session)throw new Error("過去問セッションが見つかりません");
+    if(!session)throw new Error("対象の5問スキャンセッションが見つかりません");
     const analysis=parseScan5Update(String(body.text||body.yaml||""));
-    if(Number(analysis.session_id)!==id)throw new Error("分析結果のsession_idが一致しません");
-    await db.pastSessions.update(id,{analysis,rubric_version:String(analysis.rubric_version)});
+    const normalizedSessionId=Number(String(analysis.session_id??"").trim());
+    if(!Number.isInteger(normalizedSessionId)||normalizedSessionId<=0||normalizedSessionId!==id)
+      throw new Error(`対象の5問スキャンセッションが見つかりません。受信したsession_id：${String(analysis.session_id??"（空）")}`);
+    if(analysis.session_kind!=null&&String(analysis.session_kind)!==String(session.session_kind))
+      throw new Error(`session_kindが既存セッションと一致しません。受信値：${String(analysis.session_kind)}／登録値：${String(session.session_kind)}`);
+    if(analysis.stage!=null&&String(analysis.stage)!==String(session.stage))
+      throw new Error(`stageが既存セッションと一致しません。受信値：${String(analysis.stage)}／登録値：${String(session.stage)}`);
+    const rawCandidate=String(analysis.candidate_review_problem_id??"").trim();
+    const importLogs=Array.isArray(analysis.import_normalization_logs)?[...analysis.import_normalization_logs] as Array<Record<string,unknown>>:[];
+    if(rawCandidate){
+      const [problems,aliases]=await Promise.all([db.problems.toArray(),db.problemAliases.toArray()]);
+      const canonicalCandidate=resolveCanonicalProblemId(rawCandidate,aliases);
+      const matched=problems.find(problem=>resolveCanonicalProblemId(problem.problem_id,aliases)===canonicalCandidate);
+      if(matched){
+        analysis.candidate_review_problem_id=matched.problem_id;
+        if(matched.problem_id!==rawCandidate)importLogs.push({rawValue:rawCandidate,normalizedValue:matched.problem_id,
+          fieldName:"candidate_review_problem_id",rubricVersion:String(analysis.rubric_version),timestamp:new Date().toISOString()});
+      }else{
+        analysis.candidate_review_problem_id=null;analysis.candidate_review_label=rawCandidate;
+        importLogs.push({rawValue:rawCandidate,normalizedValue:null,fieldName:"candidate_review_problem_id",
+          rubricVersion:String(analysis.rubric_version),timestamp:new Date().toISOString()});
+      }
+    }else analysis.candidate_review_problem_id=null;
+    analysis.import_normalization_logs=importLogs;
+    await db.transaction("rw",db.pastSessions,()=>db.pastSessions.update(id,{analysis,rubric_version:String(analysis.rubric_version)}));
+    return {ok:true,analysis} as T;
   } else throw new Error(`未対応の保存です: ${path}`);
   return {ok:true} as T;
 }

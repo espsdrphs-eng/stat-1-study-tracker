@@ -3,6 +3,40 @@ import type { PastExamExposure, PastExamSessionKind, PastExamStage, PastSession,
 import { addCalendarDays } from "./taskScheduler.ts";
 
 export const SCAN5_RUBRIC_VERSION="STAT1-SCAN5-v1";
+export const PRIMARY_SELECTION_ERRORS=[
+  "type_misclassification","first_step_failure","score_overconfidence","score_underconfidence",
+  "time_underestimate","sink_risk_missed","poor_selection_balance","none"
+] as const;
+export type PrimarySelectionError=typeof PRIMARY_SELECTION_ERRORS[number];
+export const PRIMARY_SELECTION_ERROR_ALIASES={
+  problem_type_underclassification:"type_misclassification",
+  problem_type_misclassification:"type_misclassification",
+  type_underclassification:"type_misclassification",
+  wrong_problem_type:"type_misclassification",
+  partial_type_identification:"type_misclassification",
+  overconfidence:"score_overconfidence",
+  score_overestimate:"score_overconfidence",
+  underconfidence:"score_underconfidence",
+  score_underestimate:"score_underconfidence",
+  time_overrun:"time_underestimate",
+  time_underestimation:"time_underestimate",
+  sink_risk_underestimate:"sink_risk_missed",
+  sink_risk_overlooked:"sink_risk_missed"
+} as const satisfies Record<string,PrimarySelectionError>;
+
+export type Scan5ImportNormalizationLog={
+  rawValue:string;normalizedValue:string|null;fieldName:string;rubricVersion:string;timestamp:string;
+};
+
+export class Scan5ImportValidationError extends Error{
+  fieldName:string;receivedValue:string;allowedValues:string[];suggestedValue?:string;
+  constructor(args:{fieldName:string;receivedValue:string;allowedValues:string[];suggestedValue?:string}){
+    const suggestion=args.suggestedValue?` 正規化候補：${args.suggestedValue}。`:"";
+    super(`SCAN5分析を保存できません。修正対象：${args.fieldName}。受信値：${args.receivedValue||"（空）"}。${suggestion}使用可能な正式値：${args.allowedValues.join("、")}`);
+    this.name="Scan5ImportValidationError";this.fieldName=args.fieldName;this.receivedValue=args.receivedValue;
+    this.allowedValues=args.allowedValues;this.suggestedValue=args.suggestedValue;
+  }
+}
 
 const list=(value:unknown)=>Array.isArray(value)?value.map(String).filter(Boolean):String(value||"").split(/[;,、\s]+/).map(row=>row.trim()).filter(Boolean);
 const nullableNumber=(value:unknown)=>value===""||value==null?null:Number.isFinite(Number(value))?Number(value):null;
@@ -119,16 +153,22 @@ export function recommendScanSource(args:{sessions:PastSession[];availableYears:
 }
 
 export function buildScan5Prompt(session:PastSession,daysRemaining:number,metrics=scanMetrics(session)){
-  return `あなたは統計検定1級・統計数理の選題判断コーチです。\nルーブリック: ${SCAN5_RUBRIC_VERSION}\n問題文がない場合、真の難易度・最適解法・最適3問・未解答問題の得点を推測しないでください。K/W/N/Cは出力しません。\n\nセッション形式: ${session.session_kind}\n残り日数: ${daysRemaining}\n段階: ${session.stage}\n事前判断:\n${JSON.stringify(session.questions||[],null,2)}\n初期選択: ${(session.initial_selected_problem_ids||[]).join(", ")}\n解答順: ${(session.solve_order||[]).join(", ")}\n実測指標: ${JSON.stringify(metrics)}\n\n良かった判断、誤った判断、主因、次回変更する選題規則1つ、次回確認項目1つを示し、最後に次のYAMLだけを出してください。\n\nscan_update:\n  session_id: "${session.id}"\n  date: "${session.date}"\n  session_kind: "${session.session_kind}"\n  stage: "${session.stage}"\n  good_decisions: []\n  bad_decisions: []\n  primary_selection_error: "none"\n  calibration_findings: []\n  next_selection_rule: ""\n  next_scan_focus: ""\n  candidate_review_problem_id: null\n  candidate_review_reason: ""\n  grading_confidence: 0\n  rubric_version: "${SCAN5_RUBRIC_VERSION}"`;
+  return `あなたは統計検定1級・統計数理の選題判断コーチです。\nルーブリック: ${SCAN5_RUBRIC_VERSION}\n問題文がない場合、真の難易度・最適解法・最適3問・未解答問題の得点を推測しないでください。K/W/N/Cは出力しません。\n\nセッション形式: ${session.session_kind}\n残り日数: ${daysRemaining}\n段階: ${session.stage}\n事前判断:\n${JSON.stringify(session.questions||[],null,2)}\n初期選択: ${(session.initial_selected_problem_ids||[]).join(", ")}\n解答順: ${(session.solve_order||[]).join(", ")}\n実測指標: ${JSON.stringify(metrics)}\n\n良かった判断、誤った判断、主因、次回変更する選題規則1つ、次回確認項目1つを示してください。\nprimary_selection_errorは次の正式値から厳密に1つだけ選び、新しい値・言い換え・複合値を作らないでください。\n- type_misclassification\n- first_step_failure\n- score_overconfidence\n- score_underconfidence\n- time_underestimate\n- sink_risk_missed\n- poor_selection_balance\n- none\n\n問題型を部分的にしか認識できない、分布名だけで分類した、一問内の複数テーマを見落とした、型の粒度が粗すぎる、主役の統計量や変換を識別できない場合は type_misclassification を使ってください。\n最後に次のYAMLだけを出してください。\n\nscan_update:\n  session_id: "${session.id}"\n  date: "${session.date}"\n  session_kind: "${session.session_kind}"\n  stage: "${session.stage}"\n  good_decisions: []\n  bad_decisions: []\n  primary_selection_error: "none" # 上記8個の正式値から1つ\n  calibration_findings: []\n  next_selection_rule: ""\n  next_scan_focus: ""\n  candidate_review_problem_id: null\n  candidate_review_reason: ""\n  grading_confidence: 0\n  rubric_version: "${SCAN5_RUBRIC_VERSION}"`;
 }
 
 export function parseScan5Update(text:string):Record<string,unknown>{
   const fenced=text.match(/```(?:yaml|yml)?\s*([\s\S]*?)```/i)?.[1]||text;
   const parsed=yaml.load(fenced) as Record<string,unknown>||{};const row=(parsed.scan_update||parsed) as Record<string,unknown>;
   if(String(row.rubric_version)!==SCAN5_RUBRIC_VERSION)throw new Error(`scan5専用rubric ${SCAN5_RUBRIC_VERSION} が必要です`);
-  const allowed=["type_misclassification","first_step_failure","score_overconfidence","score_underconfidence","time_underestimate","sink_risk_missed","poor_selection_balance","none"];
-  if(!allowed.includes(String(row.primary_selection_error||"none")))throw new Error("primary_selection_errorが不正です");
-  return {...row,rubric_version:SCAN5_RUBRIC_VERSION};
+  const rawValue=String(row.primary_selection_error??"").trim();
+  const formal=(PRIMARY_SELECTION_ERRORS as readonly string[]).includes(rawValue)?rawValue as PrimarySelectionError:undefined;
+  const alias=PRIMARY_SELECTION_ERROR_ALIASES[rawValue as keyof typeof PRIMARY_SELECTION_ERROR_ALIASES];
+  if(!formal&&!alias)throw new Scan5ImportValidationError({fieldName:"primary_selection_error",receivedValue:rawValue,
+    allowedValues:[...PRIMARY_SELECTION_ERRORS]});
+  const normalized=formal||alias,logs:Scan5ImportNormalizationLog[]=[];
+  if(alias)logs.push({rawValue,normalizedValue:alias,fieldName:"primary_selection_error",rubricVersion:SCAN5_RUBRIC_VERSION,timestamp:new Date().toISOString()});
+  return {...row,primary_selection_error:normalized,raw_primary_selection_error:rawValue,
+    import_normalization_logs:logs,rubric_version:SCAN5_RUBRIC_VERSION};
 }
 
 export function simulateScanPlan(args:{startDate:string;daysRemaining:number;days?:number}){

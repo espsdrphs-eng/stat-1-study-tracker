@@ -8,10 +8,11 @@ export default defineConfig({
     __APP_COMMIT__: JSON.stringify(process.env.GITHUB_SHA || process.env.VITE_APP_COMMIT || "local-build"),
     __APP_DEPLOYED_AT__: JSON.stringify(process.env.VITE_DEPLOYED_AT || new Date().toISOString()),
     __APP_TEST_REPORT__: JSON.stringify([
-      "Release verification (2026-07-18)",
+      "Release verification (2026-07-22)",
       "Type check: PASS (npm run check)",
-      "Unit tests: PASS (97/97, npm test)",
+      "Unit tests: PASS (168/168, npm test)",
       "Production build: PASS (npm run build)",
+      "Browser SCAN5 import: PASS (STAT1-SCAN5-v1 alias normalization)",
       "Note: these commands run during implementation; the iPad export itself does not execute developer tools."
     ].join("\n"))
   },

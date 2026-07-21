@@ -33,3 +33,48 @@ test("scan5分析は専用rubricでpastSessionへ保存しReviewを作らない"
   await localPost(`/api/past-sessions/${saved.id}/analysis`,{text:`scan_update:\n  session_id: "${saved.id}"\n  primary_selection_error: "none"\n  rubric_version: "STAT1-SCAN5-v1"`});
   const updated=await db.pastSessions.get(saved.id);assert.equal(updated.rubric_version,"STAT1-SCAN5-v1");assert.equal(await db.reviews.count(),before);
 });
+
+test("提示されたSCAN5 YAMLをalias正規化し、未解決candidateをラベルとして安全に保存する",async()=>{
+  await db.pastSessions.clear();
+  await db.pastSessions.put({id:1,year:2025,date:"2026-07-22",session_type:"scan5",session_kind:"scan_only",stage:"discrimination",scan_set_source:"past_exam_year",questions,scan_minutes:10,exam_score_eligible:false});
+  await db.meta.put({key:"today-plan-snapshot:2026-07-22",value:JSON.stringify({date:"2026-07-22",task_ids:["x"],tasks:[]})});
+  const before={attempts:await db.attempts.count(),reviews:await db.reviews.count(),sessions:await db.pastSessions.count(),snapshot:(await db.meta.get("today-plan-snapshot:2026-07-22")).value};
+  const yaml=`scan_update:
+  session_id: "1"
+  date: "2026-07-22"
+  session_kind: "scan_only"
+  stage: "discrimination"
+  good_decisions: []
+  bad_decisions: []
+  primary_selection_error: "problem_type_underclassification"
+  calibration_findings: []
+  next_selection_rule: ""
+  next_scan_focus: ""
+  candidate_review_problem_id: "2025-統計数理-問2"
+  candidate_review_reason: "型の粒度を確認する"
+  grading_confidence: 0.8
+  rubric_version: "STAT1-SCAN5-v1"`;
+  await localPost("/api/past-sessions/1/analysis",{text:yaml});
+  const saved=await db.pastSessions.get(1),analysis=saved.analysis;
+  assert.equal(analysis.primary_selection_error,"type_misclassification");
+  assert.equal(analysis.raw_primary_selection_error,"problem_type_underclassification");
+  assert.equal(analysis.candidate_review_problem_id,null);
+  assert.equal(analysis.candidate_review_label,"2025-統計数理-問2");
+  assert.equal(analysis.candidate_review_reason,"型の粒度を確認する");
+  assert.ok(analysis.import_normalization_logs.some(row=>row.fieldName==="primary_selection_error"&&row.rawValue==="problem_type_underclassification"));
+  assert.ok(analysis.import_normalization_logs.some(row=>row.fieldName==="candidate_review_problem_id"&&row.normalizedValue===null));
+  assert.equal(await db.attempts.count(),before.attempts);assert.equal(await db.reviews.count(),before.reviews);assert.equal(await db.pastSessions.count(),before.sessions);
+  assert.equal((await db.meta.get("today-plan-snapshot:2026-07-22")).value,before.snapshot);
+});
+
+test("SCAN5 session_idは文字列と数値を同一視し、存在しないIDを作らない",async()=>{
+  await localPost("/api/past-sessions/1/analysis",{text:'scan_update:\n  session_id: 1\n  session_kind: "scan_only"\n  stage: "discrimination"\n  primary_selection_error: "none"\n  rubric_version: "STAT1-SCAN5-v1"'});
+  const before=await db.pastSessions.count();
+  await assert.rejects(()=>localPost("/api/past-sessions/999/analysis",{text:'scan_update:\n  session_id: 999\n  primary_selection_error: "none"\n  rubric_version: "STAT1-SCAN5-v1"'}),/対象の5問スキャンセッションが見つかりません/);
+  assert.equal(await db.pastSessions.count(),before);
+});
+
+test("SCAN5分析はsession_kindとstageの不一致を保存しない",async()=>{
+  await assert.rejects(()=>localPost("/api/past-sessions/1/analysis",{text:'scan_update:\n  session_id: 1\n  session_kind: "scan_plus_one"\n  stage: "discrimination"\n  primary_selection_error: "none"\n  rubric_version: "STAT1-SCAN5-v1"'}),/session_kind/);
+  await assert.rejects(()=>localPost("/api/past-sessions/1/analysis",{text:'scan_update:\n  session_id: 1\n  session_kind: "scan_only"\n  stage: "simulation"\n  primary_selection_error: "none"\n  rubric_version: "STAT1-SCAN5-v1"'}),/stage/);
+});
