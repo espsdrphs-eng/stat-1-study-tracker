@@ -1,8 +1,8 @@
 import Dexie, { type EntityTable } from "dexie";
-import type { AnswerIndexEntry, Attempt, Bootstrap, CorrectionLog, DataDiagnostic, MasterImportLog, PastSession, Problem, ProblemAlias, Review, Roadmap, StudyUpdate, Task, TodayPlanSnapshot, WeakNote } from "./types";
+import type { AnswerIndexEntry, Attempt, Bootstrap, CorrectionLog, DataDiagnostic, MasterImportLog, PastSession, Problem, ProblemAlias, ProblemRelation, Review, Roadmap, StudyUpdate, Task, TodayPlanSnapshot, WeakNote } from "./types";
 import { japaneseizeMathText } from "./mathJapanese.ts";
 import { analyzeWeaknesses } from "./weaknessAnalytics.ts";
-import { createAdaptiveReviewPlan, createAttemptReviewPlan, createPastReviewPlan, createSReviewPlan, enforceReviewEvidence, normalizedErrors, type ReviewOutcome, type ReviewPlan, type SState } from "./reviewRules.ts";
+import { createAdaptiveReviewPlan, createAttemptReviewPlan, createSReviewPlan, enforceReviewEvidence, normalizedErrors, type ReviewOutcome, type ReviewPlan, type SState } from "./reviewRules.ts";
 import { postponedDueDate } from "./reviewScheduling.ts";
 import { applyWeakNoteQuizResult } from "./weakNoteQuiz.ts";
 import { selectMixedPractice } from "./studyScheduler.ts";
@@ -23,6 +23,8 @@ import { examScoreEligibility, taskScoreForAttempt } from "./scoreEligibility.ts
 import { resolveReviewTransition } from "./reviewTransition.ts";
 import { analyzeLegacyKReorganization } from "./legacyKRepair.ts";
 import { classifyKPolicyValidity, excludeLegacyKFromPlanning } from "./legacyKPolicy.ts";
+import { analyzeSourceMismatchRepair, resolveReviewOrigin, REVIEW_ORIGIN_POLICY_VERSION } from "./reviewOrigin.ts";
+import { normalizePastExamSession, parseScan5Update, sessionStudyMinutes, validatePastExamSession } from "./pastExamWorkflow.ts";
 import {
   APP_SCHEMA_VERSION, createSchemaDiagnostic, DB_NAME, DB_VERSION,
   GPT_SAVE_REQUIRED_STORES, IndexedDbSchemaError, LATEST_STORE_SCHEMAS, REQUIRED_APP_STORES, STORES
@@ -731,6 +733,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     ,policy_validity:kPolicyValidity,exclude_from_planning:kPolicyValidity==="invalid_legacy_k"
     ,exclude_from_recurrence_metrics:kPolicyValidity==="invalid_legacy_k"
     ,superseded_by_policy_version:kPolicyValidity==="invalid_legacy_k"?LEARNING_POLICY_VERSION:undefined
+    ,parent_past_session_id:Number(input.parent_past_session_id||0)||undefined
   }));
   if(input.auto_corrected) pendingCorrectionLogs.push({
     auto_corrected:true,correction_fields:input.correction_fields||[],
@@ -778,6 +781,8 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     problem_id:input.problem_id,due_date:await reviewDueDate(date,delayedInterval),
     review_type:plan.review_type,status:"pending",generated_from_attempt_id:id,duration_minutes:delayedPrescription.estimatedMinutes,
     reason:delayedPrescription.schedulingReason,task_origin:"review_attempt",attempt_exists:true,
+    origin:input.parent_past_session_id?"past_exam_attempt":"direct_attempt",target_problem_id:input.problem_id,
+    parent_past_session_id:Number(input.parent_past_session_id||0)||undefined,generated_at:new Date().toISOString(),
     review_scope:delayedPrescription.reviewScope,targeted_parts:delayedPrescription.targetedParts,
     scope_completion_conditions:delayedPrescription.completionConditions,effective_mode:delayedPrescription.mode==="exam_90min"?"full":delayedPrescription.mode,
     sheet_type:delayedPrescription.sheetType,learning_purpose:delayedPrescription.learningPurpose,
@@ -794,6 +799,8 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     const immediateDraft=taskDraftFromPrescription({prescription:immediate,sourceAttemptId:id,sourceDate:date,errors:effectiveErrors});
     await addOrReplaceReview({problem_id:input.problem_id,due_date:date,review_type:"same_session_correction",status:"pending",
       generated_from_attempt_id:id,duration_minutes:immediate.estimatedMinutes,reason:immediate.schedulingReason,task_origin:"review_attempt",attempt_exists:true,
+      origin:input.parent_past_session_id?"past_exam_attempt":"direct_attempt",target_problem_id:input.problem_id,
+      parent_past_session_id:Number(input.parent_past_session_id||0)||undefined,generated_at:new Date().toISOString(),
       review_scope:immediate.reviewScope,targeted_parts:immediate.targetedParts,scope_completion_conditions:immediate.completionConditions,
       effective_mode:immediate.mode==="exam_90min"?"full":immediate.mode,sheet_type:immediate.sheetType,
       learning_purpose:"error_repair",learning_stage:"repair",assessment_timing:"same_session_correction",target_kind:immediate.targetKind,
@@ -1201,8 +1208,8 @@ async function importIntegratedMaster(raw:unknown){
 }
 
 async function diagnoseData():Promise<DataDiagnostic[]>{
-  const [problems,attempts,reviews,notes,answers,aliases,examMeta]=await Promise.all([
-    db.problems.toArray(),db.attempts.toArray(),db.reviews.toArray(),db.weakNotes.toArray(),db.answerIndex.toArray(),db.problemAliases.toArray(),db.meta.get("exam_date")
+  const [problems,attempts,reviews,notes,answers,aliases,examMeta,relations]=await Promise.all([
+    db.problems.toArray(),db.attempts.toArray(),db.reviews.toArray(),db.weakNotes.toArray(),db.answerIndex.toArray(),db.problemAliases.toArray(),db.meta.get("exam_date"),storedProblemRelations()
   ]);
   const pmap=new Map(problems.map(problem=>[problem.problem_id,problem])),amap=new Map(answers.map(answer=>[answer.problem_id,answer]));
   const diagnostics:DataDiagnostic[]=[];
@@ -1229,6 +1236,13 @@ async function diagnoseData():Promise<DataDiagnostic[]>{
     if(canonicalId!==review.problem_id) diagnostics.push({id:`review-alias-${review.id}`,severity:"warning",problem_id:review.problem_id,record_type:"review",message:"復習予定のproblem_idがaliasです。表示・集計上はcanonical IDへ統合します。",current_value:review.problem_id,suggested_value:canonicalId,reason:"problem_aliasesに基づく補正です。",review_id:review.id,repairable:true,recommended_action:"repair"});
     const problem=pmap.get(canonicalId)||pmap.get(review.problem_id),source=attempts.find(attempt=>attempt.id===review.generated_from_attempt_id);
     if(review.status==="ignored") continue;
+    if(!["done","completed","cancelled","superseded"].includes(review.status)){
+      const origin=resolveReviewOrigin({review,attempts,aliases,relations});
+      if(!origin.valid)diagnostics.push({id:`review-source-origin-${review.id}`,severity:"critical",problem_id:review.problem_id,
+        canonical_problem_id:origin.targetProblemId,record_type:"source_mismatch",message:origin.reason,review_id:review.id,
+        source_problem_id:origin.sourceProblemId,target_problem_id:origin.targetProblemId,source_attempt_id:origin.sourceAttempt?.id,
+        repairable:true,recommended_action:"repair"});
+    }
     if(!problem) diagnostics.push({id:`review-${review.id}`,severity:"critical",problem_id:review.problem_id,record_type:"review",message:"復習の問題IDが problem_master に存在しません。",repairable:false});
     const ownAttemptExists=attempts.some(attempt=>resolveCanonicalProblemId(attempt.problem_id,aliases)===canonicalId);
     if(review.task_origin==="review_attempt"&&!ownAttemptExists)
@@ -1463,6 +1477,53 @@ async function reorganizeLegacyKTasks(){
   return {...summary,data_preserved:true};
 }
 
+async function storedProblemRelations():Promise<ProblemRelation[]>{
+  const row=await db.meta.get("problem-relations");
+  if(!row?.value)return [];
+  try{return (JSON.parse(row.value) as ProblemRelation[]).filter(relation=>relation&&relation.relationId)}catch{return []}
+}
+
+async function sourceMismatchPreview(){
+  const [reviews,attempts,problems,aliases,relations]=await Promise.all([
+    db.reviews.toArray(),db.attempts.toArray(),db.problems.toArray(),db.problemAliases.toArray(),storedProblemRelations()
+  ]);
+  const result=analyzeSourceMismatchRepair({reviews,attempts,problems,aliases,relations});
+  return {source_mismatch_count:result.mismatchCount,verified_relation_count:result.verifiedRelationCount,
+    superseded_count:result.supersededCount,regenerated_count:result.regeneratedCount,
+    needs_review_count:result.needsReviewCount,unchanged_completed_count:result.unchangedCompletedCount,
+    policy_version:REVIEW_ORIGIN_POLICY_VERSION,preview:true,
+    causes:result.actions.reduce<Record<string,number>>((map,row)=>({...map,[row.reason]:(map[row.reason]||0)+1}),{})};
+}
+
+async function reorganizeSourceMismatches(){
+  const [reviewsBefore,attemptsBefore,problems,aliases,relations,snapshotsBefore]=await Promise.all([
+    db.reviews.toArray(),db.attempts.toArray(),db.problems.toArray(),db.problemAliases.toArray(),storedProblemRelations(),
+    db.meta.filter(row=>row.key.startsWith("today-plan-snapshot:")).toArray()
+  ]);
+  const attemptKeys=attemptsBefore.map(row=>row.id).sort((a,b)=>a-b).join(","),reviewKeys=reviewsBefore.map(row=>row.id).sort((a,b)=>a-b).join(",");
+  const completed=reviewsBefore.filter(row=>["done","completed"].includes(row.status)).map(row=>`${row.id}:${row.status}`).sort().join(",");
+  const scoreTime=attemptsBefore.map(row=>`${row.id}:${row.score_numeric}:${row.time_minutes}`).sort().join("|");
+  const snapshotJson=JSON.stringify(snapshotsBefore.map(row=>[row.key,row.value]));
+  const result=analyzeSourceMismatchRepair({reviews:reviewsBefore,attempts:attemptsBefore,problems,aliases,relations});
+  for(const action of result.actions){
+    if(action.patch)await db.reviews.update(action.reviewId,action.patch);
+    if(action.replacement)await addOrReplaceReview(action.replacement);
+  }
+  const summary={reorganized_at:new Date().toISOString(),source_mismatch_count:result.mismatchCount,
+    verified_relation_count:result.verifiedRelationCount,superseded_count:result.actions.filter(row=>row.action==="supersede"||row.action==="needs_review"||row.action==="regenerate").length,
+    regenerated_count:result.regeneratedCount,needs_review_count:result.needsReviewCount,unchanged_completed_count:result.unchangedCompletedCount,
+    policy_version:REVIEW_ORIGIN_POLICY_VERSION,preview:false};
+  await db.meta.put({key:"source_mismatch_reorganization_summary",value:JSON.stringify(summary)});
+  const [reviewsAfter,attemptsAfter,snapshotsAfter]=await Promise.all([db.reviews.toArray(),db.attempts.toArray(),db.meta.filter(row=>row.key.startsWith("today-plan-snapshot:")).toArray()]);
+  const safe=attemptKeys===attemptsAfter.map(row=>row.id).sort((a,b)=>a-b).join(",")&&
+    reviewKeys.split(",").every(id=>reviewsAfter.some(row=>row.id===Number(id)))&&
+    completed===reviewsAfter.filter(row=>["done","completed"].includes(row.status)).map(row=>`${row.id}:${row.status}`).sort().join(",")&&
+    scoreTime===attemptsAfter.map(row=>`${row.id}:${row.score_numeric}:${row.time_minutes}`).sort().join("|")&&
+    snapshotJson===JSON.stringify(snapshotsAfter.map(row=>[row.key,row.value]));
+  if(!safe)throw new Error("source mismatch修復の安全性検証に失敗しました。transactionを取り消します。");
+  return {...summary,data_preserved:true};
+}
+
 async function resolveDiagnostic(body:Record<string,unknown>){
   const reviewId=Number(body.review_id),action=String(body.action||"hold");
   const review=await db.reviews.get(reviewId);
@@ -1626,6 +1687,8 @@ async function bootstrap():Promise<Bootstrap>{
     exam_date:metaEntries.find(entry=>entry.key==="exam_date")?.value||"",
     daily_study_minutes:Math.max(30,Number(metaEntries.find(entry=>entry.key==="daily_study_minutes")?.value||150))
   };
+  let storedRelations:ProblemRelation[]=[];
+  try{const value=JSON.parse(metaEntries.find(entry=>entry.key==="problem-relations")?.value||"[]");if(Array.isArray(value))storedRelations=value}catch{storedRelations=[]}
   const baseReviews=rawReviews.map(review=>{
     if(review.review_method) return review;
     const problem=problemForId(review.problem_id);
@@ -1637,16 +1700,20 @@ async function bootstrap():Promise<Bootstrap>{
     return legacyPlan?{...review,duration_minutes:legacyPlan.estimated_minutes,reason:legacyPlan.review_reason,...planFields(legacyPlan)}:review;
   });
   const reviews=baseReviews.map(review=>{
-    const card=resolveReviewCard({item:review,problems,attempts,aliases:problemAliases,today,examDate:settings.exam_date});
+    const originResolution=resolveReviewOrigin({review,attempts,aliases:problemAliases,relations:storedRelations});
+    const resolvedReview={...review,origin_verified:originResolution.valid};
+    const card=resolveReviewCard({item:resolvedReview,problems,attempts,aliases:problemAliases,today,examDate:settings.exam_date});
     const resolvedDue=correctedDueDate(card);
     const status=["pending","overdue"].includes(review.status)&&resolvedDue<today?"overdue":review.status;
-    return {...review,problem_id:card.canonicalProblemId,due_date:resolvedDue,status,
+    return {...resolvedReview,problem_id:card.canonicalProblemId,due_date:resolvedDue,status,
       inferred_mode:card.inferredMode,effective_mode:card.effectiveMode,mode_override:card.modeOverride,
       sheet_type:card.sheetType,sheet_name:card.sheetLabel,
       consistency_warnings:card.consistencyWarnings,review_needed:card.reviewNeeded,
       derived_fields:{reviewGoal:card.reviewGoal,correctionTheme:card.correctionTheme,entryHint:card.entryHint,
         oneLineHint:card.oneLineHint,todayActions:card.todayActions,completionConditions:card.completionConditions}};
   }).sort((a,b)=>a.due_date.localeCompare(b.due_date)||Number(a.manual_order||0)-Number(b.manual_order||0)||a.id-b.id);
+  const reviewIsExecutable=(review:Review)=>!review.exclude_from_planning&&
+    resolveReviewOrigin({review,attempts,aliases:problemAliases,relations:storedRelations}).valid;
   const a14=new Set(attempts.filter(a=>a.date>=fortnight&&pmap.get(a.problem_id)?.category==="A").map(a=>a.problem_id)).size;
   const skeleton=attempts.filter(a=>a.date>=fortnight&&a.mode==="skeleton");
   const skeletonGood=skeleton.filter(a=>["◎","○"].includes(a.mark)).length;
@@ -1656,9 +1723,10 @@ async function bootstrap():Promise<Bootstrap>{
   const pastSkeleton=attempts.filter(a=>a.date>=fortnight&&pmap.get(a.problem_id)?.category==="past_exam").length;
   const delayed3=reviews.filter(r=>r.status==="overdue"&&r.due_date<addDays(today,-3)).length;
   const weakUpdates=weakNotes.filter(w=>w.date>=week).length;
-  const scans=pastSessions.filter(s=>["scan_5_questions","scan5"].includes(s.session_type)),exams=pastSessions.filter(s=>["exam_90min","past_exam"].includes(s.session_type));
-  const studyDays14=new Set(attempts.filter(a=>a.date>=fortnight).map(a=>a.date)).size;
-  const actualMinutes14=attempts.filter(a=>a.date>=fortnight).reduce((sum,a)=>sum+Math.max(0,Number(a.time_minutes||0)),0);
+  const scans=pastSessions.filter(s=>["scan_5_questions","scan5"].includes(s.session_type)||!!s.session_kind),exams=pastSessions.filter(s=>["exam_90min","past_exam"].includes(s.session_type)||s.session_kind==="selected_three_timed");
+  const studyDays14=new Set([...attempts.filter(a=>a.date>=fortnight).map(a=>a.date),...pastSessions.filter(s=>String(s.date)>=fortnight).map(s=>String(s.date))]).size;
+  const standaloneMinutes14=attempts.filter(a=>a.date>=fortnight&&!a.parent_past_session_id).reduce((sum,a)=>sum+Math.max(0,Number(a.time_minutes||0)),0);
+  const actualMinutes14=standaloneMinutes14+pastSessions.filter(s=>String(s.date)>=fortnight).reduce((sum,session)=>sum+sessionStudyMinutes(session,attempts),0);
   const sCore14=new Set(attempts.filter(a=>a.date>=fortnight&&["SS","S"].includes(pmap.get(a.problem_id)?.strategy_rank||"")).map(a=>a.problem_id)).size;
   const aPlus14=new Set(attempts.filter(a=>a.date>=fortnight&&pmap.get(a.problem_id)?.strategy_rank==="A+").map(a=>a.problem_id)).size;
   const criticalS=["WB-6-S-21","WB-6-S-22"].map(problemId=>attempts.find(attempt=>attempt.problem_id===problemId)).filter(Boolean) as Attempt[];
@@ -1681,7 +1749,7 @@ async function bootstrap():Promise<Bootstrap>{
   const readiness=calculateExamReadinessMetrics({problems,attempts,pastSessions,aliases:problemAliases,today});
   const weeklyQuota=weeklySoftQuota({attempts:attempts as unknown as Array<Record<string,unknown>>,
     pastSessions:pastSessions as unknown as Array<Record<string,unknown>>,weekStart:week});
-  const weeklyQuotaCandidates=quotaCandidatesWithinCapacity({status:weeklyQuota,remainingMinutes:settings.daily_study_minutes});
+  const weeklyQuotaCandidates=quotaCandidatesWithinCapacity({status:weeklyQuota,remainingMinutes:settings.daily_study_minutes,daysRemaining:progress.daysRemaining});
   const stableBlockingIssues=[
     ...(diagnosticsPreview(problems,attempts,reviews,problemAliases).criticalCount?["問題ID・表示名の重大不一致が残っています。"]:[]),
     ...(!readiness.sampleSizes.unseen?["未見・長期未実施問題の得点記録がまだありません。"]:[]),
@@ -1714,7 +1782,7 @@ async function bootstrap():Promise<Bootstrap>{
       allocation:progress.allocation,nextPhase:progress.nextPhase,dangerCriteria:progress.dangerCriteria,
       daysRemaining:progress.daysRemaining,examDateIsEstimate:!settings.exam_date}
   };
-  const dueReviews=reviews.filter(r=>["pending","overdue"].includes(r.status)&&r.due_date<=today).map(r=>{
+  const dueReviews=reviews.filter(r=>["pending","overdue"].includes(r.status)&&r.due_date<=today&&reviewIsExecutable(r)).map(r=>{
     const p=problemForId(r.problem_id)!;const originSource=attempts.find(a=>a.id===r.generated_from_attempt_id);
     const ownSource=attempts.find(attempt=>resolveCanonicalProblemId(attempt.problem_id,problemAliases)===resolveCanonicalProblemId(r.problem_id,problemAliases)&&p&&attemptMatchesProblem(attempt,p));
     const linkedS=r.task_origin==="linked_s_check"||r.review_type==="s_check";
@@ -1906,7 +1974,8 @@ async function bootstrap():Promise<Bootstrap>{
     } as Task;
   });
   const totalLoad=Math.round(tasks.filter(task=>!task.checked&&task.triage!=="tomorrow").reduce((sum,x)=>sum+x.load,0)*10)/10;
-  const actualMinutes=attempts.filter(attempt=>attempt.date===today).reduce((sum,attempt)=>sum+Math.max(0,Number(attempt.time_minutes||0)),0);
+  const actualMinutes=attempts.filter(attempt=>attempt.date===today&&!attempt.parent_past_session_id).reduce((sum,attempt)=>sum+Math.max(0,Number(attempt.time_minutes||0)),0)
+    +pastSessions.filter(session=>String(session.date)===today).reduce((sum,session)=>sum+sessionStudyMinutes(session,attempts),0);
   const timeSummary=summarizeTodayTime(tasks,actualMinutes,settings.daily_study_minutes,snapshot.start_of_day_planned_minutes);
   const activeRemainingMinutes=timeSummary.activeRemainingMinutes;
   const postponeCandidateMinutes=timeSummary.postponeCandidateMinutes;
@@ -1946,6 +2015,7 @@ async function bootstrap():Promise<Bootstrap>{
     pdf_files:[...new Set([...pdfNames,...pdfDocumentKeys])],pdf_documents:pdfDocuments,diagnostics,import_history:importHistory,
     review_rebuild_summary:(()=>{try{return JSON.parse(metaEntries.find(entry=>entry.key==="review_card_rebuild_summary")?.value||"null")||undefined}catch{return undefined}})()
     ,legacy_k_summary:(()=>{try{return JSON.parse(metaEntries.find(entry=>entry.key==="legacy_k_reorganization_summary")?.value||"null")||undefined}catch{return undefined}})()
+    ,source_mismatch_summary:(()=>{try{return JSON.parse(metaEntries.find(entry=>entry.key==="source_mismatch_reorganization_summary")?.value||"null")||undefined}catch{return undefined}})()
   };
   return {problems:problems.sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.category.localeCompare(b.category)||a.problem_number-b.problem_number),attempts,reviews,roadmap,weakNotes,pastSessions,answerIndex,problemAliases,dashboard,settings,masterStatus,databaseStatus,
     today:{tasks,totalLoad,plannedMinutes:plannedTotal,remainingMinutes,actualMinutes,targetMinutes:settings.daily_study_minutes,capacityPercent,warning,guidance,
@@ -1971,6 +2041,36 @@ export async function localGet<T>(path:string):Promise<T>{
   throw new Error(`未対応の読み取りです: ${path}`);
 }
 
+async function savePastExamSession(body:Record<string,unknown>,existingId?:number){
+  return await db.transaction("rw",[db.pastSessions,db.reviews,db.meta,db.problems,db.attempts,db.problemAliases,db.answerIndex,db.weakNotes,db.sMemory],async()=>{
+    const previous=existingId?await db.pastSessions.get(existingId):undefined;
+    if(existingId&&!previous)throw new Error("過去問セッションが見つかりません");
+    const normalized=normalizePastExamSession({...previous,...body,id:existingId||0}),validation=validatePastExamSession(normalized);
+    if(!validation.valid)throw new Error(validation.errors.join(" "));
+    const now=new Date().toISOString(),hasSolved=validation.solvedQuestions.length>0;
+    const session={...previous,...normalized,exam_score_eligible:validation.examScoreEligible,
+      prompt_scanned_at:previous?.prompt_scanned_at||normalized.prompt_scanned_at||(normalized.session_kind!=="retrospective_review"?now:undefined),
+      attempt_started_at:hasSolved?(previous?.attempt_started_at||now):previous?.attempt_started_at,
+      attempt_completed_at:hasSolved?now:previous?.attempt_completed_at,
+      answer_viewed_at:previous?.answer_viewed_at||normalized.answer_viewed_at||(normalized.answer_exposure?now:undefined),
+      simulation_completed_at:normalized.session_kind==="selected_three_timed"&&validation.solvedQuestions.length===3?now:previous?.simulation_completed_at};
+    const sessionId=existingId||Number(await db.pastSessions.add({...session,id:undefined as unknown as number} as PastSession));
+    if(existingId)await db.pastSessions.put({...session,id:sessionId} as PastSession);
+    const allowedSolved=new Set(validation.solvedQuestions.map(row=>row.problemId).filter(Boolean));
+    const attemptUpdates=(Array.isArray(body.attempt_updates)?body.attempt_updates:[]) as Array<StudyUpdate&Record<string,unknown>>;
+    const aliases=await db.problemAliases.toArray(),linkedIds=[...(previous?.linked_attempt_ids||[])];
+    for(const update of attemptUpdates){
+      if(!allowedSolved.has(update.problem_id))throw new Error(`解いていない問題 ${update.problem_id} はAttemptとして保存できません`);
+      const target=resolveCanonicalProblemId(update.problem_id,aliases);
+      const existingAttempt=(await db.attempts.toArray()).find(row=>row.parent_past_session_id===sessionId&&resolveCanonicalProblemId(row.problem_id,aliases)===target);
+      const attemptId=existingAttempt?.id||await saveAttempt({...update,parent_past_session_id:sessionId,date:update.date||normalized.date});
+      if(!linkedIds.includes(attemptId))linkedIds.push(attemptId);
+    }
+    if(linkedIds.length)await db.pastSessions.update(sessionId,{linked_attempt_ids:linkedIds});
+    return {sessionId,examScoreEligible:validation.examScoreEligible,warnings:validation.warnings};
+  });
+}
+
 export async function localPost<T>(path:string,body:any):Promise<T>{
   await initialize();
   if(path==="/api/database/repair"){
@@ -1991,6 +2091,10 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     return await legacyKReorganizationPreview() as T;
   } else if(path==="/api/legacy-k/reorganize"){
     return await db.transaction("rw",[db.attempts,db.reviews,db.problems,db.meta],()=>reorganizeLegacyKTasks()) as T;
+  } else if(path==="/api/source-mismatch/preview"){
+    return await sourceMismatchPreview() as T;
+  } else if(path==="/api/source-mismatch/reorganize"){
+    return await db.transaction("rw",[db.attempts,db.reviews,db.problems,db.problemAliases,db.meta],()=>reorganizeSourceMismatches()) as T;
   } else if(path==="/api/master/diagnostic/resolve"){
     return await resolveDiagnostic(body) as T;
   } else if(path==="/api/today/recalculate"){
@@ -2065,18 +2169,15 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     if(!note) throw new Error("弱点ノートが見つかりません");
     await db.weakNotes.update(id,applyWeakNoteQuizResult(note,body.result==="remembered"?"remembered":"retry"));
   } else if(path==="/api/past-sessions") {
-    await db.transaction("rw",[db.pastSessions,db.reviews,db.meta,db.problems,db.attempts,db.problemAliases],async()=>{
-      const session={...body,id:undefined as unknown as number,year:Number(body.year),selection_time_minutes:Number(body.selection_time_minutes||0),completed_questions_count:Number(body.completed_questions_count||0)};
-      const sessionId=Number(await db.pastSessions.add(session));
-      const plan=createPastReviewPlan(session);
-      await addOrReplaceReview({
-        problem_id:`PY-${session.year}-SESSION`,
-        due_date:await reviewDueDate(String(session.date||todayString()),plan.interval_days||7),review_type:plan.review_type,
-        status:"pending",generated_from_attempt_id:0,generated_from_past_session_id:sessionId,
-        duration_minutes:plan.estimated_minutes,reason:plan.review_reason,task_origin:"past_exam_followup",
-        attempt_exists:false,...planFields(plan)
-      });
-    });
+    return await savePastExamSession(body) as T;
+  } else if(/^\/api\/past-sessions\/\d+\/update$/.test(path)){
+    return await savePastExamSession(body,Number(path.split("/")[3])) as T;
+  } else if(/^\/api\/past-sessions\/\d+\/analysis$/.test(path)){
+    const id=Number(path.split("/")[3]),session=await db.pastSessions.get(id);
+    if(!session)throw new Error("過去問セッションが見つかりません");
+    const analysis=parseScan5Update(String(body.text||body.yaml||""));
+    if(Number(analysis.session_id)!==id)throw new Error("分析結果のsession_idが一致しません");
+    await db.pastSessions.update(id,{analysis,rubric_version:String(analysis.rubric_version)});
   } else throw new Error(`未対応の保存です: ${path}`);
   return {ok:true} as T;
 }

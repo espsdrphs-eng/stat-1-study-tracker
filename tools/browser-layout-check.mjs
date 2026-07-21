@@ -16,7 +16,13 @@ try{
     const overflow=dimensions.scrollWidth-dimensions.clientWidth;
     if(overflow>1)throw new Error(`${size.name}: horizontal overflow ${overflow}px`);
     await page.screenshot({path:`outputs/${size.name}.png`,fullPage:true});
-    results.push({...size,...dimensions,status:"PASS"});
+    await page.getByText("過去問分析",{exact:true}).first().evaluate(element=>(element.closest("button")||element).click());
+    await page.waitForTimeout(300);
+    const pastDimensions=await page.evaluate(()=>({scrollWidth:document.documentElement.scrollWidth,clientWidth:document.documentElement.clientWidth}));
+    const pastOverflow=pastDimensions.scrollWidth-pastDimensions.clientWidth;
+    if(pastOverflow>1)throw new Error(`${size.name}: past workflow horizontal overflow ${pastOverflow}px`);
+    await page.screenshot({path:`outputs/${size.name}-past.png`,fullPage:true});
+    results.push({...size,...dimensions,pastScrollWidth:pastDimensions.scrollWidth,status:"PASS"});
     await context.close();
   }
   console.log(JSON.stringify(results,null,2));

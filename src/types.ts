@@ -46,6 +46,18 @@ export type ProblemRelation = {
   status:"confirmed"|"candidate"|"rejected";
   createdAt:string; updatedAt:string;
 };
+export type ReviewOrigin="direct_attempt"|"verified_linked_problem"|"integration_schedule"|"transfer_schedule"|"past_exam_attempt";
+export type PastExamSessionKind="scan_only"|"scan_plus_one"|"selected_three_timed"|"retrospective_review";
+export type PastExamStage="discrimination"|"calibration"|"simulation";
+export type ScanSetSource="past_exam_year"|"mixed_a_problems"|"custom_set";
+export type PastExamExposure="unknown"|"unseen"|"prompt_scanned"|"partially_attempted"|"fully_attempted"|"answer_exposed"|"simulated";
+export type ScanQuestion = {
+  problemId?:string;questionLabel:string;predictedType:string;firstStep:string;
+  predictedScore:number|null;predictedMinutes:number|null;sinkRisk:"low"|"medium"|"high";
+  selected:boolean;selectionReason:string;plannedOrder:number|null;
+  actualScore?:number|null;actualMinutes?:number|null;typeJudgmentCorrect?:boolean|null;
+  firstStepCorrect?:boolean|null;sank?:boolean|null;hintUsed?:boolean;referenceUsed?:boolean;completed?:boolean;
+};
 export type LearningPurpose="error_repair"|"integration_check"|"transfer_check"|"exam_performance";
 export type LearningStage="acquisition"|"repair"|"integration"|"discrimination"|"transfer"|"performance"|"stable";
 export type AssessmentTiming="same_session_correction"|"delayed_retrieval"|"independent_performance";
@@ -83,6 +95,7 @@ export type Attempt = {
   retention_eligible?:boolean; problem_type_key?:string; transfer_evidence?:boolean;
   policy_validity?:KPolicyValidity; exclude_from_planning?:boolean;
   exclude_from_recurrence_metrics?:boolean; superseded_by_policy_version?:string;
+  parent_past_session_id?:number;
 };
 export type Review = {
   id:number; problem_id:string; due_date:string; review_type:string; status:string; generated_from_attempt_id:number;
@@ -120,6 +133,7 @@ export type Review = {
   policy_validity?:KPolicyValidity; exclude_from_planning?:boolean;
   exclude_from_recurrence_metrics?:boolean; superseded_by_policy_version?:string;
   superseded_reason?:string;
+  origin?:ReviewOrigin;origin_verified?:boolean;target_problem_id?:string;relation_id?:string;generated_at?:string;parent_past_session_id?:number;
 };
 export type TodayPlanSnapshot = {
   date:string;task_ids:string[];start_of_day_planned_minutes:number;
@@ -135,7 +149,17 @@ export type WeakNote = {
 export type Roadmap = {
   id:number; order_index:number; problem_id:string; block_name:string; expected_mode:string; load_score:number; is_active:number;
 };
-export type PastSession = Record<string, string|number> & { id:number; year:number; session_type:string; date:string };
+export type PastSession = Record<string, unknown> & {
+  id:number;year:number;session_type:string;date:string;session_kind?:PastExamSessionKind;stage?:PastExamStage;
+  scan_set_source?:ScanSetSource;source_label?:string;questions?:ScanQuestion[];scan_minutes?:number;
+  initial_selected_problem_ids?:string[];final_selected_problem_ids?:string[];solve_order?:string[];
+  planned_minutes_by_problem?:Record<string,number>;selection_strategy?:string;actual_total_minutes?:number;
+  changed_selection?:boolean;selection_change_reason?:string;answer_exposure?:boolean;review_minutes?:number;notes?:string;
+  selection_evaluation_eligible?:boolean;optimal_selected_problem_ids?:string[];optimal_selection_basis?:string;
+  exam_score_eligible?:boolean;prompt_scanned_at?:string;attempt_started_at?:string;attempt_completed_at?:string;
+  answer_viewed_at?:string;simulation_completed_at?:string;linked_attempt_ids?:number[];
+  analysis?:Record<string,unknown>;rubric_version?:string;
+};
 export type Task = {
   id?:number; problem_id:string; title:string; kind:string; reason:string; mode:string;
   minutes:number; load:number; status?:string; error_type?:string; theme?:string;
@@ -185,12 +209,14 @@ export type Dashboard = {
   readiness:{
     unseenScoreRate:number|null;timedCompletionRate:number|null;selectionSuccessRate:number|null;
     pastExamScoreRate:number|null;kRecurrenceRate:number|null;repeatedWRate:number|null;
+    typeIdentificationAccuracy:number|null;firstStepAccuracy:number|null;
+    predictedScoreCalibration:number|null;predictedTimeCalibration:number|null;
     sampleSizes:{unseen:number;timed:number;scans:number;pastExams:number;kReviews:number;wReviews:number};
   };
   stableRelease:{isStable:boolean;blockingIssues:string[];message:string};
   weeklyQuota:{fullSkeleton:number;timedFull:number;scan5:number;
     deficits:{fullSkeleton:boolean;timedFull:boolean;scan5:boolean};
-    candidates:Array<{kind:"full_skeleton"|"timed_full"|"scan5";minutes:number}>};
+    candidates:Array<{kind:"full_skeleton"|"timed_full"|"scan5";minutes:number;sessionKind?:PastExamSessionKind;stage?:PastExamStage}>};
   pace:{label:string;checks:boolean[];items:{label:string;detail:string;status:"ok"|"warning"|"pending"}[];
     a14:number;pastSkeleton:number;kRepeat:number;skeletonRate:number;weakUpdates:number;delayed3:number;
     suggestion:string;dangerCriteria:string[];phase:string;phaseLabel:string;summary:string;allocation:string;nextPhase:string;daysRemaining:number;examDateIsEstimate:boolean};
@@ -207,6 +233,9 @@ export type Bootstrap = {
     review_rebuild_summary?:{repaired_at:string;stale_count:number;regenerated_count:number;review_needed_count:number;source_target_mix_count:number;date_corrected_count:number};
     legacy_k_summary?:{analyzed_at:string;invalid_legacy_k_count:number;needs_review_count:number;
       superseded_task_count:number;resolved_task_count:number;policy_version:string;preview?:boolean};
+    source_mismatch_summary?:{reorganized_at:string;source_mismatch_count:number;verified_relation_count:number;
+      superseded_count:number;regenerated_count:number;needs_review_count:number;unchanged_completed_count:number;
+      policy_version:string;preview?:boolean};
   };
   databaseStatus:{
     databaseName:string;databaseVersion:number;requiredDatabaseVersion:number;requestedStores:string[];
@@ -232,6 +261,7 @@ export type StudyUpdate = {
   display_label?:string; source_type?:"whitebook"|"past_exam"; category?:"S"|"A"|"past_exam";
   chapter?:number|null; problem_number?:number; difficulty?:number|null; themes?:string[];
   related_s_problem_ids?:string[]; linked_s_problems?:string[]; linked_past_exams?:string[];
+  parent_past_session_id?:number|string;
   ignored_parts?:string[]; score_text?:string; score_numeric?:number|null; score_max?:number|null;
   result_summary?:string; exam_selection_rank?:string; error_types?:string[];
   improvement_guidance?:string; required_derivation?:string; corrected_answer?:string;

@@ -25,10 +25,11 @@ import { removeTimingExpressions } from "./reviewTiming";
 import { EXAM_PHASES } from "./studyProgress";
 import { sheetUsageForPhase, type ExamPhase } from "./examReadiness";
 import { resolveReviewCard, type ResolvedReviewCard } from "./reviewCardResolver";
+import { buildScan5Prompt, deriveExposure, scanMetrics, stageForDays, defaultSessionKind } from "./pastExamWorkflow";
 import { CHAPTER_META } from "./officialMaster";
 import { isProblemPack, masterDiff, parseAliasesPayload, parseIntegratedMasterPayload, parseProblemMasterPayload } from "./masterData";
 import { isIndexedDbSchemaError, schemaErrorMessage, type IndexedDbSchemaDiagnostic } from "./dbSchema";
-import type { AnswerIndexEntry, Attempt, Bootstrap, Problem, ProblemAlias, Review, StudyUpdate, Task } from "./types";
+import type { AnswerIndexEntry, Attempt, Bootstrap, PastExamSessionKind, PastSession, Problem, ProblemAlias, Review, ScanQuestion, StudyUpdate, Task } from "./types";
 
 type Page = "dashboard"|"today"|"problems"|"attempt"|"import"|"reviews"|"weak"|"past"|"sheets"|"settings";
 const pageTitles:Record<Page,string> = {
@@ -886,18 +887,39 @@ function WeakView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:
   </>;
 }
 
-function PastView({data,go,run,busy}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean}) {
-  const [session,setSession]=useState({session_type:"timed_single",date:todayString(),year:"2025",time_limit_minutes:"35",actual_minutes:"",score_numeric:"",initialSelectedProblemIds:"",finalSelectedProblemIds:"",selection_result:"questionable"});
+function PastView({data,go,run,busy}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()=>Promise<unknown>,s:string)=>Promise<boolean>;busy:boolean}) {
+  const days=data.dashboard.pace.daysRemaining;
+  const blankQuestions=():ScanQuestion[]=>Array.from({length:5},(_,index)=>({questionLabel:`問${index+1}`,predictedType:"",firstStep:"",predictedScore:null,predictedMinutes:null,sinkRisk:"medium",selected:index<3,selectionReason:"",plannedOrder:index<3?index+1:null,actualScore:null,actualMinutes:null,typeJudgmentCorrect:null,firstStepCorrect:null,sank:null,hintUsed:false,referenceUsed:false,completed:false}));
+  const [session,setSession]=useState<{session_kind:PastExamSessionKind;date:string;year:string;scan_set_source:string;scan_minutes:string;actual_total_minutes:string;selection_strategy:string;selection_change_reason:string;notes:string;answer_exposure:boolean;initial_selected_problem_ids:string[];questions:ScanQuestion[]}>({session_kind:defaultSessionKind(days),date:todayString(),year:"2025",scan_set_source:"past_exam_year",scan_minutes:"10",actual_total_minutes:"",selection_strategy:"",selection_change_reason:"",notes:"",answer_exposure:false,initial_selected_problem_ids:[],questions:blankQuestions()});
+  const [analysisText,setAnalysisText]=useState<Record<number,string>>({});
+  const [editingSessionId,setEditingSessionId]=useState<number|null>(null);
   const pastProblems=data.problems.filter(problem=>problem.category==="past_exam");
   const pmap=new Map(pastProblems.map(problem=>[problem.problem_id,problem]));
   const attempts=data.attempts.filter(attempt=>pmap.has(attempt.problem_id));
   const errorAttempts=attempts.filter(attempt=>(attempt.error_types||[attempt.error_type]).some(error=>error!=="none"));
   const pending=data.reviews.filter(review=>review.status!=="done"&&pmap.has(review.problem_id));
   const themes=new Set(errorAttempts.map(attempt=>pmap.get(attempt.problem_id)?.theme).filter(Boolean));
+  const submitSession=async()=>{
+    const selectedProblemIds=session.questions.filter(row=>row.selected).map(row=>row.problemId||row.questionLabel);
+    const payload={...session,year:Number(session.year),stage:stageForDays(days),scan_minutes:Number(session.scan_minutes||0),actual_total_minutes:Number(session.actual_total_minutes||0),
+      initial_selected_problem_ids:editingSessionId?session.initial_selected_problem_ids:selectedProblemIds,
+      final_selected_problem_ids:editingSessionId?selectedProblemIds:[],
+      solve_order:session.questions.filter(row=>row.selected).sort((a,b)=>Number(a.plannedOrder||99)-Number(b.plannedOrder||99)).map(row=>row.problemId||row.questionLabel)};
+    const path=editingSessionId?`/api/past-sessions/${editingSessionId}/update`:"/api/past-sessions";
+    const ok=await run(()=>post(path,payload),editingSessionId?"事後結果を保存しました":"5問スキャンの事前判断を保存しました");
+    if(ok)setEditingSessionId(null);
+  };
+  const editPastSession=(saved:PastSession)=>{
+    setEditingSessionId(saved.id);setSession({session_kind:saved.session_kind||"scan_plus_one",date:saved.date,year:String(saved.year||""),
+      scan_set_source:saved.scan_set_source||"past_exam_year",scan_minutes:String(saved.scan_minutes||0),actual_total_minutes:String(saved.actual_total_minutes||""),
+      selection_strategy:saved.selection_strategy||"",selection_change_reason:saved.selection_change_reason||"",notes:saved.notes||"",answer_exposure:!!saved.answer_exposure,
+      initial_selected_problem_ids:saved.initial_selected_problem_ids||[],questions:saved.questions?.length?saved.questions:blankQuestions()});
+    window.scrollTo({top:0,behavior:"smooth"});
+  };
   return <>
     <section className="past-analysis-intro">
-      <div><span className="eyebrow">PAST EXAM ANALYSIS</span><h2>過去問はGPT採点結果から分析します</h2><p>選題フォームへの手入力は不要です。GPTの採点結果を貼り付けると、白本とは分けて失点箇所・復習予定・戻るA/S問題を整理します。</p></div>
-      <button className="primary" onClick={()=>go("import")}><ClipboardPaste size={17}/>GPT採点結果を取り込む</button>
+      <div><span className="eyebrow">PAST EXAM WORKFLOW</span><h2>5問を見て、得点できる3問を選ぶ</h2><p>スキャン判断は通常答案のK/W/N/Cと分離します。実際に解いた問題だけをGPT採点へ接続し、未解答問題は0点にしません。</p></div>
+      <button className="primary" onClick={()=>go("import")}><ClipboardPaste size={17}/>解いた問題をGPT採点</button>
     </section>
     <div className="past-analysis-metrics">
       <Metric label="取り込み済み" value={attempts.length} unit="件" hint="過去問の採点履歴"/>
@@ -905,17 +927,23 @@ function PastView({data,go,run,busy}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()
       <Metric label="復習待ち" value={pending.length} unit="件" hint="過去問の未完了予定"/>
       <Metric label="苦手テーマ" value={themes.size} unit="件" hint="失点したテーマ"/>
     </div>
-    <details className="panel past-session-quick"><summary>本番力を記録する</summary><form className="form-grid" onSubmit={event=>{event.preventDefault();run(()=>post("/api/past-sessions",{...session,
-      year:Number(session.year),actual_minutes:Number(session.actual_minutes||0),time_limit_minutes:Number(session.time_limit_minutes||0),score_numeric:Number(session.score_numeric||0),
-      selected_questions:session.initialSelectedProblemIds,final_selected_problem_ids:session.finalSelectedProblemIds,
-      completed_questions_count:session.session_type==="past_exam"?3:1}),"本番力の記録を保存しました")}}>
-      <Field label="記録種別"><select value={session.session_type} onChange={event=>setSession({...session,session_type:event.target.value})}><option value="timed_single">時間制限・単問</option><option value="scan5">5問スキャン</option><option value="past_exam">過去問</option></select></Field>
+    <details className="panel past-session-quick" open><summary>{editingSessionId?"5問スキャンの事後結果を入力":"5問スキャンを開始"}</summary><form className="scan5-form" onSubmit={event=>{event.preventDefault();void submitSession()}}>
+      <div className="form-grid"><Field label="形式"><select value={session.session_kind} onChange={event=>setSession({...session,session_kind:event.target.value as PastExamSessionKind})}><option value="scan_only">scan only</option><option value="scan_plus_one">scan＋1問</option><option value="selected_three_timed">3問90分</option><option value="retrospective_review">事後レビュー</option></select></Field>
       <Field label="実施日"><input type="date" value={session.date} onChange={event=>setSession({...session,date:event.target.value})}/></Field>
       <Field label="年度"><input inputMode="numeric" value={session.year} onChange={event=>setSession({...session,year:event.target.value})}/></Field>
-      {session.session_type!=="scan5"&&<><Field label="制限時間（分）"><input type="number" value={session.time_limit_minutes} onChange={event=>setSession({...session,time_limit_minutes:event.target.value})}/></Field><Field label="実際時間（分）"><input required type="number" value={session.actual_minutes} onChange={event=>setSession({...session,actual_minutes:event.target.value})}/></Field><Field label="得点率"><input required type="number" min="0" max="100" value={session.score_numeric} onChange={event=>setSession({...session,score_numeric:event.target.value})}/></Field></>}
-      {session.session_type==="scan5"&&<><Field label="最初に選んだ3問" wide><input value={session.initialSelectedProblemIds} onChange={event=>setSession({...session,initialSelectedProblemIds:event.target.value})} placeholder="IDを ; 区切り"/></Field><Field label="解いた後に選ぶ3問" wide><input value={session.finalSelectedProblemIds} onChange={event=>setSession({...session,finalSelectedProblemIds:event.target.value})}/></Field><Field label="選題結果"><select value={session.selection_result} onChange={event=>setSession({...session,selection_result:event.target.value})}><option value="good">妥当</option><option value="questionable">要確認</option><option value="failed">選題ミス</option></select></Field></>}
-      <div className="form-actions wide"><button className="primary" disabled={busy}>記録する</button></div>
+      <Field label="素材"><select value={session.scan_set_source} onChange={event=>setSession({...session,scan_set_source:event.target.value})}><option value="past_exam_year">過去問年度</option><option value="mixed_a_problems">A問題混合</option><option value="custom_set">カスタム</option></select></Field>
+      <Field label="スキャン時間"><input type="number" value={session.scan_minutes} onChange={event=>setSession({...session,scan_minutes:event.target.value})}/></Field>
+      {session.session_kind==="selected_three_timed"&&<Field label="全体実時間"><input type="number" value={session.actual_total_minutes} onChange={event=>setSession({...session,actual_total_minutes:event.target.value})}/></Field>}
+      <Field label="選題方針" wide><input value={session.selection_strategy} onChange={event=>setSession({...session,selection_strategy:event.target.value})} placeholder="確実な2問→残り1問を比較"/></Field>
+      {editingSessionId&&<><Field label="選択が変わった理由" wide><input value={session.selection_change_reason} onChange={event=>setSession({...session,selection_change_reason:event.target.value})}/></Field><Field label="事後メモ" wide><textarea value={session.notes} onChange={event=>setSession({...session,notes:event.target.value})}/></Field></>}</div>
+      <div className="scan-question-list">{session.questions.map((question,index)=><article className="scan-question-card" key={index}><div className="scan-question-head"><strong>{index+1}問目</strong><label><input type="checkbox" checked={question.selected} onChange={event=>setSession({...session,questions:session.questions.map((row,i)=>i===index?{...row,selected:event.target.checked}:row)})}/>選ぶ</label></div>
+        <div className="form-grid"><Field label="問題IDまたはラベル"><input value={question.problemId||question.questionLabel} onChange={event=>setSession({...session,questions:session.questions.map((row,i)=>i===index?{...row,problemId:event.target.value}:row)})}/></Field><Field label="型"><input value={question.predictedType} onChange={event=>setSession({...session,questions:session.questions.map((row,i)=>i===index?{...row,predictedType:event.target.value}:row)})}/></Field><Field label="最初の一手" wide><input value={question.firstStep} onChange={event=>setSession({...session,questions:session.questions.map((row,i)=>i===index?{...row,firstStep:event.target.value}:row)})}/></Field><Field label="予想得点"><input type="number" value={question.predictedScore??""} onChange={event=>setSession({...session,questions:session.questions.map((row,i)=>i===index?{...row,predictedScore:event.target.value===""?null:Number(event.target.value)}:row)})}/></Field><Field label="予想時間"><input type="number" value={question.predictedMinutes??""} onChange={event=>setSession({...session,questions:session.questions.map((row,i)=>i===index?{...row,predictedMinutes:event.target.value===""?null:Number(event.target.value)}:row)})}/></Field><Field label="沈没リスク"><select value={question.sinkRisk} onChange={event=>setSession({...session,questions:session.questions.map((row,i)=>i===index?{...row,sinkRisk:event.target.value as ScanQuestion["sinkRisk"]}:row)})}><option value="low">低</option><option value="medium">中</option><option value="high">高</option></select></Field><Field label="解答順"><input type="number" min="1" max="3" value={question.plannedOrder??""} onChange={event=>setSession({...session,questions:session.questions.map((row,i)=>i===index?{...row,plannedOrder:event.target.value===""?null:Number(event.target.value)}:row)})}/></Field><Field label="選ぶ／捨てる理由" wide><input value={question.selectionReason} onChange={event=>setSession({...session,questions:session.questions.map((row,i)=>i===index?{...row,selectionReason:event.target.value}:row)})}/></Field>
+        {session.session_kind!=="scan_only"&&<><Field label="実際に解いた"><input type="checkbox" checked={!!question.completed} onChange={event=>setSession({...session,questions:session.questions.map((row,i)=>i===index?{...row,completed:event.target.checked}:row)})}/></Field><Field label="実得点（未評価は空欄）"><input type="number" value={question.actualScore??""} onChange={event=>setSession({...session,questions:session.questions.map((row,i)=>i===index?{...row,actualScore:event.target.value===""?null:Number(event.target.value)}:row)})}/></Field><Field label="実時間"><input type="number" value={question.actualMinutes??""} onChange={event=>setSession({...session,questions:session.questions.map((row,i)=>i===index?{...row,actualMinutes:event.target.value===""?null:Number(event.target.value)}:row)})}/></Field><Field label="型判断"><select value={question.typeJudgmentCorrect==null?"":question.typeJudgmentCorrect?"yes":"no"} onChange={event=>setSession({...session,questions:session.questions.map((row,i)=>i===index?{...row,typeJudgmentCorrect:event.target.value===""?null:event.target.value==="yes"}:row)})}><option value="">未評価</option><option value="yes">正しい</option><option value="no">誤り</option></select></Field><Field label="初手判断"><select value={question.firstStepCorrect==null?"":question.firstStepCorrect?"yes":"no"} onChange={event=>setSession({...session,questions:session.questions.map((row,i)=>i===index?{...row,firstStepCorrect:event.target.value===""?null:event.target.value==="yes"}:row)})}><option value="">未評価</option><option value="yes">正しい</option><option value="no">誤り</option></select></Field><Field label="沈没した"><input type="checkbox" checked={!!question.sank} onChange={event=>setSession({...session,questions:session.questions.map((row,i)=>i===index?{...row,sank:event.target.checked}:row)})}/></Field><Field label="ヒント使用"><input type="checkbox" checked={!!question.hintUsed} onChange={event=>setSession({...session,questions:session.questions.map((row,i)=>i===index?{...row,hintUsed:event.target.checked}:row)})}/></Field><Field label="外部参照"><input type="checkbox" checked={!!question.referenceUsed} onChange={event=>setSession({...session,questions:session.questions.map((row,i)=>i===index?{...row,referenceUsed:event.target.checked}:row)})}/></Field></>}</div></article>)}</div>
+      <label className="reference-reproduction-check"><input type="checkbox" checked={session.answer_exposure} onChange={event=>setSession({...session,answer_exposure:event.target.checked})}/>開始前または途中で模範解答を見た</label>
+      <div className="form-actions"><button type="button" className="ghost" onClick={()=>{setEditingSessionId(null);setSession({...session,questions:blankQuestions()})}}>入力をリセット</button><button className="primary" disabled={busy}>{editingSessionId?"事後結果を保存":"事前判断を保存"}</button></div>
     </form></details>
+    <section className="section-head"><div><span className="eyebrow">SCAN HISTORY</span><h2>過去問セッション</h2></div></section>
+    <div className="past-result-list">{data.pastSessions.map(saved=>{const metrics=scanMetrics(saved),exposure=deriveExposure(saved);return <article className="panel past-result-card" key={saved.id}><div className="past-result-head"><div><h3>{saved.year||saved.source_label||"カスタム"}・{saved.session_kind||saved.session_type}</h3><span>{saved.date} ・ 露出：{exposure}</span></div><Badge tone={saved.exam_score_eligible?"green":""}>{saved.exam_score_eligible?"本番得点対象":"学習指標"}</Badge></div><div className="past-result-body"><div><span>型判断</span><p>{metrics.typeIdentificationAccuracy==null?"未評価":`${metrics.typeIdentificationAccuracy}%`}</p></div><div><span>初手判断</span><p>{metrics.firstStepAccuracy==null?"未評価":`${metrics.firstStepAccuracy}%`}</p></div><div><span>選題成功率</span><p>{metrics.selectionSuccessRate==null?"未評価":`${metrics.selectionSuccessRate}%`}</p></div><div><span>解答済み</span><p>{metrics.solvedCount}問</p></div></div><div className="task-actions"><button className="secondary" onClick={()=>editPastSession(saved)}><Pencil size={15}/>事後結果を入力</button><button className="secondary" onClick={()=>navigator.clipboard.writeText(buildScan5Prompt(saved,days))}><Copy size={15}/>GPT分析プロンプト</button>{metrics.solvedCount>0&&<button className="secondary" onClick={()=>go("import")}><ClipboardPaste size={15}/>解いた問題を採点</button>}</div><details><summary>GPT分析結果を取り込む</summary><textarea value={analysisText[saved.id]||""} onChange={event=>setAnalysisText({...analysisText,[saved.id]:event.target.value})} placeholder="scan_update YAMLを貼り付け"/><button className="secondary" disabled={busy||!analysisText[saved.id]} onClick={()=>run(()=>post(`/api/past-sessions/${saved.id}/analysis`,{text:analysisText[saved.id]}),"scan5分析を保存しました")}>専用分析を保存</button></details></article>})}</div>
     <section className="section-head"><div><span className="eyebrow">REPAIR TARGETS</span><h2>過去問で明らかになった要復習箇所</h2></div></section>
     <div className="past-result-list">{errorAttempts.map(attempt=>{
       const problem=pmap.get(attempt.problem_id)!;
@@ -982,6 +1010,7 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
   const [diagnosticResult,setDiagnosticResult]=useState<{readOnlyVerified:boolean;problemCount:number;reviewCount:number;issueCount:number}|null>(null);
   const [diagnosticError,setDiagnosticError]=useState("");
   const [legacyKPreview,setLegacyKPreview]=useState<{invalid_legacy_k_count:number;needs_review_count:number;superseded_task_count:number;resolved_task_count:number}|null>(null);
+  const [sourcePreview,setSourcePreview]=useState<{source_mismatch_count:number;verified_relation_count:number;superseded_count:number;regenerated_count:number;needs_review_count:number;unchanged_completed_count:number;causes:Record<string,number>}|null>(null);
   const saveBlob=(content:string|Blob,name:string,type:string)=>{
     const payload=content instanceof Blob?content:new Blob([content],{type});
     const url=URL.createObjectURL(payload);const a=document.createElement("a");
@@ -1069,6 +1098,10 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
     try{setLegacyKPreview(await post("/api/legacy-k/preview",{}))}
     catch(error){setMasterError(error instanceof Error?error.message:String(error))}
   };
+  const previewSourceMismatch=async()=>{
+    try{setSourcePreview(await post("/api/source-mismatch/preview",{}))}
+    catch(error){setMasterError(error instanceof Error?error.message:String(error))}
+  };
   const unresolvedLinks=data.masterStatus.diagnostics.filter(item=>item.recommended_action==="hold");
   return <><section className="panel master-import-panel master-import-primary" id="problem-master-import"><div className="panel-title"><div><span className="eyebrow">CANONICAL DATA</span><h3>問題マスター取り込み</h3></div><Badge tone="green">バックアップ復元とは別機能</Badge></div>
       <p>ChatGPTで作成した problem_master / aliases JSON を読み込み、問題ID・表示名・テーマ・GPT取り込み補正に使います。統合JSON内の answer_index は互換データとして保存できますが、日常画面では使いません。通常のバックアップ復元とは別機能です。</p>
@@ -1126,6 +1159,13 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
         {data.masterStatus.legacy_k_summary&&<span>前回結果：invalid {data.masterStatus.legacy_k_summary.invalid_legacy_k_count}件／要確認 {data.masterStatus.legacy_k_summary.needs_review_count}件／superseded {data.masterStatus.legacy_k_summary.superseded_task_count}件／再解決 {data.masterStatus.legacy_k_summary.resolved_task_count}件</span>}
         {legacyKPreview&&<div className="legacy-k-preview"><span>invalid_legacy_k <strong>{legacyKPreview.invalid_legacy_k_count}件</strong></span><span>needs_review <strong>{legacyKPreview.needs_review_count}件</strong></span><span>除外予定 <strong>{legacyKPreview.superseded_task_count}件</strong></span><span>再解決予定 <strong>{legacyKPreview.resolved_task_count}件</strong></span><small>Attempt、過去点数、K/W/N/C、実績時間、完了済みタスク、todayPlanSnapshotは変更しません。</small></div>}
         <div className="button-row"><button className="secondary" disabled={busy} onClick={()=>void previewLegacyK()}>件数をプレビュー</button>{legacyKPreview&&<button className="primary" disabled={busy} onClick={()=>{setLegacyKPreview(null);run(()=>post("/api/legacy-k/reorganize",{}),"旧K由来タスクを安全に再整理しました")}}>旧K由来タスクを安全に再整理</button>}</div>
+      </div>
+      <div className="legacy-k-diagnostic source-origin-diagnostic">
+        <strong>復習カードの出所診断</strong>
+        <p>source Attemptと対象問題のcanonical IDを照合し、verified relationのない異問題カードを単純なID付け替えなしで整理します。</p>
+        {data.masterStatus.source_mismatch_summary&&<span>前回結果：不一致 {data.masterStatus.source_mismatch_summary.source_mismatch_count}件／superseded {data.masterStatus.source_mismatch_summary.superseded_count}件／対象問題自身から再生成 {data.masterStatus.source_mismatch_summary.regenerated_count}件／要確認 {data.masterStatus.source_mismatch_summary.needs_review_count}件</span>}
+        {sourcePreview&&<div className="legacy-k-preview"><span>source mismatch <strong>{sourcePreview.source_mismatch_count}件</strong></span><span>verified relation維持 <strong>{sourcePreview.verified_relation_count}件</strong></span><span>superseded予定 <strong>{sourcePreview.superseded_count}件</strong></span><span>独立再生成予定 <strong>{sourcePreview.regenerated_count}件</strong></span><span>needs_review <strong>{sourcePreview.needs_review_count}件</strong></span><span>完了済み・変更なし <strong>{sourcePreview.unchanged_completed_count}件</strong></span><small>Attempt、点数、実績時間、完了済みカード、todayPlanSnapshotは変更しません。</small><details><summary>原因別集計</summary>{Object.entries(sourcePreview.causes).map(([reason,count])=><div key={reason}>{reason}：{count}件</div>)}</details></div>}
+        <div className="button-row"><button className="secondary" disabled={busy} onClick={()=>void previewSourceMismatch()}>source mismatch修復をプレビュー</button>{sourcePreview&&<button className="primary" disabled={busy} onClick={()=>{setSourcePreview(null);run(()=>post("/api/source-mismatch/reorganize",{}),"出所が矛盾する復習カードを安全に整理しました")}}>出所が矛盾する復習カードを安全に整理</button>}</div>
       </div>
       {!!data.masterStatus.import_history.length&&<details><summary>取り込み履歴</summary><ul>{data.masterStatus.import_history.map((row,index)=><li key={index}>{row}</li>)}</ul></details>}
     </section>

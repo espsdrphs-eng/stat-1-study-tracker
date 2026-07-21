@@ -263,3 +263,4 @@ header h1{font-size:28px;font-weight:700;letter-spacing:-.02em;color:var(--text-
 .legacy-k-preview{display:flex;flex-wrap:wrap;gap:8px 18px;padding:12px;border-radius:var(--radius-sm);background:var(--warning-soft)}
 .legacy-k-preview small{flex-basis:100%;color:var(--text-secondary)}
 .legacy-k-note{display:block;margin-top:5px;color:var(--warning);font-size:12px;line-height:1.5}
+.scan5-form{display:grid;gap:20px;margin-top:18px}.scan-question-list{display:grid;gap:14px}.scan-question-card{border:1px solid var(--border);border-radius:var(--radius-md);padding:18px;background:var(--surface-subtle);min-width:0}.scan-question-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px}.scan-question-head label{display:flex;align-items:center;gap:7px}.scan-question-card .form-grid{margin:0}.source-origin-diagnostic details{width:100%}.source-origin-diagnostic details div{padding:4px 0;color:var(--text-secondary)}

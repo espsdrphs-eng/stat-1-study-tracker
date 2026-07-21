@@ -194,8 +194,9 @@ export function resolveReviewCard({
   const generatedIsOwn=sourceAttempt&&resolveCanonicalProblemId(sourceAttempt.problem_id,aliases)===canonicalId?sourceAttempt:undefined;
   const targetAttempt=generatedIsOwn||latestOwn;
   if(!problem) warnings.push({code:"problem_missing",message:"problem_masterに対象問題がありません。",repairable:false,blocksSpecificGuidance:true});
-  if(sourceAttempt&&item.task_origin!=="linked_s_check"&&item.task_origin!=="related_drill"&&
-    resolveCanonicalProblemId(sourceAttempt.problem_id,aliases)!==canonicalId){
+  const sourceMismatch=sourceAttempt&&resolveCanonicalProblemId(sourceAttempt.problem_id,aliases)!==canonicalId;
+  const verifiedLinked=item.origin==="verified_linked_problem"&&!!item.relation_id&&item.origin_verified===true;
+  if(sourceMismatch&&!verifiedLinked){
     warnings.push({code:"attempt_problem_mismatch",message:"復習元Attemptの問題IDが対象問題と一致しません。",repairable:false,blocksSpecificGuidance:true});
   }
   const metadataStatus=(problem as (Problem&{metadata_status?:string})|undefined)?.metadata_status;
@@ -203,7 +204,8 @@ export function resolveReviewCard({
     warnings.push({code:"metadata_review_needed",message:"問題マスターの内容確認が必要です。",repairable:false,blocksSpecificGuidance:true});
   }
   const origin=taskOriginFor(item,problem,!!targetAttempt,warnings);
-  const errorSource=targetAttempt||(origin==="linked_s_check"||origin==="related_drill"?sourceAttempt:undefined);
+  // source問題の採点内容をtarget問題の前回ミス・採点範囲へ混ぜない。
+  const errorSource=targetAttempt;
   const errors=normalizeErrors(errorSource);
   const plannedMode=item.mode==="scan"?"scan5":item.mode;
   const inferred=origin==="first_attempt"&&isReviewMode(plannedMode)?plannedMode:inferReviewMode(errors,item);

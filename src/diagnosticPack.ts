@@ -10,7 +10,9 @@ import { LEARNING_POLICY_VERSION, resolveLearningPolicy } from "./learningPolicy
 import { simulateThirtyDays } from "./learningSimulation.ts";
 import { analyzeLegacyKReorganization } from "./legacyKRepair.ts";
 import { classifyKPolicyValidity } from "./legacyKPolicy.ts";
-import type { Attempt, Problem, ProblemAlias, Review, TodayPlanSnapshot } from "./types.ts";
+import { analyzeSourceMismatchRepair, resolveReviewOrigin } from "./reviewOrigin.ts";
+import { deriveExposure, scanMetrics, sessionStudyMinutes, simulateScanPlan, validatePastExamSession } from "./pastExamWorkflow.ts";
+import type { Attempt, Problem, ProblemAlias, ProblemRelation, Review, TodayPlanSnapshot } from "./types.ts";
 
 type JsonRecord=Record<string,unknown>;
 type FingerprintEntry={count:number;primaryKeyDigest:string};
@@ -23,7 +25,7 @@ const EXCLUDED_KEYS=new Set([
 const SETTINGS_KEYS=new Set([
   "exam_date","daily_study_minutes","problem_master_version","problem_master_updated_at",
   "problem_aliases_version","problem_aliases_updated_at","stable_release","last_migration",
-  "last_migration_result","last_migration_at","review_rebuild_summary","legacy_k_reorganization_summary"
+  "last_migration_result","last_migration_at","review_rebuild_summary","legacy_k_reorganization_summary","source_mismatch_reorganization_summary"
 ]);
 
 function sanitize(value:unknown):unknown{
@@ -298,15 +300,25 @@ export async function createDiagnosticPack():Promise<DiagnosticPackResult>{
   ]);
   const today=new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Tokyo"}).format(new Date());
   const examDate=metaRows.find(row=>row.key==="exam_date")?.value||"";
+  let storedRelations:ProblemRelation[]=[];try{storedRelations=JSON.parse(metaRows.find(row=>row.key==="problem-relations")?.value||"[]")}catch{/* 診断は読み取り専用 */}
   const cards=new Map<number,ResolvedReviewCard>();
-  for(const review of reviews) cards.set(review.id,resolveReviewCard({item:review,problems,attempts,aliases,today,examDate,now:new Date().toISOString()}));
+  for(const review of reviews){const origin=resolveReviewOrigin({review,attempts,aliases,relations:storedRelations});
+    cards.set(review.id,resolveReviewCard({item:{...review,origin_verified:origin.valid},problems,attempts,aliases,today,examDate,now:new Date().toISOString()}));}
   const promptAudits=reviews.map(review=>buildPromptAudit(review,cards.get(review.id)!));
-  const relations=relationRows(problems,aliases);
+  const relations=[...relationRows(problems,aliases),...storedRelations];
   const baseConsistency=buildConsistencyReport(problems,attempts,reviews,aliases,relations,cards,promptAudits);
   const legacyK=analyzeLegacyKReorganization({attempts,reviews,problems});
+  const sourceRepair=analyzeSourceMismatchRepair({attempts,reviews,problems,aliases,relations:storedRelations});
+  const pastExamAudit=pastSessions.map(session=>({id:session.id,year:session.year,sessionKind:session.session_kind||session.session_type,
+    exposure:deriveExposure(session),validation:validatePastExamSession(session),metrics:scanMetrics(session),
+    countedStudyMinutes:sessionStudyMinutes(session,attempts),linkedAttemptIds:session.linked_attempt_ids||[]}));
   const consistency={...baseConsistency,legacyKPolicy:{invalid_legacy_k_count:legacyK.invalidLegacyKCount,
     needs_review_count:legacyK.needsReviewCount,superseded_task_count:legacyK.supersededTaskCount,
-    resolved_task_count:legacyK.resolvedTaskCount,classifications:legacyK.classifications,taskActions:legacyK.taskActions}};
+    resolved_task_count:legacyK.resolvedTaskCount,classifications:legacyK.classifications,taskActions:legacyK.taskActions},
+    sourceOriginPolicy:{source_mismatch_count:sourceRepair.mismatchCount,verified_relation_count:sourceRepair.verifiedRelationCount,
+      superseded_count:sourceRepair.supersededCount,regenerated_count:sourceRepair.regeneratedCount,
+      needs_review_count:sourceRepair.needsReviewCount,unchanged_completed_count:sourceRepair.unchangedCompletedCount,actions:sourceRepair.actions},
+    pastExamAudit};
   const snapshotRows=metaRows.filter(row=>row.key.startsWith("today-plan-snapshot:"));
   const settings=Object.fromEntries(metaRows.filter(row=>SETTINGS_KEYS.has(row.key)).map(row=>[row.key,row.value]));
   const learningData={_modelMapping:{evaluations:"attemptsの評価フィールドから作った論理ビュー",reviewTasks:"reviews物理テーブル",
@@ -326,6 +338,7 @@ export async function createDiagnosticPack():Promise<DiagnosticPackResult>{
       freeFormMemoIncluded:false,rawGptTextIncluded:false},
     physicalModel:{attempts:"答案とGPT評価",reviews:"復習タスクと復習計画",problemRelations:"独立storeなし"}};
   const plannerAudit={...buildPlannerAudit(snapshotRows,reviews,attempts,Math.max(30,Number(settings.daily_study_minutes||150))),
+    scanSoftQuotaSimulation:[119,90,60,30].map(daysRemaining=>({daysRemaining,...simulateScanPlan({startDate:today,daysRemaining,days:30})})),
     thirtyDaySimulation:simulateThirtyDays({startDate:today,targetMinutes:Math.max(30,Number(settings.daily_study_minutes||150)),
       problems,tasks:reviews.filter(review=>review.status!=="done").map(review=>{
         const card=cards.get(review.id)!;return {id:review.id,problem_id:card.canonicalProblemId,title:card.displayLabel,

@@ -1,6 +1,7 @@
 import type { Attempt, PastSession, Problem, ProblemAlias } from "./types.ts";
 import { examScoreEligibility } from "./scoreEligibility.ts";
 import { excludeLegacyKFromPlanning } from "./legacyKPolicy.ts";
+import { scanMetrics, selectionSuccessRate, validatePastExamSession } from "./pastExamWorkflow.ts";
 
 export type ExamPhase =
   | "foundation_to_A"
@@ -15,6 +16,10 @@ export type ExamReadinessMetrics = {
   pastExamScoreRate: number | null;
   kRecurrenceRate: number | null;
   repeatedWRate: number | null;
+  typeIdentificationAccuracy:number|null;
+  firstStepAccuracy:number|null;
+  predictedScoreCalibration:number|null;
+  predictedTimeCalibration:number|null;
   sampleSizes: {
     unseen: number;
     timed: number;
@@ -118,12 +123,13 @@ export function calculateExamReadinessMetrics(args: {
       : Infinity;
     const eligibility=attempt.exam_score_eligible===true||examScoreEligibility(attempt,problem).eligible;
     const eligibilityResult=examScoreEligibility(attempt,problem);
-    if ((!previous || daysSince >= 30) && eligibility && noReference(attempt) && validScore(attempt)&&
+    const standaloneExamAttempt=!attempt.parent_past_session_id;
+    if (standaloneExamAttempt&&(!previous || daysSince >= 30) && eligibility && noReference(attempt) && validScore(attempt)&&
       Number(attempt.time_minutes||0)<=Number(attempt.time_limit_minutes||eligibilityResult.timeLimitMinutes||0)) transferAttempts.push(attempt);
     const mode = attempt.mode || "";
     const timeLimit = mode === "exam_90min" ? 90 : mode === "full" ? 35 : problem?.category === "past_exam" ? 30 : 0;
-    if (eligibility&&(mode === "full" || mode === "exam_90min" || problem?.category === "past_exam") && timeLimit) timedAttempts.push(attempt);
-    if (eligibility&&problem?.category === "past_exam" && validScore(attempt)&&
+    if (standaloneExamAttempt&&eligibility&&(mode === "full" || mode === "exam_90min" || problem?.category === "past_exam") && timeLimit) timedAttempts.push(attempt);
+    if (standaloneExamAttempt&&eligibility&&problem?.category === "past_exam" && validScore(attempt)&&
       Number(attempt.time_minutes||0)<=Number(attempt.time_limit_minutes||eligibilityResult.timeLimitMinutes||0)) pastExamAttempts.push(attempt);
     const errors = new Set([...(attempt.error_types || []), attempt.primary_error_type || attempt.error_type || ""].filter(Boolean));
     if(excludeLegacyKFromPlanning(attempt))errors.delete("K");
@@ -146,25 +152,22 @@ export function calculateExamReadinessMetrics(args: {
       !["×", "ﾃ・"].includes(attempt.mark || "");
   });
 
-  const scanSessions = pastSessions.filter(session => ["scan_5_questions", "scan5"].includes(session.session_type));
-  const scanScores = scanSessions.map(session => {
-    const initial = parseProblemList(session.initialSelectedProblemIds || session.selected_questions);
-    const final = parseProblemList(session.finalSelectedProblemIds || session.final_selected_problem_ids);
-    if (initial.length && final.length) {
-      const hit = initial.filter(id => final.includes(id)).length;
-      return hit / Math.max(3, final.length);
-    }
-    if (session.selection_result === "good") return 1;
-    if (session.selection_result === "questionable") return 0.5;
-    if (session.selection_result === "failed") return 0;
-    return null;
-  }).filter((value): value is number => value != null);
+  const scanSessions = pastSessions.filter(session => ["scan_5_questions", "scan5"].includes(session.session_type)||!!session.session_kind);
+  const scanScores=scanSessions.map(selectionSuccessRate).filter((value):value is number=>value!=null);
+  const scanRows=scanSessions.map(scanMetrics);
+  const averageNullable=(values:Array<number|null>)=>{const rows=values.filter((value):value is number=>value!=null);return rows.length?Math.round(rows.reduce((a,b)=>a+b,0)/rows.length):null};
 
-  const sessionEligible=(session:PastSession)=>session.examScoreEligible!==0&&session.examScoreEligible!=="false"&&
-    Number(session.actual_reference_level||0)===0&&session.evaluation_scope!=="conditional_full";
-  const timedSessions=pastSessions.filter(session=>sessionEligible(session)&&["timed_single","past_exam","exam_90min"].includes(session.session_type)&&Number(session.actual_minutes||session.selection_time_minutes||0)>0);
-  const timedSessionSuccesses=timedSessions.filter(session=>Number(session.actual_minutes||session.selection_time_minutes||0)<=Number(session.time_limit_minutes||(session.session_type==="exam_90min"?90:35))&&Number(session.score_numeric||0)>=60);
-  const pastSessionScores=pastSessions.filter(session=>sessionEligible(session)&&["past_exam","exam_90min"].includes(session.session_type)&&Number.isFinite(Number(session.score_numeric))&&String(session.score_numeric)!=="").map(session=>Number(session.score_numeric));
+  const sessionEligible=(session:PastSession)=>session.session_kind==="selected_three_timed"
+    ?session.exam_score_eligible===true&&validatePastExamSession(session).examScoreEligible
+    :session.exam_score_eligible===true&&Number(session.actual_reference_level||0)===0&&session.evaluation_scope!=="conditional_full";
+  const timedSessions=pastSessions.filter(session=>sessionEligible(session)&&Number(session.actual_total_minutes||session.actual_minutes||session.selection_time_minutes||0)>0);
+  const sessionScore=(session:PastSession)=>{
+    if(session.session_kind!=="selected_three_timed")return Number(session.score_numeric||0);
+    const scored=(session.questions||[]).filter(row=>row.completed&&row.actualScore!=null);
+    return scored.length?scored.reduce((sum,row)=>sum+Number(row.actualScore),0)/scored.length:0;
+  };
+  const timedSessionSuccesses=timedSessions.filter(session=>Number(session.actual_total_minutes||session.actual_minutes||session.selection_time_minutes||0)<=Number(session.time_limit_minutes||90)&&sessionScore(session)>=60);
+  const pastSessionScores=pastSessions.filter(session=>sessionEligible(session)).map(sessionScore);
 
   const kDenominator = [...kGroups.values()].length;
   const wDenominator = [...wGroups.values()].length;
@@ -176,6 +179,10 @@ export function calculateExamReadinessMetrics(args: {
     pastExamScoreRate: pastExamAttempts.length||pastSessionScores.length?Math.round(([...pastExamAttempts.map(attempt=>Number(attempt.score_numeric||0)),...pastSessionScores].reduce((sum,value)=>sum+value,0))/(pastExamAttempts.length+pastSessionScores.length)):null,
     kRecurrenceRate: kDenominator ? Math.round([...kGroups.values()].filter(count => count >= 2).length / kDenominator * 100) : null,
     repeatedWRate: wDenominator ? Math.round([...wGroups.values()].filter(count => count >= 2).length / wDenominator * 100) : null,
+    typeIdentificationAccuracy:averageNullable(scanRows.map(row=>row.typeIdentificationAccuracy)),
+    firstStepAccuracy:averageNullable(scanRows.map(row=>row.firstStepAccuracy)),
+    predictedScoreCalibration:averageNullable(scanRows.map(row=>row.predictedScoreDifference)),
+    predictedTimeCalibration:averageNullable(scanRows.map(row=>row.predictedTimeDifference)),
     sampleSizes: {
       unseen: transferAttempts.length,
       timed: timedAttempts.length+timedSessions.length,

@@ -1,4 +1,4 @@
-import type { AssessmentTiming, LearningPurpose, Review, Task } from "./types.ts";
+import type { AssessmentTiming, LearningPurpose, PastExamSessionKind, PastExamStage, Review, Task } from "./types.ts";
 import type { LearningPrescription } from "./learningPolicyResolver.ts";
 
 export type ScheduleWindow={earliestDate:string;preferredDate:string;latestDate:string};
@@ -50,17 +50,21 @@ export function weeklySoftQuota(args:{attempts:Array<Record<string,unknown>>;pas
   let timedFull=timedAttempt,scan5=0;
   for(const session of args.pastSessions.filter(row=>inWeek(row.date))){
     if(["timed_single","past_exam","exam_90min"].includes(String(session.session_type)))timedFull++;
-    if(["scan5","scan_5_questions"].includes(String(session.session_type))||
+    if(["scan5","scan_5_questions"].includes(String(session.session_type))||!!session.session_kind||
       (String(session.session_type)==="past_exam"&&!!(session.initialSelectedProblemIds||session.selected_questions)))scan5++;
   }
   return {fullSkeleton,timedFull,scan5,deficits:{fullSkeleton:fullSkeleton<1,timedFull:timedFull<1,scan5:scan5<1}};
 }
 
-export function quotaCandidatesWithinCapacity(args:{status:WeeklyQuotaStatus;remainingMinutes:number}){
-  const candidates:Array<{kind:"full_skeleton"|"timed_full"|"scan5";minutes:number}>=[];
-  const add=(kind:"full_skeleton"|"timed_full"|"scan5",minutes:number)=>{if(candidates.reduce((sum,row)=>sum+row.minutes,0)+minutes<=args.remainingMinutes)candidates.push({kind,minutes})};
+export function quotaCandidatesWithinCapacity(args:{status:WeeklyQuotaStatus;remainingMinutes:number;daysRemaining?:number}){
+  const candidates:Array<{kind:"full_skeleton"|"timed_full"|"scan5";minutes:number;sessionKind?:PastExamSessionKind;stage?:PastExamStage}>=[];
+  const add=(kind:"full_skeleton"|"timed_full"|"scan5",minutes:number,extra:Partial<{sessionKind:PastExamSessionKind;stage:PastExamStage}>={})=>{if(candidates.reduce((sum,row)=>sum+row.minutes,0)+minutes<=args.remainingMinutes)candidates.push({kind,minutes,...extra})};
   if(args.status.deficits.timedFull)add("timed_full",35);
   if(args.status.deficits.fullSkeleton)add("full_skeleton",15);
-  if(args.status.deficits.scan5)add("scan5",10);
+  if(args.status.deficits.scan5){
+    const days=args.daysRemaining??119,stage:PastExamStage=days>=91?"discrimination":days>=31?"calibration":"simulation";
+    const sessionKind:PastExamSessionKind=days>=61?"scan_plus_one":"selected_three_timed";
+    add("scan5",days>=61?45:90,{sessionKind,stage});
+  }
   return candidates;
 }
