@@ -22,9 +22,10 @@ import { quotaCandidatesWithinCapacity, taskDraftFromPrescription, weeklySoftQuo
 import { examScoreEligibility, taskScoreForAttempt } from "./scoreEligibility.ts";
 import { resolveReviewTransition } from "./reviewTransition.ts";
 import { analyzeLegacyKReorganization } from "./legacyKRepair.ts";
-import { classifyKPolicyValidity, excludeLegacyKFromPlanning } from "./legacyKPolicy.ts";
+import { classifyKPolicyValidity, excludeLegacyKFromPlanning, planningErrorsForSource } from "./legacyKPolicy.ts";
 import { analyzeSourceMismatchRepair, resolveReviewOrigin, REVIEW_ORIGIN_POLICY_VERSION } from "./reviewOrigin.ts";
 import { normalizePastExamSession, parseScan5Update, sessionStudyMinutes, validatePastExamSession } from "./pastExamWorkflow.ts";
+import { auditLegacyReviewContracts, buildGradingContractSnapshot, contractDifferences, prescriptionFromContract, taskFieldsFromContract } from "./gradingContract.ts";
 import {
   APP_SCHEMA_VERSION, createSchemaDiagnostic, DB_NAME, DB_VERSION,
   GPT_SAVE_REQUIRED_STORES, IndexedDbSchemaError, LATEST_STORE_SCHEMAS, REQUIRED_APP_STORES, STORES
@@ -624,7 +625,12 @@ async function addOrReplaceReview(review:ReviewInsert){
   if(review.deduplication_key){
     const duplicate=pending.find(item=>item.deduplication_key===review.deduplication_key);
     if(duplicate)return duplicate.id;
-  }else if(pending.length) await db.reviews.bulkDelete(pending.map(item=>item.id));
+  }else if(pending.length){
+    // A changed purpose/scope is a new Review. Keep the previous rows as history instead of
+    // replacing their identity or physically deleting them.
+    for(const item of pending)await db.reviews.update(item.id,{status:"superseded",exclude_from_planning:true,
+      superseded_reason:"後続の独立した復習契約が生成されたため"});
+  }
   const [problem,attempts,aliases,examMeta]=await Promise.all([
     db.problems.get(review.problem_id),db.attempts.toArray(),db.problemAliases.toArray(),db.meta.get("exam_date")
   ]);
@@ -632,19 +638,21 @@ async function addOrReplaceReview(review:ReviewInsert){
     return Number(await db.reviews.add({id:undefined as unknown as number,...review,status:"review_needed",review_needed_reason:"problem_masterに対象問題がありません"}));
   }
   const card=resolveReviewCard({item:review,problems:[problem],attempts,aliases,today:todayString(),examDate:examMeta?.value||""});
+  const contractFields=taskFieldsFromContract(card.gradingContract);
   const provenance={
     reviewGoal:card.reviewGoal,correctionTheme:card.correctionTheme,entryHint:card.entryHint,
     oneLineHint:card.oneLineHint,todayActions:card.todayActions,completionConditions:card.completionConditions
   };
   return Number(await db.reviews.add({
     id:undefined as unknown as number,...review,problem_id:card.canonicalProblemId,
-    inferred_mode:card.inferredMode,mode_override:card.modeOverride,effective_mode:card.effectiveMode,
-    sheet_type:card.sheetType,sheet_name:card.sheetLabel,
+    inferred_mode:card.inferredMode,mode_override:card.modeOverride,sheet_name:card.sheetLabel,
     derived_from_problem_id:card.canonicalProblemId,derived_from_attempt_id:card.targetAttempt?.id,
     derived_from_master_version:problem.master_version||"unversioned",derived_generated_at:new Date().toISOString(),
     derived_stale:false,derived_fields:provenance,
     status:card.reviewNeeded?"review_needed":review.status,
-    review_needed_reason:card.reviewNeeded?card.consistencyWarnings.map(item=>item.message).join(" "):undefined
+    review_needed_reason:card.reviewNeeded?card.consistencyWarnings.map(item=>item.message).join(" "):undefined,
+    // Contract fields are applied last so legacy mode/scope fields cannot overwrite the immutable contract.
+    ...contractFields
   }));
 }
 
@@ -658,6 +666,20 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
   input=finalizeStudyUpdateForSave(applyCanonicalMaster(input,problem,answer,await db.problems.toArray(),await db.answerIndex.toArray())) as StudyUpdate&Record<string,unknown>;
   if(input.requires_problem_confirmation) throw new Error(`取り込み内容は ${input.suggested_problem_id||"別の問題"} の可能性があります。問題IDを確認してください`);
   const sourceReview=input.generated_from_review_id?await db.reviews.get(input.generated_from_review_id):undefined;
+  if(sourceReview?.grading_contract){
+    const supplied={
+      contractHash:String(input.contract_hash||""),problemId:String(input.problem_id||""),
+      learningPurpose:input.learning_purpose,mode:input.mode as "check"|"skeleton"|"main_calc"|"full"|"scan5",reviewScope:input.review_scope,
+      targetKind:input.target_kind,gradedParts:input.graded_parts||[],
+    };
+    const differences=contractDifferences(sourceReview.grading_contract,supplied);
+    if(differences.length){
+      const detail=differences.map(row=>`${String(row.field)}: 画面=${JSON.stringify(row.expected)} / GPT=${JSON.stringify(row.actual)}`).join("\n");
+      throw new Error(`画面に表示した課題とGPT採点範囲が一致しません。\n${detail}`);
+    }
+    const disallowed=(input.error_types||[]).filter(error=>error!=="none"&&!sourceReview.grading_contract!.allowedErrorTypes.includes(error));
+    if(disallowed.length)throw new Error(`契約外の誤り分類は保存できません: ${disallowed.join(", ")}`);
+  }
   if(input.generated_from_review_id&&[REVIEW_RUBRIC_VERSION,"STAT1-REVIEW-v8","STAT1-REVIEW-v7","STAT1-REVIEW-v6","STAT1-REVIEW-v5","STAT1-REVIEW-v4"].includes(input.rubric_version||"")){
     const source=sourceReview?await db.attempts.get(sourceReview.generated_from_attempt_id):undefined;
     const previousErrors=source?normalizedErrors(source):[];
@@ -723,8 +745,8 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     raw_gpt_problem_id:input.raw_gpt_problem_id||input.problem_id,raw_gpt_theme:input.raw_gpt_theme||"",
     auto_corrected:!!input.auto_corrected,correction_fields:input.correction_fields||[],
     correction_reason:input.correction_reason||"",consistency_score:input.consistency_score
-    ,learning_purpose:input.learning_purpose||(examEligibility.eligible?"exam_performance":input.generated_from_review_id?"error_repair":"integration_check")
-    ,learning_stage:input.learning_stage||(examEligibility.eligible?"performance":input.generated_from_review_id?"repair":"acquisition")
+    ,learning_purpose:input.learning_purpose||sourceReview?.grading_contract?.learningPurpose||(examEligibility.eligible?"exam_performance":input.generated_from_review_id?"error_repair":"integration_check")
+    ,learning_stage:input.learning_stage||sourceReview?.grading_contract?.learningStage||(examEligibility.eligible?"performance":input.generated_from_review_id?"repair":"acquisition")
     ,assessment_timing:assessmentTiming,task_score:taskScoreForAttempt(scoreCandidate),exam_score:examEligibility.examScore
     ,exam_score_eligible:examEligibility.eligible,time_limit_minutes:examEligibility.timeLimitMinutes||undefined
     ,conclusion_reached:input.conclusion_reached,incomplete_reason:input.incomplete_reason
@@ -734,6 +756,8 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     ,exclude_from_recurrence_metrics:kPolicyValidity==="invalid_legacy_k"
     ,superseded_by_policy_version:kPolicyValidity==="invalid_legacy_k"?LEARNING_POLICY_VERSION:undefined
     ,parent_past_session_id:Number(input.parent_past_session_id||0)||undefined
+    ,contract_id:input.contract_id,contract_version:input.contract_version,contract_hash:input.contract_hash
+    ,grading_contract:sourceReview?.grading_contract,explicitly_out_of_scope_parts:input.explicitly_out_of_scope_parts||[]
   }));
   if(input.auto_corrected) pendingCorrectionLogs.push({
     auto_corrected:true,correction_fields:input.correction_fields||[],
@@ -773,7 +797,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
       :basePlan;
   const effectiveErrors=(input.effective_error_types?.length?input.effective_error_types:errors).filter(error=>["K","W","N","C"].includes(String(error)));
   const delayedPrescription=resolveLearningPolicy({problemId:input.problem_id,problem,source:{...input,
-    error_types:effectiveErrors.length?effectiveErrors:["none"],learning_purpose:effectiveErrors.length?"error_repair":"integration_check",
+    error_types:effectiveErrors.length?effectiveErrors:["none"],learning_purpose:effectiveErrors.length?"error_repair":"retrieval_check",
     assessment_timing:"delayed_retrieval"},targetedParts:input.targeted_parts});
   const delayedDraft=taskDraftFromPrescription({prescription:delayedPrescription,sourceAttemptId:id,sourceDate:date,errors:effectiveErrors});
   const delayedInterval=Math.max(0,Math.round((Date.parse(delayedDraft.dueDate)-Date.parse(date))/86400000));
@@ -970,9 +994,11 @@ async function completeReview(id:number,body:Record<string,unknown>){
   };
   const related=[...(problem.related_s_problem_ids||[]),...list(problem.linked_s_problems)];
   const successful=outcome.result==="success";
-  const currentPrescription=resolveLearningPolicy({problemId:review.problem_id,problem,source:{...source,...review},
-    learningPurpose:review.learning_purpose,learningStage:review.learning_stage,
-    assessmentTiming:review.assessment_timing||"delayed_retrieval",targetedParts:review.targeted_parts});
+  const currentPrescription=review.grading_contract
+    ?prescriptionFromContract(review.grading_contract,planningErrorsForSource(source))
+    :resolveLearningPolicy({problemId:review.problem_id,problem,source:{...source,...review},
+      learningPurpose:review.learning_purpose,learningStage:review.learning_stage,
+      assessmentTiming:review.assessment_timing||"delayed_retrieval",targetedParts:review.targeted_parts});
   const transition=resolveReviewTransition({prescription:currentPrescription,result:outcome.result,
     referenceClosedReproduction:referenceClosed||actualReferenceLevel===0,crossProblemEvidence:false,
     verifiedTransferTargetAvailable:false});
@@ -982,7 +1008,8 @@ async function completeReview(id:number,body:Record<string,unknown>){
   const errors=successful?[]:sourceErrors.length?sourceErrors:["K"];
   const date=todayString(),mark=successful?(outcome.hint_used?"○":"◎"):outcome.result==="partial"?"△":"×";
   const attemptId=Number(await db.attempts.add({
-    ...source,id:undefined as unknown as number,problem_id:review.problem_id,date,mode:plan.mode,
+    ...source,id:undefined as unknown as number,problem_id:review.problem_id,date,
+    mode:currentPrescription.mode==="exam_90min"?"full":currentPrescription.mode,
     time_minutes:outcome.time_minutes,mark,score_label:successful?"A":outcome.result==="partial"?"B":"C",
     error_type:errors[0]||"none",primary_error_type:errors[0]||"none",secondary_error_type:errors[1]||"",
     error_types:errors,error_point:successful?"":linkedS?"関連S確認で基礎型を再現できなかった":source.error_point,
@@ -1004,7 +1031,8 @@ async function completeReview(id:number,body:Record<string,unknown>){
     task_origin:linkedS?"linked_s_check":"review_attempt",source_problem_id:linkedS?source.problem_id:undefined,attempt_exists:true,
     learning_purpose:currentPrescription.learningPurpose,learning_stage:currentPrescription.learningStage,
     assessment_timing:currentPrescription.assessmentTiming,task_score:null,exam_score:null,exam_score_eligible:false,
-    retention_eligible:transition.retentionSuccess,problem_type_key:problem.metadata_status==="ok"?problem.canonical_problem_type:undefined
+    retention_eligible:transition.retentionSuccess,problem_type_key:problem.metadata_status==="ok"?problem.canonical_problem_type:undefined,
+    grading_contract:review.grading_contract,contract_id:review.contract_id,contract_version:review.contract_version,contract_hash:review.contract_hash
   }));
   await db.reviews.update(id,{status:"done",completion_result:outcome.result,hint_used:outcome.hint_used,
     hint_level:String(body.hint_level|| (outcome.hint_used?"unspecified":"none")),after_hint_reproduced:!!outcome.after_hint_reproduced,
@@ -1402,11 +1430,18 @@ async function rebuildReviewCards(){
   const [problems,attempts,reviews,aliases,examMeta,relations]=await Promise.all([
     db.problems.toArray(),db.attempts.toArray(),db.reviews.toArray(),db.problemAliases.toArray(),db.meta.get("exam_date"),storedProblemRelations()
   ]);
-  let staleCount=0,regeneratedCount=0,reviewNeededCount=0,sourceTargetMixCount=0,dateCorrectedCount=0;
+  let staleCount=0,regeneratedCount=0,reviewNeededCount=0,sourceTargetMixCount=0,dateCorrectedCount=0,supersededLegacyCount=0;
   const now=new Date().toISOString(),today=todayString();
   for(const review of reviews){
     // 完了・取消・superseded 済みは不変の履歴。派生表示の再構築対象にしない。
     if(["done","completed","cancelled","superseded","ignored"].includes(review.status))continue;
+    const legacySource=attempts.find(attempt=>attempt.id===(review.source_attempt_id||review.generated_from_attempt_id));
+    if(review.policy_validity==="invalid_legacy_k"&&!planningErrorsForSource(legacySource||review).length){
+      await db.reviews.update(review.id,{status:"superseded",exclude_from_planning:true,exclude_from_recurrence_metrics:true,
+        superseded_by_policy_version:LEARNING_POLICY_VERSION,
+        superseded_reason:"invalid_legacy_k由来で現在有効なN/W/Cまたは根拠付きKがない"});
+      supersededLegacyCount++;continue;
+    }
     const origin=resolveReviewOrigin({review,attempts,aliases,relations,problems});
     const card=resolveReviewCard({item:{...review,origin:origin.origin,origin_verified:origin.valid,
       relation_id:origin.relation?.relationId||review.relation_id},problems,attempts,aliases,today,examDate:examMeta?.value||"",now});
@@ -1428,22 +1463,32 @@ async function rebuildReviewCards(){
       raw_problem_id:problem&&card.canonicalProblemId!==review.problem_id?(review.raw_problem_id||review.problem_id):review.raw_problem_id,
       id_corrected:problem&&card.canonicalProblemId!==review.problem_id?true:review.id_corrected,
       id_correction_reason:problem&&card.canonicalProblemId!==review.problem_id?"problem_aliasesに基づきcanonical IDへ補正":review.id_correction_reason,
-      inferred_mode:card.inferredMode,mode_override:card.modeOverride,effective_mode:card.effectiveMode,
-      sheet_type:card.sheetType,sheet_name:card.sheetLabel,
+      inferred_mode:card.inferredMode,mode_override:card.modeOverride,sheet_name:card.sheetLabel,
       derived_from_problem_id:card.canonicalProblemId,derived_from_attempt_id:card.targetAttempt?.id,
       derived_from_master_version:problem?.master_version||"unversioned",derived_generated_at:now,derived_stale:false,
       derived_fields:derivedFields,
       raw_due_date:dueChanged?(review.raw_due_date||review.due_date):review.raw_due_date,
       due_date:resolvedDue,due_date_correction_reason:dueChanged?`Attempt日と復習間隔から再計算（${card.reviewAfterDays}日）`:review.due_date_correction_reason,
-      review_needed_reason:card.reviewNeeded?card.consistencyWarnings.filter(item=>item.blocksSpecificGuidance).map(item=>item.message).join(" "):undefined
+      review_needed_reason:card.reviewNeeded?card.consistencyWarnings.filter(item=>item.blocksSpecificGuidance).map(item=>item.message).join(" "):undefined,
+      ...taskFieldsFromContract(card.gradingContract)
     });
     regeneratedCount++;
   }
   await appendImportHistory("復習カードを安全に再構築","review-card-resolver",regeneratedCount);
+  const afterRows=await db.reviews.toArray();
+  const rawContractMismatch=afterRows.filter(row=>["pending","overdue","review_needed"].includes(row.status)&&(
+    !row.grading_contract||row.effective_mode!==row.grading_contract.mode||row.sheet_type!==row.grading_contract.sheetType||
+    row.review_scope!==row.grading_contract.reviewScope)).length;
   const summary={repaired_at:now,stale_count:staleCount,regenerated_count:regeneratedCount,review_needed_count:reviewNeededCount,
-    source_target_mix_count:sourceTargetMixCount,date_corrected_count:dateCorrectedCount};
+    source_target_mix_count:sourceTargetMixCount,date_corrected_count:dateCorrectedCount,superseded_legacy_count:supersededLegacyCount,
+    raw_contract_mismatch_count:rawContractMismatch};
   await db.meta.put({key:"review_card_rebuild_summary",value:JSON.stringify(summary)});
   return {...summary,diagnostics:await diagnoseData()};
+}
+
+async function gradingContractAuditPreview(){
+  const [reviews,attempts,aliases]=await Promise.all([db.reviews.toArray(),db.attempts.toArray(),db.problemAliases.toArray()]);
+  return {...auditLegacyReviewContracts({reviews,attempts,aliases}),preview:true,contract_version:"STAT1-CONTRACT-v1"};
 }
 
 async function legacyKReorganizationPreview(){
@@ -1729,11 +1774,11 @@ async function bootstrap():Promise<Bootstrap>{
     const resolvedDue=correctedDueDate(card);
     const status=["pending","overdue"].includes(review.status)&&resolvedDue<today?"overdue":review.status;
     return {...resolvedReview,problem_id:card.canonicalProblemId,due_date:resolvedDue,status,
-      inferred_mode:card.inferredMode,effective_mode:card.effectiveMode,mode_override:card.modeOverride,
-      sheet_type:card.sheetType,sheet_name:card.sheetLabel,
+      inferred_mode:card.inferredMode,mode_override:card.modeOverride,sheet_name:card.sheetLabel,
       consistency_warnings:card.consistencyWarnings,review_needed:card.reviewNeeded,
       derived_fields:{reviewGoal:card.reviewGoal,correctionTheme:card.correctionTheme,entryHint:card.entryHint,
-        oneLineHint:card.oneLineHint,todayActions:card.todayActions,completionConditions:card.completionConditions}};
+        oneLineHint:card.oneLineHint,todayActions:card.todayActions,completionConditions:card.completionConditions},
+      ...taskFieldsFromContract(card.gradingContract)};
   }).sort((a,b)=>a.due_date.localeCompare(b.due_date)||Number(a.manual_order||0)-Number(b.manual_order||0)||a.id-b.id);
   const reviewIsExecutable=(review:Review)=>!review.exclude_from_planning&&
     resolveReviewOrigin({review,attempts,aliases:problemAliases,relations:storedRelations,problems}).valid;
@@ -1810,8 +1855,6 @@ async function bootstrap():Promise<Bootstrap>{
     const ownSource=attempts.find(attempt=>resolveCanonicalProblemId(attempt.problem_id,problemAliases)===resolveCanonicalProblemId(r.problem_id,problemAliases)&&p&&attemptMatchesProblem(attempt,p));
     const linkedS=r.task_origin==="linked_s_check"||r.review_type==="s_check";
     const source=linkedS?ownSource:originSource,answer=answerMap.get(r.problem_id);
-    const defaultMinutes=r.estimated_minutes||r.duration_minutes||20;
-    const minutes=source?.is_review_attempt&&source.time_minutes>0?Math.max(3,Math.round((defaultMinutes+source.time_minutes)/2)):defaultMinutes;
     const card=resolveReviewCard({item:r,problems,attempts,aliases:problemAliases,today,examDate:settings.exam_date});
     const reviewMode=card.effectiveMode;
     return {...r,task_origin:linkedS?"linked_s_check":r.task_origin||(source?"review_attempt":"first_attempt"),
@@ -1833,9 +1876,8 @@ async function bootstrap():Promise<Bootstrap>{
       answer_excerpt:answer?.answer_excerpt||"",
       kind:r.review_type==="s_check"?"S確認":r.generated_from_past_session_id?"過去問復習":"復習",reason:r.status==="overdue"?`期限切れ（${r.due_date}）`:"本日が復習日",
       title:card.displayLabel,theme:card.theme,canonical_problem_type:card.canonicalProblemType,
-      mode:reviewMode,effective_mode:reviewMode,sheet_type:card.sheetType,
       consistency_warnings:card.consistencyWarnings,review_needed:card.reviewNeeded,
-      minutes,estimated_minutes:minutes,load:loadFor(reviewMode)};
+      ...taskFieldsFromContract(card.gradingContract),load:loadFor(reviewMode)};
   }).sort((a,b)=>(a.status==="overdue"&&a.error_type==="K"?0:1)-(b.status==="overdue"&&b.error_type==="K"?0:1)||
     Number(a.manual_order||0)-Number(b.manual_order||0));
   const activeS=new Set(reviews.filter(r=>r.review_type==="s_check"&&["pending","overdue","deferred"].includes(r.status)).map(r=>r.problem_id));
@@ -1977,7 +2019,9 @@ async function bootstrap():Promise<Bootstrap>{
     const record=!saved.id?taskPostponements.get(`${saved.problem_id}:${saved.kind}`):undefined;
     const answer=answerMap.get(saved.problem_id);
     const forcedMust=review?.triage_override==="must"||record?.triage_override==="must";
-    return {...saved,...current,
+    const contract=saved.grading_contract||review?.grading_contract||current?.grading_contract;
+    const contractFields=contract?taskFieldsFromContract(contract):{};
+    return {...current,...saved,...contractFields,
       title:pmap.get(saved.problem_id)?.display_label||pmap.get(saved.problem_id)?.title||saved.title,
       theme:pmap.get(saved.problem_id)?.theme||saved.theme,
       canonical_problem_type:pmap.get(saved.problem_id)?.canonical_problem_type||saved.canonical_problem_type,
@@ -1991,6 +2035,7 @@ async function bootstrap():Promise<Bootstrap>{
       answer_page_start:answer?.page_start,
       answer_page_end:answer?.page_end,
       answer_document_key:answer?.document_key,
+      // Snapshot selection/order/triage/minutes stay fixed. Only a missing legacy contract is hydrated for display.
       minutes:Number(snapshot!.initial_estimated_minutes[key]??saved.minutes),
       triage:forcedMust?"must":snapshot!.initial_bucket[key]||saved.triage||"tomorrow",
       checked:checkedKeys.has(`today-check:${today}:${saved.problem_id}:${saved.kind}`)||todayAttemptProblems.has(saved.problem_id)
@@ -2110,6 +2155,10 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     return await repairDataIntegrity() as T;
   } else if(path==="/api/reviews/rebuild"){
     return await rebuildReviewCards() as T;
+  } else if(path==="/api/contracts/preview"){
+    return await gradingContractAuditPreview() as T;
+  } else if(path==="/api/contracts/hydrate"){
+    return await rebuildReviewCards() as T;
   } else if(path==="/api/legacy-k/preview"){
     return await legacyKReorganizationPreview() as T;
   } else if(path==="/api/legacy-k/reorganize"){
@@ -2159,6 +2208,10 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
   } else if(/^\/api\/reviews\/\d+\/complete$/.test(path)) {
     await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.problemAliases],
       ()=>completeReview(Number(path.split("/")[3]),body));
+  } else if(/^\/api\/reviews\/\d+\/contract-lock$/.test(path)) {
+    const id=Number(path.split("/")[3]),review=await db.reviews.get(id);
+    if(!review)throw new Error("復習カードが見つかりません");
+    if(!review.contract_locked_at)await db.reviews.update(id,{contract_locked_at:new Date().toISOString()});
   } else if(/^\/api\/reviews\/\d+\/postpone$/.test(path)) {
     await db.transaction("rw",[db.reviews,db.meta],()=>postponeReview(Number(path.split("/")[3]),body));
   } else if(path==="/api/tasks/postpone") {

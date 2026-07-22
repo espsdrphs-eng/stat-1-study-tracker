@@ -42,7 +42,7 @@ const localOrFormalPatterns=[
 const textOf=(source:KPolicySource)=>[
   source.error_point,source.result_summary,source.improvement_guidance,
   ...(source.unresolved_carryover||[]),...(source.graded_parts||[]),
-  ...(source.targeted_parts||[]),...(source.required_work_shown||[]),
+  ...(source.targeted_parts||[]),
 ].map(value=>String(value||"").trim()).filter(Boolean).join("\n");
 
 export function hasConcreteStructuralKEvidence(value:unknown){
@@ -98,7 +98,6 @@ export function isSkeletonOnlyCarryover(value:string){
 
 export function mathematicalPatchTargets(source:KPolicySource,explicit:string[]=[]){
   const rows=[...explicit,...(source.targeted_parts||[]),...(source.unresolved_carryover||[]),
-    ...(source.required_work_shown||[]),
     source.error_point||"",source.next_action||""].map(String).filter(value=>value.trim()&&!isSkeletonOnlyCarryover(value));
   const text=rows.join("\n"),targets:string[]=[];
   if(/H|直交行列|行列配置/.test(text))targets.push("Hの配置");

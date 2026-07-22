@@ -63,7 +63,7 @@ function inferPurpose(source:PolicySource|undefined,errors:string[]):LearningPur
   if(source?.learning_purpose)return source.learning_purpose;
   if(["exam_90min","past_exam","timed_single"].includes(String(source?.mode||"")))return "exam_performance";
   if(errors.length)return "error_repair";
-  return "integration_check";
+  return "retrieval_check";
 }
 
 function inferTiming(source:PolicySource|undefined,purpose:LearningPurpose):AssessmentTiming{
@@ -84,7 +84,7 @@ function sheet(mode:PolicyMode):PolicySheetType{
 function parts(input:LearningPolicyInput){
   const source=input.source;
   return clean([input.targetedParts||[],source?.targeted_parts||[],source?.unresolved_carryover||[],
-    source?.required_work_shown||[],source?.error_point,source?.next_action]);
+    source?.error_point,source?.next_action]);
 }
 
 function explicitScope(source?:PolicySource):PolicyReviewScope|undefined{
@@ -119,11 +119,13 @@ export function resolveLearningPolicy(input:LearningPolicyInput):LearningPrescri
   const targetedParts=mathematicalRepair?mathematicalTargets:initialParts;
   const primary=effective.includes("K")?"K":effective.includes("N")?"N":effective.includes("W")?"W":effective.includes("C")?"C":"none";
   let stage:LearningStage=input.learningStage||source?.learning_stage||(
-    purpose==="error_repair"?"repair":purpose==="integration_check"?"integration":purpose==="transfer_check"?"transfer":"performance"
+    purpose==="error_repair"?"repair":purpose==="retrieval_check"?"maintenance":purpose==="integration_check"?"integration":purpose==="transfer_check"?"transfer":"performance"
   );
   let reviewScope:PolicyReviewScope="check_only",mode:PolicyMode="check",estimatedMinutes=5,targetKind:TargetKind|undefined;
   let allowedReferenceLevel=0;
-  if(purpose==="exam_performance"){
+  if(purpose==="retrieval_check"){
+    reviewScope="check_only";mode="check";estimatedMinutes=5;stage="maintenance";allowedReferenceLevel=0;
+  }else if(purpose==="exam_performance"){
     mode=String(source?.mode)==="scan5"||String(source?.mode)==="scan"?"scan5":String(source?.mode)==="exam_90min"?"exam_90min":"full";
     reviewScope=mode==="scan5"?"scan5":"full_answer";estimatedMinutes=mode==="exam_90min"?90:mode==="scan5"?10:35;stage="performance";
   }else if(purpose==="transfer_check"){
@@ -141,7 +143,7 @@ export function resolveLearningPolicy(input:LearningPolicyInput):LearningPrescri
     targetKind="skeleton_expression_patch";allowedReferenceLevel=timing==="same_session_correction"?2:primary==="N"?2:0;
   }
   const requestedScope=explicitScope(source);
-  if(requestedScope){
+  if(requestedScope&&purpose!=="retrieval_check"){
     reviewScope=requestedScope;
     mode=modeForScope(requestedScope,source);
     estimatedMinutes=requestedScope==="targeted_patch"?10:requestedScope==="main_calc_target"?12:
@@ -158,7 +160,7 @@ export function resolveLearningPolicy(input:LearningPolicyInput):LearningPrescri
     if(reviewScope==="full_skeleton"||reviewScope==="full_answer")reviewScope="targeted_patch";
     if(mode==="full"||mode==="exam_90min")mode=primary==="W"?"main_calc":primary==="C"?"check":"skeleton";
   }
-  const targets=targetedParts.length?targetedParts:["前回指定された箇所"];
+  const targets=purpose==="retrieval_check"?[]:targetedParts.length?targetedParts:["前回指定された箇所"];
   const completionConditions=reviewScope==="targeted_patch"||reviewScope==="main_calc_target"
     ?[`${targets.join("／")}だけを参照を閉じて再現できた`]
     :reviewScope==="full_skeleton"?["方針・出発式・主役の量・条件・流れを参照なしで再現できた"]
@@ -168,7 +170,7 @@ export function resolveLearningPolicy(input:LearningPolicyInput):LearningPrescri
   const requiredEvidence=reviewScope==="targeted_patch"||reviewScope==="main_calc_target"
     ?targets.map(target=>`${target}を今回答案で示す`)
     :completionConditions;
-  const allowedErrorTypes:Array<"K"|"W"|"N"|"C">=reviewScope==="targeted_patch"
+  const allowedErrorTypes:Array<"K"|"W"|"N"|"C">=purpose==="retrieval_check"?(["W","C"] as Array<"K"|"W"|"N"|"C">):reviewScope==="targeted_patch"
     ?(targetKind==="mathematical_patch"?(primary==="C"?["C"]:primary==="W"?["W","N","C"]:["N","C"]):primary==="K"?["K","N","C"]:["N","C"])
     :reviewScope==="main_calc_target"?(["W","N","C"] as Array<"K"|"W"|"N"|"C">)
     :(["K","W","N","C"] as Array<"K"|"W"|"N"|"C">);

@@ -3,6 +3,7 @@ export const REVIEW_RUBRIC_VERSION="STAT1-REVIEW-v9";
 
 import { removeTimingExpressions } from "./reviewTiming.ts";
 import type { EffectiveReviewScope } from "./reviewScopeResolver.ts";
+import type { GradingContractSnapshot, ProblemContextPack } from "./types.ts";
 
 export type ReviewPromptContext={
   reviewId?:number;problemId:string;title?:string;theme?:string;date:string;mode:string;
@@ -19,6 +20,7 @@ export type ReviewPromptContext={
   reviewScope?:EffectiveReviewScope;targetedParts?:string[];completionConditions?:string[];
   allowedErrorTypes?:string[];requiresKEvidence?:boolean;
   learningPurpose?:string;learningStage?:string;assessmentTiming?:string;targetKind?:string;
+  gradingContract?:GradingContractSnapshot;problemContext?:ProblemContextPack;
 };
 
 export type FirstAttemptPromptContext={
@@ -249,9 +251,13 @@ exam_selection_rank や「本番で選ぶか」の判定は出力しないでく
 }
 
 export function buildReviewGradingPrompt(context:ReviewPromptContext){
-  const scope=context.reviewScope||(context.requiresFullAnswer||context.mode==="full"||context.mode==="exam_90min"?"full_answer":context.mode==="main_calc"?"main_calc_target":context.mode==="check"?"check_only":"full_skeleton");
-  const targets=(context.targetedParts||[]).filter(Boolean);
-  const conditions=(context.completionConditions||[]).filter(Boolean);
+  // A stored contract is immutable. Prompt generation must never run policy resolution again.
+  const contract=context.gradingContract;
+  const scope=contract?.reviewScope||context.reviewScope||(context.requiresFullAnswer||context.mode==="full"||context.mode==="exam_90min"?"full_answer":context.mode==="main_calc"?"main_calc_target":context.mode==="check"?"check_only":"full_skeleton");
+  const targets=(contract?.targetedParts||context.targetedParts||[]).filter(Boolean);
+  const gradedParts=(contract?.gradedParts||targets).filter(Boolean);
+  const outOfScope=(contract?.explicitlyOutOfScopeParts||[]).filter(Boolean);
+  const conditions=(contract?.completionConditions||context.completionConditions||[]).filter(Boolean);
   const fullScope=scope==="full_answer";
   const hintLevel=context.hintLevel||"none";
   const hintUsed=hintLevel!=="none";
@@ -264,25 +270,43 @@ export function buildReviewGradingPrompt(context:ReviewPromptContext){
   const defaultAllowed=fullScope?0:(context.previousErrors||[]).some(error=>["K","N","W","C"].includes(error))?2:1;
   const allowedReferenceLevel=Math.min(5,Math.max(0,Number(context.allowedReferenceLevel??defaultAllowed)));
   const referenceClosed=context.referenceClosedReproduction??context.afterHintReproduced??false;
-  const scopeRule:Record<EffectiveReviewScope,string>={
+  const scopeRule:Record<EffectiveReviewScope|"scan5",string>={
     targeted_patch:"targetedPartsだけを採点する。指定範囲外の空欄・省略・未提出をK/W/N/Cの根拠にしない。骨格全項目を要求しない。",
     full_skeleton:"骨格全体（方針、出発式、主役の量、条件、道具、流れ、最後に示すこと）を採点する。最終式・計算完了は要求しない。",
     main_calc_target:"指定計算と開始式・必要条件だけを採点する。問題全体や骨格全項目を要求しない。",
     check_only:"指定された型・初手・主役の量・注意点だけを採点する。",
     full_answer:"答案全体を採点し、未提出部分を正しいと仮定しない。",
+    scan5:"5問スキャン専用契約だけを評価し、通常答案のK/W/N/Cは付けない。",
   };
-  const allowed=(context.allowedErrorTypes||["K","W","N","C"]).join(" / ");
+  const allowed=(contract?.learningPurpose==="retrieval_check"?["W","C"]:(context.allowedErrorTypes||["K","W","N","C"])).join(" / ");
   const targetText=targets.length?targets.map((part,index)=>`${index+1}. ${part}`).join("\n"):"指定なし";
   const conditionText=conditions.length?conditions.map((condition,index)=>`${index+1}. ${condition}`).join("\n"):"指定範囲を自力で再現する";
+  const problemContext=context.problemContext;
+  const problemContextText=problemContext?`canonical problem_id：${problemContext.canonicalProblemId}
+表示名：${problemContext.displayLabel}
+テーマ：${problemContext.theme}
+問題型：${problemContext.canonicalProblemType}
+キーワード：${problemContext.canonicalKeywords.join("、")||"未登録"}
+情報充足度：${problemContext.contextCompleteness}`:`問題ID：${context.problemId}
+問題名：${context.title||""}
+テーマ：${context.theme||""}`;
+  const contractText=contract?`contract_id：${contract.contractId}
+contract_version：${contract.contractVersion}
+contract_hash：${contract.contractHash}
+learning_purpose：${contract.learningPurpose}
+mode：${contract.mode}
+review_scope：${contract.reviewScope}
+target_kind：${contract.targetKind||""}
+graded_parts：${gradedParts.join(" / ")||"なし"}
+explicitly_out_of_scope_parts：${outOfScope.join(" / ")||"なし"}`:`legacy contract（保存前に契約化が必要）`;
   return `あなたは統計検定1級・統計数理の復習答案採点者です。
 rubric_version: ${REVIEW_RUBRIC_VERSION}
 
-【今回の問題】
-問題ID：${context.problemId}
-問題名：${context.title||""}
-テーマ：${context.theme||""}
-復習モード：${context.mode}
-復習範囲：${scope}
+【problem_context：問題理解の参考。採点範囲ではない】
+${problemContextText}
+
+【grading_contract：今回の唯一の採点範囲】
+${contractText}
 採点規則：${scopeRule[scope]}
 
 【targetedParts】
@@ -307,6 +331,8 @@ ${conditionText}
 
 【判定ルール】
 1. 採点対象は上記の復習範囲とtargetedPartsだけ。画面の最低クリア条件と同じ条件を使う。
+   problem_contextに問題全体の情報があってもgrading_contractを拡張しない。
+   explicitly_out_of_scope_partsの欠落・未記入・空欄を減点しない。
 2. 許可する誤り分類：${allowed}。指定範囲外の空欄や未記入を誤りの根拠にしない。
 3. Kは、今回答案から「型・方針・入口・出発式・主役の量・必要な道具・結論への大きな流れ」の崩れを確認できる場合だけ。Kを返す場合は答案中の根拠をk_evidenceへ引用する。引用がなければKを返さない。${context.allowedErrorTypes&&!context.allowedErrorTypes.includes("K")?"今回はKが採点範囲外なのでKを返さない。":""}
 4. 計算過程の失敗はW、条件・理由・再現性不足はN、記号・添字・次元・符号・転記はCとする。
@@ -318,9 +344,12 @@ ${conditionText}
 8. 最後に次のYAMLをコードブロックで出力する。
 
 study_update:
+  contract_id: "${contract?.contractId||""}"
+  contract_version: "${contract?.contractVersion||""}"
+  contract_hash: "${contract?.contractHash||""}"
   problem_id: "${context.problemId}"
   date: "${context.date}"
-  mode: "${context.mode}"
+  mode: "${contract?.mode||context.mode}"
   time_minutes: ${context.timeMinutes||15}
   mark: "○"
   score_label: "A"
@@ -346,15 +375,15 @@ study_update:
   linked_s_problems: []
   grading_confidence: 90
   rubric_version: "${REVIEW_RUBRIC_VERSION}"
-  learning_purpose: "${context.learningPurpose||"error_repair"}"
-  learning_stage: "${context.learningStage||"repair"}"
+  learning_purpose: "${contract?.learningPurpose||context.learningPurpose||"error_repair"}"
+  learning_stage: "${contract?.learningStage||context.learningStage||"repair"}"
   assessment_timing: "${context.assessmentTiming||"delayed_retrieval"}"
-  target_kind: "${context.targetKind||""}"
+  target_kind: "${contract?.targetKind||context.targetKind||""}"
   review_scope: "${scope}"
   targeted_parts: ${targets.length?`\n${targets.map(part=>`    - "${part.replaceAll('"','\\"')}"`).join("\n")}`:"[]"}
   evaluation_scope: "${fullScope?"full":"conditional_full"}"
-  graded_parts:
-    - "今回の答案から実際に採点した部分"
+  graded_parts: ${gradedParts.length?`\n${gradedParts.map(part=>`    - "${part.replaceAll('"','\\"')}"`).join("\n")}`:"[]"}
+  explicitly_out_of_scope_parts: ${outOfScope.length?`\n${outOfScope.map(part=>`    - "${part.replaceAll('"','\\"')}"`).join("\n")}`:"[]"}
 ${fullScope?"  assumed_correct_parts: []":"  assumed_correct_parts:\n    - \"提出対象外として正しいと仮定した部分\""}
   unresolved_carryover: []
   uncertain_points: []

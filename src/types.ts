@@ -11,6 +11,7 @@ export type Problem = {
   roadmap_rank?:string; source_book?:string; related_a_problem_ids?:string[];
   related_past_exam_ids?:string[]; answer_available?:boolean; master_version?:string;
   metadata_status?:"ok"|"review_needed"|"metadata_review_needed";
+  full_skeleton_blueprint?:FullSkeletonBlueprint;
 };
 export type AnswerIndexEntry = {
   problem_id:string; answer_available:boolean; pdf_file_name?:string; page_start?:number|null;
@@ -58,11 +59,35 @@ export type ScanQuestion = {
   actualScore?:number|null;actualMinutes?:number|null;typeJudgmentCorrect?:boolean|null;
   firstStepCorrect?:boolean|null;sank?:boolean|null;hintUsed?:boolean;referenceUsed?:boolean;completed?:boolean;
 };
-export type LearningPurpose="error_repair"|"integration_check"|"transfer_check"|"exam_performance";
-export type LearningStage="acquisition"|"repair"|"integration"|"discrimination"|"transfer"|"performance"|"stable";
+export type LearningPurpose="error_repair"|"retrieval_check"|"integration_check"|"transfer_check"|"exam_performance";
+export type LearningStage="acquisition"|"repair"|"maintenance"|"integration"|"discrimination"|"transfer"|"performance"|"stable";
 export type AssessmentTiming="same_session_correction"|"delayed_retrieval"|"independent_performance";
 export type TargetKind="mathematical_patch"|"skeleton_expression_patch";
 export type KPolicyValidity="valid"|"invalid_legacy_k"|"needs_review";
+export type FullSkeletonBlueprint={
+  problemId:string;blueprintVersion:string;
+  verificationStatus:"official_verified"|"user_verified"|"successful_attempt_verified"|"unverified";
+  requiredSections:string[];requiredParts:string[];optionalParts:string[];finalGoals:string[];sourceReferences:string[];
+};
+export type GradingContractSnapshot={
+  contractId:string;contractVersion:string;contractHash:string;createdAt:string;problemId:string;
+  sourceAttemptId?:number;sourceReviewId?:number;
+  learningPurpose:LearningPurpose;learningStage:LearningStage;
+  mode:"check"|"skeleton"|"main_calc"|"full"|"scan5";
+  reviewScope:"targeted_patch"|"main_calc_target"|"full_skeleton"|"check_only"|"full_answer"|"scan5";
+  targetKind?:TargetKind;targetedParts:string[];gradedParts:string[];explicitlyOutOfScopeParts:string[];
+  completionConditions:string[];requiredEvidence:string[];allowedErrorTypes:string[];requiresKEvidence:boolean;
+  allowedReferenceLevel:number;estimatedMinutes:number;
+  sheetType:"check_sheet"|"skeleton_sheet"|"main_calc_sheet"|"full_answer_sheet"|"scan5_sheet";
+};
+export type ProblemContextPack={
+  problemId:string;canonicalProblemId:string;displayLabel:string;title:string;theme:string;canonicalProblemType:string;
+  canonicalKeywords:string[];problemMaster:Problem;answerIndex?:AnswerIndexEntry;problemStatement?:string;officialAnswerText?:string;
+  answerExcerpt?:string;answerPages?:{documentKey?:string;pageStart?:number;pageEnd?:number};
+  contextCompleteness:"complete"|"partial"|"metadata_only";currentSourceAttempt?:Attempt;
+  previousAttempts:Array<{attemptId:number;date:string;mode:string;scoreNumeric:number|null;errorTypes:string[]}>;
+  previousReviews:Array<{reviewId:number;status:string;reviewType:string;dueDate:string}>;verifiedRelations:ProblemRelation[];
+};
 export type Attempt = {
   id:number; problem_id:string; date:string; mode:string; time_minutes:number; mark:string;
   score_label:string; error_type:string; error_point:string; next_action:string; memo:string;
@@ -96,6 +121,8 @@ export type Attempt = {
   policy_validity?:KPolicyValidity; exclude_from_planning?:boolean;
   exclude_from_recurrence_metrics?:boolean; superseded_by_policy_version?:string;
   parent_past_session_id?:number;
+  grading_contract?:GradingContractSnapshot;contract_id?:string;contract_version?:string;contract_hash?:string;
+  explicitly_out_of_scope_parts?:string[];
 };
 export type Review = {
   id:number; problem_id:string; due_date:string; review_type:string; status:string; generated_from_attempt_id:number;
@@ -134,6 +161,8 @@ export type Review = {
   exclude_from_recurrence_metrics?:boolean; superseded_by_policy_version?:string;
   superseded_reason?:string;
   origin?:ReviewOrigin;origin_verified?:boolean;target_problem_id?:string;relation_id?:string;generated_at?:string;parent_past_session_id?:number;
+  grading_contract?:GradingContractSnapshot;contract_id?:string;contract_version?:string;contract_hash?:string;
+  contract_locked_at?:string;explicitly_out_of_scope_parts?:string[];graded_parts?:string[];
 };
 export type TodayPlanSnapshot = {
   date:string;task_ids:string[];start_of_day_planned_minutes:number;
@@ -193,6 +222,8 @@ export type Task = {
   policy_version?:string; source_attempt_id?:number; deduplication_key?:string;
   earliest_date?:string; preferred_date?:string; latest_date?:string;
   retention_eligible?:boolean;success_transition?:string;failure_transition?:string;
+  grading_contract?:GradingContractSnapshot;contract_id?:string;contract_version?:string;contract_hash?:string;
+  contract_locked_at?:string;explicitly_out_of_scope_parts?:string[];graded_parts?:string[];
 };
 export type WeaknessInsight = {
   theme:string; score:number; level:"重点"|"注意"|"観察"; confidence:"参考"|"暫定"|"分析可能";
@@ -302,4 +333,6 @@ export type StudyUpdate = {
   time_limit_minutes?:number; conclusion_reached?:boolean; incomplete_reason?:string;
   raw_import_data?:Record<string,unknown>; raw_time_minutes?:number|string; raw_score_label?:string;
   raw_reference_closed_reproduction?:boolean;
+  contract_id?:string;contract_version?:string;contract_hash?:string;
+  explicitly_out_of_scope_parts?:string[];
 };

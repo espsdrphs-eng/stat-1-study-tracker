@@ -55,3 +55,27 @@ full skeleton、timed full、scan5は週間soft quotaです。既存実績が不
 整合性診断・ReviewCardResolver・派生表示の再構築でも同じ `ReviewOrigin` 判定を使います。`done` / `completed` / `cancelled` / `superseded` は現在対応件数と派生表示の再構築対象から除外し、履歴レコードを書き換えません。verified relation の移行対象は必ず現在対応件数へ含め、内訳との件数矛盾を許しません。
 
 `STAT1-SCAN5-v1` の `primary_selection_error` は正式8値のみを保存します。既知aliasはschema検証前に正式値へ正規化してraw値とログを残し、未知値は`none`へ変換しません。session ID・kind・stageは既存pastSessionと照合し、未解決の復習候補IDはラベルとして保持します。SCAN5分析の保存先はpastSession.analysisだけであり、Attempt・Review・todayPlanSnapshot・K/W/N/C・露出状態を変更しません。
+# 採点契約の固定（STAT1-CONTRACT-v1）
+
+- 1つの復習カードについて、画面、使用シート、所要時間、完了条件、GPT採点範囲、保存検証は同じ `GradingContractSnapshot` を参照する。
+- `ProblemContextPack` は問題理解の参考情報であり、採点範囲を拡張しない。採点範囲は `grading_contract` だけが正本である。
+- 契約確定後は表示時・プロンプトコピー時に LearningPolicy を再実行しない。目的を変える場合は別Reviewを生成する。
+- `required_work_shown`、`resolution_evidence`、`target_issue_resolved`、`minimum_pass_condition_met` は成功証拠であり、次回の `targetedParts` に変換しない。
+- `error_types=["none"]` または課題解消済みAttemptから `error_repair` を作らない。
+
+## retrieval_check
+
+`light_check` / `careless_check` は `retrieval_check` として扱う。
+
+- mode: `check`
+- reviewScope: `check_only`
+- sheetType: `check_sheet`
+- estimatedMinutes: 3〜5分
+- 採点対象: 型、最初の一手、主役の量、重要条件または注意点
+- 採点対象外: 全体骨格、全計算、最終結論の完全再現
+
+`retrieval_check` を同じReview IDのまま `integration_check` へ昇格しない。全体骨格の確認が必要なら、検証済み `FullSkeletonBlueprint` を根拠に別Reviewとして作成する。検証済みblueprintがない `full_skeleton` は `needs_review` とする。
+
+## 保存時照合
+
+復習GPT結果の `contract_hash`、problem ID、purpose、mode、scope、target kind、graded partsが画面契約と一致しない場合は保存しない。GPT結果から画面契約を逆変更しない。

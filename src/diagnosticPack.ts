@@ -85,6 +85,8 @@ function errorsFor(attempt?:Attempt){
 }
 
 function buildPromptAudit(review:Review,card:ResolvedReviewCard){
+  // Production cards always carry the stored contract/prescription. The fallback only supports
+  // legacy diagnostic fixtures and never mutates or persists a task.
   const prescription=card.prescription||resolveLearningPolicy({problemId:card.canonicalProblemId,source:{
     mode:card.effectiveMode,review_scope:card.effectiveReviewScope,targeted_parts:card.targetedParts,
     error_types:card.errorTypes,assessment_timing:review.assessment_timing||"delayed_retrieval",
@@ -105,6 +107,7 @@ function buildPromptAudit(review:Review,card:ResolvedReviewCard){
     allowedErrorTypes:card.allowedErrorTypes,requiresKEvidence:card.requiresKEvidence,
     learningPurpose:prescription.learningPurpose,learningStage:prescription.learningStage,
     assessmentTiming:prescription.assessmentTiming,targetKind:prescription.targetKind,
+    gradingContract:card.gradingContract,problemContext:card.problemContext,
   });
   const warnings:Array<{code:string;message:string}>=[];
   const consistencyWarnings=card.consistencyWarnings.map(item=>({code:item.code,message:item.message}));
@@ -129,6 +132,9 @@ function buildPromptAudit(review:Review,card:ResolvedReviewCard){
     learningPrescription:prescription,policyVersion:prescription.policyVersion,
     assessmentTiming:prescription.assessmentTiming,learningPurpose:prescription.learningPurpose,
     consistencyWarnings,storedSheetType:review.sheet_type||null,expectedSheetType:expectedSheet,
+    contractId:card.gradingContract?.contractId||null,contractHash:card.gradingContract?.contractHash||null,
+    gradedParts:card.gradingContract?.gradedParts||card.targetedParts,
+    explicitlyOutOfScopeParts:card.gradingContract?.explicitlyOutOfScopeParts||[],
   };
 }
 

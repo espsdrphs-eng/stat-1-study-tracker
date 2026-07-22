@@ -297,6 +297,7 @@ function ReviewPlanDetails({item:rawItem,compact=false,resolved}:{item:Partial<R
   const [reference,setReference]=useState<ReferenceState>(()=>readReferenceState(item.id));
   const [referenceClosedReproduction,setReferenceClosedReproduction]=useState(()=>readReferenceClosed(item.id));
   const [openReferencePanel,setOpenReferencePanel]=useState<OpenReferencePanel>(null);
+  const lockContract=()=>{if(item.id&&!item.contract_locked_at)void post(`/api/reviews/${item.id}/contract-lock`,{}).catch(()=>undefined)};
   if(!item.review_method&&!item.review_reason&&!resolved) return null;
   const actions=resolved?.todayActions.value||safeReviewActions(item);
   const template=reviewTemplate(item);
@@ -304,6 +305,7 @@ function ReviewPlanDetails({item:rawItem,compact=false,resolved}:{item:Partial<R
   const hasSavedFeedback=!!item.has_saved_gpt_feedback;
   const hasPreviousAttempt=item.attempt_exists!==false;
   const reveal=(level:Exclude<ReferenceLevel,0>,panel:Exclude<OpenReferencePanel,null>)=>{
+    lockContract();
     const next=revealReference(reference,level);
     setReference(next);rememberReferenceState(item.id,next);setOpenReferencePanel(panel);
     setReferenceClosedReproduction(false);rememberReferenceClosed(item.id,false);
@@ -333,7 +335,7 @@ function ReviewPlanDetails({item:rawItem,compact=false,resolved}:{item:Partial<R
     completionConditions:resolved?.completionConditions.value,allowedErrorTypes:resolved?.allowedErrorTypes,
     requiresKEvidence:resolved?.requiresKEvidence,learningPurpose:resolved?.prescription.learningPurpose,
     learningStage:resolved?.prescription.learningStage,assessmentTiming:resolved?.prescription.assessmentTiming,
-    targetKind:resolved?.prescription.targetKind
+    targetKind:resolved?.prescription.targetKind,gradingContract:resolved?.gradingContract,problemContext:resolved?.problemContext
   }):"";
   return <div className={`review-plan ${compact?"compact":""}`}>
     {resolved?.reviewNeeded&&<div className="review-consistency-warning"><AlertTriangle size={18}/><div><strong>要確認</strong><span>問題情報または復習履歴に不整合があります。誤った具体的な指示は表示していません。</span></div></div>}
@@ -343,9 +345,17 @@ function ReviewPlanDetails({item:rawItem,compact=false,resolved}:{item:Partial<R
     <div className="review-plan-summary">
       {item.due_date&&<div><span>次回復習</span><strong>{resolved?`${resolved.dueDate}${resolved.daysUntilDue==null?"":resolved.daysUntilDue===0?"（今日）":resolved.daysUntilDue>0?`（あと${resolved.daysUntilDue}日）`:`（${Math.abs(resolved.daysUntilDue)}日超過）`}`:item.due_date}</strong></div>}
       <div><span>復習方法</span><strong>{resolved?.reviewMethodLabel||item.review_method||"—"}</strong></div>
-      <div><span>必要時間</span><strong>{item.estimated_minutes||item.minutes||"—"}分</strong></div>
+      <div><span>必要時間</span><strong>{resolved?.estimatedMinutes||item.estimated_minutes||item.minutes||"—"}分</strong></div>
       <div><span>使用シート</span><strong>{resolved?.sheetLabel||template.sheetLabel}</strong></div>
     </div>
+    {resolved&&<div className="grading-contract-summary">
+      <div><span>今回の目的</span><strong>{resolved.gradingContract.learningPurpose}</strong></div>
+      <div><span>モード／採点範囲</span><strong>{resolved.gradingContract.mode}／{resolved.gradingContract.reviewScope}</strong></div>
+      <div><span>採点対象</span><strong>{resolved.gradingContract.gradedParts.join("・")||"なし"}</strong></div>
+      <div><span>採点対象外</span><strong>{resolved.gradingContract.explicitlyOutOfScopeParts.join("・")||"なし"}</strong></div>
+      <div><span>許可された参照</span><strong>レベル {resolved.gradingContract.allowedReferenceLevel}</strong></div>
+      <div><span>契約</span><strong>{resolved.gradingContract.contractId.slice(-8)}</strong></div>
+    </div>}
     <div className="review-aim"><span>今回の狙い</span><strong>{resolved?.reviewGoal.value||reviewAim(item)}</strong></div>
     {(resolved?.taskOrigin||item.task_origin)==="linked_s_check"&&<div className="task-origin-note"><Badge tone="blue">関連S確認</Badge><div><strong>この問題自体は{hasPreviousAttempt?"既習":"初回"}確認です</strong><span>元問題：{resolved?.sourceProblem?.displayLabel||item.source_problem_id||"記録なし"}／{resolved?.sourceProblem?.sourceIssue||"元問題で崩れた基礎型を確認します。"}</span></div></div>}
     <div className="correction-theme"><span>修正テーマ</span><strong>{resolved?.correctionTheme.value||correctionTheme(item)}</strong></div>
@@ -356,7 +366,7 @@ function ReviewPlanDetails({item:rawItem,compact=false,resolved}:{item:Partial<R
       <div className="review-template-head"><div><span>復習内容の型</span><strong>{resolved?.reviewMethodLabel||template.title}</strong></div><SheetLink href={sheetHref(resolved?.effectiveMode||template.sheetMode)} label={resolved?.sheetLabel||template.sheetLabel}/></div>
       <div className="review-template-fields">{template.fields.map(field=><div key={field.label}><strong>{field.label}</strong><span>{field.hint}</span></div>)}</div>
     </div>
-    <div className="completion-checklist"><span>完了条件</span>{(resolved?.completionConditions.value||completionChecklist(item)).map(condition=><label key={condition}><input type="checkbox"/><b>{condition}</b></label>)}</div>
+    <div className="completion-checklist"><span>完了条件</span>{(resolved?.completionConditions.value||completionChecklist(item)).map(condition=><label key={condition}><input type="checkbox" onChange={lockContract}/><b>{condition}</b></label>)}</div>
     <div className="reference-gate">
       <div className="reference-gate-head"><div><span>今回見たもの</span><strong>{referenceLabels[reference.actual_reference_level]}</strong></div><small>許可：{referenceLabels[allowed]}まで</small></div>
       <div className="hint-policy"><strong>参照ルール</strong><span>{referencePolicy(item)}</span></div>
@@ -379,12 +389,12 @@ function ReviewPlanDetails({item:rawItem,compact=false,resolved}:{item:Partial<R
     {reviewPrompt&&<div className="review-prompt-prep">
       <div className="review-prompt-prep-head"><div><span>GPT採点前に入力</span><strong>時間と参照状況をプロンプトへ反映</strong></div></div>
       <div className="review-prompt-inputs">
-        <Field label="今回かかった時間（分）"><input type="number" min="0" value={reviewMinutes} onChange={event=>setReviewMinutes(event.target.value)}/></Field>
+        <Field label="今回かかった時間（分）"><input type="number" min="0" value={reviewMinutes} onChange={event=>{lockContract();setReviewMinutes(event.target.value)}}/></Field>
         <Field label="許可された参照"><input value={`${allowed}. ${referenceLabels[allowed]}まで`} readOnly/></Field>
         <Field label="実際に見た参照"><input value={`${reference.actual_reference_level}. ${referenceLabels[reference.actual_reference_level]}`} readOnly/></Field>
       </div>
       {usedReference&&<label className="after-hint-check"><input type="checkbox" checked={referenceClosedReproduction} onChange={event=>{setReferenceClosedReproduction(event.target.checked);rememberReferenceClosed(item.id,event.target.checked)}}/><span>表示を隠してから、該当部分を白紙で再現した</span></label>}
-      <button className="ghost small review-prompt-copy" onClick={async()=>{await navigator.clipboard.writeText(reviewPrompt);setPromptCopied(true);setTimeout(()=>setPromptCopied(false),1800)}}>{promptCopied?<Check size={14}/>:<Copy size={14}/>} {promptCopied?"復習採点プロンプトをコピーしました":"入力内容を含むGPT採点プロンプトをコピー"}</button>
+      <button className="ghost small review-prompt-copy" onClick={async()=>{lockContract();await navigator.clipboard.writeText(reviewPrompt);setPromptCopied(true);setTimeout(()=>setPromptCopied(false),1800)}}>{promptCopied?<Check size={14}/>:<Copy size={14}/>} {promptCopied?"復習採点プロンプトをコピーしました":"入力内容を含むGPT採点プロンプトをコピー"}</button>
     </div>}
     {item.status==="done"&&<div className="post-review-summary"><span>復習後の確認</span>
       <p><b>前回ミス：</b>{item.previous_error_point||"記録なし"}</p>
@@ -534,7 +544,7 @@ function StudyPromptButtons({item,resolved}:{item:Partial<Review&Task>;resolved?
     completionConditions:resolved?.completionConditions.value,allowedErrorTypes:resolved?.allowedErrorTypes,
     requiresKEvidence:resolved?.requiresKEvidence,learningPurpose:resolved?.prescription.learningPurpose,
     learningStage:resolved?.prescription.learningStage,assessmentTiming:resolved?.prescription.assessmentTiming,
-    targetKind:resolved?.prescription.targetKind
+    targetKind:resolved?.prescription.targetKind,gradingContract:resolved?.gradingContract,problemContext:resolved?.problemContext
   }):"";
   const repairPrompt=buildRepairPrompt({
     problemId:item.problem_id||"",displayLabel:item.title||item.problem_id,theme:item.theme,
@@ -543,7 +553,7 @@ function StudyPromptButtons({item,resolved}:{item:Partial<Review&Task>;resolved?
   const isFirst=(item.task_origin||"first_attempt")==="first_attempt"&&!item.id;
   return <div className="prompt-button-row">
     <button type="button" className={isFirst?"primary small":"ghost small"} onClick={()=>void copyText(firstPrompt,"first",setCopied)}><Copy size={14}/>{copied==="first"?"コピー済み":"初回採点プロンプト"}</button>
-    <button type="button" className="ghost small" disabled={!reviewPrompt} onClick={()=>reviewPrompt&&void copyText(reviewPrompt,"review",setCopied)}><Copy size={14}/>{copied==="review"?"コピー済み":"復習採点プロンプト"}</button>
+    <button type="button" className="ghost small" disabled={!reviewPrompt} onClick={()=>{if(item.id)void post(`/api/reviews/${item.id}/contract-lock`,{}).catch(()=>undefined);if(reviewPrompt)void copyText(reviewPrompt,"review",setCopied)}}><Copy size={14}/>{copied==="review"?"コピー済み":"復習採点プロンプト"}</button>
     <button type="button" className="ghost small" onClick={()=>void copyText(repairPrompt,"repair",setCopied)}><Copy size={14}/>{copied==="repair"?"コピー済み":"理解補修プロンプト"}</button>
   </div>;
 }
@@ -1013,6 +1023,8 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
   const [sourcePreview,setSourcePreview]=useState<{source_mismatch_count:number;verified_relation_count:number;superseded_count:number;regenerated_count:number;needs_review_count:number;unchanged_completed_count:number;
     active_source_mismatch:number;pending_verified_link_needs_migration:number;invalid_legacy_cards_to_supersede:number;
     historical_completed_linked_reviews:number;unresolved_needs_review:number;verified_relation_migrated:number;causes:Record<string,number>}|null>(null);
+  const [contractPreview,setContractPreview]=useState<{pending_mode_mismatch:number;light_check_mismatch:number;invalid_legacy_pending:number;
+    source_target_mismatch:number;generated_derived_attempt_mismatch:number;success_evidence_used_as_target:number;ids:Record<string,number[]>}|null>(null);
   const saveBlob=(content:string|Blob,name:string,type:string)=>{
     const payload=content instanceof Blob?content:new Blob([content],{type});
     const url=URL.createObjectURL(payload);const a=document.createElement("a");
@@ -1104,6 +1116,10 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
     try{setSourcePreview(await post("/api/source-mismatch/preview",{}))}
     catch(error){setMasterError(error instanceof Error?error.message:String(error))}
   };
+  const previewContracts=async()=>{
+    try{setContractPreview(await post("/api/contracts/preview",{}))}
+    catch(error){setMasterError(error instanceof Error?error.message:String(error))}
+  };
   const unresolvedLinks=data.masterStatus.diagnostics.filter(item=>item.recommended_action==="hold");
   return <><section className="panel master-import-panel master-import-primary" id="problem-master-import"><div className="panel-title"><div><span className="eyebrow">CANONICAL DATA</span><h3>問題マスター取り込み</h3></div><Badge tone="green">バックアップ復元とは別機能</Badge></div>
       <p>ChatGPTで作成した problem_master / aliases JSON を読み込み、問題ID・表示名・テーマ・GPT取り込み補正に使います。統合JSON内の answer_index は互換データとして保存できますが、日常画面では使いません。通常のバックアップ復元とは別機能です。</p>
@@ -1155,6 +1171,12 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
       </>}
       {data.masterStatus.review_rebuild_summary&&<div className="review-rebuild-summary"><strong>前回の復習カード再構築</strong><span>{new Date(data.masterStatus.review_rebuild_summary.repaired_at).toLocaleString("ja-JP")}</span><span>stale {data.masterStatus.review_rebuild_summary.stale_count}件／再生成 {data.masterStatus.review_rebuild_summary.regenerated_count}件／要確認 {data.masterStatus.review_rebuild_summary.review_needed_count}件／source混入 {data.masterStatus.review_rebuild_summary.source_target_mix_count}件／日付補正 {data.masterStatus.review_rebuild_summary.date_corrected_count}件</span></div>}
       <div className="button-row"><button className="primary" disabled={busy} onClick={()=>run(()=>post("/api/reviews/rebuild",{}),"復習カードを安全に再構築しました")}>復習カードを安全に再構築する</button><button className="secondary" disabled={busy||!data.masterStatus.diagnostics.some(item=>item.repairable)} onClick={()=>run(()=>post("/api/master/repair",{}),"自動修復可能な不整合を一括補正しました")}>問題・関連データを一括補正</button><button className="ghost" disabled={!data.masterStatus.diagnostics.length} onClick={()=>setShowDiagnostics(true)}>個別確認する</button><button className="ghost" disabled={!data.masterStatus.diagnostics.length} onClick={()=>setShowDiagnostics(false)}>後で確認する</button></div>
+      <div className="legacy-k-diagnostic">
+        <strong>採点契約の固定診断</strong>
+        <p>画面・使用シート・完了条件・GPT採点範囲を同じ契約へ固定します。成功証拠は修正対象へ変換しません。</p>
+        {contractPreview&&<div className="legacy-k-preview"><span>mode不一致 <strong>{contractPreview.pending_mode_mismatch}件</strong></span><span>light check混在 <strong>{contractPreview.light_check_mismatch}件</strong></span><span>invalid legacy K <strong>{contractPreview.invalid_legacy_pending}件</strong></span><span>source不一致 <strong>{contractPreview.source_target_mismatch}件</strong></span><span>generated/derived不一致 <strong>{contractPreview.generated_derived_attempt_mismatch}件</strong></span><span>成功証拠の誤使用 <strong>{contractPreview.success_evidence_used_as_target}件</strong></span><small>Review履歴は削除せず、todayPlanSnapshotの選択・順序・triage・朝の予定時間は変更しません。</small></div>}
+        <div className="button-row"><button className="secondary" disabled={busy} onClick={()=>void previewContracts()}>契約不整合をプレビュー</button>{contractPreview&&<button className="primary" disabled={busy} onClick={()=>{setContractPreview(null);run(()=>post("/api/contracts/hydrate",{}),"表示とGPT採点範囲を同じ契約へ固定しました")}}>採点契約を安全に固定</button>}</div>
+      </div>
       <div className="legacy-k-diagnostic">
         <strong>旧K由来タスク診断</strong>
         <p>過去のKは削除・再採点せず、根拠のない旧Kだけを将来の計画と再発率から除外します。</p>

@@ -11,7 +11,7 @@ export function metadataQuality(problem:Problem|undefined):MetadataQuality{
 }
 
 export function safeGenericGuidance(problem:Problem|undefined,evidence?:{error_point?:string;next_action?:string;unresolved_carryover?:string[];required_work_shown?:string[]}){
-  const parts=[...(evidence?.unresolved_carryover||[]),...(evidence?.required_work_shown||[]),evidence?.error_point,evidence?.next_action]
+  const parts=[...(evidence?.unresolved_carryover||[]),evidence?.error_point,evidence?.next_action]
     .map(value=>String(value||"").trim()).filter(value=>value&&value!=="大きな問題なし");
   return {
     correctionTheme:parts[0]||"前回指定された箇所を確認する",

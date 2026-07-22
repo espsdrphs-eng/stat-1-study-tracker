@@ -222,6 +222,7 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
   const requiredWorkShown=stringArray(raw.required_work_shown).map(japaneseizeMathText);
   const evaluationScope=scalar(raw.evaluation_scope);
   const gradedParts=stringArray(raw.graded_parts).map(japaneseizeMathText);
+  const explicitlyOutOfScopeParts=stringArray(raw.explicitly_out_of_scope_parts).map(japaneseizeMathText);
   const assumedCorrectParts=stringArray(raw.assumed_correct_parts).map(japaneseizeMathText);
   const unresolvedCarryover=stringArray(raw.unresolved_carryover).map(japaneseizeMathText);
   const weak=raw.weak_note&&typeof raw.weak_note==="object"
@@ -278,12 +279,14 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
     target_issue_resolved:targetIssueResolved,minimum_pass_condition_met:minimumPassConditionMet,
     resolution_evidence:resolutionEvidence,answer_change_summary:answerChangeSummary,required_work_shown:requiredWorkShown,
     evaluation_scope:evaluationScope,graded_parts:gradedParts,assumed_correct_parts:assumedCorrectParts,
+    contract_id:scalar(raw.contract_id)||undefined,contract_version:scalar(raw.contract_version)||undefined,
+    contract_hash:scalar(raw.contract_hash)||undefined,explicitly_out_of_scope_parts:explicitlyOutOfScopeParts,
     unresolved_carryover:unresolvedCarryover,
     review_scope:scalar(raw.review_scope) as StudyUpdate["review_scope"],
     targeted_parts:stringArray(raw.targeted_parts),k_evidence:stringArray(raw.k_evidence),
-    learning_purpose:["error_repair","integration_check","transfer_check","exam_performance"].includes(scalar(raw.learning_purpose))
+    learning_purpose:["error_repair","retrieval_check","integration_check","transfer_check","exam_performance"].includes(scalar(raw.learning_purpose))
       ?scalar(raw.learning_purpose) as StudyUpdate["learning_purpose"]:undefined,
-    learning_stage:["acquisition","repair","integration","discrimination","transfer","performance","stable"].includes(scalar(raw.learning_stage))
+    learning_stage:["acquisition","repair","maintenance","integration","discrimination","transfer","performance","stable"].includes(scalar(raw.learning_stage))
       ?scalar(raw.learning_stage) as StudyUpdate["learning_stage"]:undefined,
     assessment_timing:["same_session_correction","delayed_retrieval","independent_performance"].includes(scalar(raw.assessment_timing))
       ?scalar(raw.assessment_timing) as StudyUpdate["assessment_timing"]:undefined,

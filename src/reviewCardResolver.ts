@@ -1,8 +1,9 @@
-import type { Attempt, Problem, ProblemAlias, Review, Task } from "./types.ts";
+import type { Attempt, Problem, ProblemAlias, ProblemContextPack, Review, Task } from "./types.ts";
 import { resolveCanonicalProblemId } from "./examReadiness.ts";
 import { resolveLearningPolicy, type LearningPrescription } from "./learningPolicyResolver.ts";
+import { buildGradingContractSnapshot, buildProblemContextPack } from "./gradingContract.ts";
 import { metadataQuality, safeGenericGuidance, type MetadataQuality } from "./metadataQuality.ts";
-import { resolveReviewScope, sheetTypeForMode, type EffectiveReviewScope } from "./reviewScopeResolver.ts";
+import { sheetTypeForMode, type EffectiveReviewScope } from "./reviewScopeResolver.ts";
 import {
   completionChecklist,
   correctionTheme,
@@ -72,6 +73,8 @@ export type ResolvedReviewCard={
   consistencyWarnings:ConsistencyWarning[];
   reviewNeeded:boolean;
   prescription:LearningPrescription;
+  gradingContract:import("./types.ts").GradingContractSnapshot;
+  problemContext:ProblemContextPack;
 };
 
 type ReviewCardInput=Partial<Review&Task> & {
@@ -215,21 +218,24 @@ export function resolveReviewCard({
   const inferred=origin==="first_attempt"&&isReviewMode(plannedMode)?plannedMode:inferReviewMode(errors,item);
   const overrideRaw=item.mode_override||item.modeOverride;
   const override=isReviewMode(overrideRaw)?overrideRaw:undefined;
-  const prescription=resolveLearningPolicy({
-    problemId:canonicalId,problem,
-    source:{...targetAttempt,...item,mode_override:override} as Partial<Attempt&Review&Task>,
-    learningPurpose:item.learning_purpose,
-    learningStage:item.learning_stage,
-    assessmentTiming:item.assessment_timing,
-    targetedParts:item.targeted_parts,
-  });
-  const planningErrors=(prescription.effectiveErrorTypes.length?prescription.effectiveErrorTypes:["none"]) as ResolverErrorType[];
-  const effective=(override||(prescription.mode==="exam_90min"?"full":prescription.mode)) as ReviewMode;
+  const contractResult=buildGradingContractSnapshot({review:{...item,problem_id:canonicalId},problem,sourceAttempt:targetAttempt,createdAt:now});
+  const contract=contractResult.contract;
+  for(const message of contractResult.validationErrors)warnings.push({code:"grading_contract_invalid",message,repairable:false,blocksSpecificGuidance:true});
+  const policyFallback=resolveLearningPolicy({problemId:canonicalId,problem,source:{...targetAttempt,...item} as Partial<Attempt&Review&Task>,
+    learningPurpose:contract.learningPurpose,learningStage:contract.learningStage,assessmentTiming:item.assessment_timing,targetedParts:contract.targetedParts});
+  const planningErrors=(policyFallback.effectiveErrorTypes.length?policyFallback.effectiveErrorTypes:["none"]) as ResolverErrorType[];
+  const effective=contract.mode as ReviewMode;
+  const prescription:LearningPrescription={...policyFallback,learningPurpose:contract.learningPurpose,learningStage:contract.learningStage,
+    reviewScope:contract.reviewScope,targetKind:contract.targetKind,targetedParts:contract.targetedParts,mode:contract.mode,
+    sheetType:contract.sheetType as LearningPrescription["sheetType"],allowedReferenceLevel:contract.allowedReferenceLevel,
+    estimatedMinutes:contract.estimatedMinutes,completionConditions:contract.completionConditions,requiredEvidence:contract.requiredEvidence,
+    allowedErrorTypes:contract.learningPurpose==="retrieval_check"?["W","C"]:policyFallback.allowedErrorTypes,
+    requiresKEvidence:contract.learningPurpose!=="retrieval_check"&&policyFallback.requiresKEvidence,policyVersion:contract.contractVersion};
   const scope={
     effectiveMode:effective,
-    effectiveReviewScope:prescription.reviewScope as EffectiveReviewScope,
-    targetedParts:prescription.targetedParts,
-    completionConditions:prescription.completionConditions,
+    effectiveReviewScope:contract.reviewScope as EffectiveReviewScope,
+    targetedParts:contract.targetedParts,
+    completionConditions:contract.completionConditions,
     allowedErrorTypes:[...prescription.allowedErrorTypes] as ResolverErrorType[],
     requiresKEvidence:prescription.requiresKEvidence,
   };
@@ -290,14 +296,16 @@ export function resolveReviewCard({
     :safeReviewActions(generatedItem);
   const completion=blocked?[fallback]:scope.completionConditions;
   const sourceIssue=sourceAttempt?.error_point||item.source_error_summary||"元問題の弱点を確認";
+  const problemContext=buildProblemContextPack({problemId:canonicalId,problems:[master],aliases,attempts,
+    reviews:item.id?[item as Review]:[],currentSourceAttemptId:targetAttempt?.id});
   return {
     taskId:String(item.id??`${canonicalId}:${item.review_type||item.kind||"task"}`),problemId:String(item.problem_id||""),canonicalProblemId:canonicalId,
     displayLabel:master.display_label||master.title||canonicalId,theme:master.theme||"要確認",canonicalProblemType:master.canonical_problem_type||"要確認",
     taskOrigin:origin,errorTypes:planningErrors,primaryErrorType:planningErrors[0],inferredMode:inferred,modeOverride:override,effectiveMode:effective,
     effectiveReviewScope:scope.effectiveReviewScope,targetedParts:scope.targetedParts,
     allowedErrorTypes:scope.allowedErrorTypes,requiresKEvidence:scope.requiresKEvidence,metadataQuality:quality,
-    reviewMethodLabel:modeLabels[effective],sheetType:getSheetType(effective),sheetLabel:sheetLabels[getSheetType(effective)],
-    estimatedMinutes:Number(item.estimated_minutes||item.minutes||item.duration_minutes||5),
+    reviewMethodLabel:modeLabels[effective],sheetType:contract.sheetType as SheetType,sheetLabel:sheetLabels[contract.sheetType as SheetType],
+    estimatedMinutes:contract.estimatedMinutes,
     reviewGoal:make(specific(()=>quality==="generic"?"前回指定された箇所を確認する":reviewAim(generatedItem))),
     correctionTheme:make(specific(()=>quality==="generic"?generic.correctionTheme:correctionTheme(generatedItem))),
     entryHint:make(specific(()=>quality==="generic"?generic.entryHint:referenceEntryPoint(generatedItem))),
@@ -305,7 +313,7 @@ export function resolveReviewCard({
     todayActions:make(actions),completionConditions:make(completion),dueDate,reviewAfterDays:interval,daysUntilDue:dueDate?differenceInCalendarDays(dueDate,today):null,
     targetAttempt,sourceAttempt,
     sourceProblem:sourceProblem?{problemId:sourceCanonical,displayLabel:sourceProblem.display_label||sourceProblem.title||sourceCanonical,sourceIssue}:undefined,
-    consistencyWarnings:warnings,reviewNeeded:blocked,prescription:{...prescription,mode:effective,sheetType:getSheetType(effective)},
+    consistencyWarnings:warnings,reviewNeeded:blocked||contractResult.needsReview,prescription,gradingContract:contract,problemContext,
   };
 }
 

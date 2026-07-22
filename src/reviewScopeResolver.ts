@@ -44,7 +44,6 @@ export function targetPartsFromAttempt(attempt?:Attempt,item?:ScopeItem){
   return cleanParts([
     item?.targeted_parts||[],
     attempt?.unresolved_carryover||[],
-    attempt?.required_work_shown||[],
     attempt?.error_point,
     attempt?.next_action,
   ]);
