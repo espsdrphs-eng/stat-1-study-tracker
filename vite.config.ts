@@ -10,7 +10,7 @@ export default defineConfig({
     __APP_TEST_REPORT__: JSON.stringify([
       "Release verification (2026-07-22)",
       "Type check: PASS (npm run check)",
-      "Unit tests: PASS (168/168, npm test)",
+      "Unit tests: PASS (174/174, npm test)",
       "Production build: PASS (npm run build)",
       "Browser SCAN5 import: PASS (STAT1-SCAN5-v1 alias normalization)",
       "Note: these commands run during implementation; the iPad export itself does not execute developer tools."
