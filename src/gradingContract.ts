@@ -45,8 +45,8 @@ function verifiedBlueprint(problem?:Problem):FullSkeletonBlueprint|undefined{
 }
 
 function legacyPurpose(review:Partial<Review&Task>,attempt?:Attempt):LearningPurpose{
-  if(["light_check","careless_check"].includes(String(review.review_type||"")))return "retrieval_check";
-  if(sourceSucceeded(attempt)&&review.learning_purpose==="error_repair")return "retrieval_check";
+  if(String(review.review_type||"")==="light_check")return "retrieval_check";
+  if(sourceErrors(attempt).length===0&&review.learning_purpose==="error_repair")return "retrieval_check";
   if(review.learning_purpose)return review.learning_purpose;
   if(["full","exam_90min","scan5"].includes(String(review.effective_mode||review.mode||"")))return "exam_performance";
   if(sourceErrors(attempt).length)return "error_repair";
@@ -54,9 +54,13 @@ function legacyPurpose(review:Partial<Review&Task>,attempt?:Attempt):LearningPur
 }
 
 function repairTargets(review:Partial<Review&Task>,attempt?:Attempt){
-  if(!attempt||!sourceErrors(attempt).length)return unique([review.targeted_parts||[]]);
-  // required_work_shown / resolution_evidence は成功証拠であり、修正対象にしない。
-  return unique([review.targeted_parts||[],attempt.unresolved_carryover||[],attempt.error_point,attempt.next_action]).slice(0,8);
+  if(!attempt)return unique([review.targeted_parts||[]]);
+  const successEvidence=new Set(unique([attempt.required_work_shown||[],attempt.resolution_evidence]));
+  const candidates=!sourceErrors(attempt).length
+    ?unique([review.targeted_parts||[]])
+    :unique([review.targeted_parts||[],attempt.unresolved_carryover||[],attempt.error_point,attempt.next_action]).slice(0,8);
+  // 成功証拠は背景として保持しても、次回の修正・採点対象には再利用しない。
+  return candidates.filter(value=>!successEvidence.has(value));
 }
 
 export type ContractBuildResult={contract:GradingContractSnapshot;validationErrors:string[];needsReview:boolean};
@@ -143,7 +147,9 @@ export function buildGradingContractSnapshot(args:{
       mode="main_calc";reviewScope="main_calc_target";sheetType="main_calc_sheet";estimatedMinutes=12;targetKind="mathematical_patch";
       gradedParts=[...targetedParts];completionConditions=[`${targetedParts.join("・")}を開始式から再現できた`];requiredEvidence=[...gradedParts];
     }else if(errors.length===1&&errors[0]==="C"){
-      mode="check";reviewScope="check_only";sheetType="check_sheet";estimatedMinutes=5;targetKind="mathematical_patch";
+      mode="check";reviewScope="check_only";sheetType="check_sheet";
+      estimatedMinutes=Math.max(3,Math.min(9,Number(review.estimated_minutes||review.duration_minutes||review.minutes||5)));
+      targetKind="mathematical_patch";
       gradedParts=[...targetedParts];completionConditions=[`${targetedParts.join("・")}を確認できた`];requiredEvidence=[...gradedParts];
     }else{
       mode="skeleton";reviewScope="targeted_patch";sheetType="skeleton_sheet";estimatedMinutes=10;
@@ -226,14 +232,15 @@ export function auditLegacyReviewContracts(args:{reviews:Review[];attempts:Attem
   const attemptMap=new Map(args.attempts.map(row=>[row.id,row]));
   const active=(row:Review)=>["pending","overdue","review_needed","id_review_needed"].includes(row.status);
   const pendingModeMismatch=args.reviews.filter(row=>active(row)&&!!row.inferred_mode&&!!row.effective_mode&&row.inferred_mode!==row.effective_mode);
-  const lightCheckMismatch=args.reviews.filter(row=>active(row)&&["light_check","careless_check"].includes(row.review_type)&&
+  const lightCheckMismatch=args.reviews.filter(row=>active(row)&&row.review_type==="light_check"&&
     (row.effective_mode!=="check"||row.sheet_type!=="check_sheet"||Number(row.estimated_minutes||row.duration_minutes||0)>5));
   const invalidLegacyPending=args.reviews.filter(row=>active(row)&&row.policy_validity==="invalid_legacy_k"&&
     (row.exclude_from_planning!==true||row.status!=="superseded"));
-  const sourceTargetMismatch=args.reviews.filter(row=>{
+  const rawSourceTargetDifference=args.reviews.filter(row=>{
     const source=attemptMap.get(row.source_attempt_id||row.generated_from_attempt_id);
     return !!source&&resolveCanonicalProblemId(source.problem_id,args.aliases)!==resolveCanonicalProblemId(row.problem_id,args.aliases);
   });
+  const activeSourceMismatch=rawSourceTargetDifference.filter(row=>active(row));
   const generatedDerivedMismatch=args.reviews.filter(row=>!!row.generated_from_attempt_id&&!!row.derived_from_attempt_id&&
     row.generated_from_attempt_id!==row.derived_from_attempt_id);
   const successEvidenceUsedAsTarget=args.reviews.filter(row=>{
@@ -244,10 +251,12 @@ export function auditLegacyReviewContracts(args:{reviews:Review[];attempts:Attem
   });
   return {
     pending_mode_mismatch:pendingModeMismatch.length,light_check_mismatch:lightCheckMismatch.length,
-    invalid_legacy_pending:invalidLegacyPending.length,source_target_mismatch:sourceTargetMismatch.length,
+    invalid_legacy_pending:invalidLegacyPending.length,source_target_mismatch:activeSourceMismatch.length,
+    raw_source_target_difference:rawSourceTargetDifference.length,active_source_mismatch:activeSourceMismatch.length,
     generated_derived_attempt_mismatch:generatedDerivedMismatch.length,success_evidence_used_as_target:successEvidenceUsedAsTarget.length,
     ids:{pending_mode_mismatch:pendingModeMismatch.map(row=>row.id),light_check_mismatch:lightCheckMismatch.map(row=>row.id),
-      invalid_legacy_pending:invalidLegacyPending.map(row=>row.id),source_target_mismatch:sourceTargetMismatch.map(row=>row.id),
+      invalid_legacy_pending:invalidLegacyPending.map(row=>row.id),source_target_mismatch:activeSourceMismatch.map(row=>row.id),
+      raw_source_target_difference:rawSourceTargetDifference.map(row=>row.id),active_source_mismatch:activeSourceMismatch.map(row=>row.id),
       generated_derived_attempt_mismatch:generatedDerivedMismatch.map(row=>row.id)}
   };
 }

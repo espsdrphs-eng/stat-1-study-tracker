@@ -91,3 +91,21 @@ test("再生成後の2回目修復は変更を増やさない",()=>{
   const second=analyzeSourceMismatchRepair({reviews:[old,replacement],attempts:[foreign,own],problems:[problem("WB-6-S-01")],aliases:[],relations:[]});
   assert.equal(second.actions.length,0);
 });
+
+test("a verified master link superseded by the old origin policy is recoverable",()=>{
+  const sourceProblem={...problem("WB-2-S-06"),master_version:"v7",related_s_problem_ids:["WB-2-S-07"]};
+  const targetProblem=problem("WB-2-S-07"),source=attempt(52,"WB-2-S-06",["N"]);
+  const row=review({id:115,problem_id:"WB-2-S-07",generated_from_attempt_id:52,source_attempt_id:undefined,
+    source_problem_id:"WB-2-S-06",status:"superseded",exclude_from_planning:true,
+    superseded_by_policy_version:"STAT1-ORIGIN-v1",superseded_reason:"verified relation missing"});
+  const result=analyzeSourceMismatchRepair({reviews:[row],attempts:[source],problems:[sourceProblem,targetProblem],aliases:[],relations:[]});
+  assert.equal(result.pendingVerifiedLinkNeedsMigrationCount,1);
+  assert.equal(result.actions[0].action,"migrate_verified");
+  assert.equal(result.actions[0].patch.status,"pending");
+  assert.equal(result.actions[0].patch.exclude_from_planning,false);
+  assert.equal(result.actions[0].patch.relation_id,"master:v7:WB-2-S-06:WB-2-S-07:remediation");
+  const migrated={...row,...result.actions[0].patch};
+  const after=analyzeSourceMismatchRepair({reviews:[migrated],attempts:[source],problems:[sourceProblem,targetProblem],aliases:[],relations:[]});
+  assert.equal(after.activeSourceMismatchCount,0);
+  assert.equal(after.actions.length,0);
+});

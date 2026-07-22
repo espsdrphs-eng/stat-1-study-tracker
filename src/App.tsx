@@ -1024,7 +1024,8 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
     active_source_mismatch:number;pending_verified_link_needs_migration:number;invalid_legacy_cards_to_supersede:number;
     historical_completed_linked_reviews:number;unresolved_needs_review:number;verified_relation_migrated:number;causes:Record<string,number>}|null>(null);
   const [contractPreview,setContractPreview]=useState<{pending_mode_mismatch:number;light_check_mismatch:number;invalid_legacy_pending:number;
-    source_target_mismatch:number;generated_derived_attempt_mismatch:number;success_evidence_used_as_target:number;ids:Record<string,number[]>}|null>(null);
+    source_target_mismatch:number;raw_source_target_difference:number;active_source_mismatch:number;
+    generated_derived_attempt_mismatch:number;success_evidence_used_as_target:number;ids:Record<string,number[]>}|null>(null);
   const saveBlob=(content:string|Blob,name:string,type:string)=>{
     const payload=content instanceof Blob?content:new Blob([content],{type});
     const url=URL.createObjectURL(payload);const a=document.createElement("a");
@@ -1174,7 +1175,7 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
       <div className="legacy-k-diagnostic">
         <strong>採点契約の固定診断</strong>
         <p>画面・使用シート・完了条件・GPT採点範囲を同じ契約へ固定します。成功証拠は修正対象へ変換しません。</p>
-        {contractPreview&&<div className="legacy-k-preview"><span>mode不一致 <strong>{contractPreview.pending_mode_mismatch}件</strong></span><span>light check混在 <strong>{contractPreview.light_check_mismatch}件</strong></span><span>invalid legacy K <strong>{contractPreview.invalid_legacy_pending}件</strong></span><span>source不一致 <strong>{contractPreview.source_target_mismatch}件</strong></span><span>generated/derived不一致 <strong>{contractPreview.generated_derived_attempt_mismatch}件</strong></span><span>成功証拠の誤使用 <strong>{contractPreview.success_evidence_used_as_target}件</strong></span><small>Review履歴は削除せず、todayPlanSnapshotの選択・順序・triage・朝の予定時間は変更しません。</small></div>}
+        {contractPreview&&<div className="legacy-k-preview"><span>mode不一致 <strong>{contractPreview.pending_mode_mismatch}件</strong></span><span>light check混在 <strong>{contractPreview.light_check_mismatch}件</strong></span><span>invalid legacy K <strong>{contractPreview.invalid_legacy_pending}件</strong></span><span>active source不一致 <strong>{contractPreview.active_source_mismatch}件</strong></span><span>raw source差（履歴含む） <strong>{contractPreview.raw_source_target_difference}件</strong></span><span>generated/derived不一致 <strong>{contractPreview.generated_derived_attempt_mismatch}件</strong></span><span>成功証拠の誤使用 <strong>{contractPreview.success_evidence_used_as_target}件</strong></span><small>Review履歴は削除せず、todayPlanSnapshotの選択・順序・triage・朝の予定時間は変更しません。</small></div>}
         <div className="button-row"><button className="secondary" disabled={busy} onClick={()=>void previewContracts()}>契約不整合をプレビュー</button>{contractPreview&&<button className="primary" disabled={busy} onClick={()=>{setContractPreview(null);run(()=>post("/api/contracts/hydrate",{}),"表示とGPT採点範囲を同じ契約へ固定しました")}}>採点契約を安全に固定</button>}</div>
       </div>
       <div className="legacy-k-diagnostic">

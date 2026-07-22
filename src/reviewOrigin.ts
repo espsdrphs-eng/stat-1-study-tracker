@@ -162,7 +162,11 @@ export function analyzeSourceMismatchRepair(args:{
   for(const review of reviews){
     const resolution=resolveReviewOrigin({review,attempts,aliases,relations,problems});
     if(resolution.historical){historicalCompletedLinkedReviewsCount++;unchangedCompletedCount++;continue}
-    if(!incomplete(review.status)){unchangedCompletedCount++;continue}
+    const recoverableVerifiedSuperseded=review.status==="superseded"&&
+      resolution.origin==="verified_linked_problem"&&resolution.valid&&!!resolution.relation&&
+      review.task_origin==="linked_s_check"&&String(review.superseded_by_policy_version||"").startsWith("STAT1-ORIGIN-")&&
+      !isInvalidLegacySource(review,resolution.sourceAttempt)&&currentTriggerErrors(resolution.sourceAttempt).length>0;
+    if(!incomplete(review.status)&&!recoverableVerifiedSuperseded){unchangedCompletedCount++;continue}
 
     if(resolution.origin==="verified_linked_problem"&&resolution.valid){
       verifiedRelationCount++;
@@ -193,11 +197,12 @@ export function analyzeSourceMismatchRepair(args:{
       if(resolution.needsMigration&&resolution.relation){
         activeSourceMismatchCount++;mismatchCount++;pendingVerifiedLinkNeedsMigrationCount++;verifiedRelationMigratedCount++;
         const relation=resolution.relation,deduplicationKey=`${resolution.targetProblemId}|verified_linked_problem|${relation.relationId}|${resolution.sourceAttempt?.id||0}|${REVIEW_ORIGIN_POLICY_VERSION}`;
-        const patch:Partial<Review>={origin:"verified_linked_problem",origin_verified:true,relation_id:relation.relationId,
+        const patch:Partial<Review>={status:"pending",origin:"verified_linked_problem",origin_verified:true,relation_id:relation.relationId,
           source_problem_id:resolution.sourceProblemId,target_problem_id:resolution.targetProblemId,
           generated_from_attempt_id:resolution.sourceAttempt?.id||review.generated_from_attempt_id,
           source_attempt_id:resolution.sourceAttempt?.id||review.generated_from_attempt_id,
           policy_version:REVIEW_ORIGIN_POLICY_VERSION,policy_validity:"valid",exclude_from_planning:false,
+          exclude_from_recurrence_metrics:false,superseded_reason:undefined,superseded_by_policy_version:undefined,review_needed_reason:undefined,
           review_scope:"targeted_patch",effective_review_scope:"targeted_patch",target_kind:"mathematical_patch",
           targeted_parts:[relation.targetFocus],scope_completion_conditions:[`${relation.targetFocus}を確認する`],
           reason:relation.reason,deduplication_key:deduplicationKey,derived_stale:true,generated_at:new Date().toISOString()};

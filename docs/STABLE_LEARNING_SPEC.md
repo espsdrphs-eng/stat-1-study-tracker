@@ -65,7 +65,7 @@ full skeleton、timed full、scan5は週間soft quotaです。既存実績が不
 
 ## retrieval_check
 
-`light_check` / `careless_check` は `retrieval_check` として扱う。
+`light_check` は `retrieval_check` として扱う。`careless_check` は有効なCがある限り局所的な `error_repair` とし、checkシートのまま3〜9分で扱う。成功済みの注意点を想起するだけのタスクへ変わった場合に限り、別Reviewとして `retrieval_check` を作る。
 
 - mode: `check`
 - reviewScope: `check_only`

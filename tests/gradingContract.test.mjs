@@ -55,6 +55,29 @@ test("success evidence never becomes a grading target and prompt uses the same c
   assert.equal(contractDifferences(contract,{contractHash:"wrong"}).some(row=>row.field==="contractHash"),true);
 });
 
+test("success evidence copied into a legacy repair target is removed",()=>{
+  const source={...attempt35,error_types:["W"],error_type:"W",primary_error_type:"W",target_issue_resolved:false,
+    minimum_pass_condition_met:false,error_point:"変数変換の符号を直す",next_action:"変数変換を再現する"};
+  const review={...review87,review_type:"retry",learning_purpose:"error_repair",targeted_parts:[...attempt35.required_work_shown,"変数変換の符号を直す"]};
+  const {contract}=buildGradingContractSnapshot({review,problem,sourceAttempt:source});
+  assert.equal(contract.learningPurpose,"error_repair");
+  assert.equal(contract.targetedParts.includes(attempt35.required_work_shown[0]),false);
+  assert.equal(contract.targetedParts.includes("変数変換の符号を直す"),true);
+});
+
+test("careless_check with a real C remains a seven-minute error repair",()=>{
+  const source={...attempt35,error_types:["C"],error_type:"C",primary_error_type:"C",target_issue_resolved:true,
+    minimum_pass_condition_met:true,error_point:"符号を逆に書いた",next_action:"符号を確認する"};
+  const review={...review87,id:132,review_type:"careless_check",duration_minutes:7,estimated_minutes:7,
+    learning_purpose:"error_repair",targeted_parts:["符号を確認する"]};
+  const {contract}=buildGradingContractSnapshot({review,problem,sourceAttempt:source});
+  assert.equal(contract.learningPurpose,"error_repair");
+  assert.equal(contract.mode,"check");
+  assert.equal(contract.reviewScope,"check_only");
+  assert.equal(contract.sheetType,"check_sheet");
+  assert.equal(contract.estimatedMinutes,7);
+});
+
 test("impossible retrieval and integration combinations are rejected",()=>{
   const {contract}=buildGradingContractSnapshot({review:review87,problem,sourceAttempt:attempt35});
   assert.ok(validateGradingContract({...contract,mode:"skeleton",sheetType:"skeleton_sheet"}).length>=2);
@@ -89,5 +112,7 @@ test("supplied real-data counts are reproducible without hard-coding production 
   assert.equal(audit.light_check_mismatch,8);
   assert.equal(audit.invalid_legacy_pending,7);
   assert.equal(audit.source_target_mismatch,18);
+  assert.equal(audit.raw_source_target_difference,18);
+  assert.equal(audit.active_source_mismatch,18);
   assert.equal(audit.generated_derived_attempt_mismatch,11);
 });
