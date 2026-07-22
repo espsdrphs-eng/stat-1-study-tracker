@@ -84,3 +84,13 @@ test("Resolverはtoday_plan_snapshotの構成を変更しない",()=>{
   resolve(snapshot.tasks[0],[master],[attempt(1,master.problem_id)]);
   assert.deepEqual(snapshot,before);
 });
+
+test("完了済みlinked Sとsupersededカードはactive source mismatchにしない",()=>{
+  const source=problem("WB-4-A-06"),target=problem("WB-4-S-07","S","変数変換の基礎","変数変換の定義域");
+  const foreign=attempt(1,source.problem_id);
+  for(const status of ["done","completed","superseded"]){
+    const card=resolve({id:90,problem_id:target.problem_id,generated_from_attempt_id:1,source_problem_id:source.problem_id,
+      task_origin:"linked_s_check",review_type:"s_check",status,due_date:"2026-07-16",interval_days:1},[source,target],[foreign]);
+    assert.equal(card.consistencyWarnings.some(item=>item.code==="attempt_problem_mismatch"),false,status);
+  }
+});

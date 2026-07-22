@@ -1236,14 +1236,18 @@ async function diagnoseData():Promise<DataDiagnostic[]>{
     if(canonicalId!==review.problem_id) diagnostics.push({id:`review-alias-${review.id}`,severity:"warning",problem_id:review.problem_id,record_type:"review",message:"復習予定のproblem_idがaliasです。表示・集計上はcanonical IDへ統合します。",current_value:review.problem_id,suggested_value:canonicalId,reason:"problem_aliasesに基づく補正です。",review_id:review.id,repairable:true,recommended_action:"repair"});
     const problem=pmap.get(canonicalId)||pmap.get(review.problem_id),source=attempts.find(attempt=>attempt.id===review.generated_from_attempt_id);
     if(review.status==="ignored") continue;
-    if(!["done","completed","cancelled","superseded"].includes(review.status)){
-      const origin=resolveReviewOrigin({review,attempts,aliases,relations,problems});
+    const inactiveReview=["done","completed","cancelled","superseded"].includes(review.status);
+    const origin=resolveReviewOrigin({review,attempts,aliases,relations,problems});
+    if(!inactiveReview){
       if(!origin.valid)diagnostics.push({id:`review-source-origin-${review.id}`,severity:"critical",problem_id:review.problem_id,
         canonical_problem_id:origin.targetProblemId,record_type:"source_mismatch",message:origin.reason,review_id:review.id,
         source_problem_id:origin.sourceProblemId,target_problem_id:origin.targetProblemId,source_attempt_id:origin.sourceAttempt?.id,
         repairable:true,recommended_action:"repair"});
     }
     if(!problem) diagnostics.push({id:`review-${review.id}`,severity:"critical",problem_id:review.problem_id,record_type:"review",message:"復習の問題IDが problem_master に存在しません。",repairable:false});
+    // 完了済み・取消・superseded は監査履歴として保持するが、現在対応が必要な
+    // 復習カード診断（task_origin / linked relation / 派生文章）には含めない。
+    if(inactiveReview)continue;
     const ownAttemptExists=attempts.some(attempt=>resolveCanonicalProblemId(attempt.problem_id,aliases)===canonicalId);
     if(review.task_origin==="review_attempt"&&!ownAttemptExists)
       diagnostics.push({id:`review-origin-${review.id}`,severity:"warning",problem_id:review.problem_id,record_type:"review",message:"履歴がないのに review_attempt になっています。",repairable:true});
@@ -1271,7 +1275,8 @@ async function diagnoseData():Promise<DataDiagnostic[]>{
         repairable:false,recommended_action:"hold"
       });
     }
-    const card=resolveReviewCard({item:review,problems,attempts,aliases,today:todayString(),examDate:examMeta?.value||""});
+    const card=resolveReviewCard({item:{...review,origin:origin.origin,origin_verified:origin.valid,
+      relation_id:origin.relation?.relationId||review.relation_id},problems,attempts,aliases,today:todayString(),examDate:examMeta?.value||""});
     if(!review.derived_from_problem_id||!review.derived_fields){
       diagnostics.push({id:`review-derived-legacy-${review.id}`,severity:"warning",problem_id:review.problem_id,canonical_problem_id:card.canonicalProblemId,
         record_type:"review_card",message:"派生文章に由来情報がない旧データです。共通Resolverで安全に再生成できます。",review_id:review.id,
@@ -1281,7 +1286,7 @@ async function diagnoseData():Promise<DataDiagnostic[]>{
     }
     for(const warning of card.consistencyWarnings.filter(item=>[
       "attempt_problem_mismatch","mode_sheet_mismatch","due_date_interval_mismatch","source_target_self_reference","metadata_review_needed"
-    ].includes(item.code))){
+    ].includes(item.code)&&!(inactiveReview&&item.code==="attempt_problem_mismatch")&&!(origin.valid&&item.code==="attempt_problem_mismatch"))){
       diagnostics.push({id:`review-card-${warning.code}-${review.id}`,severity:warning.blocksSpecificGuidance?"critical":"warning",
         problem_id:review.problem_id,canonical_problem_id:card.canonicalProblemId,record_type:"review_card",message:warning.message,
         review_id:review.id,task_id:String(review.id),master_theme:card.theme,saved_derived_text:review.review_goal_public||review.review_instruction||"",
@@ -1394,13 +1399,17 @@ async function repairDataIntegrity(silent=false){
 }
 
 async function rebuildReviewCards(){
-  const [problems,attempts,reviews,aliases,examMeta]=await Promise.all([
-    db.problems.toArray(),db.attempts.toArray(),db.reviews.toArray(),db.problemAliases.toArray(),db.meta.get("exam_date")
+  const [problems,attempts,reviews,aliases,examMeta,relations]=await Promise.all([
+    db.problems.toArray(),db.attempts.toArray(),db.reviews.toArray(),db.problemAliases.toArray(),db.meta.get("exam_date"),storedProblemRelations()
   ]);
   let staleCount=0,regeneratedCount=0,reviewNeededCount=0,sourceTargetMixCount=0,dateCorrectedCount=0;
   const now=new Date().toISOString(),today=todayString();
   for(const review of reviews){
-    const card=resolveReviewCard({item:review,problems,attempts,aliases,today,examDate:examMeta?.value||"",now});
+    // 完了・取消・superseded 済みは不変の履歴。派生表示の再構築対象にしない。
+    if(["done","completed","cancelled","superseded","ignored"].includes(review.status))continue;
+    const origin=resolveReviewOrigin({review,attempts,aliases,relations,problems});
+    const card=resolveReviewCard({item:{...review,origin:origin.origin,origin_verified:origin.valid,
+      relation_id:origin.relation?.relationId||review.relation_id},problems,attempts,aliases,today,examDate:examMeta?.value||"",now});
     const hasLegacyDerived=!!(review.review_goal_public||review.review_instruction||review.review_steps?.length||review.sheet_name);
     const stale=!review.derived_from_problem_id||!review.derived_fields||
       review.derived_from_problem_id!==card.canonicalProblemId||review.derived_from_attempt_id!==card.targetAttempt?.id||
@@ -1408,7 +1417,7 @@ async function rebuildReviewCards(){
       card.consistencyWarnings.some(item=>["mode_sheet_mismatch","stored_mode_stale","due_date_interval_mismatch","attempt_problem_mismatch"].includes(item.code));
     if(stale||hasLegacyDerived) staleCount++;
     if(card.reviewNeeded) reviewNeededCount++;
-    if(card.consistencyWarnings.some(item=>["attempt_problem_mismatch","source_target_self_reference"].includes(item.code))) sourceTargetMixCount++;
+    if(!origin.valid)sourceTargetMixCount++;
     const resolvedDue=correctedDueDate(card),dueChanged=resolvedDue!==review.due_date;
     if(dueChanged) dateCorrectedCount++;
     const problem=problems.find(entry=>entry.problem_id===card.canonicalProblemId);

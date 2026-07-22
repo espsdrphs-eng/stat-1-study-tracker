@@ -52,4 +52,6 @@ full skeleton、timed full、scan5は週間soft quotaです。既存実績が不
 
 復習カードの出所は `ReviewOrigin` を正本とします。通常・過去問Attemptはsourceとtargetのcanonical ID一致を必須とし、異なる問題を結べるのはconfirmed/verified relationまたは現行problem_masterの明示的関連だけです。完了済みの旧linked Sは `historical_completed` として履歴に残し、現在対応が必要なsource mismatchへ数えません。invalid legacy K由来の未完了cross-targetカードは付け替えずsupersededとし、対象問題自身の有効なAttemptがある場合だけ独立した新カードを冪等生成します。出所修復と派生表示の再構築は別操作です。
 
+整合性診断・ReviewCardResolver・派生表示の再構築でも同じ `ReviewOrigin` 判定を使います。`done` / `completed` / `cancelled` / `superseded` は現在対応件数と派生表示の再構築対象から除外し、履歴レコードを書き換えません。verified relation の移行対象は必ず現在対応件数へ含め、内訳との件数矛盾を許しません。
+
 `STAT1-SCAN5-v1` の `primary_selection_error` は正式8値のみを保存します。既知aliasはschema検証前に正式値へ正規化してraw値とログを残し、未知値は`none`へ変換しません。session ID・kind・stageは既存pastSessionと照合し、未解決の復習候補IDはラベルとして保持します。SCAN5分析の保存先はpastSession.analysisだけであり、Attempt・Review・todayPlanSnapshot・K/W/N/C・露出状態を変更しません。

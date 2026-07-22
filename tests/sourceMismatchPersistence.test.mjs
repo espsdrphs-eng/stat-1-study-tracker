@@ -16,12 +16,12 @@ test("実機バックアップ相当の18件を履歴3・verified移行1・inval
     await db.problems.bulkPut([problem("WB-2-S-06",["WB-2-S-07"]),problem("WB-6-A-20"),problem("WB-4-A-23"),problem("WB-6-A-19"),...targets.map(id=>problem(id))]);
     await db.attempts.bulkPut([
       attempt(1,"WB-2-S-06"),attempt(3,"WB-2-S-07",["W","N"]),attempt(23,"WB-6-A-20"),attempt(52,"WB-2-S-06",["N"]),
-      attempt(70,"WB-4-A-23",["K"],{policy_validity:"invalid_legacy_k",exclude_from_planning:true,exclude_from_recurrence_metrics:true}),
-      attempt(71,"WB-6-A-19",["K"],{policy_validity:"invalid_legacy_k",exclude_from_planning:true,exclude_from_recurrence_metrics:true}),
+      attempt(70,"WB-4-A-23",["K"]),
+      attempt(71,"WB-6-A-19",["K"]),
       attempt(25,"WB-6-S-01",["none"]),attempt(26,"WB-6-S-04",["none"]),attempt(27,"WB-6-S-21",["none"]),attempt(28,"WB-6-S-22",["none"]),
       attempt(33,"WB-6-S-12",["N","C"]),attempt(49,"WB-6-S-13",["N","C"])
     ]);
-    const invalidPatch={policy_validity:"invalid_legacy_k",exclude_from_planning:false,exclude_from_recurrence_metrics:true,superseded_by_policy_version:"STAT1-LEARNING-v1"};
+    const invalidPatch={};
     await db.reviews.bulkPut([
       review(2,"WB-2-S-07",1,"WB-2-S-06","done"),review(72,"WB-6-S-21",23,"WB-6-A-20","done"),review(73,"WB-6-S-22",23,"WB-6-A-20","done"),
       review(115,"WB-2-S-07",52,"WB-2-S-06"),
@@ -37,10 +37,21 @@ test("実機バックアップ相当の18件を履歴3・verified移行1・inval
   assert.equal(preview.active_source_mismatch,15);assert.equal(preview.historical_completed_linked_reviews,3);
   assert.equal(preview.pending_verified_link_needs_migration,1);assert.equal(preview.invalid_legacy_cards_to_supersede,14);
   assert.equal(preview.regenerated_count,2);assert.equal(preview.unresolved_needs_review,0);
+  const completedRowsBefore=JSON.stringify(await db.reviews.bulkGet([2,72,73]));
+  const rebuild=await localPost("/api/reviews/rebuild",{});
+  assert.equal(rebuild.diagnostics.some(row=>[2,72,73].includes(row.review_id)&&row.message.includes("Attempt")),false);
+  assert.equal(JSON.stringify(await db.reviews.bulkGet([2,72,73])),completedRowsBefore);
+  const previewAfterRebuild=await localPost("/api/source-mismatch/preview",{});
+  assert.equal(previewAfterRebuild.active_source_mismatch,15);
+  assert.equal(previewAfterRebuild.pending_verified_link_needs_migration,1);
   const result=await localPost("/api/source-mismatch/reorganize",{});
   assert.equal(result.active_source_mismatch_after,0);assert.equal(result.superseded_count,14);assert.equal(result.verified_relation_migrated,1);assert.equal(result.regenerated_count,2);
   const migrated=await db.reviews.get(115);assert.equal(migrated.status,"pending");assert.equal(migrated.origin,"verified_linked_problem");assert.equal(migrated.relation_id,"master:fixture-v1:WB-2-S-06:WB-2-S-07:remediation");
   for(const id of [194,195,196,197,198,199,203,204,205,206,207,208,209,210]){const row=await db.reviews.get(id);assert.equal(row.status,"superseded");assert.equal(row.exclude_from_planning,true)}
+  const inactiveRowsBefore=JSON.stringify(await db.reviews.bulkGet([2,72,73,194,195,196,197,198,199,203,204,205,206,207,208,209,210]));
+  const rebuiltAfterRepair=await localPost("/api/reviews/rebuild",{});
+  assert.equal(rebuiltAfterRepair.diagnostics.some(row=>row.message.includes("Attempt")&&row.record_type==="review_card"),false);
+  assert.equal(JSON.stringify(await db.reviews.bulkGet([2,72,73,194,195,196,197,198,199,203,204,205,206,207,208,209,210])),inactiveRowsBefore);
   const generated=(await db.reviews.toArray()).filter(row=>row.id>210);assert.equal(generated.length,2);
   assert.deepEqual(new Set(generated.map(row=>row.generated_from_attempt_id)),new Set([33,49]));
   assert.ok(generated.every(row=>row.generated_from_attempt_id===row.source_attempt_id&&row.source_attempt_id===row.derived_from_attempt_id));

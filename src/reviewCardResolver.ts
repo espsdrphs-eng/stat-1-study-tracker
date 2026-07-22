@@ -189,14 +189,18 @@ export function resolveReviewCard({
   const warnings:ConsistencyWarning[]=[];
   const canonicalId=resolveCanonicalProblemId(String(item.problem_id||""),aliases);
   const problem=problems.find(entry=>resolveCanonicalProblemId(entry.problem_id,aliases)===canonicalId);
-  const sourceAttempt=item.generated_from_attempt_id?attempts.find(attempt=>attempt.id===item.generated_from_attempt_id):undefined;
+  const sourceAttemptId=Number(item.source_attempt_id||item.generated_from_attempt_id||0);
+  const sourceAttempt=sourceAttemptId?attempts.find(attempt=>attempt.id===sourceAttemptId):undefined;
   const latestOwn=latestAttemptFor(canonicalId,attempts,aliases);
   const generatedIsOwn=sourceAttempt&&resolveCanonicalProblemId(sourceAttempt.problem_id,aliases)===canonicalId?sourceAttempt:undefined;
   const targetAttempt=generatedIsOwn||latestOwn;
   if(!problem) warnings.push({code:"problem_missing",message:"problem_masterに対象問題がありません。",repairable:false,blocksSpecificGuidance:true});
   const sourceMismatch=sourceAttempt&&resolveCanonicalProblemId(sourceAttempt.problem_id,aliases)!==canonicalId;
   const verifiedLinked=item.origin==="verified_linked_problem"&&!!item.relation_id&&item.origin_verified===true;
-  if(sourceMismatch&&!verifiedLinked){
+  const inactiveReview=["done","completed","cancelled","superseded","ignored"].includes(String(item.status||""));
+  // 完了済みの旧 linked S と superseded 済みカードは履歴であり、現在対応が必要な
+  // source mismatch ではない。出所修復は ReviewOriginResolver の active 判定に限定する。
+  if(sourceMismatch&&!verifiedLinked&&!inactiveReview){
     warnings.push({code:"attempt_problem_mismatch",message:"復習元Attemptの問題IDが対象問題と一致しません。",repairable:false,blocksSpecificGuidance:true});
   }
   const metadataStatus=(problem as (Problem&{metadata_status?:string})|undefined)?.metadata_status;

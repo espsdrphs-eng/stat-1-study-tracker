@@ -112,6 +112,7 @@ function latestOwnAttempt(target:string,attempts:Attempt[],aliases:ProblemAlias[
 
 function isInvalidLegacySource(review:Review,attempt?:Attempt){
   return review.policy_validity==="invalid_legacy_k"||attempt?.policy_validity==="invalid_legacy_k"||
+    (!!attempt&&classifyKPolicyValidity(attempt)==="invalid_legacy_k")||
     (review.superseded_by_policy_version!=null&&review.exclude_from_recurrence_metrics===true&&review.task_origin==="linked_s_check");
 }
 
@@ -238,6 +239,10 @@ export function analyzeSourceMismatchRepair(args:{
     actions.push({reviewId:review.id,action:"regenerate",reason:"古いsourceを付け替えず、対象問題自身のAttemptから独立再生成",
       patch:supersedePatch,replacement});
   }
+  // 現在対応件数は実際の修復 action 数と常に一致させる。これにより
+  // 「verified relation 移行対象 1件 / 現在対応 0件」の矛盾を防ぐ。
+  activeSourceMismatchCount=actions.length;
+  mismatchCount=actions.length;
   return {mismatchCount,verifiedRelationCount,supersededCount,regeneratedCount,needsReviewCount,unchangedCompletedCount,actions,
     activeSourceMismatchCount,pendingVerifiedLinkNeedsMigrationCount,invalidLegacyCardsToSupersedeCount,
     historicalCompletedLinkedReviewsCount,unresolvedNeedsReviewCount,verifiedRelationMigratedCount};
