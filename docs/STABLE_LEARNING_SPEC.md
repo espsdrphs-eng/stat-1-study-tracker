@@ -6,6 +6,15 @@
 
 - `LearningPolicyResolver`：純粋関数。学習目的、段階、範囲、mode、sheet、証拠、遷移方針を決め、DBへ書き込みません。
 - `TaskScheduler`：復習可能期間、日別容量、policy版付き重複防止キー、週間soft quotaを扱います。
+- `reviewSchedulePolicy`：ローカル日付の加算、policy/manual/legacy_unknownの判定、日付整合性診断、契約単位のpending重複判定を扱う純粋関数です。
+
+## 復習日と重複pendingの正本
+
+policy由来の復習は、同一Prescriptionから `source_date`、`review_after_days`、`due_date`、`schedule_origin`、`policy_version` を保存します。`due_date` は `addCalendarDays(source_date, review_after_days)` で決め、UTC時刻へ変換しません。間隔だけ、または日付だけを変更しません。
+
+`schedule_origin=manual` と先送り履歴があるカードは、policy日付と一致しなくても手動変更として保持します。由来を確定できない旧カードは `legacy_unknown` としてプレビューし、明示操作後だけpolicy日付へ補正します。日付修復で過去日になっても、既存 `today_plan_snapshot` へ自動追加しません。
+
+pendingの重複キーは canonical problem ID、learning purpose、mode、review scope、ソート済みgraded part ID集合です。同じキーでは最新の有効なsource Attempt由来だけを残し、古いpendingはsourceを付け替えず `superseded` にします。目的またはgraded part IDが異なるカード、完了済み履歴は統合・変更しません。
 - `StudyTriage`：今日の必須・任意・先送り候補だけを分類します。
 - `gradingPrompt.ts`：GradingPromptBuilder。画面と同じResolver結果から採点範囲と完了条件を生成します。
 - `ReviewTransition`：復習結果後の遷移だけを決めます。

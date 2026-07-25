@@ -22,7 +22,13 @@ try{
     const pastOverflow=pastDimensions.scrollWidth-pastDimensions.clientWidth;
     if(pastOverflow>1)throw new Error(`${size.name}: past workflow horizontal overflow ${pastOverflow}px`);
     await page.screenshot({path:`outputs/${size.name}-past.png`,fullPage:true});
-    results.push({...size,...dimensions,pastScrollWidth:pastDimensions.scrollWidth,status:"PASS"});
+    await page.getByText("設定",{exact:true}).first().evaluate(element=>(element.closest("button")||element).click());
+    await page.waitForTimeout(300);
+    const settingsDimensions=await page.evaluate(()=>({scrollWidth:document.documentElement.scrollWidth,clientWidth:document.documentElement.clientWidth}));
+    const settingsOverflow=settingsDimensions.scrollWidth-settingsDimensions.clientWidth;
+    if(settingsOverflow>1)throw new Error(`${size.name}: settings horizontal overflow ${settingsOverflow}px`);
+    await page.screenshot({path:`outputs/${size.name}-settings.png`,fullPage:true});
+    results.push({...size,...dimensions,pastScrollWidth:pastDimensions.scrollWidth,settingsScrollWidth:settingsDimensions.scrollWidth,status:"PASS"});
     await context.close();
   }
   console.log(JSON.stringify(results,null,2));

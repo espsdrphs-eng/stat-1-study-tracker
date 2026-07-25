@@ -28,6 +28,10 @@ import { normalizePastExamSession, parseScan5Update, sessionStudyMinutes, valida
 import { auditLegacyReviewContracts, buildGradingContractSnapshot, contractDifferences, isActionableReview, prescriptionFromContract, repairTargets, taskFieldsFromContract } from "./gradingContract.ts";
 import { primaryErrorFromFindings, validateGradedFindings } from "./gradedParts.ts";
 import {
+  addCalendarDays, auditReviewSchedules, pendingReviewIdentityKey, resolveReviewSchedule,
+  type ReviewScheduleAudit
+} from "./reviewSchedulePolicy.ts";
+import {
   APP_SCHEMA_VERSION, createSchemaDiagnostic, DB_NAME, DB_VERSION,
   GPT_SAVE_REQUIRED_STORES, IndexedDbSchemaError, LATEST_STORE_SCHEMAS, REQUIRED_APP_STORES, STORES
 } from "./dbSchema.ts";
@@ -507,15 +511,9 @@ const repairRules:[string,string[],string[]][] = [
 const loadFor=(mode:string)=>({check:.2,skeleton:.5,main_calc:.8,full:1.2,scan:.6,exam_90min:3}[mode]??.5);
 const todayString=()=>new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Tokyo",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
 const taskSnapshotId=(task:Task)=>task.id&&task.review_type?`review:${task.id}`:`task:${task.problem_id}:${task.kind}`;
-const addDays=(date:string,days:number)=>{
-  const d=new Date(`${date}T12:00:00`);d.setDate(d.getDate()+Number(days));
-  return new Intl.DateTimeFormat("sv-SE",{year:"numeric",month:"2-digit",day:"2-digit"}).format(d);
-};
+const addDays=addCalendarDays;
 async function reviewDueDate(date:string,days:number){
-  const normal=addDays(date,days),examDate=(await db.meta.get("exam_date"))?.value||"";
-  if(!examDate||examDate<=date||normal<addDays(examDate,-2)) return normal;
-  const preExam=addDays(examDate,-3);
-  return preExam>date?preExam:addDays(date,1);
+  return addCalendarDays(date,days);
 }
 const list=(value="")=>String(value).split(/[;,、\s]+/).map(x=>x.trim()).filter(Boolean);
 const attemptMatchesProblem=(attempt:Attempt,problem:Problem)=>{
@@ -622,15 +620,11 @@ const planFields=(plan:ReviewPlan)=>({
 });
 type ReviewInsert=Omit<Review,"id">;
 async function addOrReplaceReview(review:ReviewInsert){
-  const pending=(await db.reviews.where("problem_id").equals(review.problem_id).toArray()).filter(item=>item.status!=="done");
+  const pending=(await db.reviews.where("problem_id").equals(review.problem_id).toArray())
+    .filter(item=>["pending","overdue"].includes(item.status));
   if(review.deduplication_key){
     const duplicate=pending.find(item=>item.deduplication_key===review.deduplication_key);
     if(duplicate)return duplicate.id;
-  }else if(pending.length){
-    // A changed purpose/scope is a new Review. Keep the previous rows as history instead of
-    // replacing their identity or physically deleting them.
-    for(const item of pending)await db.reviews.update(item.id,{status:"superseded",exclude_from_planning:true,
-      superseded_reason:"後続の独立した復習契約が生成されたため"});
   }
   const [problem,attempts,aliases,examMeta]=await Promise.all([
     db.problems.get(review.problem_id),db.attempts.toArray(),db.problemAliases.toArray(),db.meta.get("exam_date")
@@ -640,12 +634,44 @@ async function addOrReplaceReview(review:ReviewInsert){
   }
   const card=resolveReviewCard({item:review,problems:[problem],attempts,aliases,today:todayString(),examDate:examMeta?.value||""});
   const contractFields=taskFieldsFromContract(card.gradingContract);
+  const sourceAttempt=attempts.find(attempt=>attempt.id===Number(review.source_attempt_id||review.generated_from_attempt_id||0));
+  const sourceDate=String(review.source_date||sourceAttempt?.date||"");
+  const reviewAfterDays=Number.isFinite(Number(review.review_after_days??review.interval_days))
+    ?Number(review.review_after_days??review.interval_days):undefined;
+  const scheduleOrigin=review.schedule_origin||"policy";
+  const policyDueDate=scheduleOrigin==="policy"&&sourceDate&&reviewAfterDays!=null
+    ?addCalendarDays(sourceDate,reviewAfterDays):review.due_date;
+  const candidate={...review,id:0,problem_id:card.canonicalProblemId,...contractFields} as Review;
+  const identityKey=pendingReviewIdentityKey(candidate,aliases);
+  if(identityKey){
+    const activeReviews=(await db.reviews.toArray()).filter(item=>["pending","overdue"].includes(item.status));
+    const sameIdentity=activeReviews.filter(item=>pendingReviewIdentityKey(item,aliases)===identityKey);
+    if(sameIdentity.length){
+      const newestExisting=[...sameIdentity].sort((a,b)=>{
+        const sourceA=attempts.find(attempt=>attempt.id===Number(a.source_attempt_id||a.generated_from_attempt_id||0));
+        const sourceB=attempts.find(attempt=>attempt.id===Number(b.source_attempt_id||b.generated_from_attempt_id||0));
+        return String(sourceB?.date||"").localeCompare(String(sourceA?.date||""))||
+          Number(sourceB?.id||0)-Number(sourceA?.id||0)||b.id-a.id;
+      })[0];
+      const existingSource=attempts.find(attempt=>attempt.id===Number(newestExisting.source_attempt_id||newestExisting.generated_from_attempt_id||0));
+      const candidateIsNewer=String(sourceAttempt?.date||"").localeCompare(String(existingSource?.date||""))>0||
+        (sourceAttempt?.date===existingSource?.date&&Number(sourceAttempt?.id||0)>Number(existingSource?.id||0));
+      if(!candidateIsNewer)return newestExisting.id;
+      for(const item of sameIdentity)await db.reviews.update(item.id,{
+        status:"superseded",exclude_from_planning:true,exclude_from_recurrence_metrics:true,
+        superseded_by_policy_version:review.policy_version||LEARNING_POLICY_VERSION,
+        superseded_reason:"同一目的・採点対象の新しいsource Attemptから独立したReviewを生成"
+      });
+    }
+  }
   const provenance={
     reviewGoal:card.reviewGoal,correctionTheme:card.correctionTheme,entryHint:card.entryHint,
     oneLineHint:card.oneLineHint,todayActions:card.todayActions,completionConditions:card.completionConditions
   };
   return Number(await db.reviews.add({
     id:undefined as unknown as number,...review,problem_id:card.canonicalProblemId,
+    due_date:policyDueDate,source_date:sourceDate||undefined,review_after_days:reviewAfterDays,
+    schedule_origin:scheduleOrigin,
     inferred_mode:card.inferredMode,mode_override:card.modeOverride,sheet_name:card.sheetLabel,
     derived_from_problem_id:card.canonicalProblemId,derived_from_attempt_id:card.targetAttempt?.id,
     derived_from_master_version:problem.master_version||"unversioned",derived_generated_at:new Date().toISOString(),
@@ -1136,6 +1162,7 @@ async function postponeReview(id:number,body:Record<string,unknown>){
   const count=Number(review.postpone_count||review.postponed_count||0)+(isToday?0:1);
   await db.reviews.update(id,{
     due_date:dueDate,status:unscheduled?"deferred":"pending",manual_order:isToday?0:Date.now(),
+    schedule_origin:"manual",
     triage_override:isToday?"must":undefined,
     postponed_count:count,postpone_count:count,last_postponed_at:postponedAt,
     postponed_at:postponedAt,postponed_to:unscheduled?"unscheduled":dueDate,
@@ -1501,6 +1528,8 @@ async function rebuildReviewCards(){
     if(card.reviewNeeded) reviewNeededCount++;
     if(!origin.valid)sourceTargetMixCount++;
     const resolvedDue=correctedDueDate(card),dueChanged=resolvedDue!==review.due_date;
+    const sourceAttempt=attempts.find(attempt=>attempt.id===Number(review.source_attempt_id||review.generated_from_attempt_id||0));
+    const schedule=resolveReviewSchedule(review,sourceAttempt);
     if(dueChanged) dateCorrectedCount++;
     const problem=problems.find(entry=>entry.problem_id===card.canonicalProblemId);
     const derivedFields={reviewGoal:card.reviewGoal,correctionTheme:card.correctionTheme,entryHint:card.entryHint,
@@ -1516,6 +1545,9 @@ async function rebuildReviewCards(){
       derived_fields:derivedFields,
       raw_due_date:dueChanged?(review.raw_due_date||review.due_date):review.raw_due_date,
       due_date:resolvedDue,due_date_correction_reason:dueChanged?`Attempt日と復習間隔から再計算（${card.reviewAfterDays}日）`:review.due_date_correction_reason,
+      source_date:schedule.sourceDate||review.source_date,
+      review_after_days:schedule.reviewAfterDays??review.review_after_days,
+      schedule_origin:schedule.scheduleOrigin,
       review_needed_reason:card.reviewNeeded?card.consistencyWarnings.filter(item=>item.blocksSpecificGuidance).map(item=>item.message).join(" "):undefined,
       ...taskFieldsFromContract(card.gradingContract)
     });
@@ -1531,6 +1563,151 @@ async function rebuildReviewCards(){
     raw_contract_mismatch_count:rawContractMismatch};
   await db.meta.put({key:"review_card_rebuild_summary",value:JSON.stringify(summary)});
   return {...summary,diagnostics:await diagnoseData()};
+}
+
+type ReviewScheduleSummary={
+  repaired_at:string;
+  policy_date_correction_count:number;
+  manual_date_preserved_count:number;
+  legacy_unknown_count:number;
+  past_due_count:number;
+  duplicates_superseded_count:number;
+  needs_review_count:number;
+  raw_policy_mismatch_count:number;
+  effective_policy_mismatch_count:number;
+  snapshot_actionable_mismatch_count:number;
+  remaining_duplicate_count:number;
+  remaining_legacy_unknown_count:number;
+  completed_unchanged_count:number;
+  today_plan_snapshot_unchanged:boolean;
+  preview:boolean;
+  success:boolean;
+};
+
+function scheduleSummaryFromAudit(audit:ReviewScheduleAudit,preview:boolean):ReviewScheduleSummary{
+  return {
+    repaired_at:new Date().toISOString(),
+    policy_date_correction_count:audit.policyDateCorrections,
+    manual_date_preserved_count:audit.manualDatePreserved,
+    legacy_unknown_count:audit.legacyUnknown,
+    past_due_count:audit.pastDueCorrections,
+    duplicates_superseded_count:audit.duplicatesToSupersede,
+    needs_review_count:audit.needsReview,
+    raw_policy_mismatch_count:audit.policyDateCorrections,
+    effective_policy_mismatch_count:audit.policyDateCorrections,
+    snapshot_actionable_mismatch_count:0,
+    remaining_duplicate_count:audit.duplicatesToSupersede,
+    remaining_legacy_unknown_count:audit.legacyUnknown,
+    completed_unchanged_count:audit.completedUnchanged,
+    today_plan_snapshot_unchanged:true,
+    preview,
+    success:audit.policyDateCorrections===0&&audit.duplicatesToSupersede===0,
+  };
+}
+
+async function reviewScheduleRepairPreview(){
+  const [reviews,attempts,aliases]=await Promise.all([
+    db.reviews.toArray(),db.attempts.toArray(),db.problemAliases.toArray()
+  ]);
+  return scheduleSummaryFromAudit(auditReviewSchedules({reviews,attempts,aliases,today:todayString()}),true);
+}
+
+async function repairReviewSchedules(){
+  const [reviewsBefore,attemptsBefore,problems,aliases,snapshotRowsBefore]=await Promise.all([
+    db.reviews.toArray(),db.attempts.toArray(),db.problems.toArray(),db.problemAliases.toArray(),
+    db.meta.filter(row=>row.key.startsWith("today-plan-snapshot:")).toArray()
+  ]);
+  const snapshotsBefore=JSON.stringify(snapshotRowsBefore.sort((a,b)=>a.key.localeCompare(b.key)).map(row=>[row.key,row.value]));
+  const attemptsBeforeJson=JSON.stringify(attemptsBefore);
+  const completedBefore=JSON.stringify(reviewsBefore.filter(row=>["done","completed"].includes(row.status)));
+  const auditBefore=auditReviewSchedules({reviews:reviewsBefore,attempts:attemptsBefore,aliases,today:todayString()});
+  const reviewMap=new Map(reviewsBefore.map(review=>[review.id,review]));
+  const attemptMap=new Map(attemptsBefore.map(attempt=>[attempt.id,attempt]));
+  const now=new Date().toISOString();
+  let dateCorrected=0,manualPreserved=0,legacyResolved=0;
+
+  for(const row of auditBefore.rows){
+    const review=reviewMap.get(row.reviewId);
+    if(!review)continue;
+    if(row.scheduleOrigin==="manual"){
+      manualPreserved+=row.manualDatePreserved?1:0;
+      if(review.schedule_origin!=="manual")await db.reviews.update(review.id,{schedule_origin:"manual"});
+      continue;
+    }
+    if(row.needsReview||!row.expectedReviewDate)continue;
+    const shouldCorrect=row.mismatch||row.scheduleOrigin==="legacy_unknown";
+    const card=resolveReviewCard({item:review,problems,attempts:attemptsBefore,aliases,today:todayString(),now});
+    const patch:Partial<Review>={
+      source_date:row.sourceDate,review_after_days:row.reviewAfterDays??undefined,
+      interval_days:row.reviewAfterDays??review.interval_days,schedule_origin:"policy",
+      policy_version:review.policy_version||card.prescription.policyVersion,
+      ...taskFieldsFromContract(card.gradingContract)
+    };
+    if(shouldCorrect){
+      patch.raw_due_date=review.raw_due_date||review.due_date;
+      patch.due_date=row.expectedReviewDate;
+      patch.due_date_correction_reason=`sourceDate ${row.sourceDate} と reviewAfterDays ${row.reviewAfterDays} から再計算`;
+      dateCorrected++;
+      if(row.scheduleOrigin==="legacy_unknown")legacyResolved++;
+    }
+    await db.reviews.update(review.id,patch);
+  }
+
+  let duplicatesSuperseded=0;
+  for(const group of auditBefore.duplicateGroups){
+    for(const id of group.supersedeReviewIds){
+      const review=await db.reviews.get(id);
+      if(!review||!["pending","overdue"].includes(review.status))continue;
+      await db.reviews.update(id,{
+        status:"superseded",exclude_from_planning:true,exclude_from_recurrence_metrics:true,
+        superseded_by_policy_version:LEARNING_POLICY_VERSION,
+        superseded_reason:`同一問題・目的・モード・採点対象の新しいpending Review ${group.keepReviewId} を保持`
+      });
+      duplicatesSuperseded++;
+    }
+  }
+
+  const [reviewsAfter,attemptsAfter,snapshotRowsAfter]=await Promise.all([
+    db.reviews.toArray(),db.attempts.toArray(),
+    db.meta.filter(row=>row.key.startsWith("today-plan-snapshot:")).toArray()
+  ]);
+  const auditAfter=auditReviewSchedules({reviews:reviewsAfter,attempts:attemptsAfter,aliases,today:todayString()});
+  const snapshotsAfter=JSON.stringify(snapshotRowsAfter.sort((a,b)=>a.key.localeCompare(b.key)).map(row=>[row.key,row.value]));
+  const snapshotUnchanged=snapshotsBefore===snapshotsAfter;
+  const historyPreserved=attemptsBeforeJson===JSON.stringify(attemptsAfter)&&
+    completedBefore===JSON.stringify(reviewsAfter.filter(row=>["done","completed"].includes(row.status)))&&
+    reviewsBefore.length===reviewsAfter.length;
+  if(!snapshotUnchanged||!historyPreserved)throw new Error("安全性検証に失敗しました。学習履歴または今日の計画は変更されていません。");
+
+  const mismatchIds=new Set(auditAfter.rows.filter(row=>row.mismatch).map(row=>row.reviewId));
+  let snapshotActionableMismatch=0;
+  for(const snapshotRow of snapshotRowsAfter){
+    try{
+      const snapshot=JSON.parse(snapshotRow.value) as TodayPlanSnapshot;
+      snapshotActionableMismatch+=snapshot.tasks.filter(task=>task.id&&task.review_type&&mismatchIds.has(Number(task.id))).length;
+    }catch{/* diagnostic only */}
+  }
+  const success=auditAfter.policyDateCorrections===0&&auditAfter.duplicatesToSupersede===0&&snapshotActionableMismatch===0;
+  const summary:ReviewScheduleSummary={
+    repaired_at:now,policy_date_correction_count:dateCorrected,
+    manual_date_preserved_count:manualPreserved,
+    legacy_unknown_count:auditBefore.legacyUnknown,
+    past_due_count:auditBefore.pastDueCorrections,
+    duplicates_superseded_count:duplicatesSuperseded,
+    needs_review_count:auditAfter.needsReview,
+    raw_policy_mismatch_count:auditAfter.policyDateCorrections,
+    effective_policy_mismatch_count:auditAfter.policyDateCorrections,
+    snapshot_actionable_mismatch_count:snapshotActionableMismatch,
+    remaining_duplicate_count:auditAfter.duplicatesToSupersede,
+    remaining_legacy_unknown_count:Math.max(0,auditAfter.legacyUnknown-legacyResolved),
+    completed_unchanged_count:auditAfter.completedUnchanged,
+    today_plan_snapshot_unchanged:snapshotUnchanged,
+    preview:false,success,
+  };
+  await db.meta.put({key:"review_schedule_repair_summary",value:JSON.stringify(summary)});
+  await appendImportHistory("復習日と重複カードの整理","review-schedule-policy-v1",dateCorrected+duplicatesSuperseded);
+  if(!success)throw new Error("復習日の再診断で不整合が残りました。要確認項目を確認してください。");
+  return {...summary,data_preserved:true};
 }
 
 async function gradingContractAuditPreview(){
@@ -2131,6 +2308,7 @@ async function bootstrap():Promise<Bootstrap>{
     review_rebuild_summary:(()=>{try{return JSON.parse(metaEntries.find(entry=>entry.key==="review_card_rebuild_summary")?.value||"null")||undefined}catch{return undefined}})()
     ,legacy_k_summary:(()=>{try{return JSON.parse(metaEntries.find(entry=>entry.key==="legacy_k_reorganization_summary")?.value||"null")||undefined}catch{return undefined}})()
     ,source_mismatch_summary:(()=>{try{return JSON.parse(metaEntries.find(entry=>entry.key==="source_mismatch_reorganization_summary")?.value||"null")||undefined}catch{return undefined}})()
+    ,review_schedule_summary:(()=>{try{return JSON.parse(metaEntries.find(entry=>entry.key==="review_schedule_repair_summary")?.value||"null")||undefined}catch{return undefined}})()
   };
   return {problems:problems.sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.category.localeCompare(b.category)||a.problem_number-b.problem_number),attempts,reviews,roadmap,weakNotes,pastSessions,answerIndex,problemAliases,dashboard,settings,masterStatus,databaseStatus,
     today:{tasks,totalLoad,plannedMinutes:plannedTotal,remainingMinutes,actualMinutes,targetMinutes:settings.daily_study_minutes,capacityPercent,warning,guidance,
@@ -2214,6 +2392,10 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     return await sourceMismatchPreview() as T;
   } else if(path==="/api/source-mismatch/reorganize"){
     return await db.transaction("rw",[db.attempts,db.reviews,db.problems,db.problemAliases,db.meta],()=>reorganizeSourceMismatches()) as T;
+  } else if(path==="/api/review-schedule/preview"){
+    return await reviewScheduleRepairPreview() as T;
+  } else if(path==="/api/review-schedule/repair"){
+    return await db.transaction("rw",[db.attempts,db.reviews,db.problems,db.problemAliases,db.meta],()=>repairReviewSchedules()) as T;
   } else if(path==="/api/master/diagnostic/resolve"){
     return await resolveDiagnostic(body) as T;
   } else if(path==="/api/today/recalculate"){

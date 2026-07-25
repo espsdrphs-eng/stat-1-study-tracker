@@ -1,12 +1,10 @@
 import type { AssessmentTiming, LearningPurpose, PastExamSessionKind, PastExamStage, Review, Task } from "./types.ts";
 import type { LearningPrescription } from "./learningPolicyResolver.ts";
+import { addCalendarDays } from "./reviewSchedulePolicy.ts";
 
 export type ScheduleWindow={earliestDate:string;preferredDate:string;latestDate:string};
 
-export function addCalendarDays(date:string,days:number){
-  const parsed=new Date(`${date}T12:00:00Z`);parsed.setUTCDate(parsed.getUTCDate()+days);
-  return parsed.toISOString().slice(0,10);
-}
+export { addCalendarDays };
 
 const intervals:Record<string,{preferred:number;early:number;late:number}>={
   K:{preferred:1,early:1,late:2},N:{preferred:2,early:1,late:3},W:{preferred:3,early:2,late:5},C:{preferred:7,early:5,late:10},none:{preferred:14,early:10,late:21},

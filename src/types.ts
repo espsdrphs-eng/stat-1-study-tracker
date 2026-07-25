@@ -168,6 +168,8 @@ export type Review = {
   target_kind?:TargetKind; required_evidence?:string[];
   policy_version?:string; source_attempt_id?:number; deduplication_key?:string;
   earliest_date?:string; preferred_date?:string; latest_date?:string;
+  source_date?:string;review_after_days?:number;
+  schedule_origin?:"policy"|"manual"|"legacy_unknown";
   retention_eligible?:boolean; success_transition?:string; failure_transition?:string;
   policy_validity?:KPolicyValidity; exclude_from_planning?:boolean;
   exclude_from_recurrence_metrics?:boolean; superseded_by_policy_version?:string;
@@ -284,6 +286,14 @@ export type Bootstrap = {
       invalid_legacy_cards_to_supersede?:number;historical_completed_linked_reviews?:number;
       unresolved_needs_review?:number;verified_relation_migrated?:number;
       policy_version:string;preview?:boolean};
+    review_schedule_summary?:{
+      repaired_at:string;policy_date_correction_count:number;manual_date_preserved_count:number;
+      legacy_unknown_count:number;past_due_count:number;duplicates_superseded_count:number;
+      needs_review_count:number;raw_policy_mismatch_count:number;effective_policy_mismatch_count:number;
+      snapshot_actionable_mismatch_count:number;remaining_duplicate_count:number;
+      remaining_legacy_unknown_count:number;completed_unchanged_count:number;
+      today_plan_snapshot_unchanged:boolean;preview:boolean;success:boolean;
+    };
   };
   databaseStatus:{
     databaseName:string;databaseVersion:number;requiredDatabaseVersion:number;requestedStores:string[];

@@ -12,6 +12,7 @@ import {
   reviewAim,
   safeReviewActions,
 } from "./reviewExperience.ts";
+import { addCalendarDays, differenceInCalendarDays, resolveReviewSchedule } from "./reviewSchedulePolicy.ts";
 
 export type ReviewMode="check"|"skeleton"|"main_calc"|"full"|"scan5";
 export type SheetType="check_sheet"|"skeleton_sheet"|"main_calc_sheet"|"full_answer_sheet"|"scan5_sheet";
@@ -128,22 +129,7 @@ export function inferReviewMode(errors:ResolverErrorType[],item?:ReviewCardInput
   return "check";
 }
 
-function parseDate(value:string){
-  const match=String(value||"").match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  return match?Date.UTC(Number(match[1]),Number(match[2])-1,Number(match[3])):NaN;
-}
-
-export function addCalendarDays(value:string,days:number){
-  const timestamp=parseDate(value);
-  if(!Number.isFinite(timestamp)) return "";
-  const date=new Date(timestamp+days*86400000);
-  return `${date.getUTCFullYear()}-${String(date.getUTCMonth()+1).padStart(2,"0")}-${String(date.getUTCDate()).padStart(2,"0")}`;
-}
-
-export function differenceInCalendarDays(later:string,earlier:string){
-  const a=parseDate(later),b=parseDate(earlier);
-  return Number.isFinite(a)&&Number.isFinite(b)?Math.round((a-b)/86400000):null;
-}
+export { addCalendarDays, differenceInCalendarDays };
 
 function latestAttemptFor(canonicalId:string,attempts:Attempt[],aliases:ProblemAlias[]){
   return attempts
@@ -243,16 +229,12 @@ export function resolveReviewCard({
   if(item.mode&&isReviewMode(item.mode)&&item.mode!==effective&&!override){
     warnings.push({code:"stored_mode_stale",message:`保存済みモードではなく、K/W/N/Cから${modeLabels[effective]}を再判定しました。`,repairable:true});
   }
-  const interval=Number.isFinite(Number(item.interval_days))?Number(item.interval_days):null;
-  const dueDate=String(item.due_date||"");
-  const attemptDate=sourceAttempt?.date||targetAttempt?.date||"";
-  const normalDue=interval!=null&&attemptDate?addCalendarDays(attemptDate,interval):"";
-  const examBoundary=examDate?addCalendarDays(examDate,-2):"";
-  const expectedDue=normalDue&&examDate>attemptDate&&normalDue>=examBoundary
-    ?(addCalendarDays(examDate,-3)>attemptDate?addCalendarDays(examDate,-3):addCalendarDays(attemptDate,1))
-    :normalDue;
-  const wasPostponed=!!(item.postponed_at||item.postpone_count||item.postponed_count);
-  if(expectedDue&&dueDate&&expectedDue!==dueDate&&!wasPostponed){
+  const schedule=resolveReviewSchedule(item as Partial<Review>,sourceAttempt||targetAttempt);
+  const interval=schedule.reviewAfterDays;
+  const dueDate=schedule.storedReviewDate;
+  const attemptDate=schedule.sourceDate;
+  const expectedDue=schedule.expectedReviewDate;
+  if(schedule.mismatch){
     warnings.push({code:"due_date_interval_mismatch",message:`復習日${dueDate}は${attemptDate}から${interval}日後と一致しません。${expectedDue}へ補正できます。`,repairable:true,suggestedValue:expectedDue});
   }
   const sourceProblemId=item.source_problem_id||((origin==="linked_s_check"||origin==="related_drill")?sourceAttempt?.problem_id:undefined);

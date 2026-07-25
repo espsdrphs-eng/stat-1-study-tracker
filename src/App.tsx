@@ -1032,6 +1032,12 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
   const [contractPreview,setContractPreview]=useState<{pending_mode_mismatch:number;light_check_mismatch:number;invalid_legacy_pending:number;
     source_target_mismatch:number;raw_source_target_difference:number;active_source_mismatch:number;
     generated_derived_attempt_mismatch:number;success_evidence_used_as_target:number;ids:Record<string,number[]>}|null>(null);
+  const [schedulePreview,setSchedulePreview]=useState<{
+    policy_date_correction_count:number;manual_date_preserved_count:number;legacy_unknown_count:number;
+    past_due_count:number;duplicates_superseded_count:number;needs_review_count:number;
+    raw_policy_mismatch_count:number;effective_policy_mismatch_count:number;
+    snapshot_actionable_mismatch_count:number;remaining_duplicate_count:number;
+  }|null>(null);
   const saveBlob=(content:string|Blob,name:string,type:string)=>{
     const payload=content instanceof Blob?content:new Blob([content],{type});
     const url=URL.createObjectURL(payload);const a=document.createElement("a");
@@ -1127,6 +1133,10 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
     try{setContractPreview(await post("/api/contracts/preview",{}))}
     catch(error){setMasterError(error instanceof Error?error.message:String(error))}
   };
+  const previewReviewSchedule=async()=>{
+    try{setSchedulePreview(await post("/api/review-schedule/preview",{}))}
+    catch(error){setMasterError(error instanceof Error?error.message:String(error))}
+  };
   const unresolvedLinks=data.masterStatus.diagnostics.filter(item=>item.recommended_action==="hold");
   return <><section className="panel master-import-panel master-import-primary" id="problem-master-import"><div className="panel-title"><div><span className="eyebrow">CANONICAL DATA</span><h3>問題マスター取り込み</h3></div><Badge tone="green">バックアップ復元とは別機能</Badge></div>
       <p>ChatGPTで作成した problem_master / aliases JSON を読み込み、問題ID・表示名・テーマ・GPT取り込み補正に使います。統合JSON内の answer_index は互換データとして保存できますが、日常画面では使いません。通常のバックアップ復元とは別機能です。</p>
@@ -1178,6 +1188,32 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
       </>}
       {data.masterStatus.review_rebuild_summary&&<div className="review-rebuild-summary"><strong>前回の復習カード再構築</strong><span>{new Date(data.masterStatus.review_rebuild_summary.repaired_at).toLocaleString("ja-JP")}</span><span>stale {data.masterStatus.review_rebuild_summary.stale_count}件／再生成 {data.masterStatus.review_rebuild_summary.regenerated_count}件／要確認 {data.masterStatus.review_rebuild_summary.review_needed_count}件／source混入 {data.masterStatus.review_rebuild_summary.source_target_mix_count}件／日付補正 {data.masterStatus.review_rebuild_summary.date_corrected_count}件</span></div>}
       <div className="button-row"><button className="primary" disabled={busy} onClick={()=>run(()=>post("/api/reviews/rebuild",{}),"復習カードを安全に再構築しました")}>復習カードを安全に再構築する</button><button className="secondary" disabled={busy||!data.masterStatus.diagnostics.some(item=>item.repairable)} onClick={()=>run(()=>post("/api/master/repair",{}),"自動修復可能な不整合を一括補正しました")}>問題・関連データを一括補正</button><button className="ghost" disabled={!data.masterStatus.diagnostics.length} onClick={()=>setShowDiagnostics(true)}>個別確認する</button><button className="ghost" disabled={!data.masterStatus.diagnostics.length} onClick={()=>setShowDiagnostics(false)}>後で確認する</button></div>
+      <div className="legacy-k-diagnostic review-schedule-diagnostic">
+        <strong>復習日と重複カードの診断</strong>
+        <p>復習元の日付と間隔からpolicy由来の日付を再計算します。手動で延期した日付と現在のtodayPlanSnapshotは変更しません。</p>
+        {data.masterStatus.review_schedule_summary&&<span>
+          前回結果：日付補正 {data.masterStatus.review_schedule_summary.policy_date_correction_count}件／
+          手動保持 {data.masterStatus.review_schedule_summary.manual_date_preserved_count}件／
+          重複整理 {data.masterStatus.review_schedule_summary.duplicates_superseded_count}件／
+          残り不整合 {data.masterStatus.review_schedule_summary.raw_policy_mismatch_count}件
+        </span>}
+        {schedulePreview&&<div className="legacy-k-preview">
+          <span>policy日付補正予定 <strong>{schedulePreview.policy_date_correction_count}件</strong></span>
+          <span>manual日付保持 <strong>{schedulePreview.manual_date_preserved_count}件</strong></span>
+          <span>legacy_unknown <strong>{schedulePreview.legacy_unknown_count}件</strong></span>
+          <span>過去日になるカード <strong>{schedulePreview.past_due_count}件</strong></span>
+          <span>重複カード <strong>{schedulePreview.duplicates_superseded_count}件</strong></span>
+          <span>要確認 <strong>{schedulePreview.needs_review_count}件</strong></span>
+          <small>実行前に「全データ JSON」でバックアップしてください。完了済み履歴・点数・実績時間・今日の計画は変更しません。</small>
+        </div>}
+        <div className="button-row">
+          <button className="secondary" disabled={busy} onClick={()=>void previewReviewSchedule()}>日付と重複をプレビュー</button>
+          {schedulePreview&&<button className="primary" disabled={busy} onClick={()=>{
+            setSchedulePreview(null);
+            run(()=>post("/api/review-schedule/repair",{}),"復習日と間隔の不整合を整理しました");
+          }}>復習日と間隔の不整合を整理</button>}
+        </div>
+      </div>
       <div className="legacy-k-diagnostic">
         <strong>採点契約の固定診断</strong>
         <p>画面・使用シート・完了条件・GPT採点範囲を同じ契約へ固定します。成功証拠は修正対象へ変換しません。</p>
