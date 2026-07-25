@@ -61,6 +61,9 @@ test("Review 186相当のinvalid legacy Kは実行不可で成功証拠を採点
   assert.deepEqual(contract.gradedParts.map(part=>part.id).sort(),[
     "density_transform_direction","standardization_target",
   ]);
+  assert.equal(contract.mode,"check");
+  assert.equal(contract.reviewScope,"check_only");
+  assert.equal(contract.estimatedMinutes,5);
   assert.equal(contract.completionCriteria.some(row=>/[=√]/.test(row.displayText)),false);
   assert.equal(isActionableReview({...review,grading_contract:contract},contract),false);
 });

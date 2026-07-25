@@ -154,7 +154,8 @@ export function buildGradingContractSnapshot(args:{
       completionConditions=[];requiredEvidence=[...targetedParts];
     }else if(errors.length===1&&errors[0]==="C"){
       mode="check";reviewScope="check_only";sheetType="check_sheet";
-      estimatedMinutes=Math.max(3,Math.min(9,Number(review.estimated_minutes||review.duration_minutes||review.minutes||5)));
+      estimatedMinutes=sourceAttempt&&classifyKPolicyValidity(sourceAttempt)==="invalid_legacy_k"&&targetedParts.length<=2
+        ?5:Math.max(3,Math.min(9,Number(review.estimated_minutes||review.duration_minutes||review.minutes||5)));
       targetKind="mathematical_patch";
       completionConditions=[];requiredEvidence=[...targetedParts];
     }else{

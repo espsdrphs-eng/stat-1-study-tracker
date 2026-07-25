@@ -1481,7 +1481,7 @@ async function rebuildReviewCards(){
         await addOrReplaceReview({problem_id:review.problem_id,due_date:review.due_date,
           review_type:plan.review_type,status:"pending",generated_from_attempt_id:legacySource.id,
           source_attempt_id:legacySource.id,derived_from_attempt_id:legacySource.id,
-          duration_minutes:Math.min(9,Number(plan.estimated_minutes||5)),reason:"対象問題自身の有効な弱点を現行契約で確認",
+          duration_minutes:validErrors.length===1&&validErrors[0]==="C"?5:Math.min(9,Number(plan.estimated_minutes||5)),
           task_origin:"review_attempt",attempt_exists:true,targeted_parts:targets,
           policy_version:LEARNING_POLICY_VERSION,learning_purpose:"error_repair",
           deduplication_key:`${review.problem_id}:error_repair:${legacySource.id}:${LEARNING_POLICY_VERSION}`,
