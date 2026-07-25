@@ -5,9 +5,10 @@ import "fake-indexeddb/auto";
 const {db,localGet,localPost}=await import("../src/localDb.ts");
 
 test("selected_three_timed updates post-results on the same saved session",async()=>{
+  const date=new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Tokyo",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
   const initial=await localGet("/api/bootstrap"),initialMinutes=initial.today.actualMinutes;
   const selected=questions.map((row,index)=>({...row,selected:index<3,plannedOrder:index<3?index+1:null,completed:false,actualScore:null,actualMinutes:null}));
-  const created=await localPost("/api/past-sessions",{session_kind:"selected_three_timed",date:"2026-07-22",year:2023,stage:"calibration",scan_set_source:"past_exam_year",scan_minutes:10,actual_total_minutes:0,questions:selected});
+  const created=await localPost("/api/past-sessions",{session_kind:"selected_three_timed",date,year:2023,stage:"calibration",scan_set_source:"past_exam_year",scan_minutes:10,actual_total_minutes:0,questions:selected});
   const before=await db.pastSessions.count();
   const completed=selected.map((row,index)=>index<3?{...row,completed:true,actualScore:70-index*5,actualMinutes:30}:{...row,completed:false,actualScore:null,actualMinutes:null});
   await localPost(`/api/past-sessions/${created.sessionId}/update`,{questions:completed,actual_total_minutes:90});

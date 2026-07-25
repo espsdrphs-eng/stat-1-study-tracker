@@ -5,8 +5,9 @@ import type {
 import { resolveCanonicalProblemId } from "./examReadiness.ts";
 import { classifyKPolicyValidity, planningErrorsForSource } from "./legacyKPolicy.ts";
 import type { LearningPrescription } from "./learningPolicyResolver.ts";
+import { gradedPartContracts, gradedPartIds, gradedPartLabels, sameGradedPartIds } from "./gradedParts.ts";
 
-export const GRADING_CONTRACT_VERSION="STAT1-CONTRACT-v1";
+export const GRADING_CONTRACT_VERSION="STAT1-CONTRACT-v2";
 
 const unique=(values:unknown[])=>[...new Set(values.flatMap(value=>Array.isArray(value)?value:[value])
   .map(value=>String(value||"").trim()).filter(Boolean))];
@@ -53,14 +54,18 @@ function legacyPurpose(review:Partial<Review&Task>,attempt?:Attempt):LearningPur
   return "retrieval_check";
 }
 
-function repairTargets(review:Partial<Review&Task>,attempt?:Attempt){
+export function repairTargets(review:Partial<Review&Task>,attempt?:Attempt){
   if(!attempt)return unique([review.targeted_parts||[]]);
   const successEvidence=new Set(unique([attempt.required_work_shown||[],attempt.resolution_evidence]));
-  const candidates=!sourceErrors(attempt).length
-    ?unique([review.targeted_parts||[]])
-    :unique([review.targeted_parts||[],attempt.unresolved_carryover||[],attempt.error_point,attempt.next_action]).slice(0,8);
+  const explicit=unique([review.targeted_parts||[]]);
+  const candidates=explicit.length?explicit:!sourceErrors(attempt).length
+    ?[]
+    :unique([attempt.unresolved_carryover||[],attempt.error_point,attempt.next_action]).slice(0,8);
   // 成功証拠は背景として保持しても、次回の修正・採点対象には再利用しない。
-  return candidates.filter(value=>!successEvidence.has(value));
+  const withoutSuccess=candidates.filter(value=>!successEvidence.has(value));
+  return classifyKPolicyValidity(attempt)==="invalid_legacy_k"
+    ?withoutSuccess.filter(value=>!/骨格|設計図|条件・道具|小問別ゴール|ここから先は計算|方針|今見る量|ゴール|計算開始の境界/.test(value))
+    :withoutSuccess;
 }
 
 export type ContractBuildResult={contract:GradingContractSnapshot;validationErrors:string[];needsReview:boolean};
@@ -84,15 +89,17 @@ export function validateGradingContract(contract:GradingContractSnapshot){
     errors.push("error_repair + full_skeleton は使用できません");
   if(contract.mode==="check"&&contract.sheetType!=="check_sheet")errors.push("check と使用シートが一致しません");
   if(contract.mode==="skeleton"&&contract.sheetType!=="skeleton_sheet")errors.push("skeleton と使用シートが一致しません");
-  if(contract.reviewScope==="targeted_patch"&&contract.gradedParts.some(part=>!contract.targetedParts.includes(part)))
-    errors.push("targeted_patch の採点対象が指定範囲を超えています");
+  if(!contract.gradedParts.length)errors.push("採点対象IDがありません");
+  if(new Set(contract.gradedParts.map(part=>part.id)).size!==contract.gradedParts.length)errors.push("採点対象IDが重複しています");
+  if(contract.gradedParts.some(part=>!part.id||!part.label||!part.completionCriterionId||!part.allowedErrorTypes.length))
+    errors.push("採点対象IDの定義が不完全です");
   return errors;
 }
 
 export function buildGradingContractSnapshot(args:{
   review:Partial<Review&Task>;problem?:Problem;sourceAttempt?:Attempt;createdAt?:string;
 }):ContractBuildResult{
-  if(args.review.grading_contract){
+  if(args.review.grading_contract?.contractVersion===GRADING_CONTRACT_VERSION){
     const errors=validateGradingContract(args.review.grading_contract);
     return {contract:args.review.grading_contract,validationErrors:errors,needsReview:errors.length>0};
   }
@@ -103,7 +110,7 @@ export function buildGradingContractSnapshot(args:{
       learningPurpose==="transfer_check"?"transfer":"performance";
   let mode:GradingContractSnapshot["mode"]="check",reviewScope:GradingContractSnapshot["reviewScope"]="check_only";
   let sheetType:GradingContractSnapshot["sheetType"]="check_sheet",estimatedMinutes=5,allowedReferenceLevel=Number(review.allowed_reference_level??0);
-  let targetKind:GradingContractSnapshot["targetKind"],targetedParts:string[]=[],gradedParts:string[]=[];
+  let targetKind:GradingContractSnapshot["targetKind"],targetedParts:string[]=[];
   let explicitlyOutOfScopeParts:string[]=[],completionConditions:string[]=[],requiredEvidence:string[]=[];
   const errors=sourceErrors(sourceAttempt),blueprint=verifiedBlueprint(problem);
 
@@ -111,62 +118,78 @@ export function buildGradingContractSnapshot(args:{
     mode="check";reviewScope="check_only";sheetType="check_sheet";
     estimatedMinutes=Math.max(3,Math.min(5,Number(review.duration_minutes||review.estimated_minutes||review.minutes||5)));
     targetedParts=[];
-    gradedParts=["問題の型","最初の一手","主役となる量","重要条件または注意点"];
     explicitlyOutOfScopeParts=["問題全体の骨格","全ての計算過程","最終結論の完全再現"];
     completionConditions=["型、最初の一手、主役となる量、重要条件または注意点を短く想起できた"];
     requiredEvidence=["上記4項目を参照なし、または許可された最小参照内で短く示す"];
   }else if(learningPurpose==="integration_check"){
     mode="skeleton";reviewScope="full_skeleton";sheetType="skeleton_sheet";estimatedMinutes=12;allowedReferenceLevel=0;
     if(blueprint){
-      targetedParts=[...blueprint.requiredParts];gradedParts=[...blueprint.requiredParts];
+      targetedParts=[...blueprint.requiredParts];
       explicitlyOutOfScopeParts=[...blueprint.optionalParts];
       completionConditions=[...blueprint.requiredSections.map(section=>`${section}を白紙から再現できた`),...blueprint.finalGoals.map(goal=>`${goal}へ接続できた`)];
       requiredEvidence=[...blueprint.requiredParts];
     }else{
       // 全体構造が未検証なら、もっともらしい骨格を局所履歴から捏造しない。
-      targetedParts=[];gradedParts=[];completionConditions=[];requiredEvidence=[];
+      targetedParts=[];completionConditions=[];requiredEvidence=[];
     }
   }else if(learningPurpose==="transfer_check"){
     mode="skeleton";reviewScope="full_skeleton";sheetType="skeleton_sheet";estimatedMinutes=15;allowedReferenceLevel=0;
-    targetedParts=unique([review.targeted_parts||[]]);gradedParts=[...targetedParts];completionConditions=review.scope_completion_conditions||[];
-    requiredEvidence=[...gradedParts];
+    targetedParts=unique([review.targeted_parts||[]]);completionConditions=review.scope_completion_conditions||[];
+    requiredEvidence=[...targetedParts];
   }else if(learningPurpose==="exam_performance"){
     mode=String(review.mode)==="scan5"?"scan5":"full";reviewScope=mode==="scan5"?"scan5":"full_answer";
     sheetType=mode==="scan5"?"scan5_sheet":"full_answer_sheet";estimatedMinutes=Number(review.estimated_minutes||review.minutes||35);
-    targetedParts=[];gradedParts=["今回提出した答案全体"];completionConditions=["制限時間内に指定範囲の結論まで到達した"];
+    targetedParts=[];completionConditions=["制限時間内に指定範囲の結論まで到達した"];
     requiredEvidence=["提出答案"];
   }else{
     targetedParts=repairTargets(review,sourceAttempt);
     if(!errors.length){
       learningPurpose="retrieval_check";learningStage="maintenance";mode="check";reviewScope="check_only";sheetType="check_sheet";
-      estimatedMinutes=5;targetedParts=[];gradedParts=["問題の型","最初の一手","主役となる量","重要条件または注意点"];
+      estimatedMinutes=5;targetedParts=[];
       explicitlyOutOfScopeParts=["問題全体の骨格","全ての計算過程","最終結論の完全再現"];
       completionConditions=["型、最初の一手、主役となる量、重要条件または注意点を短く想起できた"];
-      requiredEvidence=[...gradedParts];
+      requiredEvidence=["型","最初の一手","主役の量","重要条件"];
     }else if(errors.includes("W")){
       mode="main_calc";reviewScope="main_calc_target";sheetType="main_calc_sheet";estimatedMinutes=12;targetKind="mathematical_patch";
-      gradedParts=[...targetedParts];completionConditions=[`${targetedParts.join("・")}を開始式から再現できた`];requiredEvidence=[...gradedParts];
+      completionConditions=[];requiredEvidence=[...targetedParts];
     }else if(errors.length===1&&errors[0]==="C"){
       mode="check";reviewScope="check_only";sheetType="check_sheet";
       estimatedMinutes=Math.max(3,Math.min(9,Number(review.estimated_minutes||review.duration_minutes||review.minutes||5)));
       targetKind="mathematical_patch";
-      gradedParts=[...targetedParts];completionConditions=[`${targetedParts.join("・")}を確認できた`];requiredEvidence=[...gradedParts];
+      completionConditions=[];requiredEvidence=[...targetedParts];
     }else{
       mode="skeleton";reviewScope="targeted_patch";sheetType="skeleton_sheet";estimatedMinutes=10;
       targetKind=errors.includes("K")?"skeleton_expression_patch":"mathematical_patch";
-      gradedParts=[...targetedParts];completionConditions=[`${targetedParts.join("・")}だけを白紙から再現できた`];requiredEvidence=[...gradedParts];
+      completionConditions=[];requiredEvidence=[...targetedParts];
       explicitlyOutOfScopeParts=["targetedPartsに含まれない骨格欄と計算"];
     }
   }
 
-  const allowedErrorTypes=learningPurpose==="retrieval_check"?["W","C"]:
-    reviewScope==="main_calc_target"?["W","C"]:reviewScope==="check_only"?["C"]:["K","W","N","C"];
+  const gradedParts=gradedPartContracts({texts:targetedParts,problemId:String(review.problem_id||problem?.problem_id||""),
+    sourceAttempt,purpose:learningPurpose});
+  const completionCriteria=learningPurpose==="retrieval_check"
+    ?[{id:"retrieval_short_recall",displayText:"型・初手・主役の量・重要条件を、参照なしで短く想起できた"}]
+    :learningPurpose==="integration_check"
+      ?[{id:"reconstruct_full_structure",displayText:"問題全体の方針・出発式・主役・条件・流れ・ゴールを、参照なしで再構成できた"}]
+      :learningPurpose==="error_repair"
+        ?[{id:"reproduce_targeted_points",displayText:`指定された${gradedParts.length}点を、参照なしで、対象・記号・式の向きを整合させて再現できた`}]
+        :[{id:"complete_assigned_scope",displayText:"指定された範囲を、参照なしで完了できた"}];
+  completionConditions=completionCriteria.map(row=>row.displayText);
+  // Legacy summary only. Save-time validation always uses each graded part's own allow-list.
+  const allowedErrorTypes=learningPurpose==="retrieval_check"
+    ?["W","C"]
+    :[...new Set(gradedParts.flatMap(part=>part.allowedErrorTypes).filter(value=>value!=="none"))];
   const requiresKEvidence=allowedErrorTypes.includes("K");
+  const explicitlyOutOfScopePartIds=explicitlyOutOfScopeParts.map(value=>`out_${hashText(value)}`);
+  const hiddenContent=unique([sourceAttempt?.corrected_answer,sourceAttempt?.required_derivation,
+    sourceAttempt?.error_point,sourceAttempt?.next_action]);
+  const hiddenAnswerKey=gradedParts.flatMap((part,index)=>hiddenContent[index]?[{gradedPartId:part.id,content:hiddenContent[index]}]:[]);
   const payload={
     contractVersion:GRADING_CONTRACT_VERSION,problemId:String(review.problem_id||problem?.problem_id||""),
     sourceAttemptId:Number(review.source_attempt_id||review.generated_from_attempt_id||sourceAttempt?.id||0)||undefined,
-    sourceReviewId:Number(review.id||0)||undefined,learningPurpose,learningStage,mode,reviewScope,targetKind,
-    targetedParts,gradedParts,explicitlyOutOfScopeParts,completionConditions,requiredEvidence,allowedErrorTypes,requiresKEvidence,
+    reviewId:Number(review.id||0)||undefined,sourceReviewId:Number(review.id||0)||undefined,learningPurpose,learningStage,mode,reviewScope,targetKind,
+    targetedParts,gradedParts,explicitlyOutOfScopePartIds,explicitlyOutOfScopeParts,completionCriteria,hiddenAnswerKey,
+    completionConditions,requiredEvidence,allowedErrorTypes,requiresKEvidence,
     allowedReferenceLevel,estimatedMinutes,sheetType,
   } satisfies Omit<GradingContractSnapshot,"contractHash"|"contractId"|"createdAt">;
   const contractHash=computeContractHash(payload),createdAt=args.createdAt||review.generated_at||review.derived_generated_at||new Date().toISOString();
@@ -180,7 +203,8 @@ export function taskFieldsFromContract(contract:GradingContractSnapshot){
   return {grading_contract:contract,contract_id:contract.contractId,contract_version:contract.contractVersion,
     contract_hash:contract.contractHash,learning_purpose:contract.learningPurpose,learning_stage:contract.learningStage,
     mode:contract.mode,effective_mode:contract.mode,review_scope:contract.reviewScope,effective_review_scope:contract.reviewScope,
-    target_kind:contract.targetKind,targeted_parts:contract.targetedParts,graded_parts:contract.gradedParts,
+    target_kind:contract.targetKind,targeted_parts:contract.targetedParts,graded_parts:gradedPartLabels(contract.gradedParts),
+    graded_part_ids:gradedPartIds(contract.gradedParts),
     explicitly_out_of_scope_parts:contract.explicitlyOutOfScopeParts,scope_completion_conditions:contract.completionConditions,
     required_evidence:contract.requiredEvidence,allowed_reference_level:contract.allowedReferenceLevel,
     estimated_minutes:contract.estimatedMinutes,minutes:contract.estimatedMinutes,sheet_type:contract.sheetType};
@@ -221,12 +245,29 @@ export function buildProblemContextPack(args:{
       (row.sourceProblemId===canonicalProblemId||row.targetProblemId===canonicalProblemId))};
 }
 
-export function contractDifferences(expected:GradingContractSnapshot,input:Partial<GradingContractSnapshot>){
-  const fields:Array<keyof GradingContractSnapshot>=["contractHash","problemId","learningPurpose","mode","reviewScope","targetKind","gradedParts"];
-  return fields.flatMap(field=>stable(expected[field])===stable(input[field])?[]:[{field,expected:expected[field],actual:input[field]}]);
+export function contractDifferences(
+  expected:GradingContractSnapshot,
+  input:Partial<Omit<GradingContractSnapshot,"gradedParts">>&{gradedParts?:GradingContractSnapshot["gradedParts"]|string[]},
+){
+  const fields:Array<keyof GradingContractSnapshot>=["contractId","contractVersion","contractHash","problemId","learningPurpose","mode","reviewScope","targetKind"];
+  const differences=fields.flatMap(field=>stable(expected[field])===stable(input[field])?[]:[{field,expected:expected[field],actual:input[field]}]);
+  const suppliedIds=Array.isArray(input.gradedParts)?input.gradedParts.map(part=>typeof part==="string"?part:part.id):[];
+  if(!sameGradedPartIds(expected.gradedParts,suppliedIds))
+    differences.push({field:"gradedParts",expected:gradedPartIds(expected.gradedParts),actual:[...suppliedIds].sort()});
+  return differences;
 }
 
 export function contractShortId(contract:GradingContractSnapshot){return contract.contractId.slice(-8)}
+
+export function isActionableReview(
+  review:Partial<Review&Task>,
+  contract:GradingContractSnapshot|undefined=review.grading_contract,
+){
+  return ["pending","overdue"].includes(String(review.status||"pending"))&&
+    review.policy_validity!=="invalid_legacy_k"&&review.exclude_from_planning!==true&&
+    !!contract&&contract.contractVersion===GRADING_CONTRACT_VERSION&&
+    !!contract.contractHash&&contract.gradedParts.length>0&&validateGradingContract(contract).length===0;
+}
 
 export function auditLegacyReviewContracts(args:{reviews:Review[];attempts:Attempt[];aliases:ProblemAlias[]}){
   const attemptMap=new Map(args.attempts.map(row=>[row.id,row]));

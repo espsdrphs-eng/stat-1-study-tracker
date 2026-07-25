@@ -49,7 +49,8 @@ test("success evidence never becomes a grading target and prompt uses the same c
   assert.doesNotMatch(prompt,/正規分布の平方完成/);
   assert.doesNotMatch(prompt,/一様分布の指示関数の共通区間化/);
   assert.match(prompt,/explicitly_out_of_scope_parts/);
-  assert.equal(contractDifferences(contract,{contractHash:contract.contractHash,problemId:contract.problemId,
+  assert.equal(contractDifferences(contract,{contractId:contract.contractId,contractVersion:contract.contractVersion,
+    contractHash:contract.contractHash,problemId:contract.problemId,
     learningPurpose:contract.learningPurpose,mode:contract.mode,reviewScope:contract.reviewScope,targetKind:contract.targetKind,
     gradedParts:contract.gradedParts}).length,0);
   assert.equal(contractDifferences(contract,{contractHash:"wrong"}).some(row=>row.field==="contractHash"),true);
@@ -86,11 +87,11 @@ test("impossible retrieval and integration combinations are rejected",()=>{
 
 test("GPT YAML preserves the grading contract fields for save-time validation",()=>{
   const {contract}=buildGradingContractSnapshot({review:review87,problem,sourceAttempt:attempt35});
-  const parsed=parseStudyText(`study_update:\n  contract_id: "${contract.contractId}"\n  contract_version: "${contract.contractVersion}"\n  contract_hash: "${contract.contractHash}"\n  problem_id: "WB-6-A-23"\n  date: "2026-07-22"\n  mode: "check"\n  time_minutes: 5\n  mark: "△"\n  score_numeric: 80\n  error_types: ["W"]\n  primary_error_type: "W"\n  next_action: "変数変換を直す"\n  review_after_days: 3\n  learning_purpose: "retrieval_check"\n  learning_stage: "maintenance"\n  review_scope: "check_only"\n  graded_parts:\n${contract.gradedParts.map(part=>`    - "${part}"`).join("\n")}\n  rubric_version: "STAT1-REVIEW-v9"`,[problem]);
+  const parsed=parseStudyText(`study_update:\n  contract_id: "${contract.contractId}"\n  contract_version: "${contract.contractVersion}"\n  contract_hash: "${contract.contractHash}"\n  problem_id: "WB-6-A-23"\n  date: "2026-07-22"\n  mode: "check"\n  time_minutes: 5\n  mark: "△"\n  score_numeric: 80\n  error_types: ["none"]\n  primary_error_type: "none"\n  next_action: "短く想起する"\n  review_after_days: 14\n  learning_purpose: "retrieval_check"\n  learning_stage: "maintenance"\n  review_scope: "check_only"\n  graded_part_ids:\n${contract.gradedParts.map(part=>`    - "${part.id}"`).join("\n")}\n  graded_findings:\n${contract.gradedParts.map(part=>`    - graded_part_id: "${part.id}"\n      error_type: "none"\n      evidence: "想起できた"\n      resolved: true`).join("\n")}\n  rubric_version: "STAT1-REVIEW-v9"`,[problem]);
   assert.equal(parsed.updates[0].contract_hash,contract.contractHash);
   assert.equal(parsed.updates[0].learning_purpose,"retrieval_check");
   assert.equal(parsed.updates[0].review_scope,"check_only");
-  assert.deepEqual(parsed.updates[0].graded_parts,contract.gradedParts);
+  assert.deepEqual(parsed.updates[0].graded_part_ids.sort(),contract.gradedParts.map(part=>part.id).sort());
 });
 
 test("supplied real-data counts are reproducible without hard-coding production repair",()=>{

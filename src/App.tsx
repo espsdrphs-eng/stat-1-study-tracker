@@ -29,6 +29,8 @@ import { buildScan5Prompt, deriveExposure, scanMetrics, stageForDays, defaultSes
 import { CHAPTER_META } from "./officialMaster";
 import { isProblemPack, masterDiff, parseAliasesPayload, parseIntegratedMasterPayload, parseProblemMasterPayload } from "./masterData";
 import { isIndexedDbSchemaError, schemaErrorMessage, type IndexedDbSchemaDiagnostic } from "./dbSchema";
+import { isActionableReview } from "./gradingContract";
+import { gradedPartLabels } from "./gradedParts";
 import type { AnswerIndexEntry, Attempt, Bootstrap, PastExamSessionKind, PastSession, Problem, ProblemAlias, Review, ScanQuestion, StudyUpdate, Task } from "./types";
 
 type Page = "dashboard"|"today"|"problems"|"attempt"|"import"|"reviews"|"weak"|"past"|"sheets"|"settings";
@@ -299,15 +301,18 @@ function ReviewPlanDetails({item:rawItem,compact=false,resolved}:{item:Partial<R
   const [openReferencePanel,setOpenReferencePanel]=useState<OpenReferencePanel>(null);
   const lockContract=()=>{if(item.id&&!item.contract_locked_at)void post(`/api/reviews/${item.id}/contract-lock`,{}).catch(()=>undefined)};
   if(!item.review_method&&!item.review_reason&&!resolved) return null;
+  const actionable=!item.id||!!resolved&&isActionableReview(item,resolved.gradingContract)&&!resolved.reviewNeeded;
   const actions=resolved?.todayActions.value||safeReviewActions(item);
   const template=reviewTemplate(item);
   const allowed=allowedReferenceLevel(item);
   const hasSavedFeedback=!!item.has_saved_gpt_feedback;
   const hasPreviousAttempt=item.attempt_exists!==false;
   const reveal=(level:Exclude<ReferenceLevel,0>,panel:Exclude<OpenReferencePanel,null>)=>{
+    if(!actionable)return;
     lockContract();
     const next=revealReference(reference,level);
     setReference(next);rememberReferenceState(item.id,next);setOpenReferencePanel(panel);
+    if(item.id)void post(`/api/reviews/${item.id}/reference`,{actual_reference_level:next.actual_reference_level}).catch(()=>undefined);
     setReferenceClosedReproduction(false);rememberReferenceClosed(item.id,false);
   };
   const hideReference=()=>setOpenReferencePanel(null);
@@ -318,7 +323,7 @@ function ReviewPlanDetails({item:rawItem,compact=false,resolved}:{item:Partial<R
       panel==="official_answer"&&reference.official_answer||panel==="external_reference"&&reference.external_reference
         ?`${initial.replace(/を見る$/,"")}をもう一度見る`:initial;
   const usedReference=reference.actual_reference_level>0;
-  const reviewPrompt=item.id&&item.problem_id?buildReviewGradingPrompt({
+  const reviewPrompt=actionable&&item.id&&item.problem_id?buildReviewGradingPrompt({
     reviewId:item.id,problemId:item.problem_id,title:item.title,theme:item.theme,date:todayString(),mode:reviewMode(item),
     previousDate:item.previous_date,previousScore:item.previous_score,previousErrors:item.previous_errors,
     previousErrorPoint:item.previous_error_point,previousNextAction:item.previous_next_action,
@@ -351,15 +356,16 @@ function ReviewPlanDetails({item:rawItem,compact=false,resolved}:{item:Partial<R
     {resolved&&<div className="grading-contract-summary">
       <div><span>今回の目的</span><strong>{resolved.gradingContract.learningPurpose}</strong></div>
       <div><span>モード／採点範囲</span><strong>{resolved.gradingContract.mode}／{resolved.gradingContract.reviewScope}</strong></div>
-      <div><span>採点対象</span><strong>{resolved.gradingContract.gradedParts.join("・")||"なし"}</strong></div>
+      <div><span>採点対象</span><strong>{gradedPartLabels(resolved.gradingContract.gradedParts).join("・")||"なし"}</strong></div>
       <div><span>採点対象外</span><strong>{resolved.gradingContract.explicitlyOutOfScopeParts.join("・")||"なし"}</strong></div>
       <div><span>許可された参照</span><strong>レベル {resolved.gradingContract.allowedReferenceLevel}</strong></div>
       <div><span>契約</span><strong>{resolved.gradingContract.contractId.slice(-8)}</strong></div>
     </div>}
+    {!actionable&&item.id&&<div className="review-consistency-warning"><AlertTriangle size={18}/><div><strong>実行できません</strong><span>この課題は現行ポリシーでは無効です。設定から採点契約を固定し、現在の計画を再作成してください。</span></div></div>}
     <div className="review-aim"><span>今回の狙い</span><strong>{resolved?.reviewGoal.value||reviewAim(item)}</strong></div>
     {(resolved?.taskOrigin||item.task_origin)==="linked_s_check"&&<div className="task-origin-note"><Badge tone="blue">関連S確認</Badge><div><strong>この問題自体は{hasPreviousAttempt?"既習":"初回"}確認です</strong><span>元問題：{resolved?.sourceProblem?.displayLabel||item.source_problem_id||"記録なし"}／{resolved?.sourceProblem?.sourceIssue||"元問題で崩れた基礎型を確認します。"}</span></div></div>}
-    <div className="correction-theme"><span>修正テーマ</span><strong>{resolved?.correctionTheme.value||correctionTheme(item)}</strong></div>
-    <div className="review-entry-point"><span>今回の入口</span><strong>{resolved?.entryHint.value||referenceEntryPoint(item)}</strong></div>
+    <div className="correction-theme"><span>今回の採点対象</span><strong>{resolved?resolved.gradingContract.gradedParts.map(part=>part.cueLabel).join("・"):correctionTheme(item)}</strong></div>
+    <div className="review-entry-point"><span>想起の入口</span><strong>{resolved?"採点対象IDに対応する内容を、答えを見ずに短く再現してください。":referenceEntryPoint(item)}</strong></div>
     <div className="review-format"><strong>{reviewFormat(item)}</strong></div>
     <div className="next-actions"><span>今回やること</span><ol>{actions.map((action,index)=><li key={`${index}-${action}`}>{action}</li>)}</ol></div>
     <div className="review-template">

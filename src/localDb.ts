@@ -25,7 +25,8 @@ import { analyzeLegacyKReorganization } from "./legacyKRepair.ts";
 import { classifyKPolicyValidity, excludeLegacyKFromPlanning, planningErrorsForSource } from "./legacyKPolicy.ts";
 import { analyzeSourceMismatchRepair, resolveReviewOrigin, REVIEW_ORIGIN_POLICY_VERSION } from "./reviewOrigin.ts";
 import { normalizePastExamSession, parseScan5Update, sessionStudyMinutes, validatePastExamSession } from "./pastExamWorkflow.ts";
-import { auditLegacyReviewContracts, buildGradingContractSnapshot, contractDifferences, prescriptionFromContract, taskFieldsFromContract } from "./gradingContract.ts";
+import { auditLegacyReviewContracts, buildGradingContractSnapshot, contractDifferences, isActionableReview, prescriptionFromContract, repairTargets, taskFieldsFromContract } from "./gradingContract.ts";
+import { primaryErrorFromFindings, validateGradedFindings } from "./gradedParts.ts";
 import {
   APP_SCHEMA_VERSION, createSchemaDiagnostic, DB_NAME, DB_VERSION,
   GPT_SAVE_REQUIRED_STORES, IndexedDbSchemaError, LATEST_STORE_SCHEMAS, REQUIRED_APP_STORES, STORES
@@ -666,19 +667,46 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
   input=finalizeStudyUpdateForSave(applyCanonicalMaster(input,problem,answer,await db.problems.toArray(),await db.answerIndex.toArray())) as StudyUpdate&Record<string,unknown>;
   if(input.requires_problem_confirmation) throw new Error(`取り込み内容は ${input.suggested_problem_id||"別の問題"} の可能性があります。問題IDを確認してください`);
   const sourceReview=input.generated_from_review_id?await db.reviews.get(input.generated_from_review_id):undefined;
+  if(sourceReview&&!isActionableReview(sourceReview,sourceReview.grading_contract))
+    throw new Error("この課題は現行ポリシーでは無効です。現在の計画を再作成してください。");
   if(sourceReview?.grading_contract){
     const supplied={
+      contractId:String(input.contract_id||""),contractVersion:String(input.contract_version||""),
       contractHash:String(input.contract_hash||""),problemId:String(input.problem_id||""),
       learningPurpose:input.learning_purpose,mode:input.mode as "check"|"skeleton"|"main_calc"|"full"|"scan5",reviewScope:input.review_scope,
-      targetKind:input.target_kind,gradedParts:input.graded_parts||[],
+      targetKind:input.target_kind,gradedParts:input.graded_part_ids||input.graded_parts||[],
     };
     const differences=contractDifferences(sourceReview.grading_contract,supplied);
     if(differences.length){
       const detail=differences.map(row=>`${String(row.field)}: 画面=${JSON.stringify(row.expected)} / GPT=${JSON.stringify(row.actual)}`).join("\n");
       throw new Error(`画面に表示した課題とGPT採点範囲が一致しません。\n${detail}`);
     }
-    const disallowed=(input.error_types||[]).filter(error=>error!=="none"&&!sourceReview.grading_contract!.allowedErrorTypes.includes(error));
-    if(disallowed.length)throw new Error(`契約外の誤り分類は保存できません: ${disallowed.join(", ")}`);
+    let findings=input.graded_findings||[];
+    if(!findings.length){
+      const errors=(input.error_types||[]).filter(Boolean);
+      if(errors.length===0||errors.every(error=>error==="none")){
+        findings=sourceReview.grading_contract.gradedParts.map(part=>({
+          graded_part_id:part.id,error_type:"none" as const,evidence:"大きな問題なし",resolved:true
+        }));
+      }else if(sourceReview.grading_contract.gradedParts.length===1){
+        findings=[{
+          graded_part_id:sourceReview.grading_contract.gradedParts[0].id,
+          error_type:(input.primary_error_type||errors[0]) as "K"|"W"|"N"|"C"|"none",
+          evidence:String(input.error_point||input.result_summary||""),resolved:false
+        }];
+      }else{
+        throw new Error("採点項目が複数あるため、graded_findingsを含む現行プロンプトで再採点してください。");
+      }
+    }
+    const findingErrors=validateGradedFindings(sourceReview.grading_contract.gradedParts,findings);
+    if(findingErrors.length){
+      const detail=findingErrors.map(row=>`${row.gradedPartId}: ${row.reason}（GPT=${row.errorType}）`).join("\n");
+      throw new Error(`画面に表示した課題とGPT採点範囲が一致しません。\n${detail}`);
+    }
+    const primary=primaryErrorFromFindings(findings);
+    const errors=[...new Set(findings.filter(finding=>!finding.resolved).map(finding=>finding.error_type))];
+    input={...input,graded_findings:findings,graded_part_ids:sourceReview.grading_contract.gradedParts.map(part=>part.id),
+      primary_error_type:primary,error_type:primary,error_types:errors.length?errors:["none"]};
   }
   if(input.generated_from_review_id&&[REVIEW_RUBRIC_VERSION,"STAT1-REVIEW-v8","STAT1-REVIEW-v7","STAT1-REVIEW-v6","STAT1-REVIEW-v5","STAT1-REVIEW-v4"].includes(input.rubric_version||"")){
     const source=sourceReview?await db.attempts.get(sourceReview.generated_from_attempt_id):undefined;
@@ -729,7 +757,8 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     grading_confidence:input.grading_confidence??null,rubric_version:input.rubric_version||"",
     uncertain_points:input.uncertain_points||[],generated_from_review_id:input.generated_from_review_id,
     is_review_attempt:!!input.generated_from_review_id,evaluation_scope:input.evaluation_scope||"",
-    graded_parts:input.graded_parts||[],assumed_correct_parts:input.assumed_correct_parts||[],
+    graded_parts:input.graded_parts||[],graded_part_ids:input.graded_part_ids||[],
+    graded_findings:input.graded_findings||[],assumed_correct_parts:input.assumed_correct_parts||[],
     unresolved_carryover:input.unresolved_carryover||[],review_scope:input.review_scope,
     targeted_parts:input.targeted_parts||[],k_evidence:input.k_evidence||[],
     k_evidence_valid:input.k_evidence_valid==null?undefined:!!input.k_evidence_valid,effective_error_types:input.effective_error_types||[],hint_used:!!input.hint_used,
@@ -968,6 +997,8 @@ async function deleteAttemptAnalysis(id:number){
 async function completeReview(id:number,body:Record<string,unknown>){
   const review=await db.reviews.get(id);
   if(!review) throw new Error("復習予定が見つかりません");
+  if(!isActionableReview(review,review.grading_contract))
+    throw new Error("この課題は現行ポリシーでは無効です。現在の計画を再作成してください。");
   const source=await db.attempts.get(review.generated_from_attempt_id);
   const problem=await db.problems.get(review.problem_id);
   if(!source||!problem) throw new Error("復習元の採点データが見つかりません");
@@ -1436,11 +1467,27 @@ async function rebuildReviewCards(){
     // 完了・取消・superseded 済みは不変の履歴。派生表示の再構築対象にしない。
     if(["done","completed","cancelled","superseded","ignored"].includes(review.status))continue;
     const legacySource=attempts.find(attempt=>attempt.id===(review.source_attempt_id||review.generated_from_attempt_id));
-    if(review.policy_validity==="invalid_legacy_k"&&!planningErrorsForSource(legacySource||review).length){
+    if(review.policy_validity==="invalid_legacy_k"){
       await db.reviews.update(review.id,{status:"superseded",exclude_from_planning:true,exclude_from_recurrence_metrics:true,
         superseded_by_policy_version:LEARNING_POLICY_VERSION,
-        superseded_reason:"invalid_legacy_k由来で現在有効なN/W/Cまたは根拠付きKがない"});
-      supersededLegacyCount++;continue;
+        superseded_reason:"invalid_legacy_k由来の旧契約を現行の採点契約から除外"});
+      supersededLegacyCount++;
+      const validErrors=planningErrorsForSource(legacySource||review);
+      const sameTarget=!!legacySource&&resolveCanonicalProblemId(legacySource.problem_id,aliases)===
+        resolveCanonicalProblemId(review.problem_id,aliases);
+      if(legacySource&&sameTarget&&validErrors.length){
+        const plan=createAttemptReviewPlan({...legacySource,error_types:validErrors,primary_error_type:validErrors[0]},[],0);
+        const targets=repairTargets(review,legacySource);
+        await addOrReplaceReview({problem_id:review.problem_id,due_date:review.due_date,
+          review_type:plan.review_type,status:"pending",generated_from_attempt_id:legacySource.id,
+          source_attempt_id:legacySource.id,derived_from_attempt_id:legacySource.id,
+          duration_minutes:Math.min(9,Number(plan.estimated_minutes||5)),reason:"対象問題自身の有効な弱点を現行契約で確認",
+          task_origin:"review_attempt",attempt_exists:true,targeted_parts:targets,
+          policy_version:LEARNING_POLICY_VERSION,learning_purpose:"error_repair",
+          deduplication_key:`${review.problem_id}:error_repair:${legacySource.id}:${LEARNING_POLICY_VERSION}`,
+          ...planFields(plan)});
+      }
+      continue;
     }
     const origin=resolveReviewOrigin({review,attempts,aliases,relations,problems});
     const card=resolveReviewCard({item:{...review,origin:origin.origin,origin_verified:origin.valid,
@@ -1488,7 +1535,7 @@ async function rebuildReviewCards(){
 
 async function gradingContractAuditPreview(){
   const [reviews,attempts,aliases]=await Promise.all([db.reviews.toArray(),db.attempts.toArray(),db.problemAliases.toArray()]);
-  return {...auditLegacyReviewContracts({reviews,attempts,aliases}),preview:true,contract_version:"STAT1-CONTRACT-v1"};
+  return {...auditLegacyReviewContracts({reviews,attempts,aliases}),preview:true,contract_version:"STAT1-CONTRACT-v2"};
 }
 
 async function legacyKReorganizationPreview(){
@@ -2174,11 +2221,22 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     const row=await db.meta.get(key);
     if(row?.value){
       const snapshot=JSON.parse(row.value) as TodayPlanSnapshot;
-      const target=Math.max(30,Number((await db.meta.get("daily_study_minutes"))?.value||150)),problems=await db.problems.toArray();
-      const reorganized=triageTodayTasks(snapshot.tasks,target,problems,today).tasks;
-      snapshot.tasks=snapshot.tasks.map((task,index)=>({...task,triage:reorganized[index]?.triage||"tomorrow"}));
-      snapshot.initial_bucket=Object.fromEntries(snapshot.tasks.map(task=>[taskSnapshotId(task),task.triage||"tomorrow"]));
-      await db.meta.put({key,value:JSON.stringify(snapshot)});
+      const target=Math.max(30,Number((await db.meta.get("daily_study_minutes"))?.value||150));
+      const [problems,reviews]=await Promise.all([db.problems.toArray(),db.reviews.toArray()]);
+      const reviewMap=new Map(reviews.map(review=>[review.id,review]));
+      const validTasks=snapshot.tasks.filter(task=>{
+        const review=task.id&&task.review_type?reviewMap.get(task.id):undefined;
+        return !review||isActionableReview(review,review.grading_contract);
+      });
+      const reorganized=triageTodayTasks(validTasks,target,problems,today).tasks;
+      const nextSnapshot:{[key:string]:unknown}={...snapshot,
+        tasks:reorganized,task_ids:reorganized.map(taskSnapshotId),
+        initial_bucket:Object.fromEntries(reorganized.map(task=>[taskSnapshotId(task),task.triage||"tomorrow"])),
+        initial_estimated_minutes:Object.fromEntries(reorganized.map(task=>[taskSnapshotId(task),task.minutes])),
+        created_at:new Date().toISOString(),locked:true,
+      };
+      await db.meta.put({key:`today-plan-snapshot-history:${today}:${Date.now()}`,value:row.value});
+      await db.meta.put({key,value:JSON.stringify(nextSnapshot)});
     }
     await appendImportHistory("今日の計画を再整理","manual",1);
     return {ok:true} as T;
@@ -2211,7 +2269,16 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
   } else if(/^\/api\/reviews\/\d+\/contract-lock$/.test(path)) {
     const id=Number(path.split("/")[3]),review=await db.reviews.get(id);
     if(!review)throw new Error("復習カードが見つかりません");
+    if(!isActionableReview(review,review.grading_contract))
+      throw new Error("この課題は現行ポリシーでは無効です。現在の計画を再作成してください。");
     if(!review.contract_locked_at)await db.reviews.update(id,{contract_locked_at:new Date().toISOString()});
+  } else if(/^\/api\/reviews\/\d+\/reference$/.test(path)) {
+    const id=Number(path.split("/")[3]),review=await db.reviews.get(id);
+    if(!review)throw new Error("復習カードが見つかりません");
+    if(!isActionableReview(review,review.grading_contract))
+      throw new Error("この課題は現行ポリシーでは無効です。");
+    const level=Math.min(5,Math.max(Number(review.actual_reference_level||0),Number(body.actual_reference_level||0)));
+    await db.reviews.update(id,{actual_reference_level:level,contract_locked_at:review.contract_locked_at||new Date().toISOString()});
   } else if(/^\/api\/reviews\/\d+\/postpone$/.test(path)) {
     await db.transaction("rw",[db.reviews,db.meta],()=>postponeReview(Number(path.split("/")[3]),body));
   } else if(path==="/api/tasks/postpone") {

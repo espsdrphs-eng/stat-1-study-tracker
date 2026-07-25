@@ -55,7 +55,7 @@ full skeleton、timed full、scan5は週間soft quotaです。既存実績が不
 整合性診断・ReviewCardResolver・派生表示の再構築でも同じ `ReviewOrigin` 判定を使います。`done` / `completed` / `cancelled` / `superseded` は現在対応件数と派生表示の再構築対象から除外し、履歴レコードを書き換えません。verified relation の移行対象は必ず現在対応件数へ含め、内訳との件数矛盾を許しません。
 
 `STAT1-SCAN5-v1` の `primary_selection_error` は正式8値のみを保存します。既知aliasはschema検証前に正式値へ正規化してraw値とログを残し、未知値は`none`へ変換しません。session ID・kind・stageは既存pastSessionと照合し、未解決の復習候補IDはラベルとして保持します。SCAN5分析の保存先はpastSession.analysisだけであり、Attempt・Review・todayPlanSnapshot・K/W/N/C・露出状態を変更しません。
-# 採点契約の固定（STAT1-CONTRACT-v1）
+# 採点契約の固定（STAT1-CONTRACT-v2）
 
 - 1つの復習カードについて、画面、使用シート、所要時間、完了条件、GPT採点範囲、保存検証は同じ `GradingContractSnapshot` を参照する。
 - `ProblemContextPack` は問題理解の参考情報であり、採点範囲を拡張しない。採点範囲は `grading_contract` だけが正本である。
@@ -78,4 +78,8 @@ full skeleton、timed full、scan5は週間soft quotaです。既存実績が不
 
 ## 保存時照合
 
-復習GPT結果の `contract_hash`、problem ID、purpose、mode、scope、target kind、graded partsが画面契約と一致しない場合は保存しない。GPT結果から画面契約を逆変更しない。
+復習GPT結果の `contract_hash`、problem ID、purpose、mode、scope、target kind、graded part ID集合が画面契約と一致しない場合は保存しない。GPT結果から画面契約を逆変更しない。
+
+採点対象は日本語文ではなく `GradedPartContract.id` を正本とし、順序や表記の違いは不一致にしない。各 `graded_finding` の誤り分類は、そのIDに定義された `allowedErrorTypes` で個別に検証する。checkだからNを一律禁止せず、説明項目の正当なNは保存する一方、数式実行項目で許可されていないNは保存しない。
+
+完了条件は想起を妨げない短いcueだけを表示し、正しい式・係数・導出は `hiddenAnswerKey` に分離する。ヒント、前回ミス、修正ルール、保存済み解説、外部参照を開いた時点で参照段階を記録する。`invalid_legacy_k`、契約未確定、または不可能なpurpose/mode/scopeのReviewは実行・参照・プロンプトコピー・保存を禁止する。

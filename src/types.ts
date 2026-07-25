@@ -64,6 +64,14 @@ export type LearningStage="acquisition"|"repair"|"maintenance"|"integration"|"di
 export type AssessmentTiming="same_session_correction"|"delayed_retrieval"|"independent_performance";
 export type TargetKind="mathematical_patch"|"skeleton_expression_patch";
 export type KPolicyValidity="valid"|"invalid_legacy_k"|"needs_review";
+export type GradingErrorType="K"|"W"|"N"|"C"|"none";
+export type GradedPartContract={
+  id:string;label:string;cueLabel:string;allowedErrorTypes:GradingErrorType[];
+  completionCriterionId:string;
+};
+export type GradedFinding={
+  graded_part_id:string;error_type:GradingErrorType;evidence:string;resolved:boolean;
+};
 export type FullSkeletonBlueprint={
   problemId:string;blueprintVersion:string;
   verificationStatus:"official_verified"|"user_verified"|"successful_attempt_verified"|"unverified";
@@ -71,11 +79,14 @@ export type FullSkeletonBlueprint={
 };
 export type GradingContractSnapshot={
   contractId:string;contractVersion:string;contractHash:string;createdAt:string;problemId:string;
-  sourceAttemptId?:number;sourceReviewId?:number;
+  reviewId?:number;sourceAttemptId?:number;sourceReviewId?:number;
   learningPurpose:LearningPurpose;learningStage:LearningStage;
   mode:"check"|"skeleton"|"main_calc"|"full"|"scan5";
   reviewScope:"targeted_patch"|"main_calc_target"|"full_skeleton"|"check_only"|"full_answer"|"scan5";
-  targetKind?:TargetKind;targetedParts:string[];gradedParts:string[];explicitlyOutOfScopeParts:string[];
+  targetKind?:TargetKind;targetedParts:string[];gradedParts:GradedPartContract[];
+  explicitlyOutOfScopePartIds:string[];explicitlyOutOfScopeParts:string[];
+  completionCriteria:Array<{id:string;displayText:string}>;
+  hiddenAnswerKey:Array<{gradedPartId:string;content:string}>;
   completionConditions:string[];requiredEvidence:string[];allowedErrorTypes:string[];requiresKEvidence:boolean;
   allowedReferenceLevel:number;estimatedMinutes:number;
   sheetType:"check_sheet"|"skeleton_sheet"|"main_calc_sheet"|"full_answer_sheet"|"scan5_sheet";
@@ -99,7 +110,8 @@ export type Attempt = {
   secondary_error_type?:string; ignored_parts?:string[]; auto_imported?:boolean;
   import_confidence?:number; grading_confidence?:number|null; rubric_version?:string;
   uncertain_points?:string[]; generated_from_review_id?:number; is_review_attempt?:boolean;
-  evaluation_scope?:string; graded_parts?:string[]; assumed_correct_parts?:string[];
+  evaluation_scope?:string; graded_parts?:string[]; graded_part_ids?:string[];
+  graded_findings?:GradedFinding[]; assumed_correct_parts?:string[];
   unresolved_carryover?:string[];
   review_scope?:"targeted_patch"|"full_skeleton"|"main_calc_target"|"check_only"|"full_answer"|"scan5";
   targeted_parts?:string[]; k_evidence?:string[]; k_evidence_valid?:boolean;
@@ -163,6 +175,7 @@ export type Review = {
   origin?:ReviewOrigin;origin_verified?:boolean;target_problem_id?:string;relation_id?:string;generated_at?:string;parent_past_session_id?:number;
   grading_contract?:GradingContractSnapshot;contract_id?:string;contract_version?:string;contract_hash?:string;
   contract_locked_at?:string;explicitly_out_of_scope_parts?:string[];graded_parts?:string[];
+  graded_part_ids?:string[];graded_findings?:GradedFinding[];
 };
 export type TodayPlanSnapshot = {
   date:string;task_ids:string[];start_of_day_planned_minutes:number;
@@ -224,6 +237,7 @@ export type Task = {
   retention_eligible?:boolean;success_transition?:string;failure_transition?:string;
   grading_contract?:GradingContractSnapshot;contract_id?:string;contract_version?:string;contract_hash?:string;
   contract_locked_at?:string;explicitly_out_of_scope_parts?:string[];graded_parts?:string[];
+  graded_part_ids?:string[];graded_findings?:GradedFinding[];
 };
 export type WeaknessInsight = {
   theme:string; score:number; level:"重点"|"注意"|"観察"; confidence:"参考"|"暫定"|"分析可能";
@@ -335,4 +349,5 @@ export type StudyUpdate = {
   raw_reference_closed_reproduction?:boolean;
   contract_id?:string;contract_version?:string;contract_hash?:string;
   explicitly_out_of_scope_parts?:string[];
+  graded_part_ids?:string[];graded_findings?:GradedFinding[];
 };

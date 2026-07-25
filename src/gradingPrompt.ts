@@ -4,6 +4,7 @@ export const REVIEW_RUBRIC_VERSION="STAT1-REVIEW-v9";
 import { removeTimingExpressions } from "./reviewTiming.ts";
 import type { EffectiveReviewScope } from "./reviewScopeResolver.ts";
 import type { GradingContractSnapshot, ProblemContextPack } from "./types.ts";
+import { gradedPartIds, gradedPartLabels } from "./gradedParts.ts";
 
 export type ReviewPromptContext={
   reviewId?:number;problemId:string;title?:string;theme?:string;date:string;mode:string;
@@ -255,7 +256,9 @@ export function buildReviewGradingPrompt(context:ReviewPromptContext){
   const contract=context.gradingContract;
   const scope=contract?.reviewScope||context.reviewScope||(context.requiresFullAnswer||context.mode==="full"||context.mode==="exam_90min"?"full_answer":context.mode==="main_calc"?"main_calc_target":context.mode==="check"?"check_only":"full_skeleton");
   const targets=(contract?.targetedParts||context.targetedParts||[]).filter(Boolean);
-  const gradedParts=(contract?.gradedParts||targets).filter(Boolean);
+  const gradedParts=contract?.gradedParts||[];
+  const gradedIds=gradedPartIds(gradedParts);
+  const gradedLabels=gradedPartLabels(gradedParts);
   const outOfScope=(contract?.explicitlyOutOfScopeParts||[]).filter(Boolean);
   const conditions=(contract?.completionConditions||context.completionConditions||[]).filter(Boolean);
   const fullScope=scope==="full_answer";
@@ -278,7 +281,7 @@ export function buildReviewGradingPrompt(context:ReviewPromptContext){
     full_answer:"答案全体を採点し、未提出部分を正しいと仮定しない。",
     scan5:"5問スキャン専用契約だけを評価し、通常答案のK/W/N/Cは付けない。",
   };
-  const allowed=(contract?.learningPurpose==="retrieval_check"?["W","C"]:(context.allowedErrorTypes||["K","W","N","C"])).join(" / ");
+  const allowed=gradedParts.map(part=>`${part.id}: ${part.allowedErrorTypes.join(" / ")}`).join("\n")||"採点対象なし";
   const targetText=targets.length?targets.map((part,index)=>`${index+1}. ${part}`).join("\n"):"指定なし";
   const conditionText=conditions.length?conditions.map((condition,index)=>`${index+1}. ${condition}`).join("\n"):"指定範囲を自力で再現する";
   const problemContext=context.problemContext;
@@ -297,7 +300,8 @@ learning_purpose：${contract.learningPurpose}
 mode：${contract.mode}
 review_scope：${contract.reviewScope}
 target_kind：${contract.targetKind||""}
-graded_parts：${gradedParts.join(" / ")||"なし"}
+graded_parts：
+${gradedParts.map(part=>`- ${part.id}｜${part.label}｜許可: ${part.allowedErrorTypes.join("/")}`).join("\n")||"なし"}
 explicitly_out_of_scope_parts：${outOfScope.join(" / ")||"なし"}`:`legacy contract（保存前に契約化が必要）`;
   return `あなたは統計検定1級・統計数理の復習答案採点者です。
 rubric_version: ${REVIEW_RUBRIC_VERSION}
@@ -333,7 +337,8 @@ ${conditionText}
 1. 採点対象は上記の復習範囲とtargetedPartsだけ。画面の最低クリア条件と同じ条件を使う。
    problem_contextに問題全体の情報があってもgrading_contractを拡張しない。
    explicitly_out_of_scope_partsの欠落・未記入・空欄を減点しない。
-2. 許可する誤り分類：${allowed}。指定範囲外の空欄や未記入を誤りの根拠にしない。
+2. 誤り分類は採点項目ごとの許可範囲に従う。指定範囲外の空欄や未記入を誤りの根拠にしない。
+${allowed}
 3. Kは、今回答案から「型・方針・入口・出発式・主役の量・必要な道具・結論への大きな流れ」の崩れを確認できる場合だけ。Kを返す場合は答案中の根拠をk_evidenceへ引用する。引用がなければKを返さない。${context.allowedErrorTypes&&!context.allowedErrorTypes.includes("K")?"今回はKが採点範囲外なのでKを返さない。":""}
 4. 計算過程の失敗はW、条件・理由・再現性不足はN、記号・添字・次元・符号・転記はCとする。
    形式的な骨格欄・見出し（方針、今見る量、道具、ゴール、「ここから先は計算」）の未記入は、targetedPartsに明示されていない限りKにもNにも使わない。
@@ -382,7 +387,13 @@ study_update:
   review_scope: "${scope}"
   targeted_parts: ${targets.length?`\n${targets.map(part=>`    - "${part.replaceAll('"','\\"')}"`).join("\n")}`:"[]"}
   evaluation_scope: "${fullScope?"full":"conditional_full"}"
-  graded_parts: ${gradedParts.length?`\n${gradedParts.map(part=>`    - "${part.replaceAll('"','\\"')}"`).join("\n")}`:"[]"}
+  graded_part_ids: ${gradedIds.length?`\n${gradedIds.map(id=>`    - "${id}"`).join("\n")}`:"[]"}
+  graded_findings:
+    - graded_part_id: "${gradedIds[0]||""}"
+      error_type: "none"
+      evidence: "今回答案中の具体的な根拠"
+      resolved: true
+  graded_parts: ${gradedLabels.length?`\n${gradedLabels.map(part=>`    - "${part.replaceAll('"','\\"')}"`).join("\n")}`:"[]"}
   explicitly_out_of_scope_parts: ${outOfScope.length?`\n${outOfScope.map(part=>`    - "${part.replaceAll('"','\\"')}"`).join("\n")}`:"[]"}
 ${fullScope?"  assumed_correct_parts: []":"  assumed_correct_parts:\n    - \"提出対象外として正しいと仮定した部分\""}
   unresolved_carryover: []

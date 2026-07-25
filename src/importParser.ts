@@ -1,5 +1,5 @@
 import yaml from "js-yaml";
-import type { AnswerIndexEntry, Problem, ProblemAlias, StudyUpdate } from "./types";
+import type { AnswerIndexEntry, GradedFinding, GradingErrorType, Problem, ProblemAlias, StudyUpdate } from "./types";
 import { japaneseizeMathText } from "./mathJapanese.ts";
 import { reviewDaysForErrors, sanitizeStudyUpdateTiming } from "./reviewTiming.ts";
 import { applyCanonicalMaster } from "./masterData.ts";
@@ -222,6 +222,19 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
   const requiredWorkShown=stringArray(raw.required_work_shown).map(japaneseizeMathText);
   const evaluationScope=scalar(raw.evaluation_scope);
   const gradedParts=stringArray(raw.graded_parts).map(japaneseizeMathText);
+  const gradedPartIds=stringArray(raw.graded_part_ids);
+  const gradedFindings=(Array.isArray(raw.graded_findings)?raw.graded_findings:[]).flatMap(item=>{
+    if(!item||typeof item!=="object")return [];
+    const finding=item as Record<string,unknown>;
+    const errorType=scalar(finding.error_type) as GradingErrorType;
+    if(!["K","W","N","C","none"].includes(errorType))return [];
+    return [{
+      graded_part_id:scalar(finding.graded_part_id),
+      error_type:errorType,
+      evidence:japaneseizeMathText(scalar(finding.evidence)),
+      resolved:booleanValue(finding.resolved)??false,
+    } satisfies GradedFinding];
+  }).filter(item=>item.graded_part_id);
   const explicitlyOutOfScopeParts=stringArray(raw.explicitly_out_of_scope_parts).map(japaneseizeMathText);
   const assumedCorrectParts=stringArray(raw.assumed_correct_parts).map(japaneseizeMathText);
   const unresolvedCarryover=stringArray(raw.unresolved_carryover).map(japaneseizeMathText);
@@ -278,7 +291,8 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
     improvement_guidance:improvementGuidance,required_derivation:requiredDerivation,corrected_answer:correctedAnswer,
     target_issue_resolved:targetIssueResolved,minimum_pass_condition_met:minimumPassConditionMet,
     resolution_evidence:resolutionEvidence,answer_change_summary:answerChangeSummary,required_work_shown:requiredWorkShown,
-    evaluation_scope:evaluationScope,graded_parts:gradedParts,assumed_correct_parts:assumedCorrectParts,
+    evaluation_scope:evaluationScope,graded_parts:gradedParts,graded_part_ids:gradedPartIds,
+    graded_findings:gradedFindings,assumed_correct_parts:assumedCorrectParts,
     contract_id:scalar(raw.contract_id)||undefined,contract_version:scalar(raw.contract_version)||undefined,
     contract_hash:scalar(raw.contract_hash)||undefined,explicitly_out_of_scope_parts:explicitlyOutOfScopeParts,
     unresolved_carryover:unresolvedCarryover,
