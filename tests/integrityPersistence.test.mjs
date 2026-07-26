@@ -71,3 +71,25 @@ test("unified repair is idempotent, keeps physical history and does not alter To
   assert.equal(JSON.stringify(await db.attempts.toArray()),attemptRowsBefore);
   assert.equal((await db.meta.get("today-plan-snapshot:2026-07-26")).value,snapshotBefore);
 });
+
+test("a successful WB-4-A-24 Attempt supersedes an older pending Review for the same graded part",async()=>{
+  await localGet("/api/bootstrap");
+  const source=(await db.attempts.toArray()).find(row=>row.problem_id==="WB-4-A-24");
+  const template=(await db.reviews.toArray()).find(row=>row.problem_id==="WB-4-A-24");
+  assert.ok(source&&template?.grading_contract);
+  const part=template.grading_contract.gradedParts[0];
+  const oldId=Number(await db.reviews.add({
+    ...template,id:undefined,status:"pending",source_attempt_id:source.id,generated_from_attempt_id:source.id,
+    graded_part_ids:[part.id],logical_review_key:`older:${part.id}`,deduplication_key:`older:${part.id}`,
+    contract_id:"review:older:1",contract_hash:"older",
+    grading_contract:{...template.grading_contract,contractId:"review:older:1",contractHash:"older",gradedParts:[part]},
+  }));
+  await localPost("/api/attempts",{
+    ...update("fixture-submission-success-2"),graded_part_ids:[part.id],
+    target_issue_resolved:true,minimum_pass_condition_met:true,
+  });
+  const old=await db.reviews.get(oldId);
+  assert.equal(old.status,"superseded");
+  assert.equal(old.exclude_from_planning,true);
+  assert.match(old.superseded_reason,/同一採点対象/);
+});
