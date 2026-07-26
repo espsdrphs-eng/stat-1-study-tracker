@@ -27,6 +27,12 @@ jobs:
           cache: npm
       - name: Install
         run: npm ci
+      - name: Typecheck
+        run: npm run check
+      - name: Test
+        run: npm test
+      - name: Integrity fixture test
+        run: node --experimental-strip-types --test tests/integrityEngine.test.mjs tests/integrityPersistence.test.mjs
       - name: Build
         run: npm run build
       - name: Configure Pages

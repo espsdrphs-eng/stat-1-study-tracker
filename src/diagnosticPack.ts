@@ -12,6 +12,7 @@ import { analyzeLegacyKReorganization } from "./legacyKRepair.ts";
 import { classifyKPolicyValidity } from "./legacyKPolicy.ts";
 import { analyzeSourceMismatchRepair, resolveReviewOrigin } from "./reviewOrigin.ts";
 import { deriveExposure, scanMetrics, sessionStudyMinutes, simulateScanPlan, validatePastExamSession } from "./pastExamWorkflow.ts";
+import { runIntegrityAudit } from "./integrityEngine.ts";
 import type { Attempt, Problem, ProblemAlias, ProblemRelation, Review, TodayPlanSnapshot } from "./types.ts";
 
 type JsonRecord=Record<string,unknown>;
@@ -25,7 +26,8 @@ const EXCLUDED_KEYS=new Set([
 const SETTINGS_KEYS=new Set([
   "exam_date","daily_study_minutes","problem_master_version","problem_master_updated_at",
   "problem_aliases_version","problem_aliases_updated_at","stable_release","last_migration",
-  "last_migration_result","last_migration_at","review_rebuild_summary","legacy_k_reorganization_summary","source_mismatch_reorganization_summary"
+  "last_migration_result","last_migration_at","review_rebuild_summary","legacy_k_reorganization_summary",
+  "source_mismatch_reorganization_summary","integrity_audit_summary","integrity_repair_summary"
 ]);
 
 function sanitize(value:unknown):unknown{
@@ -308,7 +310,9 @@ export async function createDiagnosticPack():Promise<DiagnosticPackResult>{
   const examDate=metaRows.find(row=>row.key==="exam_date")?.value||"";
   let storedRelations:ProblemRelation[]=[];try{storedRelations=JSON.parse(metaRows.find(row=>row.key==="problem-relations")?.value||"[]")}catch{/* 診断は読み取り専用 */}
   const cards=new Map<number,ResolvedReviewCard>();
+  const validCrossTargetReviewIds:number[]=[];
   for(const review of reviews){const origin=resolveReviewOrigin({review,attempts,aliases,relations:storedRelations,problems});
+    if(origin.valid&&origin.origin==="verified_linked_problem") validCrossTargetReviewIds.push(review.id);
     cards.set(review.id,resolveReviewCard({item:{...review,origin_verified:origin.valid},problems,attempts,aliases,today,examDate,now:new Date().toISOString()}));}
   const promptAudits=reviews.map(review=>buildPromptAudit(review,cards.get(review.id)!));
   const relations=[...relationRows(problems,aliases),...storedRelations];
@@ -318,7 +322,11 @@ export async function createDiagnosticPack():Promise<DiagnosticPackResult>{
   const pastExamAudit=pastSessions.map(session=>({id:session.id,year:session.year,sessionKind:session.session_kind||session.session_type,
     exposure:deriveExposure(session),validation:validatePastExamSession(session),metrics:scanMetrics(session),
     countedStudyMinutes:sessionStudyMinutes(session,attempts),linkedAttemptIds:session.linked_attempt_ids||[]}));
-  const consistency={...baseConsistency,legacyKPolicy:{invalid_legacy_k_count:legacyK.invalidLegacyKCount,
+  const snapshotRows=metaRows.filter(row=>row.key.startsWith("today-plan-snapshot:"));
+  const todayPlanSnapshots=snapshotRows.map(parseSnapshot)
+    .filter((snapshot):snapshot is TodayPlanSnapshot=>Boolean(snapshot&&Array.isArray((snapshot as TodayPlanSnapshot).tasks)));
+  const systemIntegrity=runIntegrityAudit({attempts,reviews,aliases,today,todayPlanSnapshots,validCrossTargetReviewIds});
+  const consistency={...baseConsistency,systemIntegrity,legacyKPolicy:{invalid_legacy_k_count:legacyK.invalidLegacyKCount,
     needs_review_count:legacyK.needsReviewCount,superseded_task_count:legacyK.supersededTaskCount,
     resolved_task_count:legacyK.resolvedTaskCount,classifications:legacyK.classifications,taskActions:legacyK.taskActions},
     sourceOriginPolicy:{source_mismatch_count:sourceRepair.mismatchCount,verified_relation_count:sourceRepair.verifiedRelationCount,
@@ -330,7 +338,6 @@ export async function createDiagnosticPack():Promise<DiagnosticPackResult>{
       historical_completed_linked_reviews:sourceRepair.historicalCompletedLinkedReviewsCount,
       unresolved_needs_review:sourceRepair.unresolvedNeedsReviewCount,actions:sourceRepair.actions},
     pastExamAudit};
-  const snapshotRows=metaRows.filter(row=>row.key.startsWith("today-plan-snapshot:"));
   const settings=Object.fromEntries(metaRows.filter(row=>SETTINGS_KEYS.has(row.key)).map(row=>[row.key,row.value]));
   const learningData={_modelMapping:{evaluations:"attemptsの評価フィールドから作った論理ビュー",reviewTasks:"reviews物理テーブル",
       reviewPlans:"reviewsの予定フィールドから作った論理ビュー",problemRelations:"problem_masterの既存関連指定から作った読み取り専用ビュー"},

@@ -194,7 +194,11 @@ export function buildGradingContractSnapshot(args:{
     allowedReferenceLevel,estimatedMinutes,sheetType,
   } satisfies Omit<GradingContractSnapshot,"contractHash"|"contractId"|"createdAt">;
   const contractHash=computeContractHash(payload),createdAt=args.createdAt||review.generated_at||review.derived_generated_at||new Date().toISOString();
-  const contract:GradingContractSnapshot={...payload,contractId:`review:${payload.sourceReviewId||"new"}:${contractHash.slice(3)}`,contractHash,createdAt};
+  const contract:GradingContractSnapshot={
+    ...payload,
+    contractId:payload.sourceReviewId?`review:${payload.sourceReviewId}:1`:`review:pending:${contractHash.slice(3)}`,
+    contractHash,createdAt
+  };
   const validationErrors=validateGradingContract(contract);
   if(learningPurpose==="integration_check"&&!blueprint)validationErrors.push("検証済みfullSkeletonBlueprintがないためfull_skeletonを自動確定できません");
   return {contract,validationErrors,needsReview:validationErrors.length>0};
@@ -264,8 +268,10 @@ export function isActionableReview(
   review:Partial<Review&Task>,
   contract:GradingContractSnapshot|undefined=review.grading_contract,
 ){
+  const today=new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Tokyo",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
   return ["pending","overdue"].includes(String(review.status||"pending"))&&
     review.policy_validity!=="invalid_legacy_k"&&review.exclude_from_planning!==true&&
+    !(review.assessment_timing==="same_session_correction"&&String(review.due_date||"")<today)&&
     !!contract&&contract.contractVersion===GRADING_CONTRACT_VERSION&&
     !!contract.contractHash&&contract.gradedParts.length>0&&validateGradingContract(contract).length===0;
 }

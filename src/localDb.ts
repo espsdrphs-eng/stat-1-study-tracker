@@ -35,6 +35,11 @@ import {
   APP_SCHEMA_VERSION, createSchemaDiagnostic, DB_NAME, DB_VERSION,
   GPT_SAVE_REQUIRED_STORES, IndexedDbSchemaError, LATEST_STORE_SCHEMAS, REQUIRED_APP_STORES, STORES
 } from "./dbSchema.ts";
+import {
+  ACTIVE_REVIEW_STATUSES, bindContractToReview, classifyExactDuplicateAttempts, logicalReviewKey,
+  reviewExecutionState, runIntegrityAudit, type IntegrityAudit
+} from "./integrityEngine.ts";
+import { notifyStudyDataChanged } from "./appEvents.ts";
 
 type SMemory = { problem_id:string; state:"stable"|"check"|"forgotten"|"collapsed"; last_touched?:string; k_trigger_count:number };
 type StoredAttempt = Attempt;
@@ -620,12 +625,6 @@ const planFields=(plan:ReviewPlan)=>({
 });
 type ReviewInsert=Omit<Review,"id">;
 async function addOrReplaceReview(review:ReviewInsert){
-  const pending=(await db.reviews.where("problem_id").equals(review.problem_id).toArray())
-    .filter(item=>["pending","overdue"].includes(item.status));
-  if(review.deduplication_key){
-    const duplicate=pending.find(item=>item.deduplication_key===review.deduplication_key);
-    if(duplicate)return duplicate.id;
-  }
   const [problem,attempts,aliases,examMeta]=await Promise.all([
     db.problems.get(review.problem_id),db.attempts.toArray(),db.problemAliases.toArray(),db.meta.get("exam_date")
   ]);
@@ -642,9 +641,15 @@ async function addOrReplaceReview(review:ReviewInsert){
   const policyDueDate=scheduleOrigin==="policy"&&sourceDate&&reviewAfterDays!=null
     ?addCalendarDays(sourceDate,reviewAfterDays):review.due_date;
   const candidate={...review,id:0,problem_id:card.canonicalProblemId,...contractFields} as Review;
+  const activeReviews=(await db.reviews.toArray()).filter(item=>ACTIVE_REVIEW_STATUSES.has(item.status));
+  const logicalKey=logicalReviewKey({review:candidate,aliases,sourceAttempt});
+  const exactLogical=activeReviews.find(item=>{
+    const existingSource=attempts.find(attempt=>attempt.id===Number(item.source_attempt_id||item.generated_from_attempt_id||0));
+    return (item.logical_review_key||logicalReviewKey({review:item,aliases,sourceAttempt:existingSource}))===logicalKey;
+  });
+  if(exactLogical)return exactLogical.id;
   const identityKey=pendingReviewIdentityKey(candidate,aliases);
   if(identityKey){
-    const activeReviews=(await db.reviews.toArray()).filter(item=>["pending","overdue"].includes(item.status));
     const sameIdentity=activeReviews.filter(item=>pendingReviewIdentityKey(item,aliases)===identityKey);
     if(sameIdentity.length){
       const newestExisting=[...sameIdentity].sort((a,b)=>{
@@ -668,7 +673,7 @@ async function addOrReplaceReview(review:ReviewInsert){
     reviewGoal:card.reviewGoal,correctionTheme:card.correctionTheme,entryHint:card.entryHint,
     oneLineHint:card.oneLineHint,todayActions:card.todayActions,completionConditions:card.completionConditions
   };
-  return Number(await db.reviews.add({
+  const insertedId=Number(await db.reviews.add({
     id:undefined as unknown as number,...review,problem_id:card.canonicalProblemId,
     due_date:policyDueDate,source_date:sourceDate||undefined,review_after_days:reviewAfterDays,
     schedule_origin:scheduleOrigin,
@@ -678,14 +683,24 @@ async function addOrReplaceReview(review:ReviewInsert){
     derived_stale:false,derived_fields:provenance,
     status:card.reviewNeeded?"review_needed":review.status,
     review_needed_reason:card.reviewNeeded?card.consistencyWarnings.map(item=>item.message).join(" "):undefined,
+    logical_review_key:logicalKey,contract_revision:1,
     // Contract fields are applied last so legacy mode/scope fields cannot overwrite the immutable contract.
     ...contractFields
   }));
+  const persistedContract=bindContractToReview(card.gradingContract,insertedId,1);
+  await db.reviews.update(insertedId,{
+    ...taskFieldsFromContract(persistedContract),
+    logical_review_key:logicalKey,contract_revision:1,
+  });
+  return insertedId;
 }
 
 type PendingCorrectionLog=Omit<CorrectionLog,"id">;
 async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorrectionLogs:PendingCorrectionLog[]=[]){
   input={...input,...sanitizeStudyUpdateTiming(input)};
+  const submissionId=String(input.submission_id||"").trim()||`submission-${crypto.randomUUID()}`;
+  const alreadySaved=(await db.attempts.toArray()).find(attempt=>attempt.submission_id===submissionId);
+  if(alreadySaved)return alreadySaved.id;
   const problem=await db.problems.get(input.problem_id);
   if(!problem) throw new Error(`未登録の問題IDです: ${input.problem_id}`);
   if(input.requires_problem_confirmation) throw new Error("問題ID候補を確認してから保存してください");
@@ -811,9 +826,12 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     ,exclude_from_recurrence_metrics:kPolicyValidity==="invalid_legacy_k"
     ,superseded_by_policy_version:kPolicyValidity==="invalid_legacy_k"?LEARNING_POLICY_VERSION:undefined
     ,parent_past_session_id:Number(input.parent_past_session_id||0)||undefined
-    ,contract_id:input.contract_id,contract_version:input.contract_version,contract_hash:input.contract_hash
-    ,grading_contract:sourceReview?.grading_contract,explicitly_out_of_scope_parts:input.explicitly_out_of_scope_parts||[]
-  }));
+     ,contract_id:input.contract_id,contract_version:input.contract_version,contract_hash:input.contract_hash
+     ,grading_contract:sourceReview?.grading_contract,explicitly_out_of_scope_parts:input.explicitly_out_of_scope_parts||[]
+     ,submission_id:submissionId,source_review_id:input.generated_from_review_id,saved_at:new Date().toISOString()
+     ,exclude_from_metrics:false
+   }));
+  await db.attempts.update(id,{canonical_attempt_id:id});
   if(input.auto_corrected) pendingCorrectionLogs.push({
     auto_corrected:true,correction_fields:input.correction_fields||[],
     raw_gpt_problem_id:String(input.raw_gpt_problem_id||input.problem_id),corrected_problem_id:input.problem_id,
@@ -834,6 +852,21 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
       official_answer:!!input.official_answer,external_reference:!!input.external_reference,
       gpt_explanation:!!input.saved_gpt_feedback||!!input.gpt_explanation,
       completion_time_minutes:actualMinutes,completed_at:date
+    });
+  }
+  if(input.minimum_pass_condition_met===true||input.target_issue_resolved===true||
+    (input.error_types||[]).every(error=>error==="none")){
+    const succeededParts=new Set(input.graded_part_ids||sourceReview?.grading_contract?.gradedParts.map(part=>part.id)||[]);
+    const older=succeededParts.size?(await db.reviews.where("problem_id").equals(input.problem_id).toArray()).filter(review=>
+      review.id!==input.generated_from_review_id&&ACTIVE_REVIEW_STATUSES.has(review.status)&&
+      ["error_repair","retrieval_check"].includes(String(review.grading_contract?.learningPurpose||review.learning_purpose||""))&&
+      Number(review.source_attempt_id||review.generated_from_attempt_id||0)<id&&
+      (review.grading_contract?.gradedParts.map(part=>part.id)||review.graded_part_ids||[]).every(part=>succeededParts.has(part))
+    ):[];
+    for(const review of older)await db.reviews.update(review.id,{
+      status:"superseded",exclude_from_planning:true,exclude_from_recurrence_metrics:true,
+      replaced_by_review_id:input.generated_from_review_id,
+      superseded_reason:`Attempt ${id} で同一採点対象の最低合格条件を満たしたため`,
     });
   }
   const attempts=(await db.attempts.where("problem_id").equals(input.problem_id).sortBy("date")).filter(x=>x.id!==id);
@@ -2004,25 +2037,26 @@ async function bootstrap():Promise<Bootstrap>{
         oneLineHint:card.oneLineHint,todayActions:card.todayActions,completionConditions:card.completionConditions},
       ...taskFieldsFromContract(card.gradingContract)};
   }).sort((a,b)=>a.due_date.localeCompare(b.due_date)||Number(a.manual_order||0)-Number(b.manual_order||0)||a.id-b.id);
+  const activeAttempts=attempts.filter(attempt=>!attempt.exclude_from_planning&&!attempt.exclude_from_metrics&&!attempt.duplicate_of_attempt_id);
   const reviewIsExecutable=(review:Review)=>!review.exclude_from_planning&&
     resolveReviewOrigin({review,attempts,aliases:problemAliases,relations:storedRelations,problems}).valid;
-  const a14=new Set(attempts.filter(a=>a.date>=fortnight&&pmap.get(a.problem_id)?.category==="A").map(a=>a.problem_id)).size;
-  const skeleton=attempts.filter(a=>a.date>=fortnight&&a.mode==="skeleton");
+  const a14=new Set(activeAttempts.filter(a=>a.date>=fortnight&&pmap.get(a.problem_id)?.category==="A").map(a=>a.problem_id)).size;
+  const skeleton=activeAttempts.filter(a=>a.date>=fortnight&&a.mode==="skeleton");
   const skeletonGood=skeleton.filter(a=>["◎","○"].includes(a.mark)).length;
   const kGroups=new Map<string,number>();
-  attempts.filter(a=>a.date>=fortnight&&a.error_type==="K"&&!excludeLegacyKFromPlanning(a)).forEach(a=>kGroups.set(a.problem_id,(kGroups.get(a.problem_id)||0)+1));
+  activeAttempts.filter(a=>a.date>=fortnight&&a.error_type==="K"&&!excludeLegacyKFromPlanning(a)).forEach(a=>kGroups.set(a.problem_id,(kGroups.get(a.problem_id)||0)+1));
   const kRepeat=[...kGroups.values()].filter(n=>n>1).length;
-  const pastSkeleton=attempts.filter(a=>a.date>=fortnight&&pmap.get(a.problem_id)?.category==="past_exam").length;
+  const pastSkeleton=activeAttempts.filter(a=>a.date>=fortnight&&pmap.get(a.problem_id)?.category==="past_exam").length;
   const delayed3=reviews.filter(r=>r.status==="overdue"&&r.due_date<addDays(today,-3)).length;
   const weakUpdates=weakNotes.filter(w=>w.date>=week).length;
   const scans=pastSessions.filter(s=>["scan_5_questions","scan5"].includes(s.session_type)||!!s.session_kind),exams=pastSessions.filter(s=>["exam_90min","past_exam"].includes(s.session_type)||s.session_kind==="selected_three_timed");
-  const studyDays14=new Set([...attempts.filter(a=>a.date>=fortnight).map(a=>a.date),...pastSessions.filter(s=>String(s.date)>=fortnight).map(s=>String(s.date))]).size;
-  const standaloneMinutes14=attempts.filter(a=>a.date>=fortnight&&!a.parent_past_session_id).reduce((sum,a)=>sum+Math.max(0,Number(a.time_minutes||0)),0);
-  const actualMinutes14=standaloneMinutes14+pastSessions.filter(s=>String(s.date)>=fortnight).reduce((sum,session)=>sum+sessionStudyMinutes(session,attempts),0);
-  const sCore14=new Set(attempts.filter(a=>a.date>=fortnight&&["SS","S"].includes(pmap.get(a.problem_id)?.strategy_rank||"")).map(a=>a.problem_id)).size;
-  const aPlus14=new Set(attempts.filter(a=>a.date>=fortnight&&pmap.get(a.problem_id)?.strategy_rank==="A+").map(a=>a.problem_id)).size;
-  const criticalS=["WB-6-S-21","WB-6-S-22"].map(problemId=>attempts.find(attempt=>attempt.problem_id===problemId)).filter(Boolean) as Attempt[];
-  const past14Attempts=attempts.filter(a=>a.date>=fortnight&&pmap.get(a.problem_id)?.category==="past_exam");
+  const studyDays14=new Set([...activeAttempts.filter(a=>a.date>=fortnight).map(a=>a.date),...pastSessions.filter(s=>String(s.date)>=fortnight).map(s=>String(s.date))]).size;
+  const standaloneMinutes14=activeAttempts.filter(a=>a.date>=fortnight&&!a.parent_past_session_id).reduce((sum,a)=>sum+Math.max(0,Number(a.time_minutes||0)),0);
+  const actualMinutes14=standaloneMinutes14+pastSessions.filter(s=>String(s.date)>=fortnight).reduce((sum,session)=>sum+sessionStudyMinutes(session,activeAttempts),0);
+  const sCore14=new Set(activeAttempts.filter(a=>a.date>=fortnight&&["SS","S"].includes(pmap.get(a.problem_id)?.strategy_rank||"")).map(a=>a.problem_id)).size;
+  const aPlus14=new Set(activeAttempts.filter(a=>a.date>=fortnight&&pmap.get(a.problem_id)?.strategy_rank==="A+").map(a=>a.problem_id)).size;
+  const criticalS=["WB-6-S-21","WB-6-S-22"].map(problemId=>activeAttempts.find(attempt=>attempt.problem_id===problemId)).filter(Boolean) as Attempt[];
+  const past14Attempts=activeAttempts.filter(a=>a.date>=fortnight&&pmap.get(a.problem_id)?.category==="past_exam");
   const progress=buildProgressPlan(daysUntilExam(today,settings.exam_date),{
     a14,sCore14,aPlus14,criticalSStable:criticalS.filter(attempt=>["◎","○"].includes(attempt.mark)).length,criticalSTotal:criticalS.length,
     past14:pastSkeleton,pastFull14:past14Attempts.filter(attempt=>attempt.mode==="full"||attempt.mode==="exam_90min").length,
@@ -2032,14 +2066,14 @@ async function bootstrap():Promise<Bootstrap>{
     studyDays14,actualMinutes14,delayed3,dailyTargetMinutes:settings.daily_study_minutes
   });
   const checks=progress.checks.map(item=>item.status==="ok");
-  const pastAttempts=attempts.filter(attempt=>pmap.get(attempt.problem_id)?.category==="past_exam");
+  const pastAttempts=activeAttempts.filter(attempt=>pmap.get(attempt.problem_id)?.category==="past_exam");
   const chapterCounts=new Map<number,number>();
-  attempts.filter(a=>a.date>=fortnight&&a.error_type==="K"&&!excludeLegacyKFromPlanning(a)).forEach(a=>{const c=pmap.get(a.problem_id)?.chapter;if(c!=null)chapterCounts.set(c,(chapterCounts.get(c)||0)+1)});
+  activeAttempts.filter(a=>a.date>=fortnight&&a.error_type==="K"&&!excludeLegacyKFromPlanning(a)).forEach(a=>{const c=pmap.get(a.problem_id)?.chapter;if(c!=null)chapterCounts.set(c,(chapterCounts.get(c)||0)+1)});
   const themeCounts=new Map<string,number>();
   weakNotes.filter(w=>!w.is_resolved).forEach(w=>themeCounts.set(w.theme,(themeCounts.get(w.theme)||0)+1));
-  const weaknessAnalysis=analyzeWeaknesses(problems,attempts,reviews,weakNotes,today);
-  const readiness=calculateExamReadinessMetrics({problems,attempts,pastSessions,aliases:problemAliases,today});
-  const weeklyQuota=weeklySoftQuota({attempts:attempts as unknown as Array<Record<string,unknown>>,
+  const weaknessAnalysis=analyzeWeaknesses(problems,activeAttempts,reviews,weakNotes,today);
+  const readiness=calculateExamReadinessMetrics({problems,attempts:activeAttempts,pastSessions,aliases:problemAliases,today});
+  const weeklyQuota=weeklySoftQuota({attempts:activeAttempts as unknown as Array<Record<string,unknown>>,
     pastSessions:pastSessions as unknown as Array<Record<string,unknown>>,weekStart:week});
   const weeklyQuotaCandidates=quotaCandidatesWithinCapacity({status:weeklyQuota,remainingMinutes:settings.daily_study_minutes,daysRemaining:progress.daysRemaining});
   const stableBlockingIssues=[
@@ -2056,7 +2090,7 @@ async function bootstrap():Promise<Bootstrap>{
       :"学習運用安定版までの残タスクがあります。新機能追加より、記録と診断の不足を先に埋めてください。"
   };
   const dashboard={
-    today,weekA:new Set(attempts.filter(a=>a.date>=week&&pmap.get(a.problem_id)?.category==="A").map(a=>a.problem_id)).size,
+    today,weekA:new Set(activeAttempts.filter(a=>a.date>=week&&pmap.get(a.problem_id)?.category==="A").map(a=>a.problem_id)).size,
     weekPast:pastAttempts.filter(attempt=>attempt.date>=week).length,kRecurrence:kRepeat,
     pending:reviews.filter(r=>["pending","overdue"].includes(r.status)).length,overdue:reviews.filter(r=>r.status==="overdue").length,
     sStableRate:sMemory.length?Math.round(sMemory.filter(s=>s.state==="stable").length/sMemory.length*100):0,
@@ -2112,7 +2146,7 @@ async function bootstrap():Promise<Bootstrap>{
   });
   let load=[...dueReviews,...staleS].reduce((sum,x)=>sum+x.load,0);
   let plannedMinutes=[...dueReviews,...staleS].reduce((sum,x)=>sum+x.minutes,0);
-  const seen=new Set(attempts.map(a=>a.problem_id));
+  const seen=new Set(activeAttempts.map(a=>a.problem_id));
   const occupied=new Set([
     ...reviews.filter(review=>["pending","overdue","deferred"].includes(review.status)).map(review=>review.problem_id),
     ...dueReviews.map(task=>task.problem_id),...staleS.map(task=>task.problem_id)
@@ -2122,7 +2156,7 @@ async function bootstrap():Promise<Bootstrap>{
   for(const problemId of STRATEGY_S_ORDER){
     if(strategySTasks.length>=sLimit||plannedMinutes>=settings.daily_study_minutes*.55) break;
     const problem=pmap.get(problemId);
-    const latest=attempts.find(attempt=>attempt.problem_id===problemId);
+    const latest=activeAttempts.find(attempt=>attempt.problem_id===problemId);
     if(!problem||occupied.has(problemId)||(latest&&latest.date>addDays(today,-21))) continue;
     const minutes=problemId==="WB-6-S-21"||problemId==="WB-6-S-22"?15:10;
     const answer=answerMap.get(problemId);
@@ -2133,7 +2167,7 @@ async function bootstrap():Promise<Bootstrap>{
     occupied.add(problemId);load+=.4;plannedMinutes+=minutes;
   }
   const mixedProblem=progress.phase==="foundation"||progress.phase==="integration"
-    ?selectMixedPractice(problems,attempts,occupied,today):undefined;
+    ?selectMixedPractice(problems,activeAttempts,occupied,today):undefined;
   const mixedMinutes=mixedProblem?12:0;
   const newTasks:any[]=[];
   if(progress.phase==="foundation"||progress.phase==="integration") for(const r of roadmap.filter(r=>r.is_active&&!seen.has(r.problem_id))){
@@ -2228,7 +2262,7 @@ async function bootstrap():Promise<Bootstrap>{
   }
   const generatedMap=new Map(generatedTriage.tasks.map(task=>[taskSnapshotId(task),task]));
   const reviewMap=new Map(reviews.map(review=>[review.id,review]));
-  const todayAttemptProblems=new Set(attempts.filter(attempt=>attempt.date===today).map(attempt=>attempt.problem_id));
+  const todayAttemptProblems=new Set(activeAttempts.filter(attempt=>attempt.date===today).map(attempt=>attempt.problem_id));
   const tasks=snapshot.tasks.filter(saved=>{
     if(saved.id&&saved.review_type){
       const review=reviewMap.get(saved.id);
@@ -2266,8 +2300,8 @@ async function bootstrap():Promise<Bootstrap>{
     } as Task;
   });
   const totalLoad=Math.round(tasks.filter(task=>!task.checked&&task.triage!=="tomorrow").reduce((sum,x)=>sum+x.load,0)*10)/10;
-  const actualMinutes=attempts.filter(attempt=>attempt.date===today&&!attempt.parent_past_session_id).reduce((sum,attempt)=>sum+Math.max(0,Number(attempt.time_minutes||0)),0)
-    +pastSessions.filter(session=>String(session.date)===today).reduce((sum,session)=>sum+sessionStudyMinutes(session,attempts),0);
+  const actualMinutes=activeAttempts.filter(attempt=>attempt.date===today&&!attempt.parent_past_session_id).reduce((sum,attempt)=>sum+Math.max(0,Number(attempt.time_minutes||0)),0)
+    +pastSessions.filter(session=>String(session.date)===today).reduce((sum,session)=>sum+sessionStudyMinutes(session,activeAttempts),0);
   const timeSummary=summarizeTodayTime(tasks,actualMinutes,settings.daily_study_minutes,snapshot.start_of_day_planned_minutes);
   const activeRemainingMinutes=timeSummary.activeRemainingMinutes;
   const postponeCandidateMinutes=timeSummary.postponeCandidateMinutes;
@@ -2277,7 +2311,7 @@ async function bootstrap():Promise<Bootstrap>{
   const postponedTaskMinutes=[...taskPostponements.values()].filter(record=>String(record.postponed_at||"").startsWith(today)&&String(record.postponed_to||"")!==today)
     .reduce((sum,record)=>sum+Number(record.estimated_minutes||0),0);
   const postponedMinutes=postponedReviewMinutes+postponedTaskMinutes;
-  const completedTasks=attempts.filter(attempt=>attempt.date===today).map(attempt=>({
+  const completedTasks=activeAttempts.filter(attempt=>attempt.date===today).map(attempt=>({
     problem_id:attempt.problem_id,title:pmap.get(attempt.problem_id)?.display_label||attempt.problem_id,
     kind:"完了",reason:`${attempt.mark} ${attempt.score_text||attempt.score_label}`,mode:attempt.mode,
     minutes:Number(attempt.time_minutes||0),load:loadFor(attempt.mode),checked:true
@@ -2295,6 +2329,14 @@ async function bootstrap():Promise<Bootstrap>{
     answer_count:answerIndex.filter(answer=>answer.document_key&&pdf.document_key?answer.document_key===pdf.document_key:answer.pdf_file_name===pdf.original_file_name||answer.pdf_file_name===pdf.file_name).length
   }));
   const databaseStatus=await databaseSchemaStatus();
+  const validCrossTargetReviewIds=rawReviews.filter(review=>{
+    const source=attemptMap.get(review.source_attempt_id||review.generated_from_attempt_id);
+    return !!source&&resolveCanonicalProblemId(source.problem_id,problemAliases)!==resolveCanonicalProblemId(review.problem_id,problemAliases)&&
+      resolveReviewOrigin({review,attempts,aliases:problemAliases,relations:storedRelations,problems}).valid;
+  }).map(review=>review.id);
+  const integrityHealth=runIntegrityAudit({
+    attempts,reviews:rawReviews,aliases:problemAliases,today,todayPlanSnapshots:[snapshot],validCrossTargetReviewIds
+  });
   const masterStatus={
     problem_count:problems.length,answer_count:answerIndex.length,
     problem_version:metaEntries.find(entry=>entry.key==="problem_master_version")?.value||"未設定",
@@ -2309,6 +2351,12 @@ async function bootstrap():Promise<Bootstrap>{
     ,legacy_k_summary:(()=>{try{return JSON.parse(metaEntries.find(entry=>entry.key==="legacy_k_reorganization_summary")?.value||"null")||undefined}catch{return undefined}})()
     ,source_mismatch_summary:(()=>{try{return JSON.parse(metaEntries.find(entry=>entry.key==="source_mismatch_reorganization_summary")?.value||"null")||undefined}catch{return undefined}})()
     ,review_schedule_summary:(()=>{try{return JSON.parse(metaEntries.find(entry=>entry.key==="review_schedule_repair_summary")?.value||"null")||undefined}catch{return undefined}})()
+    ,integrity_summary:{
+      generatedAt:integrityHealth.generatedAt,activeIssueCount:integrityHealth.activeIssueCount,
+      historyWarningCount:integrityHealth.historyWarningCount,counts:integrityHealth.counts,
+      ...(()=>{try{const saved=JSON.parse(metaEntries.find(entry=>entry.key==="integrity_audit_summary")?.value||"null");return saved?.repairedAt?{repairedAt:saved.repairedAt}:{}}
+        catch{return {}}})()
+    }
   };
   return {problems:problems.sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.category.localeCompare(b.category)||a.problem_number-b.problem_number),attempts,reviews,roadmap,weakNotes,pastSessions,answerIndex,problemAliases,dashboard,settings,masterStatus,databaseStatus,
     today:{tasks,totalLoad,plannedMinutes:plannedTotal,remainingMinutes,actualMinutes,targetMinutes:settings.daily_study_minutes,capacityPercent,warning,guidance,
@@ -2364,10 +2412,182 @@ async function savePastExamSession(body:Record<string,unknown>,existingId?:numbe
   });
 }
 
+async function currentTodaySnapshots(){
+  const rows=await db.meta.filter(row=>row.key.startsWith("today-plan-snapshot:")&&!row.key.startsWith("today-plan-snapshot-history:")).toArray();
+  return rows.flatMap(row=>{try{return [JSON.parse(row.value) as TodayPlanSnapshot]}catch{return []}});
+}
+
+async function integrityAudit():Promise<IntegrityAudit>{
+  const [attempts,reviews,aliases,snapshots,problems,relations]=await Promise.all([
+    db.attempts.toArray(),db.reviews.toArray(),db.problemAliases.toArray(),currentTodaySnapshots(),
+    db.problems.toArray(),storedProblemRelations()
+  ]);
+  const validCrossTargetReviewIds=reviews.filter(review=>{
+    const source=attempts.find(row=>row.id===Number(review.source_attempt_id||review.generated_from_attempt_id));
+    return !!source&&resolveCanonicalProblemId(source.problem_id,aliases)!==resolveCanonicalProblemId(review.problem_id,aliases)&&
+      resolveReviewOrigin({review,attempts,aliases,relations,problems}).valid;
+  }).map(review=>review.id);
+  return runIntegrityAudit({attempts,reviews,aliases,today:todayString(),todayPlanSnapshots:snapshots,validCrossTargetReviewIds});
+}
+
+async function repairIntegrity(preview=false){
+  const before=await integrityAudit();
+  if(preview)return {preview:true,before,after:before,changes:{
+    duplicateAttempts:before.counts.exact_duplicate_attempt,
+    reviewsSuperseded:before.counts.inactive_pending+before.counts.expired_same_session+
+      before.counts.duplicate_logical_review+before.counts.repeated_deduplication_key,
+    contractsRebound:before.counts.duplicate_contract_id+before.counts.contract_top_level_mismatch,
+    datesCorrected:before.counts.date_interval_mismatch,
+  }};
+  const now=new Date().toISOString(),today=todayString();
+  const changes={duplicateAttempts:0,reviewsSuperseded:0,contractsRebound:0,datesCorrected:0};
+  await db.transaction("rw",[db.attempts,db.reviews,db.problemAliases,db.problems,db.meta],async()=>{
+    const [attempts,reviews,aliases,problems,relations]=await Promise.all([
+      db.attempts.toArray(),db.reviews.toArray(),db.problemAliases.toArray(),db.problems.toArray(),storedProblemRelations()
+    ]);
+    const attemptMap=new Map(attempts.map(row=>[row.id,row]));
+    for(const duplicate of classifyExactDuplicateAttempts(attempts)){
+      const row=attemptMap.get(duplicate.duplicateAttemptId);
+      if(!row||row.duplicate_of_attempt_id===duplicate.canonicalAttemptId)continue;
+      await db.attempts.update(row.id,{
+        canonical_attempt_id:duplicate.canonicalAttemptId,duplicate_of_attempt_id:duplicate.canonicalAttemptId,
+        exclude_from_planning:true,exclude_from_metrics:true,
+        duplicate_reason:`Attempt ${duplicate.canonicalAttemptId} とID以外の保存内容が完全一致`,
+      });
+      changes.duplicateAttempts++;
+      for(const review of reviews.filter(item=>ACTIVE_REVIEW_STATUSES.has(item.status)&&
+        Number(item.source_attempt_id||item.generated_from_attempt_id)===row.id)){
+        await db.reviews.update(review.id,{
+          status:"superseded",exclude_from_planning:true,exclude_from_recurrence_metrics:true,
+          superseded_reason:`重複Attempt ${row.id} 由来のため。canonical Attemptは${duplicate.canonicalAttemptId}`,
+        });
+        changes.reviewsSuperseded++;
+      }
+    }
+
+    const refreshed=await db.reviews.toArray(),active=refreshed.filter(row=>ACTIVE_REVIEW_STATUSES.has(row.status));
+    for(const review of active){
+      const source=attemptMap.get(review.source_attempt_id||review.generated_from_attempt_id);
+      const state=reviewExecutionState(review,today);
+      if(state==="expired_same_session"||state==="invalid"){
+        await db.reviews.update(review.id,{
+          status:"superseded",exclude_from_planning:true,exclude_from_recurrence_metrics:true,
+          superseded_reason:state==="expired_same_session"?"same_session_correctionの有効日を過ぎたため":"現行ポリシーで実行不可のため",
+        });
+        changes.reviewsSuperseded++;
+        continue;
+      }
+      const purpose=review.grading_contract?.learningPurpose||review.learning_purpose;
+      const reviewParts=new Set(review.grading_contract?.gradedParts.map(part=>part.id)||review.graded_part_ids||[]);
+      const newerSuccess=source&&["error_repair","retrieval_check"].includes(String(purpose||""))&&reviewParts.size
+        ?attempts.find(attempt=>attempt.id>source.id&&
+          resolveCanonicalProblemId(attempt.problem_id,aliases)===resolveCanonicalProblemId(review.problem_id,aliases)&&
+          (attempt.minimum_pass_condition_met===true||attempt.target_issue_resolved===true||
+            (attempt.error_types||[]).every(error=>error==="none"))&&
+          [...reviewParts].every(part=>(attempt.graded_part_ids||[]).includes(part))):undefined;
+      if(newerSuccess){
+        await db.reviews.update(review.id,{status:"superseded",exclude_from_planning:true,
+          exclude_from_recurrence_metrics:true,
+          superseded_reason:`新しいAttempt ${newerSuccess.id}で同一採点対象を解消済み`});
+        changes.reviewsSuperseded++;
+        continue;
+      }
+      const originResolution=resolveReviewOrigin({review,attempts,aliases,relations,problems});
+      if(source&&resolveCanonicalProblemId(source.problem_id,aliases)!==resolveCanonicalProblemId(review.problem_id,aliases)&&!originResolution.valid){
+        await db.reviews.update(review.id,{
+          status:"superseded",exclude_from_planning:true,exclude_from_recurrence_metrics:true,
+          superseded_reason:"verified relationのないsource/target不一致のため",
+        });
+        changes.reviewsSuperseded++;
+      }else if(source&&originResolution.valid&&originResolution.origin==="verified_linked_problem"){
+        await db.reviews.update(review.id,{origin:"verified_linked_problem",origin_verified:true,
+          relation_id:originResolution.relation?.relationId||review.relation_id});
+      }
+    }
+
+    const afterTerminal=await db.reviews.toArray(),stillActive=afterTerminal.filter(row=>ACTIVE_REVIEW_STATUSES.has(row.status));
+    const groups=new Map<string,Review[]>();
+    for(const review of stillActive){
+      const source=attemptMap.get(review.source_attempt_id||review.generated_from_attempt_id);
+      const key=review.logical_review_key||logicalReviewKey({review,aliases,sourceAttempt:source});
+      groups.set(key,[...(groups.get(key)||[]),review]);
+    }
+    for(const [key,rows] of groups){
+      const ordered=[...rows].sort((a,b)=>{
+        const sa=attemptMap.get(a.source_attempt_id||a.generated_from_attempt_id);
+        const sb=attemptMap.get(b.source_attempt_id||b.generated_from_attempt_id);
+        return String(sb?.date||"").localeCompare(String(sa?.date||""))||
+          Number(sb?.id||0)-Number(sa?.id||0)||b.id-a.id;
+      });
+      const keep=ordered[0];
+      await db.reviews.update(keep.id,{logical_review_key:key});
+      for(const duplicate of ordered.slice(1)){
+        await db.reviews.update(duplicate.id,{
+          status:"superseded",exclude_from_planning:true,exclude_from_recurrence_metrics:true,
+          replaced_by_review_id:keep.id,superseded_reason:`active logicalReviewKeyがReview ${keep.id}と重複`,
+        });
+        changes.reviewsSuperseded++;
+      }
+    }
+    const dedupGroups=new Map<string,Review[]>();
+    for(const review of (await db.reviews.toArray()).filter(row=>ACTIVE_REVIEW_STATUSES.has(row.status)&&!!row.deduplication_key)){
+      dedupGroups.set(review.deduplication_key!,[...(dedupGroups.get(review.deduplication_key!)||[]),review]);
+    }
+    for(const rows of dedupGroups.values()){
+      if(rows.length<2)continue;
+      const ordered=[...rows].sort((a,b)=>b.id-a.id),keep=ordered[0];
+      for(const duplicate of ordered.slice(1)){
+        await db.reviews.update(duplicate.id,{status:"superseded",exclude_from_planning:true,
+          exclude_from_recurrence_metrics:true,replaced_by_review_id:keep.id,
+          superseded_reason:`deduplication_keyがReview ${keep.id}と重複`});
+        changes.reviewsSuperseded++;
+      }
+    }
+
+    const uniqueActive=(await db.reviews.toArray()).filter(row=>ACTIVE_REVIEW_STATUSES.has(row.status));
+    for(const review of uniqueActive){
+      const source=attemptMap.get(review.source_attempt_id||review.generated_from_attempt_id);
+      const problem=problems.find(row=>row.problem_id===resolveCanonicalProblemId(review.problem_id,aliases));
+      let contract=review.grading_contract;
+      if(!contract&&problem)contract=buildGradingContractSnapshot({review,problem,sourceAttempt:source,createdAt:review.generated_at||now}).contract;
+      if(contract){
+        const revision=Math.max(1,Number(review.contract_revision||1));
+        const bound=bindContractToReview(contract,review.id,revision);
+        await db.reviews.update(review.id,{
+          ...taskFieldsFromContract(bound),contract_revision:revision,
+          logical_review_key:review.logical_review_key||logicalReviewKey({review:{...review,grading_contract:bound},aliases,sourceAttempt:source}),
+        });
+        if(review.contract_id!==bound.contractId||review.contract_hash!==bound.contractHash)changes.contractsRebound++;
+      }
+      const schedule=resolveReviewSchedule(review,source);
+      if(schedule.scheduleOrigin==="policy"&&schedule.sourceDate&&schedule.reviewAfterDays!=null){
+        const due=addCalendarDays(schedule.sourceDate,schedule.reviewAfterDays);
+        if(due!==review.due_date){
+          await db.reviews.update(review.id,{source_date:schedule.sourceDate,review_after_days:schedule.reviewAfterDays,
+            due_date:due,schedule_origin:"policy",raw_due_date:review.raw_due_date||review.due_date});
+          changes.datesCorrected++;
+        }
+      }
+    }
+  });
+  const after=await integrityAudit();
+  const summary={...after,repairedAt:now};
+  await db.meta.put({key:"integrity_audit_summary",value:JSON.stringify(summary)});
+  return {preview:false,before,after,changes,success:after.activeIssueCount===0};
+}
+
 export async function localPost<T>(path:string,body:any):Promise<T>{
   await initialize();
   if(path==="/api/database/repair"){
     return await repairDatabaseSchema() as T;
+  } else if(path==="/api/integrity/audit"){
+    const audit=await integrityAudit();
+    await db.meta.put({key:"integrity_audit_summary",value:JSON.stringify(audit)});
+    return audit as T;
+  } else if(path==="/api/integrity/preview"){
+    return await repairIntegrity(true) as T;
+  } else if(path==="/api/integrity/repair"){
+    return await repairIntegrity(false) as T;
   } else if(path==="/api/master/integrated/import"){
     return await importIntegratedMaster(body) as T;
   } else if(path==="/api/master/problem/import"){
@@ -2432,13 +2652,19 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
   } else if(path==="/api/attempts") {
     await assertDatabaseSchema("saveGptEvaluation",GPT_SAVE_REQUIRED_STORES);
     const logs:PendingCorrectionLog[]=[];
-    await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.answerIndex,db.problemAliases],()=>saveAttempt(body,logs));
-    await persistCorrectionLogs(logs);
+    await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.answerIndex,db.problemAliases,db.correctionLogs],async()=>{
+      await saveAttempt(body,logs);
+      if(logs.length)await db.correctionLogs.bulkAdd(logs as CorrectionLog[]);
+    });
+    notifyStudyDataChanged({operation:"save-attempt",reviewId:Number(body.generated_from_review_id||0)||undefined});
   } else if(path==="/api/import") {
     await assertDatabaseSchema("saveGptEvaluationBatch",GPT_SAVE_REQUIRED_STORES);
     const logs:PendingCorrectionLog[]=[];
-    await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.answerIndex,db.problemAliases],async()=>{for(const update of body.updates) await saveAttempt(update,logs)});
-    await persistCorrectionLogs(logs);
+    await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.answerIndex,db.problemAliases,db.correctionLogs],async()=>{
+      for(const update of body.updates)await saveAttempt(update,logs);
+      if(logs.length)await db.correctionLogs.bulkAdd(logs as CorrectionLog[]);
+    });
+    notifyStudyDataChanged({operation:"save-gpt-import"});
   } else if(/^\/api\/attempts\/\d+\/update$/.test(path)) {
     await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.problemAliases],
       ()=>updateAttemptAnalysis(Number(path.split("/")[3]),body));
@@ -2448,6 +2674,7 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
   } else if(/^\/api\/reviews\/\d+\/complete$/.test(path)) {
     await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.problemAliases],
       ()=>completeReview(Number(path.split("/")[3]),body));
+    notifyStudyDataChanged({operation:"complete-review",reviewId:Number(path.split("/")[3])});
   } else if(/^\/api\/reviews\/\d+\/contract-lock$/.test(path)) {
     const id=Number(path.split("/")[3]),review=await db.reviews.get(id);
     if(!review)throw new Error("復習カードが見つかりません");
@@ -2466,9 +2693,14 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
   } else if(path==="/api/tasks/postpone") {
     await db.transaction("rw",[db.meta],()=>postponeTask(body));
   } else if(/^\/api\/reviews\/\d+\/done$/.test(path)) {
-    await db.reviews.update(Number(path.split("/")[3]),{status:"done"});
+    const id=Number(path.split("/")[3]),review=await db.reviews.get(id);
+    if(!review||!isActionableReview(review,review.grading_contract))throw new Error("この復習課題はすでに完了または置換されているため操作できません");
+    await db.reviews.update(id,{status:"done",completed_at:new Date().toISOString()});
+    notifyStudyDataChanged({operation:"mark-review-done",reviewId:id});
   } else if(/^\/api\/reviews\/\d+\/pending$/.test(path)) {
-    await db.reviews.update(Number(path.split("/")[3]),{status:"pending"});
+    const id=Number(path.split("/")[3]),review=await db.reviews.get(id);
+    if(!review||["done","completed","superseded"].includes(review.status))throw new Error("完了済み・置換済みの復習課題は再実行できません");
+    await db.reviews.update(id,{status:"pending"});
   } else if(path==="/api/today-check") {
     const key=`today-check:${body.date||todayString()}:${body.problem_id}:${body.kind}`;
     if(body.checked) await db.meta.put({key,value:"1"}); else await db.meta.delete(key);

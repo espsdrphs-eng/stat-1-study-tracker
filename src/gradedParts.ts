@@ -172,7 +172,7 @@ export function gradedPartContracts(args: {
       completionCriterionId: row.criterion,
     }];
   }
-  const rows = args.texts.flatMap((text) => {
+  const rows = args.texts.flatMap((text, index) => {
     const known = definitions.filter((definition) => definition.patterns.some((pattern) => pattern.test(text)));
     if (known.length) {
       return known.map((row) => ({
@@ -185,9 +185,11 @@ export function gradedPartContracts(args: {
     }
     const normalized = normalize(text);
     if (!normalized) return [];
-    const suffix = hash(`${args.problemId}:${normalized}`);
+    const suffix = args.sourceAttempt?.id
+      ? `${args.sourceAttempt.id}:${index + 1}`
+      : hash(`${args.problemId}:${normalized}`);
     return [{
-      id: `target_${suffix}`,
+      id: args.sourceAttempt?.id ? `part:${args.problemId}:${suffix}` : `target_${suffix}`,
       label: text,
       cueLabel: "指定箇所",
       allowedErrorTypes: inferredErrors(text, args.sourceAttempt),

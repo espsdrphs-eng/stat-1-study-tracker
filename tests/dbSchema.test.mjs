@@ -26,15 +26,16 @@ test("GPT保存preflightはproblemAliases不足を具体名で検出する",()=>
   assert.match(message,/必要なDBバージョン：13/);
 });
 
-test("GPT保存transactionはresolverが読むproblemAliasesを含み補助ログを分離する",async()=>{
+test("GPT保存transactionはresolverとcorrection logを同じ原子保存に含む",async()=>{
   const source=await readFile(new URL("../src/localDb.ts",import.meta.url),"utf8");
   const saveBranch=source.slice(source.indexOf('path==="/api/attempts"'),source.indexOf('path==="/api/import"'));
   const importBranch=source.slice(source.indexOf('path==="/api/import"'),source.indexOf('/^\\/api\\/attempts'));
   assert.match(saveBranch,/db\.problemAliases/);
   assert.match(importBranch,/db\.problemAliases/);
-  assert.doesNotMatch(saveBranch,/db\.correctionLogs/);
-  assert.doesNotMatch(importBranch,/db\.correctionLogs/);
-  assert.match(source,/persistCorrectionLogs\(logs\)/);
+  assert.match(saveBranch,/db\.correctionLogs/);
+  assert.match(importBranch,/db\.correctionLogs/);
+  assert.match(saveBranch,/bulkAdd\(logs/);
+  assert.match(importBranch,/bulkAdd\(logs/);
 });
 
 test("v13 migrationは既存履歴を削除せず件数を記録する",async()=>{

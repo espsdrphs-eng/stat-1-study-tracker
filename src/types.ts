@@ -135,6 +135,9 @@ export type Attempt = {
   parent_past_session_id?:number;
   grading_contract?:GradingContractSnapshot;contract_id?:string;contract_version?:string;contract_hash?:string;
   explicitly_out_of_scope_parts?:string[];
+  submission_id?:string;source_review_id?:number;saved_at?:string;
+  canonical_attempt_id?:number;duplicate_of_attempt_id?:number;
+  exclude_from_metrics?:boolean;duplicate_reason?:string;
 };
 export type Review = {
   id:number; problem_id:string; due_date:string; review_type:string; status:string; generated_from_attempt_id:number;
@@ -178,6 +181,7 @@ export type Review = {
   grading_contract?:GradingContractSnapshot;contract_id?:string;contract_version?:string;contract_hash?:string;
   contract_locked_at?:string;explicitly_out_of_scope_parts?:string[];graded_parts?:string[];
   graded_part_ids?:string[];graded_findings?:GradedFinding[];
+  logical_review_key?:string;contract_revision?:number;replaced_by_review_id?:number;
 };
 export type TodayPlanSnapshot = {
   date:string;task_ids:string[];start_of_day_planned_minutes:number;
@@ -294,6 +298,10 @@ export type Bootstrap = {
       remaining_legacy_unknown_count:number;completed_unchanged_count:number;
       today_plan_snapshot_unchanged:boolean;preview:boolean;success:boolean;
     };
+    integrity_summary?:{
+      generatedAt:string;activeIssueCount:number;historyWarningCount:number;
+      counts:Record<string,number>;repairedAt?:string;
+    };
   };
   databaseStatus:{
     databaseName:string;databaseVersion:number;requiredDatabaseVersion:number;requestedStores:string[];
@@ -360,4 +368,5 @@ export type StudyUpdate = {
   contract_id?:string;contract_version?:string;contract_hash?:string;
   explicitly_out_of_scope_parts?:string[];
   graded_part_ids?:string[];graded_findings?:GradedFinding[];
+  submission_id?:string;source_review_id?:number;
 };

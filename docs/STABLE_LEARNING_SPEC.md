@@ -92,3 +92,7 @@ full skeleton、timed full、scan5は週間soft quotaです。既存実績が不
 採点対象は日本語文ではなく `GradedPartContract.id` を正本とし、順序や表記の違いは不一致にしない。各 `graded_finding` の誤り分類は、そのIDに定義された `allowedErrorTypes` で個別に検証する。checkだからNを一律禁止せず、説明項目の正当なNは保存する一方、数式実行項目で許可されていないNは保存しない。
 
 完了条件は想起を妨げない短いcueだけを表示し、正しい式・係数・導出は `hiddenAnswerKey` に分離する。ヒント、前回ミス、修正ルール、保存済み解説、外部参照を開いた時点で参照段階を記録する。`invalid_legacy_k`、契約未確定、または不可能なpurpose/mode/scopeのReviewは実行・参照・プロンプトコピー・保存を禁止する。
+# Data integrity source
+
+Persistence, idempotency, execution gating, and repair invariants are defined in
+[`SYSTEM_INVARIANTS.md`](./SYSTEM_INVARIANTS.md). Do not add another task-specific repair path.

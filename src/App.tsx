@@ -31,6 +31,7 @@ import { isProblemPack, masterDiff, parseAliasesPayload, parseIntegratedMasterPa
 import { isIndexedDbSchemaError, schemaErrorMessage, type IndexedDbSchemaDiagnostic } from "./dbSchema";
 import { isActionableReview } from "./gradingContract";
 import { gradedPartLabels } from "./gradedParts";
+import { subscribeStudyDataChanged } from "./appEvents";
 import type { AnswerIndexEntry, Attempt, Bootstrap, PastExamSessionKind, PastSession, Problem, ProblemAlias, Review, ScanQuestion, StudyUpdate, Task } from "./types";
 
 type Page = "dashboard"|"today"|"problems"|"attempt"|"import"|"reviews"|"weak"|"past"|"sheets"|"settings";
@@ -48,7 +49,8 @@ const sheetFiles:Record<string,string>={check:"00-check.pdf",skeleton:"01-skelet
 const sheetHref=(mode:string)=>`./answer-sheets/${sheetFiles[mode]||sheetFiles.skeleton}`;
 const reviewNames:Record<string,string>={skeleton_retry:"骨格再現",main_calc_retry:"主要計算",full_retry:"フル再演習",careless_check:"チェックリスト確認",light_check:"短時間チェック",s_check:"S確認",past_exam_link:"過去問連動",past_exam_selection:"選題確認",past_exam_retry:"過去問補修"};
 const todayString = () => new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Tokyo",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
-const blankUpdate = ():StudyUpdate => ({problem_id:"",date:todayString(),mode:"full",mark:"△",score_label:"B",error_type:"none",error_point:"",next_action:""});
+const newSubmissionId=()=>globalThis.crypto?.randomUUID?.()||`submission-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+const blankUpdate = ():StudyUpdate => ({problem_id:"",date:todayString(),mode:"full",mark:"△",score_label:"B",error_type:"none",error_point:"",next_action:"",submission_id:newSubmissionId()});
 const attemptConsistentForDisplay=(attempt:Attempt,problem?:Problem)=>{
   if(!problem)return false;
   const text=[attempt.result_summary,attempt.error_point,attempt.next_action,attempt.improvement_guidance,attempt.required_derivation,attempt.corrected_answer].join(" ");
@@ -100,7 +102,11 @@ export default function App() {
     const blocked=(event:Event)=>setDatabaseNotice({...((event as CustomEvent).detail||{}),reload:false});
     const changed=(event:Event)=>setDatabaseNotice({...((event as CustomEvent).detail||{}),reload:true});
     window.addEventListener("stat1-db-blocked",blocked);window.addEventListener("stat1-db-versionchange",changed);
-    return()=>{window.removeEventListener("stat1-db-blocked",blocked);window.removeEventListener("stat1-db-versionchange",changed)};
+    const unsubscribe=subscribeStudyDataChanged(()=>void load());
+    const resume=()=>{if(document.visibilityState==="visible")void load()};
+    window.addEventListener("pageshow",resume);document.addEventListener("visibilitychange",resume);
+    return()=>{window.removeEventListener("stat1-db-blocked",blocked);window.removeEventListener("stat1-db-versionchange",changed);
+      window.removeEventListener("pageshow",resume);document.removeEventListener("visibilitychange",resume);unsubscribe()};
   },[]);
   const run=async(action:()=>Promise<unknown>,success:string)=>{setBusy(true);setError("");try{await action();setMessage(success);await load();return true}catch(e){handleFailure(e);return false}finally{setBusy(false)}};
   const repairDatabase=async()=>{
@@ -1038,6 +1044,10 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
     raw_policy_mismatch_count:number;effective_policy_mismatch_count:number;
     snapshot_actionable_mismatch_count:number;remaining_duplicate_count:number;
   }|null>(null);
+  const [integrityPreview,setIntegrityPreview]=useState<{
+    preview:boolean;before:{activeIssueCount:number;historyWarningCount:number;counts:Record<string,number>};
+    changes:{duplicateAttempts:number;reviewsSuperseded:number;contractsRebound:number;datesCorrected:number};
+  }|null>(null);
   const saveBlob=(content:string|Blob,name:string,type:string)=>{
     const payload=content instanceof Blob?content:new Blob([content],{type});
     const url=URL.createObjectURL(payload);const a=document.createElement("a");
@@ -1137,8 +1147,36 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
     try{setSchedulePreview(await post("/api/review-schedule/preview",{}))}
     catch(error){setMasterError(error instanceof Error?error.message:String(error))}
   };
+  const previewIntegrity=async()=>{
+    try{setIntegrityPreview(await post("/api/integrity/preview",{}))}
+    catch(error){setMasterError(error instanceof Error?error.message:String(error))}
+  };
   const unresolvedLinks=data.masterStatus.diagnostics.filter(item=>item.recommended_action==="hold");
-  return <><section className="panel master-import-panel master-import-primary" id="problem-master-import"><div className="panel-title"><div><span className="eyebrow">CANONICAL DATA</span><h3>問題マスター取り込み</h3></div><Badge tone="green">バックアップ復元とは別機能</Badge></div>
+  const health=data.masterStatus.integrity_summary;
+  return <>
+    <section className="panel settings-primary-section"><span className="eyebrow">LEARNING</span><h3>学習設定</h3>
+      <Field label="受験日"><input type="date" value={examDate} onChange={event=>setExamDate(event.target.value)}/></Field>
+      <Field label="1日の学習時間（分）"><input type="number" min="30" max="600" value={dailyMinutes} onChange={event=>setDailyMinutes(event.target.value)}/></Field>
+      <button className="primary" disabled={busy} onClick={()=>run(()=>post("/api/settings",{exam_date:examDate,daily_study_minutes:Number(dailyMinutes||150)}),"学習設定を保存しました")}>保存する</button>
+    </section>
+    <section className="panel settings-primary-section"><span className="eyebrow">PROTECTION</span><h3>データ保護</h3>
+      <div className="button-row"><button className="primary" onClick={downloadJson}><Download size={16}/>全データJSON</button>
+        <label className={`master-file-button ghost ${busy?"disabled":""}`}><Database size={16}/>JSON復元<input disabled={busy} type="file" accept="application/json,.json" onChange={event=>{const file=event.target.files?.[0];if(file)void restore(file);event.target.value=""}}/></label>
+        <button className="ghost" disabled={busy||diagnosticExporting} onClick={()=>void downloadDiagnosticPack()}><Archive size={16}/>診断パック</button></div>
+    </section>
+    <section className="panel integrity-health-card"><div className="panel-title"><div><span className="eyebrow">SYSTEM</span><h3>システム状態</h3></div>
+      <Badge tone={health?.activeIssueCount?"orange":"green"}>{health?.activeIssueCount?"要対応":"正常"}</Badge></div>
+      <div className="integrity-health-summary"><span>最終診断 <strong>{health?.generatedAt?new Date(health.generatedAt).toLocaleString("ja-JP"):"未実施"}</strong></span>
+        <span>active問題 <strong>{health?.activeIssueCount||0}件</strong></span><span>履歴上の警告 <strong>{health?.historyWarningCount||0}件</strong></span></div>
+      {integrityPreview&&<div className="legacy-k-preview"><span>重複Attempt <strong>{integrityPreview.changes.duplicateAttempts}件</strong></span>
+        <span>終了予定Review <strong>{integrityPreview.changes.reviewsSuperseded}件</strong></span>
+        <span>契約補正 <strong>{integrityPreview.changes.contractsRebound}件</strong></span><span>日付補正 <strong>{integrityPreview.changes.datesCorrected}件</strong></span></div>}
+      <div className="button-row"><button className="secondary" disabled={busy} onClick={()=>run(()=>post("/api/integrity/audit",{}),"全体整合性を確認しました")}>全体整合性を確認</button>
+        <button className="ghost" disabled={busy} onClick={()=>void previewIntegrity()}>修復内容をプレビュー</button>
+        {integrityPreview&&<button className="primary" disabled={busy} onClick={()=>{setIntegrityPreview(null);run(()=>post("/api/integrity/repair",{}),"全体整合性を安全に整えました")}}>安全に整える</button>}</div>
+    </section>
+    <details className="advanced-management"><summary>高度な管理</summary><div className="advanced-management-body">
+    <section className="panel master-import-panel master-import-primary" id="problem-master-import"><div className="panel-title"><div><span className="eyebrow">CANONICAL DATA</span><h3>問題マスター取り込み</h3></div><Badge tone="green">バックアップ復元とは別機能</Badge></div>
       <p>ChatGPTで作成した problem_master / aliases JSON を読み込み、問題ID・表示名・テーマ・GPT取り込み補正に使います。統合JSON内の answer_index は互換データとして保存できますが、日常画面では使いません。通常のバックアップ復元とは別機能です。</p>
       <div className="master-import-actions">
         <label className={`master-file-button primary ${busy?"disabled":""}`}><Database size={16}/>統合JSONを読み込む<input disabled={busy} type="file" accept=".json,application/json" onChange={event=>{const file=event.target.files?.[0];if(file)void previewIntegrated(file);event.target.value=""}}/></label>
@@ -1239,6 +1277,7 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
     <section className="panel database-integrity-panel"><div className="panel-title"><div><span className="eyebrow">LOCAL DATABASE</span><h3>データベース整合性</h3></div><Badge tone={data.databaseStatus.valid?"green":"red"}>{data.databaseStatus.valid?"正常":"更新が必要"}</Badge></div><div className="database-status-grid"><span>DB名</span><strong>{data.databaseStatus.databaseName}</strong><span>DBバージョン</span><strong>{data.databaseStatus.databaseVersion}</strong><span>アプリ要求バージョン</span><strong>{data.databaseStatus.requiredDatabaseVersion}</strong><span>アプリschema</span><strong>{data.databaseStatus.appSchemaVersion}</strong><span>build</span><strong>{data.databaseStatus.buildVersion}</strong><span>存在する保存先</span><strong>{data.databaseStatus.existingStores.join("、")}</strong><span>不足</span><strong>{data.databaseStatus.missingStores.join("、")||"なし"}</strong><span>余分な旧保存先</span><strong>{data.databaseStatus.extraStores.join("、")||"なし"}</strong><span>最終migration</span><strong>{data.databaseStatus.lastMigration}</strong><span>結果</span><strong>{data.databaseStatus.migrationResult}</strong><span>保持件数</span><strong>Attempt {data.databaseStatus.counts.attempts}件・Evaluation {data.databaseStatus.counts.evaluations}件・ReviewPlan {data.databaseStatus.counts.reviewPlans}件</strong></div><div className="button-row"><button className="secondary" disabled={busy} onClick={()=>run(()=>post("/api/database/repair",{}),"データベースを診断し、不足storeを安全に補修しました")}>不足している保存先を作成</button><button className="ghost" disabled={busy} onClick={()=>run(()=>api("/api/bootstrap"),"データベースを診断しました")}>診断する</button><button className="ghost" onClick={downloadJson}><Download size={15}/>バックアップを書き出す</button></div></section>
     <section className="panel install-guide"><div className="setting-icon"><Plus/></div><div><h3>iPadへインストール</h3><p>Safariで公開URLを開き、共有ボタン →「ホーム画面に追加」を選びます。初回表示後はオフラインでも起動できます。</p></div><Badge tone="green">オフライン対応</Badge></section>
     <section className="panel"><div className="panel-title"><div><span className="eyebrow">INITIAL ROADMAP</span><h3>A問題ロードマップ</h3></div><Badge>{data.roadmap.length}題</Badge></div><div className="roadmap">{Object.entries(data.roadmap.reduce((acc,r)=>{(acc[r.block_name]??=[]).push(r);return acc},{} as Record<string,typeof data.roadmap>)).map(([block,rows])=><div className="roadmap-block" key={block}><h4>{block}</h4><div>{rows.map(r=><span key={r.id}><b>{r.order_index}</b>{r.problem_id}<small>{modes[r.expected_mode]}・{r.load_score}</small></span>)}</div></div>)}</div></section>
+    </div></details>
   </>
 }
 

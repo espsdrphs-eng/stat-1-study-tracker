@@ -6,6 +6,7 @@ import { createAttemptReviewPlan } from "./reviewRules";
 import { buildGradingPrompt, GRADING_RUBRIC_VERSION, REVIEW_RUBRIC_VERSION } from "./gradingPrompt";
 import { reviewDaysForErrors, sanitizeStudyUpdateTiming, timingWarningMessage, timingWarnings } from "./reviewTiming";
 import { finalizeStudyUpdateForSave, prepareImportedStudyUpdate } from "./studyCycle";
+import { isActionableReview } from "./gradingContract";
 import type { AnswerIndexEntry, Attempt, Problem, ProblemAlias, Review, StudyUpdate } from "./types";
 
 const modes:Record<string,string>={check:"チェック",skeleton:"骨格",main_calc:"主要計算",full:"フル答案",scan:"スキャン",exam_90min:"90分演習"};
@@ -94,6 +95,7 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
   const [highlightedField,setHighlightedField]=useState("");
   const [saveFailed,setSaveFailed]=useState(false);
   const gradingPrompt=buildGradingPrompt(todayString());
+  const newSubmissionId=()=>globalThis.crypto?.randomUUID?.()||`submission-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
   useEffect(()=>{
     if(text||updates.length) sessionStorage.setItem(draftKey,JSON.stringify({text,updates,savedAt:new Date().toISOString()}));
@@ -108,6 +110,7 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
       const historyIds=new Set(attempts.map(attempt=>attempt.problem_id));
       const normalized=result.updates.map(update=>prepareImportedStudyUpdate({
         ...update,
+        submission_id:update.submission_id||newSubmissionId(),
         task_origin:update.task_origin||(update.generated_from_review_id?"review_attempt":historyIds.has(update.problem_id)?"review_attempt":"first_attempt")
       } as StudyUpdate,{attempts,today:todayString()}));
       setStructured(result.structured);
@@ -147,7 +150,12 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
 
   const firstMissing=updates.map((row,index)=>({index,missing:missingRequiredFields(row)[0]})).find(item=>item.missing);
   const allMissing=updates.flatMap((row,index)=>missingRequiredFields(row).map(item=>({...item,index})));
-  const canSave=updates.length>0&&allMissing.length===0&&!updates.some(row=>row.requires_problem_confirmation);
+  const invalidSourceUpdates=updates.filter(row=>{
+    if(!row.generated_from_review_id)return false;
+    const review=reviews.find(item=>item.id===row.generated_from_review_id);
+    return !review||!isActionableReview(review,review.grading_contract);
+  });
+  const canSave=updates.length>0&&allMissing.length===0&&!updates.some(row=>row.requires_problem_confirmation)&&invalidSourceUpdates.length===0;
 
   const scrollToMissing=(index:number,field:string)=>{
     setEditing(true);
