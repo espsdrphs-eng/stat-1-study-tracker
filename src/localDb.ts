@@ -25,7 +25,7 @@ import { analyzeLegacyKReorganization } from "./legacyKRepair.ts";
 import { classifyKPolicyValidity, excludeLegacyKFromPlanning, planningErrorsForSource } from "./legacyKPolicy.ts";
 import { analyzeSourceMismatchRepair, resolveReviewOrigin, REVIEW_ORIGIN_POLICY_VERSION } from "./reviewOrigin.ts";
 import { normalizePastExamSession, parseScan5Update, sessionStudyMinutes, validatePastExamSession } from "./pastExamWorkflow.ts";
-import { auditLegacyReviewContracts, buildGradingContractSnapshot, contractDifferences, isActionableReview, prescriptionFromContract, repairTargets, taskFieldsFromContract } from "./gradingContract.ts";
+import { auditLegacyReviewContracts, buildGradingContractSnapshot, contractDifferences, prescriptionFromContract, repairTargets, taskFieldsFromContract } from "./gradingContract.ts";
 import { primaryErrorFromFindings, validateGradedFindings } from "./gradedParts.ts";
 import {
   addCalendarDays, auditReviewSchedules, pendingReviewIdentityKey, resolveReviewSchedule,
@@ -37,7 +37,7 @@ import {
 } from "./dbSchema.ts";
 import {
   ACTIVE_REVIEW_STATUSES, bindContractToReview, classifyExactDuplicateAttempts, logicalReviewKey,
-  reviewExecutionState, runIntegrityAudit, type IntegrityAudit
+  reviewExecutionMessage, reviewExecutionState, runIntegrityAudit, type IntegrityAudit
 } from "./integrityEngine.ts";
 import { notifyStudyDataChanged } from "./appEvents.ts";
 
@@ -708,8 +708,12 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
   input=finalizeStudyUpdateForSave(applyCanonicalMaster(input,problem,answer,await db.problems.toArray(),await db.answerIndex.toArray())) as StudyUpdate&Record<string,unknown>;
   if(input.requires_problem_confirmation) throw new Error(`取り込み内容は ${input.suggested_problem_id||"別の問題"} の可能性があります。問題IDを確認してください`);
   const sourceReview=input.generated_from_review_id?await db.reviews.get(input.generated_from_review_id):undefined;
-  if(sourceReview&&!isActionableReview(sourceReview,sourceReview.grading_contract))
-    throw new Error("この課題は現行ポリシーでは無効です。現在の計画を再作成してください。");
+  if(input.generated_from_review_id&&!sourceReview)
+    throw new Error(reviewExecutionMessage("missing"));
+  if(sourceReview){
+    const sourceState=reviewExecutionState(sourceReview,todayString());
+    if(sourceState!=="actionable")throw new Error(reviewExecutionMessage(sourceState,sourceReview));
+  }
   if(sourceReview?.grading_contract){
     const supplied={
       contractId:String(input.contract_id||""),contractVersion:String(input.contract_version||""),
@@ -1056,8 +1060,8 @@ async function deleteAttemptAnalysis(id:number){
 async function completeReview(id:number,body:Record<string,unknown>){
   const review=await db.reviews.get(id);
   if(!review) throw new Error("復習予定が見つかりません");
-  if(!isActionableReview(review,review.grading_contract))
-    throw new Error("この課題は現行ポリシーでは無効です。現在の計画を再作成してください。");
+  const executionState=reviewExecutionState(review,todayString());
+  if(executionState!=="actionable")throw new Error(reviewExecutionMessage(executionState,review));
   const source=await db.attempts.get(review.generated_from_attempt_id);
   const problem=await db.problems.get(review.problem_id);
   if(!source||!problem) throw new Error("復習元の採点データが見つかりません");
@@ -1186,8 +1190,9 @@ async function completeReview(id:number,body:Record<string,unknown>){
 async function postponeReview(id:number,body:Record<string,unknown>){
   const review=await db.reviews.get(id);
   if(!review) throw new Error("移動する復習予定が見つかりません");
-  if(review.status==="done") throw new Error("完了済みの復習予定は移動できません");
   const today=todayString();
+  const state=reviewExecutionState(review,today);
+  if(state!=="actionable")throw new Error(reviewExecutionMessage(state,review));
   const unscheduled=!!body.unscheduled;
   const dueDate=unscheduled?review.due_date:postponedDueDate(today,body);
   const isToday=String(body.action)==="today";
@@ -2038,8 +2043,7 @@ async function bootstrap():Promise<Bootstrap>{
       ...taskFieldsFromContract(card.gradingContract)};
   }).sort((a,b)=>a.due_date.localeCompare(b.due_date)||Number(a.manual_order||0)-Number(b.manual_order||0)||a.id-b.id);
   const activeAttempts=attempts.filter(attempt=>!attempt.exclude_from_planning&&!attempt.exclude_from_metrics&&!attempt.duplicate_of_attempt_id);
-  const reviewIsExecutable=(review:Review)=>!review.exclude_from_planning&&
-    resolveReviewOrigin({review,attempts,aliases:problemAliases,relations:storedRelations,problems}).valid;
+  const reviewIsExecutable=(review:Review)=>reviewExecutionState(review,today)==="actionable";
   const a14=new Set(activeAttempts.filter(a=>a.date>=fortnight&&pmap.get(a.problem_id)?.category==="A").map(a=>a.problem_id)).size;
   const skeleton=activeAttempts.filter(a=>a.date>=fortnight&&a.mode==="skeleton");
   const skeletonGood=skeleton.filter(a=>["◎","○"].includes(a.mark)).length;
@@ -2047,7 +2051,8 @@ async function bootstrap():Promise<Bootstrap>{
   activeAttempts.filter(a=>a.date>=fortnight&&a.error_type==="K"&&!excludeLegacyKFromPlanning(a)).forEach(a=>kGroups.set(a.problem_id,(kGroups.get(a.problem_id)||0)+1));
   const kRepeat=[...kGroups.values()].filter(n=>n>1).length;
   const pastSkeleton=activeAttempts.filter(a=>a.date>=fortnight&&pmap.get(a.problem_id)?.category==="past_exam").length;
-  const delayed3=reviews.filter(r=>r.status==="overdue"&&r.due_date<addDays(today,-3)).length;
+  const delayed3=reviews.filter(r=>reviewExecutionState(r,today)==="actionable"&&
+    r.status==="overdue"&&r.due_date<addDays(today,-3)).length;
   const weakUpdates=weakNotes.filter(w=>w.date>=week).length;
   const scans=pastSessions.filter(s=>["scan_5_questions","scan5"].includes(s.session_type)||!!s.session_kind),exams=pastSessions.filter(s=>["exam_90min","past_exam"].includes(s.session_type)||s.session_kind==="selected_three_timed");
   const studyDays14=new Set([...activeAttempts.filter(a=>a.date>=fortnight).map(a=>a.date),...pastSessions.filter(s=>String(s.date)>=fortnight).map(s=>String(s.date))]).size;
@@ -2092,7 +2097,8 @@ async function bootstrap():Promise<Bootstrap>{
   const dashboard={
     today,weekA:new Set(activeAttempts.filter(a=>a.date>=week&&pmap.get(a.problem_id)?.category==="A").map(a=>a.problem_id)).size,
     weekPast:pastAttempts.filter(attempt=>attempt.date>=week).length,kRecurrence:kRepeat,
-    pending:reviews.filter(r=>["pending","overdue"].includes(r.status)).length,overdue:reviews.filter(r=>r.status==="overdue").length,
+    pending:reviews.filter(r=>reviewExecutionState(r,today)==="actionable").length,
+    overdue:reviews.filter(r=>reviewExecutionState(r,today)==="actionable"&&r.status==="overdue").length,
     sStableRate:sMemory.length?Math.round(sMemory.filter(s=>s.state==="stable").length/sMemory.length*100):0,
     sForgotten:sMemory.filter(s=>["forgotten","collapsed","check"].includes(s.state)).length,
     scanSuccess:scans.length?Math.round(scans.filter(s=>s.selection_result==="good").length/scans.length*100):0,
@@ -2138,7 +2144,7 @@ async function bootstrap():Promise<Bootstrap>{
       ...taskFieldsFromContract(card.gradingContract),load:loadFor(reviewMode)};
   }).sort((a,b)=>(a.status==="overdue"&&a.error_type==="K"?0:1)-(b.status==="overdue"&&b.error_type==="K"?0:1)||
     Number(a.manual_order||0)-Number(b.manual_order||0));
-  const activeS=new Set(reviews.filter(r=>r.review_type==="s_check"&&["pending","overdue","deferred"].includes(r.status)).map(r=>r.problem_id));
+  const activeS=new Set(reviews.filter(r=>r.review_type==="s_check"&&reviewExecutionState(r,today)==="actionable").map(r=>r.problem_id));
   const staleS=sMemory.filter(s=>!activeS.has(s.problem_id)&&(s.state==="forgotten"||s.state==="collapsed"||!!s.last_touched&&s.last_touched<=addDays(today,-30))).map(s=>{
     const p=pmap.get(s.problem_id)!,answer=answerMap.get(s.problem_id),sPlan=createSReviewPlan(s.state);return {problem_id:s.problem_id,title:p.display_label||p.title,theme:p.theme,
       canonical_problem_type:p.canonical_problem_type||p.theme,canonical_keywords:[...(p.canonical_keywords||[]),...(answer?.canonical_keywords||[])],
@@ -2148,7 +2154,7 @@ async function bootstrap():Promise<Bootstrap>{
   let plannedMinutes=[...dueReviews,...staleS].reduce((sum,x)=>sum+x.minutes,0);
   const seen=new Set(activeAttempts.map(a=>a.problem_id));
   const occupied=new Set([
-    ...reviews.filter(review=>["pending","overdue","deferred"].includes(review.status)).map(review=>review.problem_id),
+    ...reviews.filter(review=>reviewExecutionState(review,today)==="actionable").map(review=>review.problem_id),
     ...dueReviews.map(task=>task.problem_id),...staleS.map(task=>task.problem_id)
   ]);
   const strategySTasks:any[]=[];
@@ -2266,7 +2272,7 @@ async function bootstrap():Promise<Bootstrap>{
   const tasks=snapshot.tasks.filter(saved=>{
     if(saved.id&&saved.review_type){
       const review=reviewMap.get(saved.id);
-      return !!review&&["pending","overdue"].includes(review.status)&&review.due_date<=today;
+      return !!review&&reviewExecutionState(review,today)==="actionable"&&review.due_date<=today;
     }
     const record=taskPostponements.get(`${saved.problem_id}:${saved.kind}`);
     if(!record) return true;
@@ -2628,7 +2634,7 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
       const reviewMap=new Map(reviews.map(review=>[review.id,review]));
       const validTasks=snapshot.tasks.filter(task=>{
         const review=task.id&&task.review_type?reviewMap.get(task.id):undefined;
-        return !review||isActionableReview(review,review.grading_contract);
+        return !review||reviewExecutionState(review,today)==="actionable";
       });
       const reorganized=triageTodayTasks(validTasks,target,problems,today).tasks;
       const nextSnapshot:{[key:string]:unknown}={...snapshot,
@@ -2678,14 +2684,14 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
   } else if(/^\/api\/reviews\/\d+\/contract-lock$/.test(path)) {
     const id=Number(path.split("/")[3]),review=await db.reviews.get(id);
     if(!review)throw new Error("復習カードが見つかりません");
-    if(!isActionableReview(review,review.grading_contract))
-      throw new Error("この課題は現行ポリシーでは無効です。現在の計画を再作成してください。");
+    const state=reviewExecutionState(review,todayString());
+    if(state!=="actionable")throw new Error(reviewExecutionMessage(state,review));
     if(!review.contract_locked_at)await db.reviews.update(id,{contract_locked_at:new Date().toISOString()});
   } else if(/^\/api\/reviews\/\d+\/reference$/.test(path)) {
     const id=Number(path.split("/")[3]),review=await db.reviews.get(id);
     if(!review)throw new Error("復習カードが見つかりません");
-    if(!isActionableReview(review,review.grading_contract))
-      throw new Error("この課題は現行ポリシーでは無効です。");
+    const state=reviewExecutionState(review,todayString());
+    if(state!=="actionable")throw new Error(reviewExecutionMessage(state,review));
     const level=Math.min(5,Math.max(Number(review.actual_reference_level||0),Number(body.actual_reference_level||0)));
     await db.reviews.update(id,{actual_reference_level:level,contract_locked_at:review.contract_locked_at||new Date().toISOString()});
   } else if(/^\/api\/reviews\/\d+\/postpone$/.test(path)) {
@@ -2694,7 +2700,8 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     await db.transaction("rw",[db.meta],()=>postponeTask(body));
   } else if(/^\/api\/reviews\/\d+\/done$/.test(path)) {
     const id=Number(path.split("/")[3]),review=await db.reviews.get(id);
-    if(!review||!isActionableReview(review,review.grading_contract))throw new Error("この復習課題はすでに完了または置換されているため操作できません");
+    const state=reviewExecutionState(review,todayString());
+    if(state!=="actionable")throw new Error(reviewExecutionMessage(state,review));
     await db.reviews.update(id,{status:"done",completed_at:new Date().toISOString()});
     notifyStudyDataChanged({operation:"mark-review-done",reviewId:id});
   } else if(/^\/api\/reviews\/\d+\/pending$/.test(path)) {
@@ -2713,7 +2720,8 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
       if(examDate&&examDate>todayString()){
         const cap=addDays(examDate,-3),minimum=addDays(todayString(),1);
         const due=cap>minimum?cap:minimum;
-        const pending=await db.reviews.filter(review=>review.status!=="done"&&review.due_date>=addDays(examDate,-2)).toArray();
+        const pending=await db.reviews.filter(review=>
+          reviewExecutionState(review,todayString())==="actionable"&&review.due_date>=addDays(examDate,-2)).toArray();
         for(const review of pending) await db.reviews.update(review.id,{due_date:due});
       }
     });

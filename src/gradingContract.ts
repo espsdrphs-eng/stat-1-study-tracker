@@ -267,8 +267,8 @@ export function contractShortId(contract:GradingContractSnapshot){return contrac
 export function isActionableReview(
   review:Partial<Review&Task>,
   contract:GradingContractSnapshot|undefined=review.grading_contract,
+  today=new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Tokyo",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date()),
 ){
-  const today=new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Tokyo",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
   return ["pending","overdue"].includes(String(review.status||"pending"))&&
     review.policy_validity!=="invalid_legacy_k"&&review.exclude_from_planning!==true&&
     !(review.assessment_timing==="same_session_correction"&&String(review.due_date||"")<today)&&

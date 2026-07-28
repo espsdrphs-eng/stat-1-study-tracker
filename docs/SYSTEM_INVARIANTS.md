@@ -8,6 +8,10 @@ This document is the implementation-level source of truth for data integrity. Le
 - `contractId` identifies one persisted Review execution and is unique among active Reviews.
 - `contractHash` identifies contract content. Equal content may legitimately have different `contractId` values.
 - Done, superseded, invalid, cancelled, ignored, and expired same-session Reviews are never actionable.
+- `reviewExecutionState` is the single current-state classifier. Problem detail, Today Plan, GPT import,
+  review counts, and remaining-time calculations must use it; array order or due date alone never selects a current Review.
+- Problem-level current selection returns every actionable Review with a distinct learning purpose. Terminal Reviews
+  remain immutable history and never expose sheets, completion controls, reference controls, prompts, or save actions.
 - Same-session corrections are actionable only on their local calendar date.
 - Policy schedules persist `sourceDate`, `reviewAfterDays`, `reviewDate`, `scheduleOrigin`, and `policyVersion` together.
 - A manual schedule is preserved and is not diagnosed as a policy date mismatch.

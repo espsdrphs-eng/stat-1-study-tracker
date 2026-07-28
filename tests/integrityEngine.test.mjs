@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   attemptFingerprint, bindContractToReview, classifyExactDuplicateAttempts, contractIdForReview,
-  logicalReviewKey, reviewExecutionState, runIntegrityAudit,
+  logicalReviewKey, reviewExecutionMessage, reviewExecutionState, runIntegrityAudit,
+  selectCurrentReviewsForProblem,
 } from "../src/integrityEngine.ts";
 
 const attempt=(id,patch={})=>({
@@ -68,6 +69,42 @@ test("done, superseded, invalid and expired same-session Reviews are not actiona
   assert.equal(reviewExecutionState(review(2,1,{status:"superseded"}),"2026-07-26"),"superseded");
   assert.equal(reviewExecutionState(review(3,1,{policy_validity:"invalid_legacy_k"}),"2026-07-26"),"invalid");
   assert.equal(reviewExecutionState(review(4,1,{assessment_timing:"same_session_correction",due_date:"2026-07-25"}),"2026-07-26"),"expired_same_session");
+});
+
+test("problem current Review selection never substitutes terminal history",()=>{
+  const superseded=review(209,1,{problem_id:"WB-6-S-21",status:"superseded",policy_validity:"invalid_legacy_k",exclude_from_planning:true});
+  const none=selectCurrentReviewsForProblem({reviews:[superseded],problemId:"WB-6-S-21",today:"2026-07-29"});
+  assert.deepEqual(none.current,[]);
+  assert.deepEqual(none.history.map(row=>[row.review.id,row.state]),[[209,"superseded"]]);
+  assert.match(reviewExecutionMessage(none.history[0].state,superseded),/終了しました/);
+});
+
+test("active Review wins over superseded history for the same canonical problem",()=>{
+  const old=review(220,1,{problem_id:"WB-6-S-22",status:"superseded",policy_validity:"invalid_legacy_k",exclude_from_planning:true});
+  const current=review(231,1,{problem_id:"WB-6-S-22",due_date:"2026-07-28"});
+  const selection=selectCurrentReviewsForProblem({reviews:[old,current],problemId:"WB-6-S-22",today:"2026-07-29"});
+  assert.deepEqual(selection.current.map(row=>row.id),[231]);
+  assert.deepEqual(selection.history.map(row=>row.review.id),[220]);
+});
+
+test("different-purpose actionable Reviews for one problem are all retained",()=>{
+  const repair=review(249,1,{problem_id:"WB-6-A-20",learning_purpose:"error_repair",
+    grading_contract:{...review(249).grading_contract,contractId:"review:249:1",learningPurpose:"error_repair"}});
+  const retrieval=review(250,1,{problem_id:"WB-6-A-20",learning_purpose:"retrieval_check",
+    grading_contract:{...review(250).grading_contract,contractId:"review:250:1",learningPurpose:"retrieval_check"}});
+  const selection=selectCurrentReviewsForProblem({reviews:[retrieval,repair],problemId:"WB-6-A-20",today:"2026-07-29"});
+  assert.deepEqual(selection.current.map(row=>row.id),[249,250]);
+});
+
+test("done, invalid, needs-review and expired rows stay out of current selection",()=>{
+  const rows=[
+    review(1,1,{status:"done"}),review(2,1,{policy_validity:"invalid_legacy_k"}),
+    review(3,1,{status:"review_needed"}),review(4,1,{assessment_timing:"same_session_correction",due_date:"2026-07-28"}),
+  ];
+  const selection=selectCurrentReviewsForProblem({reviews:rows,problemId:"WB-4-A-24",today:"2026-07-29"});
+  assert.equal(selection.current.length,0);
+  assert.deepEqual(new Set(selection.history.map(row=>row.state)),
+    new Set(["completed","invalid","needs_review","expired_same_session"]));
 });
 
 test("one audit detects duplicate logical key, contract id, dedup key, expiry and stale snapshot",()=>{

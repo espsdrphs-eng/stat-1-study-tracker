@@ -29,7 +29,10 @@ import { buildScan5Prompt, deriveExposure, scanMetrics, stageForDays, defaultSes
 import { CHAPTER_META } from "./officialMaster";
 import { isProblemPack, masterDiff, parseAliasesPayload, parseIntegratedMasterPayload, parseProblemMasterPayload } from "./masterData";
 import { isIndexedDbSchemaError, schemaErrorMessage, type IndexedDbSchemaDiagnostic } from "./dbSchema";
-import { isActionableReview } from "./gradingContract";
+import {
+  reviewExecutionMessage, reviewExecutionState, selectCurrentReviewsForProblem,
+  type ReviewExecutionState
+} from "./integrityEngine";
 import { gradedPartLabels } from "./gradedParts";
 import { subscribeStudyDataChanged } from "./appEvents";
 import type { AnswerIndexEntry, Attempt, Bootstrap, PastExamSessionKind, PastSession, Problem, ProblemAlias, Review, ScanQuestion, StudyUpdate, Task } from "./types";
@@ -68,6 +71,27 @@ function Metric({label,value,unit="",hint,tone=""}:{label:string;value:string|nu
   return <div className={`metric ${tone}`}><div className="metric-label">{label}</div><div className="metric-value">{value}<small>{unit}</small></div>{hint&&<div className="metric-hint">{hint}</div>}</div>
 }
 function Empty({children}:{children:React.ReactNode}) { return <div className="empty"><Archive size={30}/><p>{children}</p></div> }
+const reviewStateLabel:Record<Exclude<ReviewExecutionState,"actionable">,string>={
+  completed:"完了",superseded:"終了済み",invalid:"計画対象外",expired_same_session:"期限切れ",
+  needs_review:"要確認",stale:"契約不一致",missing:"見つかりません"
+};
+function InactiveReviewNotice({review,state,successors=[]}:{review:Review;state:Exclude<ReviewExecutionState,"actionable">;successors?:Review[]}) {
+  const goToSuccessor=(id:number)=>{
+    const target=document.getElementById(`review-${id}`);
+    target?.scrollIntoView({behavior:"smooth",block:"center"});
+    target?.classList.add("review-focus");
+    window.setTimeout(()=>target?.classList.remove("review-focus"),1800);
+  };
+  return <div className="inactive-review-notice">
+    <AlertTriangle size={18}/><div><strong>{reviewStateLabel[state]}</strong><span>{reviewExecutionMessage(state,review)}</span>
+      <small>Review #{review.id}・{review.due_date}</small>
+      {!!successors.length&&<div className="button-row">{successors.map(successor=>
+        <button type="button" className="ghost small" key={successor.id} onClick={()=>goToSuccessor(successor.id)}>
+          現在のReview #{successor.id}へ移動
+        </button>)}</div>}
+    </div>
+  </div>;
+}
 function SheetLink({href,label="シートを見る",primary=false}:{href:string;label?:string;primary?:boolean}){
   const [open,setOpen]=useState(false);
   return <><button type="button" className={`${primary?"primary":"ghost"} sheet-trigger`} onClick={()=>setOpen(true)}><Download size={15}/>{label}</button>
@@ -160,7 +184,7 @@ function nextQueueTask(data:Bootstrap){
   if(must) return {task:must,source:"今日やること > 必ずやる > 1番目"};
   const ifTime=open.find(task=>task.triage==="if_time");
   if(ifTime) return {task:ifTime,source:"今日やること > 余裕があれば > 1番目"};
-  const review=data.reviews.find(review=>["overdue","pending"].includes(review.status));
+  const review=data.reviews.find(review=>reviewExecutionState(review,data.dashboard.today)==="actionable");
   if(review){
     const card=resolveReviewCard({item:review,problems:data.problems,attempts:data.attempts,aliases:data.problemAliases,today:data.dashboard.today,examDate:data.settings.exam_date});
     return {task:{problem_id:card.canonicalProblemId,title:card.displayLabel,theme:card.theme,kind:"復習",reason:review.status==="overdue"?"期限切れの復習待ち":"復習待ち",mode:card.effectiveMode,minutes:card.estimatedMinutes,load:0,status:review.status,review_method:card.reviewMethodLabel,effective_mode:card.effectiveMode,sheet_type:card.sheetType,review_needed:card.reviewNeeded} as Task,source:`復習予定 > ${review.status==="overdue"?"期限切れ":"未完了"} > 最優先`};
@@ -176,7 +200,8 @@ function DashboardView({data,go,select}:{data:Bootstrap;go:(p:Page)=>void;select
   const pmap=Object.fromEntries(data.problems.map(problem=>[problem.problem_id,problem]));
   const pastIds=new Set(data.problems.filter(problem=>problem.category==="past_exam").map(problem=>problem.problem_id));
   const pastAttemptCount=data.attempts.filter(attempt=>pastIds.has(attempt.problem_id)).length;
-  const pastReviewCount=data.reviews.filter(review=>review.status!=="done"&&pastIds.has(review.problem_id)).length;
+  const pastReviewCount=data.reviews.filter(review=>
+    reviewExecutionState(review,data.dashboard.today)==="actionable"&&pastIds.has(review.problem_id)).length;
   const next=nextQueueTask(data);
   const nextTask=next.task;
   const nextProblem=nextTask?pmap[nextTask.problem_id]:undefined;
@@ -307,7 +332,8 @@ function ReviewPlanDetails({item:rawItem,compact=false,resolved}:{item:Partial<R
   const [openReferencePanel,setOpenReferencePanel]=useState<OpenReferencePanel>(null);
   const lockContract=()=>{if(item.id&&!item.contract_locked_at)void post(`/api/reviews/${item.id}/contract-lock`,{}).catch(()=>undefined)};
   if(!item.review_method&&!item.review_reason&&!resolved) return null;
-  const actionable=!item.id||!!resolved&&isActionableReview(item,resolved.gradingContract)&&!resolved.reviewNeeded;
+  const executionState=item.id?reviewExecutionState(rawItem as Review,todayString()):"actionable";
+  const actionable=!item.id||executionState==="actionable"&&!!resolved&&!resolved.reviewNeeded;
   const actions=resolved?.todayActions.value||safeReviewActions(item);
   const template=reviewTemplate(item);
   const allowed=allowedReferenceLevel(item);
@@ -348,6 +374,8 @@ function ReviewPlanDetails({item:rawItem,compact=false,resolved}:{item:Partial<R
     learningStage:resolved?.prescription.learningStage,assessmentTiming:resolved?.prescription.assessmentTiming,
     targetKind:resolved?.prescription.targetKind,gradingContract:resolved?.gradingContract,problemContext:resolved?.problemContext
   }):"";
+  if(item.id&&executionState!=="actionable")
+    return <InactiveReviewNotice review={rawItem as Review} state={executionState}/>;
   return <div className={`review-plan ${compact?"compact":""}`}>
     {resolved?.reviewNeeded&&<div className="review-consistency-warning"><AlertTriangle size={18}/><div><strong>要確認</strong><span>問題情報または復習履歴に不整合があります。誤った具体的な指示は表示していません。</span></div></div>}
     {!!resolved?.consistencyWarnings.length&&!resolved.reviewNeeded&&<details className="review-consistency-details"><summary>自動整合済み {resolved.consistencyWarnings.length}件</summary><ul>{resolved.consistencyWarnings.map(warning=><li key={warning.code}>{warning.message}</li>)}</ul></details>}
@@ -367,7 +395,6 @@ function ReviewPlanDetails({item:rawItem,compact=false,resolved}:{item:Partial<R
       <div><span>許可された参照</span><strong>レベル {resolved.gradingContract.allowedReferenceLevel}</strong></div>
       <div><span>契約</span><strong>{resolved.gradingContract.contractId.slice(-8)}</strong></div>
     </div>}
-    {!actionable&&item.id&&<div className="review-consistency-warning"><AlertTriangle size={18}/><div><strong>実行できません</strong><span>この課題は現行ポリシーでは無効です。設定から採点契約を固定し、現在の計画を再作成してください。</span></div></div>}
     <div className="review-aim"><span>今回の狙い</span><strong>{resolved?.reviewGoal.value||reviewAim(item)}</strong></div>
     {(resolved?.taskOrigin||item.task_origin)==="linked_s_check"&&<div className="task-origin-note"><Badge tone="blue">関連S確認</Badge><div><strong>この問題自体は{hasPreviousAttempt?"既習":"初回"}確認です</strong><span>元問題：{resolved?.sourceProblem?.displayLabel||item.source_problem_id||"記録なし"}／{resolved?.sourceProblem?.sourceIssue||"元問題で崩れた基礎型を確認します。"}</span></div></div>}
     <div className="correction-theme"><span>今回の採点対象</span><strong>{resolved?resolved.gradingContract.gradedParts.map(part=>part.cueLabel).join("・"):correctionTheme(item)}</strong></div>
@@ -628,9 +655,14 @@ function TodayTaskDetails({task,problem,onOpenProblem,problemAliases,examPhase,r
 function TodayTaskRows({task:t,problem,data,busy,run,date,onReview,onOpenProblem,onPostpone,examPhase}:{task:Task;problem?:Problem;data:Bootstrap;busy:boolean;run:(a:()=>Promise<unknown>,s:string)=>void;date:string;onReview:(task:Task)=>void;onOpenProblem:(problem:Problem)=>void;onPostpone:(task:Task,action:ScheduleAction)=>void;examPhase:ExamPhase}) {
   const resolved=resolveReviewCard({item:t,problems:data.problems,attempts:data.attempts,aliases:data.problemAliases,today:data.dashboard.today,examDate:data.settings.exam_date});
   const isReview=!!t.id&&!!t.review_type;
+  const persistedReview=isReview?data.reviews.find(review=>review.id===t.id):undefined;
+  const executionState=isReview?reviewExecutionState(persistedReview,data.dashboard.today):"actionable";
   const toggle=()=>isReview
     ?onReview(t)
     :run(()=>post("/api/today-check",{date,problem_id:t.problem_id,kind:t.kind,checked:!t.checked}),t.checked?"チェックを外しました":"解答済み・採点待ちにしました");
+  if(isReview&&executionState!=="actionable")return <tr className="inactive-today-task"><td colSpan={6}>
+    {persistedReview?<InactiveReviewNotice review={persistedReview} state={executionState}/>:<div className="inactive-review-notice"><AlertTriangle size={18}/><div><strong>見つかりません</strong><span>この復習課題は現在のデータに存在しません。</span></div></div>}
+  </td></tr>;
   return <><tr className={t.checked?"task-checked":""}><td><Badge tone={t.kind==="S確認"?"blue":t.error_type==="K"?"red":""}>{t.kind}</Badge></td><td><strong>{t.problem_id}</strong><small>{t.title}{t.checked&&<em className="grading-wait">採点待ち</em>}</small></td><td>{modes[t.mode]||t.mode}</td><td>{t.minutes}分</td><td>{t.reason}{t.postpone_count?` ・ 先送り${t.postpone_count}回（${t.postpone_reason}）`:""}</td><td><div className="task-actions"><SheetLink href={sheetHref(t.mode)} label="シート"/><label className="task-check"><input type="checkbox" checked={!!t.checked} disabled={busy} onChange={toggle}/><span>{isReview?"復習結果を記録":"解答済み"}</span></label></div><ScheduleQuickButtons item={t} busy={busy} select={action=>onPostpone(t,action)}/></td></tr>
     <tr className="task-plan-row"><td colSpan={6}><TodayTaskDetails task={t} problem={problem} onOpenProblem={onOpenProblem} problemAliases={data.problemAliases} examPhase={examPhase} resolved={resolved}/>{(t.review_method||t.review_reason)&&<ReviewPlanDetails item={t} compact resolved={resolved}/>}</td></tr></>;
 }
@@ -700,9 +732,14 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport}:{problem:Problem;
   const canonicalId=resolveCanonicalProblemId(problem.problem_id,data.problemAliases);
   const attempts=data.attempts.filter(a=>resolveCanonicalProblemId(a.problem_id,data.problemAliases)===canonicalId);
   const validAttempts=attempts.filter(attempt=>attemptConsistentForDisplay(attempt,problem));
-  const reviews=data.reviews.filter(a=>resolveCanonicalProblemId(a.problem_id,data.problemAliases)===canonicalId);
-  const latest=validAttempts[0],nextReview=reviews.filter(r=>r.status!=="done").sort((a,b)=>a.due_date.localeCompare(b.due_date))[0];
-  const nextReviewCard=nextReview?resolveReviewCard({item:nextReview,problems:data.problems,attempts:data.attempts,aliases:data.problemAliases,today:data.dashboard.today,examDate:data.settings.exam_date}):undefined;
+  const reviewSelection=selectCurrentReviewsForProblem({
+    reviews:data.reviews,problemId:canonicalId,aliases:data.problemAliases,today:data.dashboard.today
+  });
+  const currentReviewCards=reviewSelection.current.map(review=>({
+    review,card:resolveReviewCard({item:review,problems:data.problems,attempts:data.attempts,
+      aliases:data.problemAliases,today:data.dashboard.today,examDate:data.settings.exam_date})
+  }));
+  const latest=validAttempts[0],nextReview=currentReviewCards[0]?.review;
   const related=problem.related_s_problem_ids?.length?problem.related_s_problem_ids:String(problem.linked_s_problems||"").split(";").filter(Boolean);
   const editAttempt=(attempt:Attempt)=>{
     setEditing(attempt);
@@ -731,7 +768,18 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport}:{problem:Problem;
     </div></details>}
     <div className="detail-grid"><section className="panel"><h3>問題情報</h3><dl><dt>役割</dt><dd>{problem.role}</dd><dt>出題型</dt><dd>{problem.canonical_problem_type||"—"}</dd><dt>難易度</dt><dd>{problem.difficulty!=null?`難${problem.difficulty}`:"—"}</dd><dt>推奨モード</dt><dd>{modes[problem.recommended_mode]}</dd><dt>関連S問題</dt><dd>{related.join(" / ")||"—"}</dd><dt>関連A問題</dt><dd>{problem.linked_a_problems||"—"}</dd><dt>関連過去問</dt><dd>{problem.linked_past_exams||"—"}</dd><dt>次回課題</dt><dd>{removeTimingExpressions(latest?.next_action)||"—"}</dd><dt>メモ</dt><dd>{problem.notes||"—"}</dd></dl>
     </section>
-    <section className="panel"><h3>復習予定</h3>{nextReview&&nextReviewCard?<><div className="history"><CalendarCheck/><div><strong>{nextReviewCard.dueDate}</strong><span>{nextReviewCard.reviewMethodLabel}・{nextReview.status}</span></div></div><ReviewPlanDetails item={nextReview} resolved={nextReviewCard}/></>:<Empty>復習予定はありません</Empty>}</section></div>
+    <section className="panel current-review-panel"><h3>現在の復習予定</h3>{currentReviewCards.length?
+      <div className="current-review-list">{currentReviewCards.map(({review,card})=>
+        <article className="current-review-entry" id={`review-${review.id}`} key={review.id}>
+          <div className="history"><CalendarCheck/><div><strong>{card.dueDate}</strong><span>{card.reviewMethodLabel}・{card.gradingContract.learningPurpose}・Review #{review.id}</span></div></div>
+          <ReviewPlanDetails item={review} resolved={card}/>
+        </article>)}</div>:
+      <Empty>現在、予定されている復習はありません</Empty>}
+      {!!reviewSelection.history.length&&<details className="past-review-list"><summary>過去の復習カード（{reviewSelection.history.length}件）</summary>
+        <div>{reviewSelection.history.map(({review,state})=>
+          <InactiveReviewNotice key={review.id} review={review} state={state} successors={reviewSelection.current}/>)}</div>
+      </details>}
+    </section></div>
     <section className="panel"><div className="panel-title"><h3>解答履歴</h3><span className="muted">{attempts.length}回</span></div>{attempts.some(a=>a.policy_validity==="invalid_legacy_k")&&<p className="legacy-k-note">旧ルーブリックによるKは履歴として保持していますが、現在の計画・K再発率には使用しません。</p>}{attempts.length?<div className="table-wrap"><table><thead><tr><th>日付</th><th>モード</th><th>評価</th><th>K/W/N/C</th><th>ミス</th><th>次の行動</th><th>操作</th></tr></thead><tbody>{attempts.map(a=>{const consistent=attemptConsistentForDisplay(a,problem);return <tr key={a.id} className={!consistent?"inconsistent-record":""}><td>{a.date}{!consistent&&<small> ID要確認</small>}</td><td>{modes[a.mode]||a.mode}</td><td>{a.mark} / {a.score_label}{a.score_numeric!=null?` ${a.score_numeric}点`:""}</td><td>{(a.error_types||[a.error_type]).filter(error=>error!=="none").map(error=><ErrorBadge key={error} value={error}/>)}{!(a.error_types||[a.error_type]).some(error=>error!=="none")&&<ErrorBadge value="none"/>}{a.policy_validity==="invalid_legacy_k"&&<small className="legacy-k-note">計画対象外</small>}{a.policy_validity==="needs_review"&&<small className="legacy-k-note">根拠要確認</small>}</td><td>{a.error_point||"—"}</td><td>{removeTimingExpressions(a.next_action)||"—"}</td><td><div className="history-actions"><button className="small ghost" onClick={()=>editAttempt(a)}><Pencil size={13}/>編集</button><button className="small danger-button" disabled={busy} onClick={()=>removeAttempt(a)}><Trash2 size={13}/>削除</button></div></td></tr>})}</tbody></table></div>:<Empty>まだ学習記録がありません</Empty>}</section>
     {editing&&<Modal title="解答履歴を編集" close={()=>setEditing(null)}><form className="form-grid analysis-edit-form" onSubmit={saveEdit}>
       <Field label="問題"><input value={editing.problem_id} readOnly/></Field>
@@ -813,8 +861,16 @@ function ReviewsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>
   const [filter,setFilter]=useState("open");
   const [selectedReview,setSelectedReview]=useState<Review|null>(null);
   const [postponeReviewItem,setPostponeReviewItem]=useState<{item:Review;initial:ScheduleAction}|null>(null);
-  const rows=data.reviews.filter(r=>!["id_review_needed","ignored"].includes(r.status)&&(filter==="all"||(filter==="open"?["pending","overdue","deferred"].includes(r.status):r.status===filter)))
+  const stateOf=(review:Review)=>reviewExecutionState(review,data.dashboard.today);
+  const rows=data.reviews.filter(review=>filter==="all"?true:
+    filter==="open"?stateOf(review)==="actionable":
+    filter==="done"?stateOf(review)==="completed":
+    filter==="overdue"?stateOf(review)==="actionable"&&review.status==="overdue":
+    review.status===filter)
     .sort((a,b)=>a.due_date.localeCompare(b.due_date)||Number(a.manual_order||0)-Number(b.manual_order||0)||a.id-b.id);
+  const successorsFor=(review:Review)=>selectCurrentReviewsForProblem({
+    reviews:data.reviews,problemId:review.problem_id,aliases:data.problemAliases,today:data.dashboard.today
+  }).current.filter(item=>item.id!==review.id);
   const resolveReview=(review:Review)=>{
     const card=resolveReviewCard({item:review,problems:data.problems,attempts:data.attempts,aliases:data.problemAliases,today:data.dashboard.today,examDate:data.settings.exam_date});
     const source=card.targetAttempt;
@@ -830,7 +886,26 @@ function ReviewsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>
   const saveReview=(body:Record<string,unknown>)=>{if(!selectedReview)return;const id=selectedReview.id;setSelectedReview(null);sessionStorage.removeItem(referenceStorageKey(id));sessionStorage.removeItem(referenceClosedStorageKey(id));run(()=>post(`/api/reviews/${id}/complete`,body),"復習結果を保存し、次回間隔を再計算しました")};
   const postpone=(body:Record<string,unknown>,label:string)=>{if(!postponeReviewItem)return;const id=postponeReviewItem.item.id;setPostponeReviewItem(null);
     run(()=>post(`/api/reviews/${id}/postpone`,body),`復習を${label}へ送りました`)};
-  return <><div className="toolbar"><div className="segmented">{[["open","未完了"],["overdue","期限切れ"],["deferred","期限なし"],["done","完了"],["all","すべて"]].map(([k,v])=><button key={k} className={filter===k?"active":""} onClick={()=>setFilter(k)}>{v}</button>)}</div></div><div className="review-list">{rows.map(r=>{const resolved=resolveReview(r);return <article className="panel review-card" key={r.id}><div className="review-card-head"><div><Badge tone={resolved.card.reviewNeeded?"red":r.status==="overdue"?"red":r.status==="done"?"green":""}>{resolved.card.reviewNeeded?"要確認":r.status==="overdue"?"期限切れ":r.status==="done"?"完了":r.status==="deferred"?"期限なし":"予定"}</Badge><h3>{resolved.card.displayLabel}</h3><span>{resolved.card.canonicalProblemId} ・ 次回復習 {r.status==="deferred"?"期限なし":resolved.card.dueDate}{(r.postpone_count||r.postponed_count)?` ・ 先送り ${r.postpone_count||r.postponed_count}回`:""}{r.postpone_reason?` ・ ${r.postpone_reason}`:""}{r.completion_result?` ・ 結果 ${r.completion_result}`:""}</span></div>{r.status==="done"?(r.completion_result?<Badge tone="green">結果記録済み</Badge>:<button disabled={busy} className="small ghost" onClick={()=>run(()=>post(`/api/reviews/${r.id}/pending`,{}),"未完了に戻しました")}>未完了に戻す</button>):<div className="review-card-actions"><button disabled={busy||r.status==="deferred"||resolved.card.reviewNeeded} className="small primary" onClick={()=>setSelectedReview(r)}><Check size={14}/>復習結果を記録</button></div>}</div>{r.status!=="done"&&<ScheduleQuickButtons item={resolved.item} busy={busy} select={initial=>setPostponeReviewItem({item:r,initial})}/>}<ReviewPlanDetails item={resolved.item} resolved={resolved.card}/></article>})}</div>{!rows.length&&<section className="panel"><Empty>該当する復習予定はありません</Empty></section>}{selectedReview&&<ReviewOutcomeModal item={resolveReview(selectedReview).item} busy={busy} close={()=>setSelectedReview(null)} save={saveReview}/>} {postponeReviewItem&&<PostponeReviewModal item={resolveReview(postponeReviewItem.item).item} initial={postponeReviewItem.initial} busy={busy} close={()=>setPostponeReviewItem(null)} save={postpone}/>}</>
+  return <><div className="toolbar"><div className="segmented">{[["open","現在の予定"],["overdue","期限切れ"],["deferred","期限なし"],["done","完了"],["all","すべて"]].map(([k,v])=><button key={k} className={filter===k?"active":""} onClick={()=>setFilter(k)}>{v}</button>)}</div></div>
+    <div className="review-list">{rows.map(review=>{
+      const state=stateOf(review);
+      const resolved=resolveReview(review);
+      if(state!=="actionable")return <article className="panel review-card inactive-review-card" id={`review-${review.id}`} key={review.id}>
+        <div className="review-card-head"><div><Badge>{reviewStateLabel[state]}</Badge><h3>{resolved.card.displayLabel}</h3><span>{resolved.card.canonicalProblemId}・Review #{review.id}</span></div></div>
+        <InactiveReviewNotice review={review} state={state} successors={successorsFor(review)}/>
+      </article>;
+      return <article className="panel review-card" id={`review-${review.id}`} key={review.id}>
+        <div className="review-card-head"><div><Badge tone={review.status==="overdue"?"red":""}>{review.status==="overdue"?"期限切れ":"予定"}</Badge><h3>{resolved.card.displayLabel}</h3>
+          <span>{resolved.card.canonicalProblemId}・次回復習 {resolved.card.dueDate}・Review #{review.id}{(review.postpone_count||review.postponed_count)?`・先送り ${review.postpone_count||review.postponed_count}回`:""}</span></div>
+          <div className="review-card-actions"><button disabled={busy} className="small primary" onClick={()=>setSelectedReview(review)}><Check size={14}/>復習結果を記録</button></div>
+        </div>
+        <ScheduleQuickButtons item={resolved.item} busy={busy} select={initial=>setPostponeReviewItem({item:review,initial})}/>
+        <ReviewPlanDetails item={resolved.item} resolved={resolved.card}/>
+      </article>})}</div>
+    {!rows.length&&<section className="panel"><Empty>該当する復習予定はありません</Empty></section>}
+    {selectedReview&&<ReviewOutcomeModal item={resolveReview(selectedReview).item} busy={busy} close={()=>setSelectedReview(null)} save={saveReview}/>}
+    {postponeReviewItem&&<PostponeReviewModal item={resolveReview(postponeReviewItem.item).item} initial={postponeReviewItem.initial} busy={busy} close={()=>setPostponeReviewItem(null)} save={postpone}/>}
+  </>
 }
 function WeakView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean}) {
   const [selected,setSelected]=useState<string[]>([]);
@@ -919,7 +994,8 @@ function PastView({data,go,run,busy}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()
   const pmap=new Map(pastProblems.map(problem=>[problem.problem_id,problem]));
   const attempts=data.attempts.filter(attempt=>pmap.has(attempt.problem_id));
   const errorAttempts=attempts.filter(attempt=>(attempt.error_types||[attempt.error_type]).some(error=>error!=="none"));
-  const pending=data.reviews.filter(review=>review.status!=="done"&&pmap.has(review.problem_id));
+  const pending=data.reviews.filter(review=>
+    reviewExecutionState(review,data.dashboard.today)==="actionable"&&pmap.has(review.problem_id));
   const themes=new Set(errorAttempts.map(attempt=>pmap.get(attempt.problem_id)?.theme).filter(Boolean));
   const submitSession=async()=>{
     const selectedProblemIds=session.questions.filter(row=>row.selected).map(row=>row.problemId||row.questionLabel);
@@ -969,7 +1045,8 @@ function PastView({data,go,run,busy}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()
     <section className="section-head"><div><span className="eyebrow">REPAIR TARGETS</span><h2>過去問で明らかになった要復習箇所</h2></div></section>
     <div className="past-result-list">{errorAttempts.map(attempt=>{
       const problem=pmap.get(attempt.problem_id)!;
-      const review=data.reviews.find(item=>item.generated_from_attempt_id===attempt.id&&item.problem_id===attempt.problem_id);
+      const review=data.reviews.find(item=>item.generated_from_attempt_id===attempt.id&&item.problem_id===attempt.problem_id&&
+        reviewExecutionState(item,data.dashboard.today)==="actionable");
       const insight=data.dashboard.weaknessInsights.find(item=>item.theme.includes(problem.theme)||problem.theme.includes(item.theme));
       const direct=[...String(problem.linked_a_problems||"").split(/[;,、\s]+/),...(problem.related_s_problem_ids||[])].filter(Boolean);
       const targets=[...new Set([...direct,...(insight?.recommendedA||[]),...(insight?.recommendedS||[])])];

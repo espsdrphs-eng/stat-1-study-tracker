@@ -6,7 +6,7 @@ import { createAttemptReviewPlan } from "./reviewRules";
 import { buildGradingPrompt, GRADING_RUBRIC_VERSION, REVIEW_RUBRIC_VERSION } from "./gradingPrompt";
 import { reviewDaysForErrors, sanitizeStudyUpdateTiming, timingWarningMessage, timingWarnings } from "./reviewTiming";
 import { finalizeStudyUpdateForSave, prepareImportedStudyUpdate } from "./studyCycle";
-import { isActionableReview } from "./gradingContract";
+import { reviewExecutionMessage, reviewExecutionState, selectCurrentReviewsForProblem } from "./integrityEngine";
 import type { AnswerIndexEntry, Attempt, Problem, ProblemAlias, Review, StudyUpdate } from "./types";
 
 const modes:Record<string,string>={check:"チェック",skeleton:"骨格",main_calc:"主要計算",full:"フル答案",scan:"スキャン",exam_90min:"90分演習"};
@@ -150,10 +150,15 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
 
   const firstMissing=updates.map((row,index)=>({index,missing:missingRequiredFields(row)[0]})).find(item=>item.missing);
   const allMissing=updates.flatMap((row,index)=>missingRequiredFields(row).map(item=>({...item,index})));
-  const invalidSourceUpdates=updates.filter(row=>{
-    if(!row.generated_from_review_id)return false;
+  const invalidSourceUpdates=updates.flatMap((row,index)=>{
+    if(!row.generated_from_review_id)return [];
     const review=reviews.find(item=>item.id===row.generated_from_review_id);
-    return !review||!isActionableReview(review,review.grading_contract);
+    const state=reviewExecutionState(review,todayString());
+    if(state==="actionable")return [];
+    const successors=selectCurrentReviewsForProblem({
+      reviews,problemId:review?.problem_id||row.problem_id,aliases:problemAliases,today:todayString()
+    }).current;
+    return [{index,row,review,state,message:reviewExecutionMessage(state,review),successors}];
   });
   const canSave=updates.length>0&&allMissing.length===0&&!updates.some(row=>row.requires_problem_confirmation)&&invalidSourceUpdates.length===0;
 
@@ -305,7 +310,12 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
         </button>
         {saveFailed&&<div className="database-save-failure"><AlertTriangle size={18}/><div><strong>学習内容はまだ保存されていません</strong><span>解析済みの入力内容はこの画面と一時保存領域に保持しています。データベース更新後、もう一度保存してください。</span><div className="button-row"><button type="button" className="primary small" disabled={busy} onClick={async()=>{const ok=await run(()=>post("/api/database/repair",{}),"データベースを安全に更新しました");if(ok)setSaveFailed(false)}}>データベースを更新する</button><button type="button" className="ghost small" onClick={()=>navigator.clipboard.writeText(JSON.stringify({study_updates:updates},null,2))}><Copy size={14}/>入力内容をコピー</button></div></div></div>}
         {!canSave&&<div className="save-blocked"><strong>保存できません。</strong>
-          {allMissing.length?<><span>不足項目：</span><ul>{allMissing.slice(0,8).map(item=><li key={`${item.index}-${item.key}`}><code>{item.key}</code>：{item.message}</li>)}</ul></>:<span>問題ID候補の確認が必要です。</span>}
+          {invalidSourceUpdates.length?<><span>保存対象の復習課題は現在実行できません。</span><ul>{invalidSourceUpdates.map(item=>
+            <li key={`${item.index}-${item.row.generated_from_review_id}`}>Review #{item.row.generated_from_review_id}：{item.message}
+              {!!item.successors.length&&<small> 現在のReview：{item.successors.map(review=>`#${review.id}`).join("、")}</small>}
+            </li>)}</ul></>:
+          allMissing.length?<><span>不足項目：</span><ul>{allMissing.slice(0,8).map(item=><li key={`${item.index}-${item.key}`}><code>{item.key}</code>：{item.message}</li>)}</ul></>:
+          <span>問題ID候補の確認が必要です。</span>}
         </div>}
       </>}
     </section>

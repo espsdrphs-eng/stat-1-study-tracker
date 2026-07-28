@@ -89,15 +89,69 @@ export function bindContractToReview(
 }
 
 export type ReviewExecutionState =
-  | "actionable" | "completed" | "superseded" | "invalid" | "expired_same_session" | "stale" | "missing";
+  | "actionable" | "completed" | "superseded" | "invalid" | "expired_same_session"
+  | "needs_review" | "stale" | "missing";
 
 export function reviewExecutionState(review: Review | undefined, today: string): ReviewExecutionState {
   if (!review) return "missing";
+  const row=review as Review&{review_needed?:boolean};
   if (["done", "completed"].includes(review.status)) return "completed";
   if (["superseded", "cancelled", "ignored"].includes(review.status)) return "superseded";
   if (review.policy_validity === "invalid_legacy_k" || review.exclude_from_planning === true) return "invalid";
   if (review.assessment_timing === "same_session_correction" && review.due_date < today) return "expired_same_session";
-  return isActionableReview(review, review.grading_contract) ? "actionable" : "stale";
+  if (review.origin_verified === false || row.review_needed || ["review_needed", "id_review_needed"].includes(review.status)) return "needs_review";
+  return isActionableReview(review, review.grading_contract, today) ? "actionable" : "stale";
+}
+
+const PURPOSE_ORDER = ["error_repair", "retrieval_check", "integration_check", "transfer_check", "exam_performance"];
+const purposeRank=(review:Review)=>{
+  const index=PURPOSE_ORDER.indexOf(String(review.grading_contract?.learningPurpose||review.learning_purpose||""));
+  return index<0?PURPOSE_ORDER.length:index;
+};
+
+export type CurrentProblemReviews = {
+  canonicalProblemId: string;
+  current: Review[];
+  history: Array<{ review: Review; state: Exclude<ReviewExecutionState, "actionable"> }>;
+};
+
+/**
+ * Problem detail, today plan, import validation and counts must all select Reviews
+ * through this lifecycle classification. Array position and due date never make an
+ * inactive Review current.
+ */
+export function selectCurrentReviewsForProblem(args: {
+  reviews: Review[];
+  problemId: string;
+  aliases?: ProblemAlias[];
+  today: string;
+}): CurrentProblemReviews {
+  const aliases = args.aliases || [];
+  const canonicalProblemId = resolveCanonicalProblemId(args.problemId, aliases);
+  const matching = args.reviews.filter((review) =>
+    resolveCanonicalProblemId(review.problem_id, aliases) === canonicalProblemId);
+  const current = matching.filter((review) => reviewExecutionState(review, args.today) === "actionable")
+    .sort((a, b) => a.due_date.localeCompare(b.due_date) ||
+      purposeRank(a)-purposeRank(b) ||
+      a.id - b.id);
+  const history = matching.flatMap((review) => {
+    const state = reviewExecutionState(review, args.today);
+    return state === "actionable" ? [] : [{ review, state }];
+  }).sort((a, b) => b.review.due_date.localeCompare(a.review.due_date) || b.review.id - a.review.id);
+  return { canonicalProblemId, current, history };
+}
+
+export function reviewExecutionMessage(state: ReviewExecutionState, review?: Partial<Review>) {
+  if (state === "completed") return "この復習課題はすでに完了しています";
+  if (state === "superseded") return "この復習課題は、より新しい答案または現行ポリシーにより終了しました";
+  if (state === "invalid") return review?.policy_validity === "invalid_legacy_k"
+    ? "旧ポリシー由来のため現在の計画から除外されています"
+    : "この復習課題は現在の計画から除外されています";
+  if (state === "expired_same_session") return "この同日補修課題は有効期限を過ぎています";
+  if (state === "needs_review") return "問題情報または復習履歴の確認が必要なため、現在は実行できません";
+  if (state === "missing") return "復習課題が見つかりません";
+  if (state === "stale") return "画面と採点契約が一致しないため、現在は実行できません";
+  return "現在実行できます";
 }
 
 export type IntegrityCategory =
