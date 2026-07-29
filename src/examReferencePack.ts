@@ -292,7 +292,9 @@ export function buildPastExamCatalog(args:{
   record?:StoredExamReferencePack|null;sessions:PastSession[];exposureOverrides?:Record<string,PastExamExposure>;
 }):ExamReferenceCatalogItem[]{
   if(!args.record)return [];
-  return args.record.data.pastExamProblems.map(reference=>{
+  return args.record.data.pastExamProblems
+    .filter(reference=>reference.availability==="verified_problem"&&reference.schedulable)
+    .map(reference=>{
     const canonicalProblemId=canonicalPastExamProblemId(reference);
     return {referenceProblemId:reference.problem_id,canonicalProblemId,year:reference.year,
       questionNumber:reference.question_number,title:reference.title,availability:reference.availability,
@@ -302,6 +304,39 @@ export function buildPastExamCatalog(args:{
       simulationProtected:reference.simulation_protection_default,
       classificationConfidence:reference.classification_confidence};
   });
+}
+
+const exposureDisplayRank:Record<PastExamExposure,number>={
+  prompt_scanned:0,partially_attempted:1,fully_attempted:2,answer_exposed:3,simulated:4,
+  unseen:5,unknown:6
+};
+
+export function orderCorePastExamYears(args:{
+  catalog:ExamReferenceCatalogItem[];
+  plannedReferenceProblemIds?:string[];
+  daysRemaining:number;
+}):number[]{
+  const core=args.catalog.filter(row=>row.availability==="verified_problem"&&row.schedulable);
+  const byReference=new Map(core.map(row=>[row.referenceProblemId,row]));
+  const planned=(args.plannedReferenceProblemIds||[])
+    .map(problemId=>byReference.get(problemId)?.year)
+    .filter((year):year is number=>Number.isFinite(year));
+  const years=[...new Set(core.map(row=>row.year))];
+  const yearRank=(year:number)=>{
+    const rows=core.filter(row=>row.year===year);
+    const protectedUnknown=args.daysRemaining>=61&&rows.some(row=>row.simulationProtected)&&
+      rows.every(row=>["unknown","unseen"].includes(row.exposure));
+    return {
+      protected:protectedUnknown?1:0,
+      exposure:Math.min(...rows.map(row=>exposureDisplayRank[row.exposure])),
+      year
+    };
+  };
+  const remaining=years.filter(year=>!planned.includes(year)).sort((a,b)=>{
+    const left=yearRank(a),right=yearRank(b);
+    return left.protected-right.protected||left.exposure-right.exposure||left.year-right.year;
+  });
+  return [...new Set([...planned,...remaining])];
 }
 
 export function referenceProblemToLiveProblem(reference:PastExamReference,packHash:string,existing?:Problem):Problem{

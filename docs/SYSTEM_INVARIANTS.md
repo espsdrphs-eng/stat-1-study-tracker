@@ -3,6 +3,11 @@
 This document is the implementation-level source of truth for data integrity. Learning policy remains defined by
 `STABLE_LEARNING_SPEC.md`; these invariants describe how that policy is persisted and executed.
 
+- Verified core past-exam records are hydrated idempotently into both new and existing local databases.
+- The active past-exam catalog contains only schedulable `verified_problem` records; metadata-only and no-exam years never enter study selection.
+- Reference-pack hydration never deletes or rewrites Attempt, Review, pastSession, exposure, or todayPlanSnapshot history.
+- Reapplying the same pack does not create duplicate problem records.
+- UI year lists and planner candidates come from the active normalized catalog, not a fixed year array.
 - One answer submission creates at most one Attempt. `submission_id` is the idempotency key.
 - One logical review task has at most one active Review.
 - `contractId` identifies one persisted Review execution and is unique among active Reviews.

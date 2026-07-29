@@ -98,8 +98,6 @@ export const STRATEGY_A_PLUS_ORDER=[
   ...ids(3,"A",[11,12])
 ];
 
-export const PAST_EXAM_YEAR_ORDER=[2024,2025,2022,2023];
-
 export function strategyRankFor(problemId:string,category:"S"|"A"){
   const official=officialProblemEntries().find(entry=>entry.problem_id===problemId);
   return official?.strategy_rank||(category==="S"?"S":"A");

@@ -34,7 +34,7 @@ jobs:
       - name: Integrity fixture test
         run: node --experimental-strip-types --test tests/integrityEngine.test.mjs tests/integrityPersistence.test.mjs
       - name: Adaptive planner and reference-pack fixture test
-        run: node --experimental-strip-types --test tests/examReferencePack.test.mjs tests/examReferencePackPersistence.test.mjs tests/conceptWeakness.test.mjs tests/adaptivePlanner.test.mjs
+        run: node --experimental-strip-types --test tests/examReferencePack.test.mjs tests/examReferencePackPersistence.test.mjs tests/builtinExamReferencePersistence.test.mjs tests/conceptWeakness.test.mjs tests/adaptivePlanner.test.mjs
       - name: Build
         run: npm run build
       - name: Configure Pages

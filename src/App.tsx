@@ -36,7 +36,7 @@ import {
 import { gradedPartLabels } from "./gradedParts";
 import { subscribeStudyDataChanged } from "./appEvents";
 import {
-  parseExamReferencePack, reconcileExamReferencePack,
+  orderCorePastExamYears, parseExamReferencePack, reconcileExamReferencePack,
   type ExamReferencePackData, type ReferencePackReconciliation, type ReferencePackValidation
 } from "./examReferencePack";
 import type { AnswerIndexEntry, Attempt, Bootstrap, PastExamExposure, PastExamSessionKind, PastSession, Problem, ProblemAlias, Review, ScanQuestion, StudyUpdate, Task } from "./types";
@@ -720,7 +720,16 @@ function ProblemsView({data,select,run,busy}:{data:Bootstrap;select:(p:Problem)=
     const all=data.problems.filter(problem=>problem.chapter===chapter&&(problem.category==="S"||problem.category==="A"));
     return {chapter,all,shown:shown.filter(problem=>problem.chapter===chapter)};
   }).filter(group=>group.shown.length);
-  const pastShown=shown.filter(problem=>problem.category==="past_exam");
+  const corePastCatalog=data.adaptiveLearning.pastExamCatalog;
+  const corePastIds=new Set(corePastCatalog.map(row=>row.canonicalProblemId));
+  const pastShown=shown.filter(problem=>problem.category==="past_exam"&&corePastIds.has(problem.problem_id));
+  const plannedPastIds=data.adaptiveLearning.plannerShadow.plan30.plan.flatMap(day=>
+    day.tasks.map(task=>task.referenceProblemId).filter((value):value is string=>!!value)
+  );
+  const plannedYearOrder=orderCorePastExamYears({
+    catalog:corePastCatalog,plannedReferenceProblemIds:plannedPastIds,
+    daysRemaining:data.dashboard.pace.daysRemaining
+  });
   return <>
     <section className="master-flow"><div><strong>SS / S</strong><span>型・出発式を固定する土台</span></div><ChevronRight/><div><strong>A+</strong><span>Sを崩された問題への耐性</span></div><ChevronRight/><div><strong>過去問</strong><span>5問から3問を選び答案化</span></div></section>
     <div className="rank-overview">{rankCounts.map(item=><section className={`rank-stat rank-${item.rank.replace("+","plus")}`} key={item.rank}><span>実戦ランク {item.rank}</span><strong>{item.done}<small> / {item.total}題着手</small></strong><div><i style={{width:`${item.total?item.done/item.total*100:0}%`}}/></div></section>)}</div>
@@ -734,7 +743,7 @@ function ProblemsView({data,select,run,busy}:{data:Bootstrap;select:(p:Problem)=
         {!!sRows.length&&<div className="problem-lane"><span>S・土台</span><div>{sRows.sort((a,b)=>a.problem_number-b.problem_number).map(problem=><ProblemChip key={problem.problem_id} problem={problem} latest={latestMap.get(problem.problem_id)} rank={rankOf(problem)} select={select}/>)}</div></div>}
         {!!aRows.length&&<div className="problem-lane"><span>A・補強</span><div>{aRows.sort((a,b)=>a.problem_number-b.problem_number).map(problem=><ProblemChip key={problem.problem_id} problem={problem} latest={latestMap.get(problem.problem_id)} rank={rankOf(problem)} select={select}/>)}</div></div>}
       </section>})}</div>
-    {!!pastShown.length&&<section className="panel past-problem-master"><div className="panel-title"><div><span className="eyebrow">PAST EXAMS</span><h3>過去問・実施順 2024 → 2025 → 2022 → 2023</h3></div></div><div>{[2024,2025,2022,2023].map(year=><div className="past-year-row" key={year}><strong>{year}</strong>{pastShown.filter(problem=>problem.problem_id.startsWith(`PY-${year}-`)).map(problem=><ProblemChip key={problem.problem_id} problem={problem} latest={latestMap.get(problem.problem_id)} rank="過去問" select={select}/>)}</div>)}</div></section>}
+    {!!pastShown.length&&<section className="panel past-problem-master"><div className="panel-title"><div><span className="eyebrow">PAST EXAMS</span><h3>過去問・現在フェーズの候補順 {plannedYearOrder.join(" → ")}</h3><p>正規過去問マスターと露出状態から表示しています。模試保護中の未見年度は自動推薦しません。</p></div></div><div>{plannedYearOrder.map(year=><div className="past-year-row" key={year}><strong>{year}</strong>{pastShown.filter(problem=>problem.problem_id.startsWith(`PY-${year}-`)).sort((a,b)=>a.problem_number-b.problem_number).map(problem=><ProblemChip key={problem.problem_id} problem={problem} latest={latestMap.get(problem.problem_id)} rank="過去問" select={select}/>)}</div>)}</div></section>}
     <details className="panel master-detail-table"><summary>問題マスターを表で確認する</summary><div className="table-wrap"><table><thead><tr><th>問題ID</th><th>原典</th><th>実戦ランク</th><th>テーマ</th><th>最新</th><th>状態</th></tr></thead><tbody>
       {shown.map(p=>{const latest=latestMap.get(p.problem_id);return <tr key={p.problem_id} className="clickable" onClick={()=>select(p)}><td><strong>{p.problem_id}</strong></td><td>{p.category==="past_exam"?"過去問":p.category}</td><td><Badge tone={p.strategy_rank==="SS"?"red":p.strategy_rank==="A+"?"orange":p.category==="S"?"blue":""}>{rankOf(p)}</Badge></td><td>{p.theme||"—"}</td><td>{latest?`${latest.mark} ${latest.score_text||latest.score_label}`:"未着手"}</td><td>{p.completion_status==="review_pending"?"復習待ち":p.completion_status==="completed"?"完了":"進行中"}</td></tr>})}
     </tbody></table></div></details>
@@ -1050,7 +1059,12 @@ function PastView({data,go,run,busy}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()
     reviewExecutionState(review,data.dashboard.today)==="actionable"&&pmap.has(review.problem_id));
   const themes=new Set(errorAttempts.map(attempt=>pmap.get(attempt.problem_id)?.theme).filter(Boolean));
   const referenceCatalog=data.adaptiveLearning.pastExamCatalog;
-  const catalogYears=[...new Set(referenceCatalog.map(row=>row.year))].sort((a,b)=>b-a);
+  const plannedReferenceIds=data.adaptiveLearning.plannerShadow.plan30.plan.flatMap(day=>
+    day.tasks.map(task=>task.referenceProblemId).filter((value):value is string=>!!value)
+  );
+  const catalogYears=orderCorePastExamYears({
+    catalog:referenceCatalog,plannedReferenceProblemIds:plannedReferenceIds,daysRemaining:days
+  });
   const updateExposure=(problemId:string,exposure:PastExamExposure)=>
     run(()=>post("/api/exam-reference-pack/exposure",{problemId,exposure}),"過去問の露出状態を保存しました");
   const submitSession=async()=>{
@@ -1105,7 +1119,7 @@ function PastView({data,go,run,busy}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()
     <details className="panel past-session-quick" open><summary>{editingSessionId?"5問スキャンの事後結果を入力":"5問スキャンを開始"}</summary><form className="scan5-form" onSubmit={event=>{event.preventDefault();void submitSession()}}>
       <div className="form-grid"><Field label="形式"><select value={session.session_kind} onChange={event=>setSession({...session,session_kind:event.target.value as PastExamSessionKind})}><option value="scan_only">scan only</option><option value="scan_plus_one">scan＋1問</option><option value="selected_three_timed">3問90分</option><option value="retrospective_review">事後レビュー</option></select></Field>
       <Field label="実施日"><input type="date" value={session.date} onChange={event=>setSession({...session,date:event.target.value})}/></Field>
-      <Field label="年度"><input inputMode="numeric" value={session.year} onChange={event=>setSession({...session,year:event.target.value})}/></Field>
+      <Field label="年度"><select value={session.year} onChange={event=>setSession({...session,year:event.target.value})}>{catalogYears.map(year=><option key={year} value={year}>{year}</option>)}</select></Field>
       <Field label="素材"><select value={session.scan_set_source} onChange={event=>setSession({...session,scan_set_source:event.target.value})}><option value="past_exam_year">過去問年度</option><option value="mixed_a_problems">A問題混合</option><option value="custom_set">カスタム</option></select></Field>
       <Field label="スキャン時間"><input type="number" value={session.scan_minutes} onChange={event=>setSession({...session,scan_minutes:event.target.value})}/></Field>
       {session.session_kind==="selected_three_timed"&&<Field label="全体実時間"><input type="number" value={session.actual_total_minutes} onChange={event=>setSession({...session,actual_total_minutes:event.target.value})}/></Field>}

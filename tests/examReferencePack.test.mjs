@@ -3,10 +3,11 @@ import assert from "node:assert/strict";
 import {createHash} from "node:crypto";
 import JSZip from "jszip";
 import {
-  canonicalPastExamProblemId, parseExamReferencePack, reconcileExamReferencePack,
+  buildPastExamCatalog, canonicalPastExamProblemId, orderCorePastExamYears,
+  parseExamReferencePack, reconcileExamReferencePack,
   validateReferencePackData
 } from "../src/examReferencePack.ts";
-import {concept,pastProblem,problem} from "./adaptiveFixture.mjs";
+import {concept,pastProblem,problem,record} from "./adaptiveFixture.mjs";
 
 const sha=value=>createHash("sha256").update(value).digest("hex");
 async function zipFixture({tamper=false}={}){
@@ -78,4 +79,27 @@ test("未解決白本IDはunresolvedとして明示する",async()=>{
   const result=reconcileExamReferencePack({data,problems:[],aliases:[]});
   assert.equal(result.unresolvedWhitebookLinks,1);
   assert.deepEqual(result.unresolvedWhitebookIds,["WB-4-A-01"]);
+});
+
+test("core年度だけを動的表示し、計画候補と露出状態から年度順を決める",()=>{
+  const coreYears=[2019,2021,2022,2023,2024,2025];
+  const pastExamProblems=[
+    ...coreYears.flatMap(year=>Array.from({length:5},(_,index)=>pastProblem(year,index+1,["c1"],{
+      simulation_protection_default:[2024,2025].includes(year)
+    }))),
+    pastProblem(2018,1,["c1"],{availability:"metadata_only",schedulable:false,gradable:false,
+      simulation_protection_default:false})
+  ];
+  const fixture=record({data:{...record().data,pastExamProblems}});
+  const catalog=buildPastExamCatalog({record:fixture,sessions:[],exposureOverrides:{
+    "PY-2021-Q1":"prompt_scanned"
+  }});
+  assert.equal(catalog.length,30);
+  assert.equal(catalog.some(row=>row.year===2018),false);
+  const years=orderCorePastExamYears({
+    catalog,plannedReferenceProblemIds:["PE-2021-Q01"],daysRemaining:109
+  });
+  assert.deepEqual(new Set(years),new Set(coreYears));
+  assert.equal(years[0],2021);
+  assert.ok(years.indexOf(2024)>years.indexOf(2019));
 });

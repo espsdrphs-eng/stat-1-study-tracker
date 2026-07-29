@@ -12,7 +12,7 @@ import { removeTimingExpressions, sanitizeStudyUpdateTiming } from "./reviewTimi
 import { buildProgressPlan, daysUntilExam } from "./studyProgress.ts";
 import { calculateExamReadinessMetrics } from "./examReadiness.ts";
 import { correctedDueDate, resolveReviewCard } from "./reviewCardResolver.ts";
-import { CHAPTER_META, officialProblemEntries, PAST_EXAM_YEAR_ORDER, STRATEGY_A_PLUS_ORDER, STRATEGY_S_ORDER, strategyRankFor } from "./officialMaster.ts";
+import { CHAPTER_META, officialProblemEntries, STRATEGY_A_PLUS_ORDER, STRATEGY_S_ORDER, strategyRankFor } from "./officialMaster.ts";
 import { REVIEW_RUBRIC_VERSION } from "./gradingPrompt.ts";
 import { allowedReferenceLevel, referenceDecision, type ReferenceLevel } from "./reviewExperience.ts";
 import { applyCanonicalMaster, parseAliasesPayload, parseAnswerIndexPayload, parseIntegratedMasterPayload, parseProblemMasterPayload, relatedSIntegrity } from "./masterData.ts";
@@ -41,19 +41,21 @@ import {
 } from "./integrityEngine.ts";
 import { notifyStudyDataChanged } from "./appEvents.ts";
 import {
-  buildPastExamCatalog, buildReferencePackStatus, canonicalPastExamProblemId,
+  buildPastExamCatalog, buildReferencePackStatus, canonicalPastExamProblemId, orderCorePastExamYears,
   enrichReconciledLinks, EXAM_REFERENCE_EXPOSURE_META_KEY, EXAM_REFERENCE_PACK_META_KEY,
   reconcileExamReferencePack, referenceProblemToLiveProblem, validateReferencePackData,
-  type StoredExamReferencePack
+  type ReferencePackValidation, type StoredExamReferencePack
 } from "./examReferencePack.ts";
 import { analyzeConceptWeaknesses, buildPastExamRepairCandidates } from "./conceptWeakness.ts";
 import { buildAdaptivePlannerShadow } from "./adaptivePlanner.ts";
+import { BUILT_IN_EXAM_REFERENCE_PACK, builtInReferencePackValidation } from "./builtinExamReferencePack.ts";
 
 type SMemory = { problem_id:string; state:"stable"|"check"|"forgotten"|"collapsed"; last_touched?:string; k_trigger_count:number };
 type StoredAttempt = Attempt;
 type StoredReview = Review;
 type StoredWeakNote = WeakNote;
 type StoredPastSession = PastSession;
+const LEGACY_V9_PAST_EXAM_YEAR_ORDER=[2024,2025,2022,2023] as const;
 type StoredAnswerPdf={
   file_name:string;blob:Blob;uploaded_at:string;document_key?:string;kind?:string;source_book?:string;
   original_file_name?:string;display_name?:string;page_count?:number;sha256?:string;registered_at?:string;
@@ -291,7 +293,7 @@ class StudyDatabase extends Dexie {
           problem.strategy_rank=problem.strategy_rank||strategyRankFor(problem.problem_id,problem.category);
         }
       });
-      for(const year of PAST_EXAM_YEAR_ORDER){
+      for(const year of LEGACY_V9_PAST_EXAM_YEAR_ORDER){
         for(let question=1;question<=5;question++){
           const problem_id=`PY-${year}-Q${question}`,current=await tx.table("problems").get(problem_id) as Problem|undefined;
           if(current) continue;
@@ -2015,53 +2017,102 @@ function storedExamReferencePack(entries:Array<{key:string;value:string}>){
   return jsonMetaValue<StoredExamReferencePack|null>(entries,EXAM_REFERENCE_PACK_META_KEY,null);
 }
 
-async function importExamReferencePack(body:Record<string,unknown>){
-  const data=body.data as StoredExamReferencePack["data"]|undefined;
-  const packHash=String(body.packHash||"").trim();
+async function installExamReferencePack(args:{
+  data:StoredExamReferencePack["data"];packHash:string;validation:ReferencePackValidation;
+  origin:"built_in"|"manual";notify:boolean;
+}){
+  const {data,packHash}=args;
   if(!data||!packHash)throw new Error("参照パックの解析結果がありません");
   const structure=validateReferencePackData(data);
   if(!structure.valid)throw new Error(`参照パックを採用できません。${structure.errors.join(" ")}`);
-  const suppliedValidation=(body.validation&&typeof body.validation==="object"?body.validation:{}) as Record<string,unknown>;
-  if(String(suppliedValidation.packHash||"")!==packHash)throw new Error("参照パックhashがpreviewと一致しません");
+  if(args.validation.packHash!==packHash)throw new Error("参照パックhashがpreviewと一致しません");
   const current=await db.meta.get(EXAM_REFERENCE_PACK_META_KEY);
+  let savedRecord:StoredExamReferencePack|null=null;
   if(current){
     try{
-      const saved=JSON.parse(current.value) as StoredExamReferencePack;
-      if(saved.packHash===packHash)return {unchanged:true,status:buildReferencePackStatus(saved)};
-    }catch{/* 現行の検証済みデータで安全に置き換える */}
+      savedRecord=JSON.parse(current.value) as StoredExamReferencePack;
+      if(args.origin==="built_in"&&savedRecord.packHash!==packHash){
+        return {unchanged:true,status:buildReferencePackStatus(savedRecord)};
+      }
+    }catch{savedRecord=null}
   }
   const [problems,aliases,attempts,pastSessions]=await Promise.all([
     db.problems.toArray(),db.problemAliases.toArray(),db.attempts.toArray(),db.pastSessions.toArray()
   ]);
+  const requiredCoreIds=data.pastExamProblems.filter(reference=>
+    reference.availability==="verified_problem"&&reference.schedulable
+  ).map(canonicalPastExamProblemId);
+  const existingById=new Map(problems.map(problem=>[problem.problem_id,problem]));
+  if(savedRecord?.packHash===packHash&&requiredCoreIds.every(problemId=>{
+    const problem=existingById.get(problemId);
+    return !!problem&&problem.schedulable===true&&problem.past_exam_availability==="verified_problem";
+  })){
+    return {unchanged:true,status:buildReferencePackStatus(savedRecord)};
+  }
   const reconciliation=reconcileExamReferencePack({data,problems,aliases,attempts,pastSessions});
   const linkedData={...data,whitebookLinks:enrichReconciledLinks(data,reconciliation)};
   const now=new Date().toISOString();
-  const record:StoredExamReferencePack={packHash,importedAt:now,shadowStartedAt:now,plannerMode:"shadow",
-    validation:{valid:true,packHash,errors:[],warnings:Array.isArray(suppliedValidation.warnings)?suppliedValidation.warnings.map(String):[],
-      verifiedFiles:Array.isArray(suppliedValidation.verifiedFiles)?suppliedValidation.verifiedFiles.map(String):[],
-      schemaVersions:structure.schemaVersions},reconciliation,data:linkedData};
+  const record:StoredExamReferencePack={
+    packHash,importedAt:savedRecord?.importedAt||now,shadowStartedAt:savedRecord?.shadowStartedAt||now,
+    plannerMode:savedRecord?.plannerMode||"shadow",
+    validation:{...args.validation,valid:true,packHash,errors:[],schemaVersions:structure.schemaVersions},
+    reconciliation,data:linkedData
+  };
   await db.transaction("rw",[db.meta,db.problems],async()=>{
     const currentProblems=new Map((await db.problems.toArray()).map(problem=>[problem.problem_id,problem]));
     for(const row of reconciliation.pastExamRows){
-      if(!["safe_add","safe_enrich"].includes(row.status))continue;
       const reference=linkedData.pastExamProblems.find(problem=>problem.problem_id===row.referenceProblemId);
       if(!reference||!reference.schedulable)continue;
       const existing=currentProblems.get(row.canonicalProblemId);
+      if(row.status==="conflict"&&existing){
+        const next={...existing,reference_pack_id:reference.problem_id,reference_pack_hash:packHash,
+          reference_status:"provisional" as const,past_exam_availability:reference.availability,
+          schedulable:reference.schedulable,gradable:reference.gradable,
+          simulation_protection_default:reference.simulation_protection_default};
+        await db.problems.put(next);currentProblems.set(next.problem_id,next);
+        continue;
+      }
+      if(!["safe_add","safe_enrich"].includes(row.status))continue;
       const next=referenceProblemToLiveProblem(reference,packHash,existing);
       await db.problems.put(next);currentProblems.set(next.problem_id,next);
     }
     await db.meta.put({key:EXAM_REFERENCE_PACK_META_KEY,value:JSON.stringify(record)});
     await db.meta.put({key:"exam-reference-pack:last-import",value:JSON.stringify({
-      packHash,importedAt:now,counts:buildReferencePackStatus(record).counts,reconciliation:buildReferencePackStatus(record).reconciliation
+      packHash,importedAt:now,origin:args.origin,counts:buildReferencePackStatus(record).counts,
+      reconciliation:buildReferencePackStatus(record).reconciliation
     })});
   });
-  notifyStudyDataChanged({operation:"import-exam-reference-pack"});
+  if(args.notify)notifyStudyDataChanged({operation:"import-exam-reference-pack"});
   return {unchanged:false,status:buildReferencePackStatus(record)};
+}
+
+async function importExamReferencePack(body:Record<string,unknown>){
+  const data=body.data as StoredExamReferencePack["data"]|undefined;
+  const packHash=String(body.packHash||"").trim();
+  const supplied=(body.validation&&typeof body.validation==="object"?body.validation:{}) as Partial<ReferencePackValidation>;
+  if(!data||!packHash)throw new Error("参照パックの解析結果がありません");
+  return await installExamReferencePack({
+    data,packHash,origin:"manual",notify:true,
+    validation:{valid:!!supplied.valid,packHash:String(supplied.packHash||""),errors:supplied.errors||[],
+      warnings:supplied.warnings||[],verifiedFiles:supplied.verifiedFiles||[],schemaVersions:supplied.schemaVersions||[]}
+  });
+}
+
+async function ensureBuiltInExamReferencePack(){
+  const structure=validateReferencePackData(BUILT_IN_EXAM_REFERENCE_PACK.data);
+  if(!structure.valid)throw new Error(`内蔵参照パックが不正です。${structure.errors.join(" ")}`);
+  return await installExamReferencePack({
+    data:BUILT_IN_EXAM_REFERENCE_PACK.data,
+    packHash:BUILT_IN_EXAM_REFERENCE_PACK.packHash,
+    validation:builtInReferencePackValidation(structure.schemaVersions),
+    origin:"built_in",notify:false
+  });
 }
 
 async function bootstrap():Promise<Bootstrap>{
   await initialize();
   await ensureBuiltInCanonical();
+  await ensureBuiltInExamReferencePack();
   const [problems,attempts,rawReviews,roadmap,weakNotes,pastSessions,sMemory,metaEntries,answerIndex,answerPdfs,problemAliases]=await Promise.all([
     db.problems.toArray(),db.attempts.orderBy("id").reverse().toArray(),db.reviews.orderBy("due_date").toArray(),db.roadmap.orderBy("order_index").toArray(),
     db.weakNotes.orderBy("id").reverse().toArray(),db.pastSessions.orderBy("id").reverse().toArray(),db.sMemory.toArray(),db.meta.toArray(),
@@ -2134,6 +2185,15 @@ async function bootstrap():Promise<Bootstrap>{
     skeletonCount:skeleton.length,skeletonRate:skeleton.length?Math.round(skeletonGood/skeleton.length*100):0,
     studyDays14,actualMinutes14,delayed3,dailyTargetMinutes:settings.daily_study_minutes
   });
+  const pastExamCatalog=buildPastExamCatalog({record:referenceRecord,sessions:pastSessions,exposureOverrides});
+  const availablePastYearOrder=orderCorePastExamYears({
+    catalog:pastExamCatalog,daysRemaining:progress.daysRemaining
+  });
+  const orderedPastProblemIds=availablePastYearOrder.flatMap(year=>
+    pastExamCatalog.filter(row=>row.year===year)
+      .sort((a,b)=>a.questionNumber-b.questionNumber)
+      .map(row=>row.canonicalProblemId)
+  );
   const checks=progress.checks.map(item=>item.status==="ok");
   const pastAttempts=activeAttempts.filter(attempt=>pmap.get(attempt.problem_id)?.category==="past_exam");
   const chapterCounts=new Map<number,number>();
@@ -2258,8 +2318,7 @@ async function bootstrap():Promise<Bootstrap>{
   }
   const pastTasks:any[]=[];
   if(progress.phase==="past_practice"){
-    const orderedPast=PAST_EXAM_YEAR_ORDER.flatMap(year=>[1,2,3,4,5].map(question=>`PY-${year}-Q${question}`));
-    for(const problemId of orderedPast){
+    for(const problemId of orderedPastProblemIds){
       if(pastTasks.length>=3||plannedMinutes>=settings.daily_study_minutes*.95) break;
       const problem=pmap.get(problemId);
       if(!problem||seen.has(problemId)||occupied.has(problemId)) continue;
@@ -2279,7 +2338,7 @@ async function bootstrap():Promise<Bootstrap>{
   const weekday=new Date(`${today}T12:00:00`).getDay();
   if(progress.phase==="final"&&(weekday===0||weekday===3)&&plannedMinutes+90<=settings.daily_study_minutes+30){
     const completedSimulations=pastSessions.filter(session=>session.session_type==="exam_90min").length;
-    const year=PAST_EXAM_YEAR_ORDER[completedSimulations%PAST_EXAM_YEAR_ORDER.length];
+    const year=availablePastYearOrder[completedSimulations%availablePastYearOrder.length];
     simulationTasks.push({problem_id:`PY-${year}-Q1`,title:`${year}年 3問90分`,theme:"本番シミュレーション",
       kind:"本番シミュ",reason:"最終24日・最低3回の本番演習",mode:"exam_90min",minutes:90,load:3});
     load+=3;plannedMinutes+=90;
@@ -2428,7 +2487,6 @@ async function bootstrap():Promise<Bootstrap>{
         catch{return {}}})()
     }
   };
-  const pastExamCatalog=buildPastExamCatalog({record:referenceRecord,sessions:pastSessions,exposureOverrides});
   const conceptWeaknesses=analyzeConceptWeaknesses({record:referenceRecord,problems,attempts:activeAttempts,
     reviews,weakNotes,today});
   const pastExamRepairCandidates=buildPastExamRepairCandidates({record:referenceRecord,sessions:pastSessions,
