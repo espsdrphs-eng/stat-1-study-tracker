@@ -35,7 +35,11 @@ import {
 } from "./integrityEngine";
 import { gradedPartLabels } from "./gradedParts";
 import { subscribeStudyDataChanged } from "./appEvents";
-import type { AnswerIndexEntry, Attempt, Bootstrap, PastExamSessionKind, PastSession, Problem, ProblemAlias, Review, ScanQuestion, StudyUpdate, Task } from "./types";
+import {
+  parseExamReferencePack, reconcileExamReferencePack,
+  type ExamReferencePackData, type ReferencePackReconciliation, type ReferencePackValidation
+} from "./examReferencePack";
+import type { AnswerIndexEntry, Attempt, Bootstrap, PastExamExposure, PastExamSessionKind, PastSession, Problem, ProblemAlias, Review, ScanQuestion, StudyUpdate, Task } from "./types";
 
 type Page = "dashboard"|"today"|"problems"|"attempt"|"import"|"reviews"|"weak"|"past"|"sheets"|"settings";
 const pageTitles:Record<Page,string> = {
@@ -230,6 +234,30 @@ function DashboardView({data,go,select}:{data:Bootstrap;go:(p:Page)=>void;select
       <div className="weekly-soft-quota"><strong>今週の不足候補</strong>{d.weeklyQuota.candidates.length
         ?d.weeklyQuota.candidates.map(item=><span key={item.kind}>{item.kind==="full_skeleton"?"全体統合":item.kind==="timed_full"?"時間制限答案":"5問スキャン"}・{item.minutes}分</span>)
         :<span>今週の最低構成を満たしています</span>}<small>soft quotaのため、今日の上限を超えて自動追加しません。</small></div>
+    </section>
+    <section className="panel adaptive-shadow-card">
+      <div className="panel-title"><div><span className="eyebrow">ADAPTIVE PLANNER</span><h3>合格逆算プランナー（shadow）</h3></div>
+        <Badge tone={data.adaptiveLearning.referencePack.installed?"blue":"orange"}>{data.adaptiveLearning.referencePack.installed?"比較中":"参照パック未登録"}</Badge></div>
+      {!data.adaptiveLearning.plannerShadow.available?<p>正規化済み参照パックを設定画面から照合すると、現在の計画を変更せず14日・30日の比較を開始できます。</p>:<>
+        <div className="adaptive-shadow-summary">
+          <span>フェーズ<strong>{data.adaptiveLearning.plannerShadow.phase}</strong></span>
+          <span>scan5<strong>{data.adaptiveLearning.plannerShadow.legacy30.scan5} → {data.adaptiveLearning.plannerShadow.plan30.counts.scan5}</strong></span>
+          <span>full<strong>{data.adaptiveLearning.plannerShadow.legacy30.full} → {data.adaptiveLearning.plannerShadow.plan30.counts.full}</strong></span>
+          <span>timed<strong>{data.adaptiveLearning.plannerShadow.legacy30.timed} → {data.adaptiveLearning.plannerShadow.plan30.counts.timed}</strong></span>
+        </div>
+        <p>期限到来Reviewは局所補修枠の最大1件に留め、得点形成枠を毎日確保します。shadow結果は今日の計画へ自動反映しません。</p>
+        {!!data.adaptiveLearning.plannerShadow.plan30.weeklyMinimumViolations.length&&
+          <div className="match-warning"><AlertTriangle size={17}/><span>{data.adaptiveLearning.plannerShadow.plan30.weeklyMinimumViolations.slice(0,3).join("／")}</span></div>}
+        <details><summary>比較理由と切替条件</summary>
+          <ul className="compact-list">{data.adaptiveLearning.plannerShadow.comparisonReasons.map(reason=><li key={reason}>{reason}</li>)}</ul>
+          <div className="adaptive-plan-preview">{data.adaptiveLearning.plannerShadow.plan14.plan.map(day=><div key={day.date}>
+            <strong>{day.date}</strong><span>{day.tasks.map(task=>`${task.slot==="score_building"?"得点形成":task.slot==="repair"?"局所補修":"維持・選択"}：${task.label}（${task.minutes}分）`).join("／")}</span>
+            <small>合計{day.totalMinutes}分</small>
+          </div>)}</div>
+          <strong>{data.adaptiveLearning.plannerShadow.activationEligible?"切替条件を満たしています（明示操作は別途必要）":"まだ切り替えません"}</strong>
+          {!!data.adaptiveLearning.plannerShadow.activationBlockers.length&&<ul className="compact-list">{data.adaptiveLearning.plannerShadow.activationBlockers.map(reason=><li key={reason}>{reason}</li>)}</ul>}
+        </details>
+      </>}
     </section>
     <section className="section-head"><div><span className="eyebrow">OVERVIEW</span><h2>今週の学習状況</h2></div><span className="muted">直近7日間</span></section>
     <div className="metrics-grid">
@@ -907,6 +935,29 @@ function ReviewsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>
     {postponeReviewItem&&<PostponeReviewModal item={resolveReview(postponeReviewItem.item).item} initial={postponeReviewItem.initial} busy={busy} close={()=>setPostponeReviewItem(null)} save={postpone}/>}
   </>
 }
+const conceptStateLabels:Record<string,string>={
+  unassessed:"未確認",suspected:"疑い",confirmed:"確認済み弱点",repairing:"補修中",
+  transfer_pending:"転移確認待ち",resolved:"解消",relapsed:"再発"
+};
+function ConceptWeaknessPanel({data}:{data:Bootstrap}){
+  const rows=data.adaptiveLearning.conceptWeaknesses
+    .filter(row=>row.state!=="unassessed")
+    .sort((a,b)=>b.priorityScore-a.priorityScore)
+    .slice(0,5);
+  return <section className="panel concept-weakness-panel">
+    <div className="panel-title"><div><span className="eyebrow">CONCEPT EVIDENCE</span><h3>独立した学習機会で見る弱点</h3></div>
+      <Badge tone={data.adaptiveLearning.referencePack.installed?"blue":"orange"}>{data.adaptiveLearning.referencePack.installed?"shadow評価":"参照パック未登録"}</Badge></div>
+    <p>同じ日・同じ問題・同じ文脈の複数指摘は1回にまとめます。raw weakNote件数だけでは順位を決めません。</p>
+    {!data.adaptiveLearning.referencePack.installed?<Empty>参照パック照合後に、concept単位の証拠評価を表示します</Empty>:
+      rows.length?<div className="concept-weakness-list">{rows.map(row=><article key={row.conceptId}>
+        <div><Badge tone={row.state==="relapsed"||row.state==="confirmed"?"red":row.state==="resolved"?"green":"orange"}>{conceptStateLabels[row.state]}</Badge>
+          <strong>{row.displayName}</strong><small>{row.conceptId}</small></div>
+        <div><span>独立失敗 <strong>{row.independentFailures}/{row.independentOpportunities}</strong></span>
+          <span>別問題 <strong>{row.distinctProblemCount}</strong></span><span>過去問年度 <strong>{row.examYearCount}</strong></span></div>
+        <p>{row.evidenceSummary.slice(0,2).join("／")||"証拠を蓄積中"}</p>
+      </article>)}</div>:<Empty>独立した失敗証拠はまだありません。証拠不足は「苦手」ではなく未確認として扱います</Empty>}
+  </section>;
+}
 function WeakView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean}) {
   const [selected,setSelected]=useState<string[]>([]);
   const [copied,setCopied]=useState(false);
@@ -942,8 +993,9 @@ function WeakView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:
     if(!window.confirm(`${attempt.problem_id}（${attempt.date}）の採点データを削除します。関連する復習予定と弱点傾向データも削除されます。`))return;
     run(()=>post(`/api/attempts/${attempt.id}/delete`,{}),"採点データと関連する分析・復習予定を削除しました");
   };
-  if(!trend.attemptCount) return <><section className="weak-trend-hero"><div><span className="eyebrow">WEAKNESS TRENDS</span><h2>GPT採点が集まると、苦手の傾向が見えてきます</h2><p>この画面はK/W/N/Cが付いた採点だけから、繰り返すミスを探します。ミスなしの採点は学習履歴には残りますが、弱点グラフには加算しません。</p></div></section><section className="panel weak-empty-explanation">{trend.totalAttemptCount?<><Check size={28}/><h3>採点は{trend.totalAttemptCount}件ありますが、弱点として数えるミスは0件です</h3><p>現在の採点はすべて「none（ミスなし）」です。K/W/N/Cが付いた結果を保存すると、テーマ別・分類別・週別のグラフが表示されます。</p></>:<Empty>まだ採点記録がありません。GPT採点結果を取り込むと自動で蓄積されます</Empty>}</section></>;
+  if(!trend.attemptCount) return <><ConceptWeaknessPanel data={data}/><section className="weak-trend-hero"><div><span className="eyebrow">WEAKNESS TRENDS</span><h2>GPT採点が集まると、苦手の傾向が見えてきます</h2><p>この画面はK/W/N/Cが付いた採点だけから、繰り返すミスを探します。ミスなしの採点は学習履歴には残りますが、弱点グラフには加算しません。</p></div></section><section className="panel weak-empty-explanation">{trend.totalAttemptCount?<><Check size={28}/><h3>採点は{trend.totalAttemptCount}件ありますが、弱点として数えるミスは0件です</h3><p>現在の採点はすべて「none（ミスなし）」です。K/W/N/Cが付いた結果を保存すると、テーマ別・分類別・週別のグラフが表示されます。</p></>:<Empty>まだ採点記録がありません。GPT採点結果を取り込むと自動で蓄積されます</Empty>}</section></>;
   return <>
+    <ConceptWeaknessPanel data={data}/>
     <section className="weak-trend-hero"><div><span className="eyebrow">WEAKNESS TRENDS</span><h2>採点結果から見える苦手傾向</h2><p>ここは復習タスクの一覧ではありません。問題とGPT採点結果から、繰り返し落としているテーマとミスの型を俯瞰する場所です。</p></div><div className="trend-summary"><strong>{trend.themes.length}</strong><span>検出テーマ</span><small>最多 {trend.topTheme}</small></div></section>
     <div className="trend-metrics"><Metric label="保存済みの全採点" value={trend.totalAttemptCount} unit="件" hint={`ミスなし ${trend.noErrorCount}件`}/><Metric label="ミスあり採点" value={trend.attemptCount} unit="件" hint="K/W/N/Cが1つ以上"/><Metric label="主なミス型" value={dominantError} hint={`${errorCounts[dominantError]||0}件`}/><Metric label="K発生率" value={trend.kRate} unit="%" hint="ミスあり採点に占める割合"/></div>
     <section className="weak-reading-guide"><strong>この画面の数え方</strong><span>1回の採点にK/W/N/Cが1つでもあれば「ミスあり採点」1件です。テーマの点数は重要度（K=5、N=3、W=2、C=1）の合計で、点数が高いほど先に復習します。ミスなしの結果は弱点には加算しません。</span></section>
@@ -997,6 +1049,10 @@ function PastView({data,go,run,busy}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()
   const pending=data.reviews.filter(review=>
     reviewExecutionState(review,data.dashboard.today)==="actionable"&&pmap.has(review.problem_id));
   const themes=new Set(errorAttempts.map(attempt=>pmap.get(attempt.problem_id)?.theme).filter(Boolean));
+  const referenceCatalog=data.adaptiveLearning.pastExamCatalog;
+  const catalogYears=[...new Set(referenceCatalog.map(row=>row.year))].sort((a,b)=>b-a);
+  const updateExposure=(problemId:string,exposure:PastExamExposure)=>
+    run(()=>post("/api/exam-reference-pack/exposure",{problemId,exposure}),"過去問の露出状態を保存しました");
   const submitSession=async()=>{
     const selectedProblemIds=session.questions.filter(row=>row.selected).map(row=>row.problemId||row.questionLabel);
     const payload={...session,year:Number(session.year),stage:stageForDays(days),scan_minutes:Number(session.scan_minutes||0),actual_total_minutes:Number(session.actual_total_minutes||0),
@@ -1025,6 +1081,27 @@ function PastView({data,go,run,busy}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()
       <Metric label="復習待ち" value={pending.length} unit="件" hint="過去問の未完了予定"/>
       <Metric label="苦手テーマ" value={themes.size} unit="件" hint="失点したテーマ"/>
     </div>
+    <details className="panel reference-catalog-panel">
+      <summary>正規化済み過去問カタログと露出状態</summary>
+      {!data.adaptiveLearning.referencePack.installed?<Empty>設定画面で参照パックを照合してください</Empty>:<>
+        <div className="reference-catalog-summary">
+          <span>core <strong>{data.adaptiveLearning.referencePack.counts.coreSchedulable}問</strong></span>
+          <span>metadata only <strong>{data.adaptiveLearning.referencePack.counts.metadataOnly}問</strong></span>
+          <span>concept <strong>{data.adaptiveLearning.referencePack.counts.concepts}件</strong></span>
+          <span>白本候補 <strong>{data.adaptiveLearning.referencePack.counts.whitebookLinks}件</strong></span>
+        </div>
+        <p>2016〜2018年は実物未提供のため表示専用で、通常計画・採点・模試へ入りません。unknownはunseenとして扱いません。</p>
+        <div className="reference-year-list">{catalogYears.map(year=><details key={year}><summary>{year}年（{referenceCatalog.filter(row=>row.year===year).length}問）</summary>
+          {referenceCatalog.filter(row=>row.year===year).map(row=><div className="reference-question-row" key={row.referenceProblemId}>
+            <div><strong>{year}年問{row.questionNumber}</strong><span>{row.title}</span>
+              <small>{row.availability==="metadata_only"?"metadata only・出題不可":row.simulationProtected?"模試保護":"core"}</small></div>
+            {row.schedulable?<select disabled={busy} value={row.exposure} onChange={event=>void updateExposure(row.canonicalProblemId,event.target.value as PastExamExposure)}>
+              {["unknown","unseen","prompt_scanned","partially_attempted","fully_attempted","answer_exposed","simulated"].map(value=><option value={value} key={value}>{value}</option>)}
+            </select>:<Badge>未提供</Badge>}
+          </div>)}
+        </details>)}</div>
+      </>}
+    </details>
     <details className="panel past-session-quick" open><summary>{editingSessionId?"5問スキャンの事後結果を入力":"5問スキャンを開始"}</summary><form className="scan5-form" onSubmit={event=>{event.preventDefault();void submitSession()}}>
       <div className="form-grid"><Field label="形式"><select value={session.session_kind} onChange={event=>setSession({...session,session_kind:event.target.value as PastExamSessionKind})}><option value="scan_only">scan only</option><option value="scan_plus_one">scan＋1問</option><option value="selected_three_timed">3問90分</option><option value="retrospective_review">事後レビュー</option></select></Field>
       <Field label="実施日"><input type="date" value={session.date} onChange={event=>setSession({...session,date:event.target.value})}/></Field>
@@ -1043,6 +1120,14 @@ function PastView({data,go,run,busy}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()
     <section className="section-head"><div><span className="eyebrow">SCAN HISTORY</span><h2>過去問セッション</h2></div></section>
     <div className="past-result-list">{data.pastSessions.map(saved=>{const metrics=scanMetrics(saved),exposure=deriveExposure(saved);return <article className="panel past-result-card" key={saved.id}><div className="past-result-head"><div><h3>{saved.year||saved.source_label||"カスタム"}・{saved.session_kind||saved.session_type}</h3><span>{saved.date} ・ 露出：{exposure}</span></div><Badge tone={saved.exam_score_eligible?"green":""}>{saved.exam_score_eligible?"本番得点対象":"学習指標"}</Badge></div><div className="past-result-body"><div><span>型判断</span><p>{metrics.typeIdentificationAccuracy==null?"未評価":`${metrics.typeIdentificationAccuracy}%`}</p></div><div><span>初手判断</span><p>{metrics.firstStepAccuracy==null?"未評価":`${metrics.firstStepAccuracy}%`}</p></div><div><span>選題成功率</span><p>{metrics.selectionSuccessRate==null?"未評価":`${metrics.selectionSuccessRate}%`}</p></div><div><span>解答済み</span><p>{metrics.solvedCount}問</p></div></div><div className="task-actions"><button className="secondary" onClick={()=>editPastSession(saved)}><Pencil size={15}/>事後結果を入力</button><button className="secondary" onClick={()=>navigator.clipboard.writeText(buildScan5Prompt(saved,days))}><Copy size={15}/>GPT分析プロンプト</button>{metrics.solvedCount>0&&<button className="secondary" onClick={()=>go("import")}><ClipboardPaste size={15}/>解いた問題を採点</button>}</div><details><summary>GPT分析結果を取り込む</summary><textarea value={analysisText[saved.id]||""} onChange={event=>setAnalysisText({...analysisText,[saved.id]:event.target.value})} placeholder="scan_update YAMLを貼り付け"/><button className="secondary" disabled={busy||!analysisText[saved.id]} onClick={()=>run(()=>post(`/api/past-sessions/${saved.id}/analysis`,{text:analysisText[saved.id]}),"scan5分析を保存しました")}>専用分析を保存</button></details></article>})}</div>
     <section className="section-head"><div><span className="eyebrow">REPAIR TARGETS</span><h2>過去問で明らかになった要復習箇所</h2></div></section>
+    {!!data.adaptiveLearning.pastExamRepairCandidates.length&&<section className="panel adaptive-repair-candidates">
+      <div className="panel-title"><div><span className="eyebrow">CANDIDATE ONLY</span><h3>conceptから照合した補修候補</h3></div><Badge>1セッション最大2件</Badge></div>
+      <p>候補は自動でReviewへ追加しません。白本IDはlive masterで照合済みの候補だけを表示します。</p>
+      <div>{data.adaptiveLearning.pastExamRepairCandidates.map(row=><article key={`${row.sessionId}-${row.conceptId}`}>
+        <strong>{row.conceptLabel}</strong><span>{row.reason}</span>
+        <small>白本候補：{row.whitebookProblemIds.join("、")||"未解決"}／転移候補：{row.transferProblemIds.join("、")||"未設定"}</small>
+      </article>)}</div>
+    </section>}
     <div className="past-result-list">{errorAttempts.map(attempt=>{
       const problem=pmap.get(attempt.problem_id)!;
       const review=data.reviews.find(item=>item.generated_from_attempt_id===attempt.id&&item.problem_id===attempt.problem_id&&
@@ -1102,6 +1187,9 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
   const [problemPreview,setProblemPreview]=useState<{raw:unknown;version:string;added:number;changed:number;unchanged:number;total:number}|null>(null);
   const [aliasPreview,setAliasPreview]=useState<{raw:unknown;version:string;total:number;added:number;changed:number;unchanged:number}|null>(null);
   const [integratedPreview,setIntegratedPreview]=useState<{raw:unknown;version:string;problemCount:number;answerCount:number;aliasCount:number;added:number;changed:number;unchanged:number}|null>(null);
+  const [referencePreview,setReferencePreview]=useState<{
+    data:ExamReferencePackData;validation:ReferencePackValidation;reconciliation:ReferencePackReconciliation
+  }|null>(null);
   const [backupMasterWarning,setBackupMasterWarning]=useState<unknown|null>(null);
   const [showDiagnostics,setShowDiagnostics]=useState(false);
   const [masterError,setMasterError]=useState("");
@@ -1182,6 +1270,14 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
       setAliasPreview({raw,version:parsed.version,total:parsed.aliases.length,...diff});setMasterError("");
     }catch(error){setAliasPreview(null);setMasterError((error as Error).message)}
   };
+  const previewReferencePack=async(file:File)=>{
+    try{
+      const parsed=await parseExamReferencePack(file);
+      const reconciliation=reconcileExamReferencePack({data:parsed.data,problems:data.problems,
+        aliases:data.problemAliases,attempts:data.attempts,pastSessions:data.pastSessions});
+      setReferencePreview({...parsed,reconciliation});setMasterError("");
+    }catch(error){setReferencePreview(null);setMasterError(error instanceof Error?error.message:String(error))}
+  };
   const moveBackupToMaster=()=>{
     const raw=backupMasterWarning;setBackupMasterWarning(null);
     if(!raw)return;
@@ -1253,6 +1349,58 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
         {integrityPreview&&<button className="primary" disabled={busy} onClick={()=>{setIntegrityPreview(null);run(()=>post("/api/integrity/repair",{}),"全体整合性を安全に整えました")}}>安全に整える</button>}</div>
     </section>
     <details className="advanced-management"><summary>高度な管理</summary><div className="advanced-management-body">
+    <section className="panel reference-pack-import" id="exam-reference-pack-import">
+      <div className="panel-title"><div><span className="eyebrow">EXAM REFERENCE</span><h3>正規化済み参照パック</h3></div>
+        <Badge tone={data.adaptiveLearning.referencePack.installed?"green":"orange"}>{data.adaptiveLearning.referencePack.installed?"shadow稼働中":"未登録"}</Badge></div>
+      <p>manifest・全ファイルhash・schema・件数を端末内で検証し、live problem masterと差分照合します。既存の過去問を無条件に上書きせず、解決不能な白本IDは計画から除外します。</p>
+      <label className={`master-file-button secondary ${busy?"disabled":""}`}><Archive size={16}/>stat1_exam_reference_pack_v1.zipを検証
+        <input disabled={busy} type="file" accept=".zip,application/zip" onChange={event=>{const file=event.target.files?.[0];if(file)void previewReferencePack(file);event.target.value=""}}/>
+      </label>
+      {data.adaptiveLearning.referencePack.installed&&<div className="reference-pack-installed">
+        <span>pack hash <strong>{data.adaptiveLearning.referencePack.packHash.slice(0,12)}…</strong></span>
+        <span>core <strong>{data.adaptiveLearning.referencePack.counts.coreSchedulable}</strong></span>
+        <span>metadata only <strong>{data.adaptiveLearning.referencePack.counts.metadataOnly}</strong></span>
+        <span>concept <strong>{data.adaptiveLearning.referencePack.counts.concepts}</strong></span>
+        <span>白本候補 <strong>{data.adaptiveLearning.referencePack.counts.whitebookLinks}</strong></span>
+      </div>}
+      {referencePreview&&<div className="pack-preview">
+        <div className="panel-title"><div><span className="eyebrow">VALIDATION PREVIEW</span><h4>{referencePreview.data.manifest.pack_name}</h4></div>
+          <Badge tone={referencePreview.validation.valid?"green":"red"}>{referencePreview.validation.valid?"検証成功":"採用不可"}</Badge></div>
+        <div className="reference-pack-validation">
+          <span>ZIP hash <strong>{referencePreview.validation.packHash.slice(0,16)}…</strong></span>
+          <span>hash確認 <strong>{referencePreview.validation.verifiedFiles.length}/{referencePreview.data.manifest.files.length}</strong></span>
+          <span>過去問 <strong>{referencePreview.data.manifest.counts.past_exam_records}</strong></span>
+          <span>core <strong>{referencePreview.data.manifest.counts.core_schedulable}</strong></span>
+          <span>metadata only <strong>{referencePreview.data.manifest.counts.metadata_only}</strong></span>
+          <span>concept <strong>{referencePreview.data.manifest.counts.concepts}</strong></span>
+          <span>白本候補 <strong>{referencePreview.data.manifest.counts.whitebook_links}</strong></span>
+        </div>
+        <div className="pack-diff">
+          <span>既存 <strong>{referencePreview.reconciliation.existingPastExam}</strong></span>
+          <span>安全な追加 <strong>{referencePreview.reconciliation.safePastExamAdditions}</strong></span>
+          <span>安全な補完 <strong>{referencePreview.reconciliation.safePastExamEnrichments}</strong></span>
+          <span>競合（保持） <strong>{referencePreview.reconciliation.pastExamConflicts}</strong></span>
+          <span>既知の旧誤対応 <strong>{referencePreview.reconciliation.knownLegacyConflicts}</strong></span>
+          <span>白本解決 <strong>{referencePreview.reconciliation.resolvedWhitebookLinks+referencePreview.reconciliation.aliasResolvedWhitebookLinks}</strong></span>
+          <span>白本未解決 <strong>{referencePreview.reconciliation.unresolvedWhitebookLinks}</strong></span>
+        </div>
+        {!!referencePreview.validation.errors.length&&<div className="match-warning"><AlertTriangle size={17}/><span>{referencePreview.validation.errors.join("／")}</span></div>}
+        {!!referencePreview.reconciliation.unresolvedWhitebookIds.length&&<details><summary>未解決白本ID</summary><p>{referencePreview.reconciliation.unresolvedWhitebookIds.join("、")}</p></details>}
+        {!!referencePreview.reconciliation.pastExamConflicts&&<details><summary>既存masterとの競合</summary><ul className="compact-list">{referencePreview.reconciliation.pastExamRows.filter(row=>row.status==="conflict").map(row=><li key={row.referenceProblemId}>{row.canonicalProblemId}：{row.reason}</li>)}</ul></details>}
+        {!!referencePreview.data.legacyConflictReport.examples.length&&<details><summary>旧過去問masterの既知誤対応</summary>
+          <ul className="compact-list">{referencePreview.data.legacyConflictReport.examples.map(row=><li key={row.old_id}>{row.old_id}：旧「{row.old_summary}」→ 参照パック「{row.corrected_summary}」</li>)}</ul>
+          <small>旧値は正本へ採用せず、参照パック側の分類とlive側の値を別々に保持します。</small>
+        </details>}
+        <div className="button-row">
+          <button className="primary" disabled={busy||!referencePreview.validation.valid} onClick={()=>{
+            const preview=referencePreview;setReferencePreview(null);
+            run(()=>post("/api/exam-reference-pack/import",{data:preview.data,packHash:preview.validation.packHash,validation:preview.validation}),
+              "参照パックを照合し、shadow比較を開始しました");
+          }}>解決可能なデータだけを採用</button>
+          <button className="ghost" onClick={()=>setReferencePreview(null)}>キャンセル</button>
+        </div>
+      </div>}
+    </section>
     <section className="panel master-import-panel master-import-primary" id="problem-master-import"><div className="panel-title"><div><span className="eyebrow">CANONICAL DATA</span><h3>問題マスター取り込み</h3></div><Badge tone="green">バックアップ復元とは別機能</Badge></div>
       <p>ChatGPTで作成した problem_master / aliases JSON を読み込み、問題ID・表示名・テーマ・GPT取り込み補正に使います。統合JSON内の answer_index は互換データとして保存できますが、日常画面では使いません。通常のバックアップ復元とは別機能です。</p>
       <div className="master-import-actions">

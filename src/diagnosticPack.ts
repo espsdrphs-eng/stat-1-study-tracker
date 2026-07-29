@@ -13,6 +13,12 @@ import { classifyKPolicyValidity } from "./legacyKPolicy.ts";
 import { analyzeSourceMismatchRepair, resolveReviewOrigin } from "./reviewOrigin.ts";
 import { deriveExposure, scanMetrics, sessionStudyMinutes, simulateScanPlan, validatePastExamSession } from "./pastExamWorkflow.ts";
 import { runIntegrityAudit } from "./integrityEngine.ts";
+import {
+  buildPastExamCatalog,buildReferencePackStatus,EXAM_REFERENCE_EXPOSURE_META_KEY,
+  EXAM_REFERENCE_PACK_META_KEY,type StoredExamReferencePack
+} from "./examReferencePack.ts";
+import {analyzeConceptWeaknesses,buildPastExamRepairCandidates} from "./conceptWeakness.ts";
+import {buildAdaptivePlannerShadow} from "./adaptivePlanner.ts";
 import type { Attempt, Problem, ProblemAlias, ProblemRelation, Review, TodayPlanSnapshot } from "./types.ts";
 
 type JsonRecord=Record<string,unknown>;
@@ -355,6 +361,25 @@ export async function createDiagnosticPack():Promise<DiagnosticPackResult>{
     deployedAt:deployAt,exportedAt:new Date().toISOString(),privacy:{pdfIncluded:false,imageIncluded:false,binaryIncluded:false,
       freeFormMemoIncluded:false,rawGptTextIncluded:false},
     physicalModel:{attempts:"答案とGPT評価",reviews:"復習タスクと復習計画",problemRelations:"独立storeなし"}};
+  const parseMetaJson=<T,>(key:string,fallback:T)=>{
+    try{return JSON.parse(metaRows.find(row=>row.key===key)?.value||"") as T}catch{return fallback}
+  };
+  const referenceRecord=parseMetaJson<StoredExamReferencePack|null>(EXAM_REFERENCE_PACK_META_KEY,null);
+  const exposureOverrides=parseMetaJson<Record<string,import("./types.ts").PastExamExposure>>(EXAM_REFERENCE_EXPOSURE_META_KEY,{});
+  const referenceCatalog=buildPastExamCatalog({record:referenceRecord,sessions:pastSessions,exposureOverrides});
+  const conceptWeaknesses=analyzeConceptWeaknesses({record:referenceRecord,problems,attempts,reviews,weakNotes,today});
+  const currentSnapshot=todayPlanSnapshots.find(row=>row.date===today);
+  const adaptiveShadow=buildAdaptivePlannerShadow({record:referenceRecord,catalog:referenceCatalog,
+    weaknesses:conceptWeaknesses,problems,attempts,reviews,pastSessions,currentTasks:currentSnapshot?.tasks||[],
+    today,examDate,targetMinutes:Math.max(30,Number(settings.daily_study_minutes||150))});
+  const adaptiveReferenceAudit={referencePack:buildReferencePackStatus(referenceRecord),
+    exposureCounts:Object.fromEntries([...new Set(referenceCatalog.map(row=>row.exposure))]
+      .map(state=>[state,referenceCatalog.filter(row=>row.exposure===state).length])),
+    conceptStateCounts:Object.fromEntries([...new Set(conceptWeaknesses.map(row=>row.state))]
+      .map(state=>[state,conceptWeaknesses.filter(row=>row.state===state).length])),
+    topConceptWeaknesses:conceptWeaknesses.slice(0,20),
+    repairCandidates:buildPastExamRepairCandidates({record:referenceRecord,sessions:pastSessions,attempts,conceptWeaknesses}),
+    shadow:adaptiveShadow};
   const plannerAudit={...buildPlannerAudit(snapshotRows,reviews,attempts,Math.max(30,Number(settings.daily_study_minutes||150))),
     scanSoftQuotaSimulation:[119,90,60,30].map(daysRemaining=>({daysRemaining,...simulateScanPlan({startDate:today,daysRemaining,days:30})})),
     thirtyDaySimulation:simulateThirtyDays({startDate:today,targetMinutes:Math.max(30,Number(settings.daily_study_minutes||150)),
@@ -385,6 +410,7 @@ export async function createDiagnosticPack():Promise<DiagnosticPackResult>{
   addJson("consistency-report.json",consistency);
   addJson("prompt-audit.json",promptAuditFile);
   addJson("planner-audit.json",plannerAudit);
+  addJson("adaptive-reference-audit.json",adaptiveReferenceAudit);
   zip.file("test-report.txt",`${testReport}\n\nDiagnostic export verification: PASS\n- table counts and primary-key digests unchanged\n- todayPlanSnapshot digests unchanged\n- no write transaction executed\n- PDF/image/binary records excluded\nExported at: ${appInfo.exportedAt}\n`);
   const blob=await zip.generateAsync({type:"blob",compression:"DEFLATE",compressionOptions:{level:6}});
   return {blob,fileName:`diagnostic-pack-${today}.zip`,summary:{files:Object.keys(zip.files),readOnlyVerified,problemCount:problems.length,reviewCount:reviews.length,issueCount:consistency.issues.length}};

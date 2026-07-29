@@ -1,5 +1,5 @@
 import Dexie, { type EntityTable } from "dexie";
-import type { AnswerIndexEntry, Attempt, Bootstrap, CorrectionLog, DataDiagnostic, MasterImportLog, PastSession, Problem, ProblemAlias, ProblemRelation, Review, Roadmap, StudyUpdate, Task, TodayPlanSnapshot, WeakNote } from "./types";
+import type { AnswerIndexEntry, Attempt, Bootstrap, CorrectionLog, DataDiagnostic, MasterImportLog, PastExamExposure, PastSession, Problem, ProblemAlias, ProblemRelation, Review, Roadmap, StudyUpdate, Task, TodayPlanSnapshot, WeakNote } from "./types";
 import { japaneseizeMathText } from "./mathJapanese.ts";
 import { analyzeWeaknesses } from "./weaknessAnalytics.ts";
 import { createAdaptiveReviewPlan, createAttemptReviewPlan, createSReviewPlan, enforceReviewEvidence, normalizedErrors, type ReviewOutcome, type ReviewPlan, type SState } from "./reviewRules.ts";
@@ -40,6 +40,14 @@ import {
   reviewExecutionMessage, reviewExecutionState, runIntegrityAudit, type IntegrityAudit
 } from "./integrityEngine.ts";
 import { notifyStudyDataChanged } from "./appEvents.ts";
+import {
+  buildPastExamCatalog, buildReferencePackStatus, canonicalPastExamProblemId,
+  enrichReconciledLinks, EXAM_REFERENCE_EXPOSURE_META_KEY, EXAM_REFERENCE_PACK_META_KEY,
+  reconcileExamReferencePack, referenceProblemToLiveProblem, validateReferencePackData,
+  type StoredExamReferencePack
+} from "./examReferencePack.ts";
+import { analyzeConceptWeaknesses, buildPastExamRepairCandidates } from "./conceptWeakness.ts";
+import { buildAdaptivePlannerShadow } from "./adaptivePlanner.ts";
 
 type SMemory = { problem_id:string; state:"stable"|"check"|"forgotten"|"collapsed"; last_touched?:string; k_trigger_count:number };
 type StoredAttempt = Attempt;
@@ -1997,6 +2005,60 @@ function diagnosticsPreview(problems:Problem[],attempts:Attempt[],reviews:Review
   return {criticalCount};
 }
 
+function jsonMetaValue<T>(entries:Array<{key:string;value:string}>,key:string,fallback:T):T{
+  const row=entries.find(entry=>entry.key===key);
+  if(!row)return fallback;
+  try{return JSON.parse(row.value) as T}catch{return fallback}
+}
+
+function storedExamReferencePack(entries:Array<{key:string;value:string}>){
+  return jsonMetaValue<StoredExamReferencePack|null>(entries,EXAM_REFERENCE_PACK_META_KEY,null);
+}
+
+async function importExamReferencePack(body:Record<string,unknown>){
+  const data=body.data as StoredExamReferencePack["data"]|undefined;
+  const packHash=String(body.packHash||"").trim();
+  if(!data||!packHash)throw new Error("参照パックの解析結果がありません");
+  const structure=validateReferencePackData(data);
+  if(!structure.valid)throw new Error(`参照パックを採用できません。${structure.errors.join(" ")}`);
+  const suppliedValidation=(body.validation&&typeof body.validation==="object"?body.validation:{}) as Record<string,unknown>;
+  if(String(suppliedValidation.packHash||"")!==packHash)throw new Error("参照パックhashがpreviewと一致しません");
+  const current=await db.meta.get(EXAM_REFERENCE_PACK_META_KEY);
+  if(current){
+    try{
+      const saved=JSON.parse(current.value) as StoredExamReferencePack;
+      if(saved.packHash===packHash)return {unchanged:true,status:buildReferencePackStatus(saved)};
+    }catch{/* 現行の検証済みデータで安全に置き換える */}
+  }
+  const [problems,aliases,attempts,pastSessions]=await Promise.all([
+    db.problems.toArray(),db.problemAliases.toArray(),db.attempts.toArray(),db.pastSessions.toArray()
+  ]);
+  const reconciliation=reconcileExamReferencePack({data,problems,aliases,attempts,pastSessions});
+  const linkedData={...data,whitebookLinks:enrichReconciledLinks(data,reconciliation)};
+  const now=new Date().toISOString();
+  const record:StoredExamReferencePack={packHash,importedAt:now,shadowStartedAt:now,plannerMode:"shadow",
+    validation:{valid:true,packHash,errors:[],warnings:Array.isArray(suppliedValidation.warnings)?suppliedValidation.warnings.map(String):[],
+      verifiedFiles:Array.isArray(suppliedValidation.verifiedFiles)?suppliedValidation.verifiedFiles.map(String):[],
+      schemaVersions:structure.schemaVersions},reconciliation,data:linkedData};
+  await db.transaction("rw",[db.meta,db.problems],async()=>{
+    const currentProblems=new Map((await db.problems.toArray()).map(problem=>[problem.problem_id,problem]));
+    for(const row of reconciliation.pastExamRows){
+      if(!["safe_add","safe_enrich"].includes(row.status))continue;
+      const reference=linkedData.pastExamProblems.find(problem=>problem.problem_id===row.referenceProblemId);
+      if(!reference||!reference.schedulable)continue;
+      const existing=currentProblems.get(row.canonicalProblemId);
+      const next=referenceProblemToLiveProblem(reference,packHash,existing);
+      await db.problems.put(next);currentProblems.set(next.problem_id,next);
+    }
+    await db.meta.put({key:EXAM_REFERENCE_PACK_META_KEY,value:JSON.stringify(record)});
+    await db.meta.put({key:"exam-reference-pack:last-import",value:JSON.stringify({
+      packHash,importedAt:now,counts:buildReferencePackStatus(record).counts,reconciliation:buildReferencePackStatus(record).reconciliation
+    })});
+  });
+  notifyStudyDataChanged({operation:"import-exam-reference-pack"});
+  return {unchanged:false,status:buildReferencePackStatus(record)};
+}
+
 async function bootstrap():Promise<Bootstrap>{
   await initialize();
   await ensureBuiltInCanonical();
@@ -2017,6 +2079,8 @@ async function bootstrap():Promise<Bootstrap>{
     exam_date:metaEntries.find(entry=>entry.key==="exam_date")?.value||"",
     daily_study_minutes:Math.max(30,Number(metaEntries.find(entry=>entry.key==="daily_study_minutes")?.value||150))
   };
+  const referenceRecord=storedExamReferencePack(metaEntries);
+  const exposureOverrides=jsonMetaValue<Record<string,PastExamExposure>>(metaEntries,EXAM_REFERENCE_EXPOSURE_META_KEY,{});
   let storedRelations:ProblemRelation[]=[];
   try{const value=JSON.parse(metaEntries.find(entry=>entry.key==="problem-relations")?.value||"[]");if(Array.isArray(value))storedRelations=value}catch{storedRelations=[]}
   const baseReviews=rawReviews.map(review=>{
@@ -2364,7 +2428,17 @@ async function bootstrap():Promise<Bootstrap>{
         catch{return {}}})()
     }
   };
-  return {problems:problems.sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.category.localeCompare(b.category)||a.problem_number-b.problem_number),attempts,reviews,roadmap,weakNotes,pastSessions,answerIndex,problemAliases,dashboard,settings,masterStatus,databaseStatus,
+  const pastExamCatalog=buildPastExamCatalog({record:referenceRecord,sessions:pastSessions,exposureOverrides});
+  const conceptWeaknesses=analyzeConceptWeaknesses({record:referenceRecord,problems,attempts:activeAttempts,
+    reviews,weakNotes,today});
+  const pastExamRepairCandidates=buildPastExamRepairCandidates({record:referenceRecord,sessions:pastSessions,
+    attempts:activeAttempts,conceptWeaknesses});
+  const plannerShadow=buildAdaptivePlannerShadow({record:referenceRecord,catalog:pastExamCatalog,
+    weaknesses:conceptWeaknesses,problems,attempts:activeAttempts,reviews,pastSessions,currentTasks:tasks,
+    today,examDate:settings.exam_date,targetMinutes:settings.daily_study_minutes});
+  const adaptiveLearning={referencePack:buildReferencePackStatus(referenceRecord),pastExamCatalog,
+    conceptWeaknesses,pastExamRepairCandidates,plannerShadow};
+  return {problems:problems.sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.category.localeCompare(b.category)||a.problem_number-b.problem_number),attempts,reviews,roadmap,weakNotes,pastSessions,answerIndex,problemAliases,dashboard,settings,masterStatus,databaseStatus,adaptiveLearning,
     today:{tasks,totalLoad,plannedMinutes:plannedTotal,remainingMinutes,actualMinutes,targetMinutes:settings.daily_study_minutes,capacityPercent,warning,guidance,
       planned_minutes_total:plannedTotal,completed_minutes_today:actualMinutes,remaining_minutes_today:remainingMinutes,
       postponed_minutes_today:postponedMinutes,target_minutes_today:settings.daily_study_minutes,
@@ -2594,6 +2668,25 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     return await repairIntegrity(true) as T;
   } else if(path==="/api/integrity/repair"){
     return await repairIntegrity(false) as T;
+  } else if(path==="/api/exam-reference-pack/import"){
+    return await importExamReferencePack(body as Record<string,unknown>) as T;
+  } else if(path==="/api/exam-reference-pack/exposure"){
+    const problemId=canonicalPastExamProblemId(String(body.problemId||body.problem_id||""));
+    const exposure=String(body.exposure||"") as PastExamExposure;
+    const allowed:PastExamExposure[]=["unseen","prompt_scanned","partially_attempted","fully_attempted","answer_exposed","simulated","unknown"];
+    if(!allowed.includes(exposure))throw new Error(`露出状態が不正です: ${exposure}`);
+    const row=await db.meta.get(EXAM_REFERENCE_PACK_META_KEY);
+    if(!row)throw new Error("参照パックが登録されていません");
+    const record=JSON.parse(row.value) as StoredExamReferencePack;
+    const reference=record.data.pastExamProblems.find(item=>canonicalPastExamProblemId(item)===problemId);
+    if(!reference||!reference.schedulable)throw new Error("この問題は露出状態を設定できるcore過去問ではありません");
+    const current=await db.meta.get(EXAM_REFERENCE_EXPOSURE_META_KEY);
+    let values:Record<string,PastExamExposure>={};
+    try{values=JSON.parse(current?.value||"{}")}catch{values={}}
+    values[problemId]=exposure;
+    await db.meta.put({key:EXAM_REFERENCE_EXPOSURE_META_KEY,value:JSON.stringify(values)});
+    notifyStudyDataChanged({operation:"update-past-exam-exposure"});
+    return {ok:true,problemId,exposure} as T;
   } else if(path==="/api/master/integrated/import"){
     return await importIntegratedMaster(body) as T;
   } else if(path==="/api/master/problem/import"){

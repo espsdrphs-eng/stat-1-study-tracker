@@ -23,6 +23,10 @@ This document is the implementation-level source of truth for data integrity. Le
 - A successful newer Attempt supersedes only older pending repair/retrieval Reviews for the same covered graded parts.
 - Attempt insertion, source Review completion, stale Review supersession, next Review upsert, and correction logging are one transaction.
 - SCAN5/past-session rules and the K/W/N/C learning policy are outside integrity repair and are not rewritten by it.
+- Importing the normalized exam reference pack is idempotent by pack SHA-256 and never mutates Attempts,
+  Reviews, past sessions, or Today Plan snapshots.
+- Concept weakness and adaptive plans are derived, read-only views. Shadow planning never becomes the current
+  plan or rewrites a snapshot without a separate explicit activation flow.
 
 Any code path that writes Attempts or Reviews must preserve these invariants. A new one-off repair must not be added
 when the condition belongs in `runIntegrityAudit` and the unified repair transaction.

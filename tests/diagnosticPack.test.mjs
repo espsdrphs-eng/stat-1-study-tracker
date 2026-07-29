@@ -48,13 +48,13 @@ test("安定化文字列はオブジェクトのキー順に依存しない",()=
   assert.equal(diagnosticAuditInternals.stableStringify({b:2,a:{d:4,c:3}}),diagnosticAuditInternals.stableStringify({a:{c:3,d:4},b:2}));
 });
 
-test("診断ZIPは実データを変更せず7ファイルを書き出す",async()=>{
+test("診断ZIPは実データを変更せず適応planner監査を含む8ファイルを書き出す",async()=>{
   await localGet("/api/bootstrap");
   const before={attempts:await db.attempts.count(),reviews:await db.reviews.count(),snapshots:await db.meta.where("key").startsWith("today-plan-snapshot:").toArray()};
   const result=await createDiagnosticPack();
   assert.equal(result.summary.readOnlyVerified,true);
   const zip=await JSZip.loadAsync(await result.blob.arrayBuffer());
-  for(const name of ["app-info.json","db-schema.json","learning-data.json","consistency-report.json","prompt-audit.json","planner-audit.json","test-report.txt"]){
+  for(const name of ["app-info.json","db-schema.json","learning-data.json","consistency-report.json","prompt-audit.json","planner-audit.json","adaptive-reference-audit.json","test-report.txt"]){
     assert.ok(zip.file(name),`${name} should exist`);
   }
   assert.equal(Object.keys(zip.files).some(name=>/pdf|image/i.test(name)),false);

@@ -12,6 +12,13 @@ export type Problem = {
   related_past_exam_ids?:string[]; answer_available?:boolean; master_version?:string;
   metadata_status?:"ok"|"review_needed"|"metadata_review_needed";
   full_skeleton_blueprint?:FullSkeletonBlueprint;
+  reference_pack_id?:string;reference_pack_hash?:string;
+  reference_status?:"verified"|"provisional"|"metadata_only";
+  past_exam_availability?:"verified_problem"|"metadata_only";
+  schedulable?:boolean;gradable?:boolean;
+  fine_concept_ids?:string[];coarse_topics?:string[];
+  difficulty_by_source?:Record<string,string|number|null>;
+  simulation_protection_default?:boolean;classification_confidence?:string;
 };
 export type AnswerIndexEntry = {
   problem_id:string; answer_available:boolean; pdf_file_name?:string; page_start?:number|null;
@@ -251,6 +258,67 @@ export type WeaknessInsight = {
   errorCounts:Record<string,number>; evidence:string[]; recommendedA:string[]; recommendedS:string[];
   action:string; mode:string; minutes:number; load:number;
 };
+export type ConceptWeaknessState =
+  |"unassessed"|"suspected"|"confirmed"|"repairing"|"transfer_pending"|"resolved"|"relapsed";
+export type ConceptWeaknessInsight = {
+  conceptId:string;displayName:string;state:ConceptWeaknessState;
+  independentOpportunities:number;independentFailures:number;failureRate:number|null;
+  strongFailures:number;weakFailures:number;delayedNoReferenceSuccesses:number;
+  transferSuccesses:number;distinctProblemCount:number;recurrenceCount:number;
+  examYearCount:number;recentExamYearCount:number;examImportance:number;
+  weaknessScore:number;priorityScore:number;estimatedRepairMinutes:number;
+  mappingConfidence:"verified"|"candidate";
+  latestEvidenceDate:string|null;evidenceSummary:string[];
+};
+export type ExamReferenceCatalogItem = {
+  referenceProblemId:string;canonicalProblemId:string;year:number;questionNumber:number;
+  title:string;availability:"verified_problem"|"metadata_only";schedulable:boolean;gradable:boolean;
+  fineConceptIds:string[];coarseTopics:string[];exposure:PastExamExposure;
+  simulationProtected:boolean;classificationConfidence:string;
+};
+export type ExamReferencePackStatus = {
+  installed:boolean;packName:string;packHash:string;importedAt:string;
+  schemaVersions:string[];valid:boolean;errors:string[];warnings:string[];
+  counts:{pastExamRecords:number;coreSchedulable:number;metadataOnly:number;concepts:number;whitebookLinks:number};
+  reconciliation:{
+    existingPastExam:number;safePastExamAdditions:number;safePastExamEnrichments:number;
+    pastExamConflicts:number;resolvedWhitebookLinks:number;aliasResolvedWhitebookLinks:number;
+    unresolvedWhitebookLinks:number;unresolvedWhitebookIds:string[];
+    knownLegacyConflicts:number;orphanPastAttempts:number;orphanPastSessions:number;
+  };
+  shadowStartedAt?:string;plannerMode:"legacy"|"shadow";
+};
+export type AdaptivePlanTask = {
+  taskKey:string;date:string;slot:"score_building"|"repair"|"maintenance_selection";
+  kind:"whitebook"|"past_exam"|"scan5"|"full"|"timed"|"review"|"exposure_confirmation";
+  label:string;problemId?:string;referenceProblemId?:string;conceptId?:string;
+  minutes:number;reason:string;requiresUserSelection:boolean;
+};
+export type AdaptivePlanDay = {date:string;tasks:AdaptivePlanTask[];totalMinutes:number};
+export type AdaptivePlanSummary = {
+  days:number;plan:AdaptivePlanDay[];totalMinutes:number;
+  counts:{scoreBuilding:number;repair:number;maintenance:number;scan5:number;full:number;timed:number;pastExam:number;chapter5:number;chapter7:number;chapter8:number};
+  weeklyMinimumViolations:string[];dailyCapacityViolations:number;
+};
+export type AdaptivePlannerShadow = {
+  available:boolean;mode:"unavailable"|"shadow";generatedAt:string;phase:string;daysRemaining:number;
+  targetMinutes:number;plan14:AdaptivePlanSummary;plan30:AdaptivePlanSummary;
+  legacy30:{scan5:number;full:number;timed:number;totalTasks:number};
+  comparisonReasons:string[];activationEligible:boolean;activationBlockers:string[];
+  weeklyTarget:Record<string,string|number>;weeklyActual:Record<string,number>;
+};
+export type PastExamRepairCandidate = {
+  sessionId:number;sourceProblemId:string;conceptId:string;conceptLabel:string;
+  whitebookProblemIds:string[];transferProblemIds:string[];reason:string;
+  requiresUserConfirmation:true;
+};
+export type AdaptiveLearning = {
+  referencePack:ExamReferencePackStatus;
+  pastExamCatalog:ExamReferenceCatalogItem[];
+  conceptWeaknesses:ConceptWeaknessInsight[];
+  pastExamRepairCandidates:PastExamRepairCandidate[];
+  plannerShadow:AdaptivePlannerShadow;
+};
 export type Dashboard = {
   today:string; weekA:number; weekPast:number; kRecurrence:number; pending:number; overdue:number;
   sStableRate:number; sForgotten:number; scanSuccess:number; examSuccess:number;
@@ -275,6 +343,7 @@ export type Dashboard = {
 export type Bootstrap = {
   problems:Problem[]; attempts:Attempt[]; reviews:Review[]; roadmap:Roadmap[];
   weakNotes:WeakNote[]; pastSessions:PastSession[]; answerIndex:AnswerIndexEntry[]; problemAliases:ProblemAlias[]; dashboard:Dashboard;
+  adaptiveLearning:AdaptiveLearning;
   settings:{exam_date:string;daily_study_minutes:number};
   masterStatus:{problem_count:number;answer_count:number;problem_version:string;answer_version:string;
     problem_updated_at:string;answer_updated_at:string;alias_updated_at:string;alias_version:string;alias_count:number;
