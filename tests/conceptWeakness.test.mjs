@@ -12,6 +12,28 @@ test("同日・同一問題・同一文脈の複数指摘を独立失敗1回へ�
   assert.equal(row.independentOpportunities,1);
 });
 
+test("暫定失敗20/25でも強い証拠0件なら確認済みにせず要診断のままにする",()=>{
+  const rows=[];
+  for(let index=1;index<=25;index++)rows.push(attempt(index,index%2?"PY-2021-Q1":"PY-2022-Q1",
+    `2026-07-${String(index).padStart(2,"0")}`,index<=20
+      ?{mode:"check",review_scope:"check_only",mark:"△",error_types:["W"]}
+      :{mode:"check",review_scope:"check_only",mark:"○",error_type:"none",error_types:["none"],score_numeric:80}));
+  const row=analyze(rows);
+  assert.equal(row.independentFailures,20);
+  assert.equal(row.independentOpportunities,25);
+  assert.equal(row.strongFailures,0);
+  assert.equal(row.state,"suspected");
+  assert.equal(row.evidenceConfidence,"low");
+  assert.match(row.nextRecommendedAction,/診断/);
+});
+
+test("過去問での出題年度数とユーザー実答案の失敗年度数を分離する",()=>{
+  const row=analyze([attempt(1,"PY-2021-Q1","2026-07-01")]);
+  assert.equal(row.examOccurrenceYearCount,2);
+  assert.equal(row.pastExamFailureYearCount,1);
+  assert.equal(row.pastExamFailureCount,1);
+});
+
 test("2回中2回失敗は10回中2回より弱点度が高い",()=>{
   const two=analyze([attempt(1,"PY-2021-Q1","2026-07-01"),attempt(2,"PY-2022-Q1","2026-07-02")]);
   const tenAttempts=[attempt(1,"PY-2021-Q1","2026-07-01"),attempt(2,"PY-2022-Q1","2026-07-02")];

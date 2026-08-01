@@ -48,6 +48,8 @@ import {
 } from "./examReferencePack.ts";
 import { analyzeConceptWeaknesses, buildPastExamRepairCandidates } from "./conceptWeakness.ts";
 import { buildAdaptivePlannerShadow } from "./adaptivePlanner.ts";
+import { buildAdditionalStudyCandidates } from "./additionalStudy.ts";
+import { summarizeReviewPortfolio } from "./reviewPortfolio.ts";
 import { BUILT_IN_EXAM_REFERENCE_PACK, builtInReferencePackValidation } from "./builtinExamReferencePack.ts";
 
 type SMemory = { problem_id:string; state:"stable"|"check"|"forgotten"|"collapsed"; last_touched?:string; k_trigger_count:number };
@@ -2218,6 +2220,7 @@ async function bootstrap():Promise<Bootstrap>{
       ?"現在は学習運用安定版です。新機能追加より、A問題・過去問・本番演習を優先してください。"
       :"学習運用安定版までの残タスクがあります。新機能追加より、記録と診断の不足を先に埋めてください。"
   };
+  const reviewPortfolio=summarizeReviewPortfolio({reviews,attempts:activeAttempts,aliases:problemAliases,today});
   const dashboard={
     today,weekA:new Set(activeAttempts.filter(a=>a.date>=week&&pmap.get(a.problem_id)?.category==="A").map(a=>a.problem_id)).size,
     weekPast:pastAttempts.filter(attempt=>attempt.date>=week).length,kRecurrence:kRepeat,
@@ -2231,7 +2234,7 @@ async function bootstrap():Promise<Bootstrap>{
     nextTheme:[...themeCounts.entries()].sort((a,b)=>b[1]-a[1])[0]?.[0]||"ロードマップ先頭のA問題",
     analysisConfidence:weaknessAnalysis.confidence,analysisAttemptCount:weaknessAnalysis.attemptCount,
     weaknessInsights:weaknessAnalysis.insights,
-    readiness,stableRelease,weeklyQuota:{...weeklyQuota,candidates:weeklyQuotaCandidates},
+    readiness,stableRelease,reviewPortfolio,weeklyQuota:{...weeklyQuota,candidates:weeklyQuotaCandidates},
     pace:{label:progress.label,checks,items:progress.checks,a14,pastSkeleton,kRepeat,
       skeletonRate:skeleton.length?Math.round(skeletonGood/skeleton.length*100):0,weakUpdates,delayed3,
       suggestion:progress.suggestion,phase:progress.phase,phaseLabel:progress.phaseLabel,summary:progress.summary,
@@ -2494,6 +2497,10 @@ async function bootstrap():Promise<Bootstrap>{
   const plannerShadow=buildAdaptivePlannerShadow({record:referenceRecord,catalog:pastExamCatalog,
     weaknesses:conceptWeaknesses,problems,attempts:activeAttempts,reviews,pastSessions,currentTasks:tasks,
     today,examDate:settings.exam_date,targetMinutes:settings.daily_study_minutes});
+  const additionalStudy=buildAdditionalStudyCandidates({
+    today,targetMinutes:settings.daily_study_minutes,completedMinutes:actualMinutes,
+    activeRemainingMinutes,currentTasks:tasks,shadow:plannerShadow
+  });
   const adaptiveLearning={referencePack:buildReferencePackStatus(referenceRecord),pastExamCatalog,
     conceptWeaknesses,pastExamRepairCandidates,plannerShadow};
   return {problems:problems.sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.category.localeCompare(b.category)||a.problem_number-b.problem_number),attempts,reviews,roadmap,weakNotes,pastSessions,answerIndex,problemAliases,dashboard,settings,masterStatus,databaseStatus,adaptiveLearning,
@@ -2502,6 +2509,8 @@ async function bootstrap():Promise<Bootstrap>{
       postponed_minutes_today:postponedMinutes,target_minutes_today:settings.daily_study_minutes,
       start_of_day_planned_minutes:snapshot.start_of_day_planned_minutes,active_remaining_minutes:activeRemainingMinutes,
       postpone_candidate_minutes:postponeCandidateMinutes,active_total_if_done:activeTotalIfDone,
+      remaining_learning_capacity_minutes:additionalStudy.capacity,
+      additionalCandidates:additionalStudy.candidates,
       triageMinutes:{
         must:tasks.filter(task=>task.triage==="must"&&!task.checked).reduce((sum,task)=>sum+task.minutes,0),
         if_time:tasks.filter(task=>task.triage==="if_time"&&!task.checked).reduce((sum,task)=>sum+task.minutes,0),
@@ -2775,6 +2784,34 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     return await db.transaction("rw",[db.attempts,db.reviews,db.problems,db.problemAliases,db.meta],()=>repairReviewSchedules()) as T;
   } else if(path==="/api/master/diagnostic/resolve"){
     return await resolveDiagnostic(body) as T;
+  } else if(path==="/api/today/add-candidate"){
+    const candidateKey=String(body.candidateKey||"");
+    const today=todayString(),key=`today-plan-snapshot:${today}`;
+    const existingRow=await db.meta.get(key);
+    if(existingRow?.value){
+      const existing=JSON.parse(existingRow.value) as TodayPlanSnapshot;
+      if(existing.tasks.some(task=>task.additional_candidate_key===candidateKey))
+        return {ok:true,candidateKey,alreadyAdded:true} as T;
+    }
+    const current=await bootstrap();
+    const candidate=current.today.additionalCandidates.find(item=>item.candidateKey===candidateKey);
+    if(!candidate)throw new Error("追加学習候補が見つからないか、現在の残り時間には収まりません");
+    await db.transaction("rw",db.meta,async()=>{
+      const row=await db.meta.get(key);
+      if(!row?.value)throw new Error("今日の計画が見つかりません");
+      const snapshot=JSON.parse(row.value) as TodayPlanSnapshot;
+      if(snapshot.tasks.some(task=>task.additional_candidate_key===candidateKey))return;
+      const task={...candidate.task,checked:false,triage:"if_time" as const};
+      const taskId=taskSnapshotId(task);
+      const next:TodayPlanSnapshot={...snapshot,tasks:[...snapshot.tasks,task],
+        task_ids:[...snapshot.task_ids,taskId],
+        initial_bucket:{...snapshot.initial_bucket,[taskId]:"if_time"},
+        initial_estimated_minutes:{...snapshot.initial_estimated_minutes,[taskId]:task.minutes}};
+      await db.meta.put({key:`today-plan-snapshot-history:${today}:${Date.now()}`,value:row.value});
+      await db.meta.put({key,value:JSON.stringify(next)});
+    });
+    notifyStudyDataChanged({operation:"add-shadow-candidate"});
+    return {ok:true,candidateKey} as T;
   } else if(path==="/api/today/recalculate"){
     const today=todayString(),key=`today-plan-snapshot:${today}`;
     const row=await db.meta.get(key);

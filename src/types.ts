@@ -251,6 +251,7 @@ export type Task = {
   grading_contract?:GradingContractSnapshot;contract_id?:string;contract_version?:string;contract_hash?:string;
   contract_locked_at?:string;explicitly_out_of_scope_parts?:string[];graded_parts?:string[];
   graded_part_ids?:string[];graded_findings?:GradedFinding[];
+  plan_origin?:"shadow_additional";additional_candidate_key?:string;purpose_label?:string;
 };
 export type WeaknessInsight = {
   theme:string; score:number; level:"重点"|"注意"|"観察"; confidence:"参考"|"暫定"|"分析可能";
@@ -264,10 +265,12 @@ export type ConceptWeaknessInsight = {
   conceptId:string;displayName:string;state:ConceptWeaknessState;
   independentOpportunities:number;independentFailures:number;failureRate:number|null;
   strongFailures:number;weakFailures:number;delayedNoReferenceSuccesses:number;
-  transferSuccesses:number;distinctProblemCount:number;recurrenceCount:number;
-  examYearCount:number;recentExamYearCount:number;examImportance:number;
+  transferSuccesses:number;distinctProblemCount:number;distinctFailureDateCount:number;recurrenceCount:number;
+  examYearCount:number;examOccurrenceYearCount:number;pastExamFailureCount:number;
+  pastExamFailureYearCount:number;recentExamYearCount:number;examImportance:number;
   weaknessScore:number;priorityScore:number;estimatedRepairMinutes:number;
   mappingConfidence:"verified"|"candidate";
+  evidenceConfidence:"low"|"medium"|"high";nextRecommendedAction:string;
   latestEvidenceDate:string|null;evidenceSummary:string[];
 };
 export type ExamReferenceCatalogItem = {
@@ -293,6 +296,8 @@ export type AdaptivePlanTask = {
   kind:"whitebook"|"past_exam"|"scan5"|"full"|"timed"|"review"|"exposure_confirmation";
   label:string;problemId?:string;referenceProblemId?:string;conceptId?:string;
   minutes:number;reason:string;requiresUserSelection:boolean;
+  purpose?:string;purposeLabel?:string;basis?:string;exposure?:PastExamExposure;
+  previousEventDate?:string;simulationProtected?:boolean;
 };
 export type AdaptivePlanDay = {date:string;tasks:AdaptivePlanTask[];totalMinutes:number};
 export type AdaptivePlanSummary = {
@@ -306,6 +311,21 @@ export type AdaptivePlannerShadow = {
   legacy30:{scan5:number;full:number;timed:number;totalTasks:number};
   comparisonReasons:string[];activationEligible:boolean;activationBlockers:string[];
   weeklyTarget:Record<string,string|number>;weeklyActual:Record<string,number>;
+  phaseDiagnostics:Array<{
+    checkpoint:"D90"|"D60"|"D30";phase:string;daysRemaining:number;
+    scan5:number;full:number;timed:number;pastExam:number;pastExamShare:number;
+    weeklyMinimumViolations:string[];
+  }>;
+};
+export type ReviewPortfolioSummary = {
+  actionable:number;overdue:number;dueToday:number;next7Days:number;later:number;
+  inactivePending:number;completedLast7Days:number;generatedLast7Days:number;
+  completedWithSuccessorLast7Days:number;netChangeLast7Days:number;
+  activeDuplicateLogicalKeys:number;
+};
+export type AdditionalStudyCandidate = {
+  candidateKey:string;source:"shadow"|"postponed"|"review";priority:number;
+  purposeLabel:string;reason:string;minutes:number;task:Task;
 };
 export type PastExamRepairCandidate = {
   sessionId:number;sourceProblemId:string;conceptId:string;conceptLabel:string;
@@ -333,6 +353,7 @@ export type Dashboard = {
     sampleSizes:{unseen:number;timed:number;scans:number;pastExams:number;kReviews:number;wReviews:number};
   };
   stableRelease:{isStable:boolean;blockingIssues:string[];message:string};
+  reviewPortfolio:ReviewPortfolioSummary;
   weeklyQuota:{fullSkeleton:number;timedFull:number;scan5:number;
     deficits:{fullSkeleton:boolean;timedFull:boolean;scan5:boolean};
     candidates:Array<{kind:"full_skeleton"|"timed_full"|"scan5";minutes:number;sessionKind?:PastExamSessionKind;stage?:PastExamStage}>};
@@ -386,7 +407,8 @@ export type Bootstrap = {
     start_of_day_planned_minutes:number;active_remaining_minutes:number;
     postpone_candidate_minutes:number;active_total_if_done:number;
     triageCounts:{must:number;if_time:number;tomorrow:number;completed:number};
-    completedTasks:Task[]};
+    completedTasks:Task[];remaining_learning_capacity_minutes:number;
+    additionalCandidates:AdditionalStudyCandidate[]};
 };
 export type StudyUpdate = {
   problem_id:string; date:string; mode:string; time_minutes?:number|string; actual_minutes?:number|string;

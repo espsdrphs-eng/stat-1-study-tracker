@@ -22,9 +22,9 @@ const errorValues=(attempt:Attempt)=>{
 };
 const attemptContext=(attempt:Attempt,problem?:Problem)=>{
   if(attempt.assessment_timing==="same_session_correction")return "same_session";
+  if(attempt.mode==="check"||attempt.review_scope==="check_only")return "check";
   if(attempt.parent_past_session_id||problem?.category==="past_exam")return "past_exam";
   if(attempt.exam_score_eligible||["full","exam_90min","past_exam"].includes(attempt.mode))return "timed";
-  if(attempt.mode==="check"||attempt.review_scope==="check_only")return "check";
   if(attempt.assessment_timing==="delayed_retrieval")return "delayed";
   return "standard";
 };
@@ -106,13 +106,17 @@ export function analyzeConceptWeaknesses(args:{
     const strongFailures=failures.filter(row=>row.strong).length;
     const weakFailures=failures.length-strongFailures;
     const distinctFailureProblems=unique(failures.map(row=>row.problemId));
+    const distinctFailureDates=unique(failures.map(row=>row.date));
+    const pastExamFailures=failures.filter(row=>row.pastExam);
+    const pastExamFailureYears=unique(pastExamFailures
+      .map(row=>row.problemId.match(/(?:^|[-_])((?:19|20)\d{2})(?:[-_]|$)/)?.[1]).filter(Boolean));
     let state:ConceptWeaknessInsight["state"]="unassessed",lastFailureDate="";
     let resolvedOnce=false;
     for(const row of rows){
       if(row.failed){
-        if(state==="resolved"){state="relapsed";resolvedOnce=true}
-        else if(row.strong||failures.filter(item=>item.date<=row.date).length>=2)state="confirmed";
-        else state="suspected";
+        if(row.strong&&state==="resolved"){state="relapsed";resolvedOnce=true}
+        else if(row.strong)state="confirmed";
+        else if(state==="unassessed")state="suspected";
         lastFailureDate=row.date;
       }else if(row.successful&&lastFailureDate&&row.date>lastFailureDate&&row.strong){
         const after=successes.filter(item=>item.strong&&item.date>lastFailureDate&&item.date<=row.date);
@@ -137,15 +141,26 @@ export function analyzeConceptWeaknesses(args:{
     const rawNotes=args.weakNotes.filter(note=>{
       const mapping=mappings.get(note.problem_id);return mapping?.conceptIds.includes(concept.concept_id);
     }).length;
+    const evidenceConfidence:ConceptWeaknessInsight["evidenceConfidence"]=
+      strongFailures>=2&&distinctFailureDates.length>=2?"high":strongFailures?"medium":"low";
+    const nextRecommendedAction=state==="unassessed"||state==="suspected"
+      ?"参照なしの別日診断で、弱点かどうかを確認する"
+      :state==="transfer_pending"?"別問題または過去問実答案で転移を確認する"
+      :state==="resolved"?"低頻度の維持確認に留める"
+      :state==="repairing"?"現在の局所補修を完了し、遅延確認へ進む"
+      :"最も得点波及の大きい1点だけを補修する";
     results.push({conceptId:concept.concept_id,displayName:concept.display_name,state,
       independentOpportunities:rows.length,independentFailures:failures.length,
       failureRate:failureRate==null?null:Math.round(failureRate*100),strongFailures,weakFailures,
       delayedNoReferenceSuccesses,transferSuccesses,distinctProblemCount:distinctFailureProblems.length,
-      recurrenceCount:recurrence,examYearCount:exam.years,recentExamYearCount:exam.recent,
+      distinctFailureDateCount:distinctFailureDates.length,recurrenceCount:recurrence,
+      examYearCount:exam.years,examOccurrenceYearCount:exam.years,
+      pastExamFailureCount:pastExamFailures.length,pastExamFailureYearCount:pastExamFailureYears.length,
+      recentExamYearCount:exam.recent,
       examImportance:exam.importance,weaknessScore,priorityScore,estimatedRepairMinutes,
-      mappingConfidence:verifiedRows.length?"verified":"candidate",
+      mappingConfidence:verifiedRows.length?"verified":"candidate",evidenceConfidence,nextRecommendedAction,
       latestEvidenceDate:rows.at(-1)?.date||null,evidenceSummary:[
-        rows.length?`独立機会 ${rows.length}回中、失敗 ${failures.length}回`:"独立した答案証拠なし",
+        rows.length?`履歴由来の暫定失敗 ${failures.length}/${rows.length}`:"独立した答案証拠なし",
         strongFailures?`強い失敗証拠 ${strongFailures}回`:"強い失敗証拠なし",
         delayedNoReferenceSuccesses?`参照なし遅延成功 ${delayedNoReferenceSuccesses}回`:"参照なし遅延成功なし",
         rawNotes?`raw weakNote ${rawNotes}件（順位計算には未使用）`:"raw weakNoteなし"

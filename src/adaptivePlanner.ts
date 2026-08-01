@@ -3,6 +3,7 @@ import type {
   ExamReferenceCatalogItem, PastSession, Problem, Review, Task
 } from "./types.ts";
 import type { StoredExamReferencePack } from "./examReferencePack.ts";
+import { canonicalPastExamProblemId } from "./examReferencePack.ts";
 import { addCalendarDays } from "./reviewSchedulePolicy.ts";
 import { daysUntilExam } from "./studyProgress.ts";
 import { reviewExecutionState } from "./integrityEngine.ts";
@@ -63,7 +64,9 @@ function choosePastExam(args:{
   const rows=args.catalog.filter(row=>row.schedulable&&row.availability==="verified_problem"&&
     row.exposure!=="unknown"&&!(args.daysRemaining>=61&&row.simulationProtected&&["unseen","unknown"].includes(row.exposure)))
     .sort((a,b)=>pastRank(a.exposure)-pastRank(b.exposure)||a.year-b.year||a.questionNumber-b.questionNumber);
-  const selected=rows.find(row=>!args.used.get(row.referenceProblemId)||args.used.get(row.referenceProblemId)!>addCalendarDays(args.date,-14));
+  // A simulation must not invent a second purpose after merely placing the
+  // first task. Reuse requires a persisted Attempt/exposure event in a later run.
+  const selected=rows.find(row=>!args.used.has(row.referenceProblemId));
   if(selected)args.used.set(selected.referenceProblemId,args.date);
   return selected;
 }
@@ -138,9 +141,24 @@ function planDays(args:{
   };
   const makePast=(date:string,kind:"past_exam"|"scan5"|"timed",minutes:number,reason:string)=>{
     const selected=choosePastExam({catalog:args.catalog,daysRemaining:args.daysRemaining,used:usedPast,date});
-    return task({date,slot:"score_building",kind,label:selected?`${selected.year}年問${selected.questionNumber}`:"過去問素材を選択",
-      referenceProblemId:selected?.referenceProblemId,problemId:selected?.canonicalProblemId,minutes,reason,
-      requiresUserSelection:!selected});
+    if(!selected)return task({date,slot:"maintenance_selection",kind:"exposure_confirmation",label:"過去問素材の露出状態を確認",
+      minutes:10,reason:"unknownまたは模試保護中の素材を50分答案へ直接配置しないため、先に素材を確認します。",
+      purpose:"material_selection_confirmation",purposeLabel:"素材選択確認",
+      basis:"利用可能な具体問題がないため、露出状態を変更せずユーザー確認を求めます。",exposure:"unknown",
+      requiresUserSelection:true});
+    const latest=[...args.attempts].filter(attempt=>
+      canonicalPastExamProblemId(attempt.problem_id)===canonicalPastExamProblemId(selected.canonicalProblemId))
+      .sort((a,b)=>b.date.localeCompare(a.date)||b.id-a.id)[0];
+    const purpose=kind==="timed"?"timed_reconfirmation":
+      selected.exposure==="unseen"?"initial_diagnosis":
+      selected.exposure==="prompt_scanned"&&!latest?"first_answer":"delayed_reattempt";
+    const purposeLabel=purpose==="timed_reconfirmation"?"時間制限再確認":
+      purpose==="initial_diagnosis"?"初回診断":purpose==="first_answer"?"初回答案":"補修後の遅延再挑戦";
+    const basis=`露出状態：${selected.exposure}${latest?`／前回Attempt：${latest.date}`:"／対象問題のAttemptなし"}`;
+    return task({date,slot:"score_building",kind,label:`${selected.year}年問${selected.questionNumber}`,
+      referenceProblemId:selected.referenceProblemId,problemId:selected.canonicalProblemId,minutes,
+      reason:`${reason}・${purposeLabel}`,purpose,purposeLabel,basis,exposure:selected.exposure,
+      previousEventDate:latest?.date,simulationProtected:selected.simulationProtected,requiresUserSelection:false});
   };
   for(let offset=0;offset<args.days;offset++){
     const date=addCalendarDays(args.startDate,offset),weekday=offset%7;
@@ -216,7 +234,7 @@ export function buildAdaptivePlannerShadow(args:{
   if(!args.record)return {available:false,mode:"unavailable",generatedAt,phase,daysRemaining,targetMinutes:args.targetMinutes,
     plan14:empty,plan30:empty,legacy30:{scan5:0,full:0,timed:0,totalTasks:0},
     comparisonReasons:["正規化済み参照パックを取り込むとshadow比較を開始できます。"],
-    activationEligible:false,activationBlockers:["参照パック未登録"],weeklyTarget:{},weeklyActual:{}};
+    activationEligible:false,activationBlockers:["参照パック未登録"],weeklyTarget:{},weeklyActual:{},phaseDiagnostics:[]};
   const plan14=validateMinimums(planSummary(planDays({...args,startDate:args.today,days:14,daysRemaining})),daysRemaining,args.targetMinutes);
   const plan30=validateMinimums(planSummary(planDays({...args,startDate:args.today,days:30,daysRemaining})),daysRemaining,args.targetMinutes);
   const legacy=simulateThirtyDays({startDate:args.today,tasks:args.currentTasks,problems:args.problems,targetMinutes:args.targetMinutes,
@@ -229,6 +247,18 @@ export function buildAdaptivePlannerShadow(args:{
     ...(shadowDays<14?[`shadow観察 ${shadowDays}/14日`]:[]),
     ...(plan14.weeklyMinimumViolations.length||plan14.dailyCapacityViolations?["14日シミュレーションに未達あり"]:[])
   ];
+  const phaseDiagnostics=([
+    ["D90",90],["D60",60],["D30",30]
+  ] as const).map(([checkpoint,remaining])=>{
+    const diagnosticStart=addCalendarDays(args.examDate,-remaining);
+    const summary=validateMinimums(planSummary(planDays({...args,startDate:diagnosticStart,days:14,daysRemaining:remaining})),remaining,args.targetMinutes);
+    const all=summary.plan.flatMap(day=>day.tasks);
+    const total=all.reduce((sum,row)=>sum+row.minutes,0);
+    const past=all.filter(row=>["past_exam","scan5","timed"].includes(row.kind)).reduce((sum,row)=>sum+row.minutes,0);
+    return {checkpoint,phase:phaseName(remaining),daysRemaining:remaining,scan5:summary.counts.scan5,
+      full:summary.counts.full,timed:summary.counts.timed,pastExam:summary.counts.pastExam,
+      pastExamShare:total?Math.round(past/total*100):0,weeklyMinimumViolations:summary.weeklyMinimumViolations};
+  });
   return {available:true,mode:"shadow",generatedAt,phase,daysRemaining,targetMinutes:args.targetMinutes,plan14,plan30,
     legacy30:{scan5:legacy.purposeCounts.scan5,full:legacy.purposeCounts.fullSkeleton,
       timed:legacy.purposeCounts.timedFull,totalTasks:args.currentTasks.length},
@@ -241,5 +271,5 @@ export function buildAdaptivePlannerShadow(args:{
     weeklyTarget:{phase,
       minimums:JSON.stringify((policy as Record<string,unknown>).minimums_per_7_days||{}),
       targetMix:JSON.stringify((policy as Record<string,unknown>).target_mix||{})},
-    weeklyActual:weekly};
+    weeklyActual:weekly,phaseDiagnostics};
 }

@@ -10,6 +10,14 @@ const whitebook=[
 ];
 const baseRecord=record();
 const catalog=buildPastExamCatalog({record:baseRecord,sessions:[],exposureOverrides:{"PY-2021-Q1":"prompt_scanned","PY-2022-Q1":"unseen"}});
+const manyPast=Array.from({length:30},(_,index)=>({
+  ...baseRecord.data.pastExamProblems[index%2],year:2019+Math.floor(index/5),
+  question_number:index%5+1,problem_id:`PE-${2019+Math.floor(index/5)}-Q${String(index%5+1).padStart(2,"0")}`,
+  simulation_protection_default:false
+})).filter(row=>row.year!==2020);
+const expandedRecord=record({data:{...baseRecord.data,pastExamProblems:manyPast}});
+const expandedCatalog=buildPastExamCatalog({record:expandedRecord,sessions:[],
+  exposureOverrides:Object.fromEntries(manyPast.map(row=>[`PY-${row.year}-Q${row.question_number}`,"prompt_scanned"]))});
 const build=(today,examDate="2026-11-15",reviews=[])=>
   buildAdaptivePlannerShadow({record:baseRecord,catalog,weaknesses:[],problems:whitebook,attempts:[],reviews,pastSessions:[],
     currentTasks:[],today,examDate,targetMinutes:150});
@@ -42,11 +50,14 @@ test("unknown exposureを特定の未見年度として推薦せず、2024・202
   const shadow=buildAdaptivePlannerShadow({record:protectedRecord,catalog:protectedCatalog,weaknesses:[],problems:whitebook,
     attempts:[],reviews:[],pastSessions:[],currentTasks:[],today:"2026-07-29",examDate:"2026-11-15",targetMinutes:150});
   assert.equal(shadow.plan30.plan.flatMap(day=>day.tasks).some(task=>task.referenceProblemId),false);
-  assert.equal(shadow.plan30.plan.flatMap(day=>day.tasks).filter(task=>["scan5","past_exam","timed"].includes(task.kind)).every(task=>task.requiresUserSelection),true);
+  const confirmations=shadow.plan30.plan.flatMap(day=>day.tasks).filter(task=>task.kind==="exposure_confirmation");
+  assert.ok(confirmations.length>0);
+  assert.equal(confirmations.every(task=>task.requiresUserSelection&&task.minutes===10&&task.purpose==="material_selection_confirmation"),true);
 });
 
 test("残り60日以下で90分演習と過去問比率50%以上を満たす",()=>{
-  const shadow=build("2026-09-20");
+  const shadow=buildAdaptivePlannerShadow({record:expandedRecord,catalog:expandedCatalog,weaknesses:[],problems:whitebook,
+    attempts:[],reviews:[],pastSessions:[],currentTasks:[],today:"2026-09-20",examDate:"2026-11-15",targetMinutes:150});
   assert.ok(shadow.plan14.counts.timed>0);
   assert.equal(shadow.plan14.dailyCapacityViolations,0);
   assert.equal(shadow.plan14.weeklyMinimumViolations.filter(value=>value.includes("50%未満")).length,0);
@@ -56,9 +67,11 @@ test("参照なし本番得点が良好なら過去問を前倒しし、不十�
   const successes=[1,2].map(id=>({id,problem_id:`WB-4-A-0${id}`,date:`2026-07-${20+id}`,mode:"full",
     mark:"○",score_label:"A",score_numeric:80,error_type:"none",error_types:["none"],
     exam_score_eligible:true,actual_reference_level:0,time_minutes:35}));
-  const accelerated=buildAdaptivePlannerShadow({record:baseRecord,catalog,weaknesses:[],problems:whitebook,
+  const acceleratedExpanded=buildAdaptivePlannerShadow({record:expandedRecord,catalog:expandedCatalog,weaknesses:[],problems:whitebook,
     attempts:successes,reviews:[],pastSessions:[],currentTasks:[],today:"2026-07-29",examDate:"2026-11-15",targetMinutes:150});
-  assert.ok(accelerated.plan14.counts.pastExam>build("2026-07-29").plan14.counts.pastExam);
+  const normalExpanded=buildAdaptivePlannerShadow({record:expandedRecord,catalog:expandedCatalog,weaknesses:[],problems:whitebook,
+    attempts:[],reviews:[],pastSessions:[],currentTasks:[],today:"2026-07-29",examDate:"2026-11-15",targetMinutes:150});
+  assert.ok(acceleratedExpanded.plan14.counts.pastExam>normalExpanded.plan14.counts.pastExam);
   const insufficient=build("2026-07-29");
   assert.ok(insufficient.plan14.counts.scan5>=2);
 });
@@ -75,4 +88,24 @@ test("shadowはtodayPlanSnapshotを変更する出力を持たない",()=>{
   buildAdaptivePlannerShadow({record:baseRecord,catalog,weaknesses:[],problems:whitebook,attempts:[],reviews:[],pastSessions:[],
     currentTasks:current,today:"2026-07-29",examDate:"2026-11-15",targetMinutes:150});
   assert.deepEqual(current,copy);
+});
+
+test("同じ過去問を根拠のない同一目的で再配置せず、配置目的と露出根拠を持つ",()=>{
+  const tasks=build("2026-07-29").plan30.plan.flatMap(day=>day.tasks).filter(task=>task.referenceProblemId);
+  assert.equal(new Set(tasks.map(task=>task.referenceProblemId)).size,tasks.length);
+  assert.equal(tasks.every(task=>task.purpose&&task.purposeLabel&&task.basis&&task.exposure),true);
+});
+
+test("D90・D60・D30診断は純粋にフェーズを切り替え、D60以降にtimedを確保する",()=>{
+  const shadow=buildAdaptivePlannerShadow({record:expandedRecord,catalog:expandedCatalog,weaknesses:[],problems:whitebook,
+    attempts:[],reviews:[],pastSessions:[],currentTasks:[],today:"2026-08-01",examDate:"2026-11-15",targetMinutes:150});
+  const d90=shadow.phaseDiagnostics.find(row=>row.checkpoint==="D90");
+  const d60=shadow.phaseDiagnostics.find(row=>row.checkpoint==="D60");
+  const d30=shadow.phaseDiagnostics.find(row=>row.checkpoint==="D30");
+  assert.equal(d90.phase,"A_and_past_parallel");
+  assert.ok(d90.pastExam>0);
+  assert.ok(d60.timed>=2);
+  assert.ok(d60.pastExamShare>=50);
+  assert.ok(d30.timed>=2);
+  assert.ok(d30.pastExamShare>=50);
 });

@@ -8,6 +8,12 @@ This document is the implementation-level source of truth for data integrity. Le
 - Reference-pack hydration never deletes or rewrites Attempt, Review, pastSession, exposure, or todayPlanSnapshot history.
 - Reapplying the same pack does not create duplicate problem records.
 - UI year lists and planner candidates come from the active normalized catalog, not a fixed year array.
+- Shadow suggestions never mutate the current Today Plan. An additional candidate enters the current snapshot only
+  after an explicit user action, and its candidate key is idempotent.
+- Review portfolio totals, due buckets, transition counts, and duplicate warnings use the same
+  `reviewExecutionState` and logical Review identity used by integrity diagnostics.
+- Phase diagnostics and shadow simulations are pure reads: they do not change the observation start date,
+  Review dates, exposure state, or any todayPlanSnapshot.
 - One answer submission creates at most one Attempt. `submission_id` is the idempotency key.
 - One logical review task has at most one active Review.
 - `contractId` identifies one persisted Review execution and is unique among active Reviews.

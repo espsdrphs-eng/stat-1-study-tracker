@@ -251,8 +251,13 @@ function DashboardView({data,go,select}:{data:Bootstrap;go:(p:Page)=>void;select
         <details><summary>比較理由と切替条件</summary>
           <ul className="compact-list">{data.adaptiveLearning.plannerShadow.comparisonReasons.map(reason=><li key={reason}>{reason}</li>)}</ul>
           <div className="adaptive-plan-preview">{data.adaptiveLearning.plannerShadow.plan14.plan.map(day=><div key={day.date}>
-            <strong>{day.date}</strong><span>{day.tasks.map(task=>`${task.slot==="score_building"?"得点形成":task.slot==="repair"?"局所補修":"維持・選択"}：${task.label}（${task.minutes}分）`).join("／")}</span>
+            <strong>{day.date}</strong><span>{day.tasks.map(task=>`${task.slot==="score_building"?"得点形成":task.slot==="repair"?"局所補修":"維持・選択"}：${task.label}［${task.purposeLabel||"通常配置"}］（${task.minutes}分）`).join("／")}</span>
             <small>合計{day.totalMinutes}分</small>
+          </div>)}</div>
+          <div className="phase-diagnostic-grid">{data.adaptiveLearning.plannerShadow.phaseDiagnostics.map(item=><div key={item.checkpoint}>
+            <strong>{item.checkpoint}・{item.phase}</strong>
+            <span>scan5 {item.scan5}／full {item.full}／timed {item.timed}</span>
+            <small>過去問系 {item.pastExamShare}%・未達 {item.weeklyMinimumViolations.length}件</small>
           </div>)}</div>
           <strong>{data.adaptiveLearning.plannerShadow.activationEligible?"切替条件を満たしています（明示操作は別途必要）":"まだ切り替えません"}</strong>
           {!!data.adaptiveLearning.plannerShadow.activationBlockers.length&&<ul className="compact-list">{data.adaptiveLearning.plannerShadow.activationBlockers.map(reason=><li key={reason}>{reason}</li>)}</ul>}
@@ -265,7 +270,7 @@ function DashboardView({data,go,select}:{data:Bootstrap;go:(p:Page)=>void;select
       <Metric label="A問題進捗" value={d.weekA} unit="題" hint="今週の新規・復習"/>
       <Metric label={d.pace.phase==="foundation"?"過去問（任意）":"過去問GPT採点"} value={d.weekPast} unit="件" hint={d.pace.phase==="foundation"?"基礎期は未実施でも可":"今週の取り込み"}/>
       <Metric label="K再発" value={d.kRecurrence} unit="題" hint="直近2週間" tone={d.kRecurrence>2?"red":""}/>
-      <Metric label="復習待ち" value={d.pending} unit="件" hint={`うち遅延 ${d.overdue}件`} tone={d.overdue?"amber":""}/>
+      <Metric label="復習待ち" value={d.pending} unit="件" hint={`期限超過 ${d.reviewPortfolio.overdue}・今日 ${d.reviewPortfolio.dueToday}`} tone={d.overdue?"amber":""}/>
       <Metric label="S問題安定率" value={d.sStableRate} unit="%" hint={`要確認 ${d.sForgotten}件`}/>
     </div>
     <section className="progress-phase">
@@ -580,6 +585,20 @@ function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a
       {summary.map(item=><button type="button" className={`${item.key} ${todayFilter===item.key?"active":""}`} onClick={()=>setTodayFilter(item.key)} key={item.key}><span>{item.label}</span><strong>{item.count}件 / {item.minutes}分</strong></button>)}
     </div><div className="today-tabs">{summary.map(item=><button className={todayFilter===item.key?"active":""} onClick={()=>setTodayFilter(item.key)} key={item.key}>{item.label}</button>)}<button className={todayFilter==="all"?"active":""} onClick={()=>setTodayFilter("all")}>すべて</button></div></div>
     {!data.today.warning&&<div className="time-guidance"><Clock3 size={16}/><span>{data.today.guidance}</span></div>}
+    {!!data.today.remaining_learning_capacity_minutes&&!!data.today.additionalCandidates.length&&
+      <section className="panel additional-study-panel">
+        <div className="panel-title"><div><span className="eyebrow">OPTIONAL EXTRA</span><h3>追加学習候補</h3></div>
+          <Badge tone="blue">残り最大 {data.today.remaining_learning_capacity_minutes}分</Badge></div>
+        <p>{data.today.active_remaining_minutes===0?"今日の必須・任意課題は完了しています。": "正式計画を変えず、残り時間で追加できます。"}候補はshadowの合格戦略から選び、追加するまで今日の予定には入りません。</p>
+        <div className="additional-candidate-list">{data.today.additionalCandidates.map(candidate=><article key={candidate.candidateKey}>
+          <div><strong>{candidate.task.title}</strong><span>{candidate.purposeLabel}・{candidate.minutes}分</span><small>{candidate.reason}</small></div>
+          <button className="small primary" disabled={busy} onClick={()=>run(
+            ()=>post("/api/today/add-candidate",{candidateKey:candidate.candidateKey}),
+            `${candidate.task.title}を「余裕があれば」へ追加しました`
+          )}><Plus size={14}/>今日に追加</button>
+        </article>)}</div>
+        <small>追加後も完了時間・先送り時間は二重計上しません。</small>
+      </section>}
     <section className="panel">
       <div className="table-wrap"><table><thead><tr><th>種類</th><th>問題</th><th>推奨モード</th><th>予定時間</th><th>理由</th><th/></tr></thead>
       {triageGroups.map(group=><tbody key={group.key} className={`triage-group ${group.key}`}><tr className="triage-heading"><td colSpan={6}><strong>{group.label}</strong>{group.description&&<span>{group.description}</span>}</td></tr>{group.tasks.map((t,i)=><TodayTaskRows key={`${t.problem_id}-${i}`} task={t} problem={pmap[t.problem_id]} data={data} busy={busy} run={run} date={data.dashboard.today} onReview={setReviewTask} onOpenProblem={problem=>select(problem)} onPostpone={(item,initial)=>setPostponeTask({item,initial})} examPhase={examPhase}/>)}</tbody>)}</table></div>
@@ -923,7 +942,19 @@ function ReviewsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>
   const saveReview=(body:Record<string,unknown>)=>{if(!selectedReview)return;const id=selectedReview.id;setSelectedReview(null);sessionStorage.removeItem(referenceStorageKey(id));sessionStorage.removeItem(referenceClosedStorageKey(id));run(()=>post(`/api/reviews/${id}/complete`,body),"復習結果を保存し、次回間隔を再計算しました")};
   const postpone=(body:Record<string,unknown>,label:string)=>{if(!postponeReviewItem)return;const id=postponeReviewItem.item.id;setPostponeReviewItem(null);
     run(()=>post(`/api/reviews/${id}/postpone`,body),`復習を${label}へ送りました`)};
-  return <><div className="toolbar"><div className="segmented">{[["open","現在の予定"],["overdue","期限切れ"],["deferred","期限なし"],["done","完了"],["all","すべて"]].map(([k,v])=><button key={k} className={filter===k?"active":""} onClick={()=>setFilter(k)}>{v}</button>)}</div></div>
+  const portfolio=data.dashboard.reviewPortfolio;
+  return <><section className="panel review-portfolio">
+    <div className="panel-title"><div><span className="eyebrow">REVIEW FLOW</span><h3>現在の復習予定と直近7日の推移</h3></div>
+      <Badge tone={portfolio.overdue||portfolio.activeDuplicateLogicalKeys?"orange":"green"}>見るべき主指標：期限超過 {portfolio.overdue}件</Badge></div>
+    <div className="review-portfolio-grid">
+      <span>期限超過<strong>{portfolio.overdue}</strong></span><span>今日が期限<strong>{portfolio.dueToday}</strong></span>
+      <span>今後7日<strong>{portfolio.next7Days}</strong></span><span>8日以降<strong>{portfolio.later}</strong></span>
+      <span>要確認・無効<strong>{portfolio.inactivePending}</strong></span><span>active重複<strong>{portfolio.activeDuplicateLogicalKeys}</strong></span>
+    </div>
+    <p>直近7日：{portfolio.completedLast7Days}件完了／{portfolio.generatedLast7Days}件生成／差引 {portfolio.netChangeLast7Days>=0?"+":""}{portfolio.netChangeLast7Days}件
+      {portfolio.completedWithSuccessorLast7Days?`（完了後に次回確認を生成した流れ ${portfolio.completedWithSuccessorLast7Days}件）`:""}</p>
+    <small>総pendingが横ばいでも、完了後の正常な遅延確認が生成されることがあります。総数を強制的に減らさず、期限超過と重複・無効を確認します。</small>
+  </section><div className="toolbar"><div className="segmented">{[["open","現在の予定"],["overdue","期限切れ"],["deferred","期限なし"],["done","完了"],["all","すべて"]].map(([k,v])=><button key={k} className={filter===k?"active":""} onClick={()=>setFilter(k)}>{v}</button>)}</div></div>
     <div className="review-list">{rows.map(review=>{
       const state=stateOf(review);
       const resolved=resolveReview(review);
@@ -945,7 +976,7 @@ function ReviewsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>
   </>
 }
 const conceptStateLabels:Record<string,string>={
-  unassessed:"未確認",suspected:"疑い",confirmed:"確認済み弱点",repairing:"補修中",
+  unassessed:"未確認",suspected:"要診断",confirmed:"確認済み弱点",repairing:"補修中",
   transfer_pending:"転移確認待ち",resolved:"解消",relapsed:"再発"
 };
 function ConceptWeaknessPanel({data}:{data:Bootstrap}){
@@ -956,14 +987,18 @@ function ConceptWeaknessPanel({data}:{data:Bootstrap}){
   return <section className="panel concept-weakness-panel">
     <div className="panel-title"><div><span className="eyebrow">CONCEPT EVIDENCE</span><h3>独立した学習機会で見る弱点</h3></div>
       <Badge tone={data.adaptiveLearning.referencePack.installed?"blue":"orange"}>{data.adaptiveLearning.referencePack.installed?"shadow評価":"参照パック未登録"}</Badge></div>
-    <p>同じ日・同じ問題・同じ文脈の複数指摘は1回にまとめます。raw weakNote件数だけでは順位を決めません。</p>
+    <p><strong>新指標（shadowのみ）</strong>：同じ日・同じ問題・同じ文脈の複数指摘は1回にまとめます。raw weakNote件数だけでは順位を決めません。</p>
     {!data.adaptiveLearning.referencePack.installed?<Empty>参照パック照合後に、concept単位の証拠評価を表示します</Empty>:
       rows.length?<div className="concept-weakness-list">{rows.map(row=><article key={row.conceptId}>
         <div><Badge tone={row.state==="relapsed"||row.state==="confirmed"?"red":row.state==="resolved"?"green":"orange"}>{conceptStateLabels[row.state]}</Badge>
           <strong>{row.displayName}</strong><small>{row.conceptId}</small></div>
-        <div><span>独立失敗 <strong>{row.independentFailures}/{row.independentOpportunities}</strong></span>
-          <span>別問題 <strong>{row.distinctProblemCount}</strong></span><span>過去問年度 <strong>{row.examYearCount}</strong></span></div>
-        <p>{row.evidenceSummary.slice(0,2).join("／")||"証拠を蓄積中"}</p>
+        <div><span>履歴由来の暫定失敗 <strong>{row.independentFailures}/{row.independentOpportunities}</strong></span>
+          <span>強い独立失敗 <strong>{row.strongFailures}</strong></span><span>別日 <strong>{row.distinctFailureDateCount}</strong></span>
+          <span>別問題 <strong>{row.distinctProblemCount}</strong></span><span>過去問実答案の失敗年度 <strong>{row.pastExamFailureYearCount}</strong></span>
+          <span>過去問での出題年度数 <strong>{row.examOccurrenceYearCount}</strong></span>
+          <span>遅延成功 <strong>{row.delayedNoReferenceSuccesses}</strong></span><span>転移成功 <strong>{row.transferSuccesses}</strong></span></div>
+        <p>証拠信頼度：{row.evidenceConfidence==="high"?"高":row.evidenceConfidence==="medium"?"中":"低"}／{row.nextRecommendedAction}</p>
+        {!row.strongFailures&&<small>旧履歴上では弱点候補ですが、新方式の強い証拠は未取得です。</small>}
       </article>)}</div>:<Empty>独立した失敗証拠はまだありません。証拠不足は「苦手」ではなく未確認として扱います</Empty>}
   </section>;
 }
@@ -1005,9 +1040,9 @@ function WeakView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:
   if(!trend.attemptCount) return <><ConceptWeaknessPanel data={data}/><section className="weak-trend-hero"><div><span className="eyebrow">WEAKNESS TRENDS</span><h2>GPT採点が集まると、苦手の傾向が見えてきます</h2><p>この画面はK/W/N/Cが付いた採点だけから、繰り返すミスを探します。ミスなしの採点は学習履歴には残りますが、弱点グラフには加算しません。</p></div></section><section className="panel weak-empty-explanation">{trend.totalAttemptCount?<><Check size={28}/><h3>採点は{trend.totalAttemptCount}件ありますが、弱点として数えるミスは0件です</h3><p>現在の採点はすべて「none（ミスなし）」です。K/W/N/Cが付いた結果を保存すると、テーマ別・分類別・週別のグラフが表示されます。</p></>:<Empty>まだ採点記録がありません。GPT採点結果を取り込むと自動で蓄積されます</Empty>}</section></>;
   return <>
     <ConceptWeaknessPanel data={data}/>
-    <section className="weak-trend-hero"><div><span className="eyebrow">WEAKNESS TRENDS</span><h2>採点結果から見える苦手傾向</h2><p>ここは復習タスクの一覧ではありません。問題とGPT採点結果から、繰り返し落としているテーマとミスの型を俯瞰する場所です。</p></div><div className="trend-summary"><strong>{trend.themes.length}</strong><span>検出テーマ</span><small>最多 {trend.topTheme}</small></div></section>
+    <section className="weak-trend-hero"><div><span className="eyebrow">LEGACY WEAKNESS TRENDS</span><h2>旧指標：採点結果から見える苦手傾向</h2><p>現在の正式計画は既存Review・ロードマップとこの履歴集計を使用し、新concept指標はshadow比較中です。本切替後も旧指標は履歴比較として残します。</p></div><div className="trend-summary"><strong>{trend.themes.length}</strong><span>旧方式の検出テーマ</span><small>最多 {trend.topTheme}</small></div></section>
     <div className="trend-metrics"><Metric label="保存済みの全採点" value={trend.totalAttemptCount} unit="件" hint={`ミスなし ${trend.noErrorCount}件`}/><Metric label="ミスあり採点" value={trend.attemptCount} unit="件" hint="K/W/N/Cが1つ以上"/><Metric label="主なミス型" value={dominantError} hint={`${errorCounts[dominantError]||0}件`}/><Metric label="K発生率" value={trend.kRate} unit="%" hint="ミスあり採点に占める割合"/></div>
-    <section className="weak-reading-guide"><strong>この画面の数え方</strong><span>1回の採点にK/W/N/Cが1つでもあれば「ミスあり採点」1件です。テーマの点数は重要度（K=5、N=3、W=2、C=1）の合計で、点数が高いほど先に復習します。ミスなしの結果は弱点には加算しません。</span></section>
+    <section className="weak-reading-guide"><strong>旧指標の数え方</strong><span>1回の採点にK/W/N/Cが1つでもあれば「ミスあり採点」1件です。テーマの点数は重要度（K=5、N=3、W=2、C=1）の履歴集計です。上のshadow指標と同じランキングには混ぜません。</span></section>
     <div className="trend-grid">
       <section className="panel theme-chart"><div className="panel-title"><div><span className="eyebrow">BY THEME</span><h3>苦手テーマ上位</h3></div><BarChart3 size={19}/></div>
         {topThemes.map(theme=><div className="theme-bar-row" key={theme.label}><div><strong>{theme.label}</strong><span>採点 {theme.count}件</span></div><div className="theme-bar"><i style={{width:`${theme.score/maxTheme*100}%`}}/></div><b>{theme.score}</b></div>)}
