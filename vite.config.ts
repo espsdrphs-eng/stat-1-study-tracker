@@ -8,12 +8,13 @@ export default defineConfig({
     __APP_COMMIT__: JSON.stringify(process.env.GITHUB_SHA || process.env.VITE_APP_COMMIT || "local-build"),
     __APP_DEPLOYED_AT__: JSON.stringify(process.env.VITE_DEPLOYED_AT || new Date().toISOString()),
     __APP_TEST_REPORT__: JSON.stringify([
-      "Release verification (2026-07-29)",
+      "Release verification (2026-08-01)",
       "Type check: PASS (npm run check)",
-      "Unit tests: PASS (228/228, npm test)",
+      "Unit tests: PASS (237/237, npm test)",
       "Production build: PASS (npm run build)",
       "Integrity fixture: PASS (idempotent repair, submission deduplication, reference-pack import)",
       "Adaptive planner fixture: PASS (14/30-day shadow plan, phase floors, capacity)",
+      "Shadow coherence fixture: PASS (optional capacity, review flow, evidence confidence, repeat purpose)",
       "Past-exam core fixture: PASS (legacy 20 -> core 30, idempotent bootstrap, history preserved)",
       "Note: these commands run during implementation; the iPad export itself does not execute developer tools."
     ].join("\n"))
