@@ -316,7 +316,7 @@ export type AdaptivePlannerShadow = {
   phaseDiagnostics:Array<{
     checkpoint:"D90"|"D60"|"D30";phase:string;daysRemaining:number;
     scan5:number;full:number;timed:number;pastExam:number;pastExamShare:number;
-    weeklyMinimumViolations:string[];
+    weeklyMinimumViolations:string[];assumption?:string;
   }>;
 };
 export type ReviewPortfolioSummary = {

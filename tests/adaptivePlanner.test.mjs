@@ -110,6 +110,19 @@ test("D90・D60・D30診断は純粋にフェーズを切り替え、D60以降�
   assert.ok(d30.pastExamShare>=50);
 });
 
+test("将来フェーズ診断はunknownを実DBで変更せず、素材確認後という仮定を明示する",()=>{
+  const unknownCatalog=expandedCatalog.map(row=>({...row,exposure:"unknown"}));
+  const before=structuredClone(unknownCatalog);
+  const result=buildAdaptivePlannerShadow({record:expandedRecord,catalog:unknownCatalog,weaknesses:[],problems:whitebook,
+    attempts:[],reviews:[],pastSessions:[],currentTasks:[],today:"2026-08-04",examDate:"2026-11-15",targetMinutes:150});
+  assert.deepEqual(unknownCatalog,before);
+  assert.equal(result.plan14.plan.flatMap(day=>day.tasks).some(task=>task.referenceProblemId),false);
+  const d60=result.phaseDiagnostics.find(row=>row.checkpoint==="D60");
+  assert.ok(d60.timed>=2);
+  assert.ok(d60.pastExamShare>=50);
+  assert.match(d60.assumption,/素材選択確認/);
+});
+
 test("正式順位はraw weakNoteではなくconcept evidenceの強い証拠を優先する",()=>{
   const candidates=[
     {...problem("WB-2-A-01",2),fine_concept_ids:["concept-low"]},

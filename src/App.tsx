@@ -260,6 +260,7 @@ function DashboardView({data,go,select}:{data:Bootstrap;go:(p:Page)=>void;select
             <strong>{item.checkpoint}・{item.phase}</strong>
             <span>scan5 {item.scan5}／full {item.full}／timed {item.timed}</span>
             <small>過去問系 {item.pastExamShare}%・未達 {item.weeklyMinimumViolations.length}件</small>
+            {item.assumption&&<small>仮定：{item.assumption}</small>}
           </div>)}</div>
         </details>
       </>}

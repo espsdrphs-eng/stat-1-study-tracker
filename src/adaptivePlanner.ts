@@ -268,13 +268,20 @@ export function buildAdaptivePlannerShadow(args:{
     ["D90",90],["D60",60],["D30",30]
   ] as const).map(([checkpoint,remaining])=>{
     const diagnosticStart=addCalendarDays(args.examDate,-remaining);
-    const summary=validateMinimums(planSummary(planDays({...args,startDate:diagnosticStart,days:14,daysRemaining:remaining})),remaining,args.targetMinutes);
+    // This is a pure capacity/phase simulation. It assumes that the explicit
+    // material-selection check has been completed before the checkpoint, but
+    // never persists or reclassifies an unknown exposure in the real catalog.
+    const diagnosticCatalog=args.catalog.map(row=>row.exposure==="unknown"
+      ?{...row,exposure:"prompt_scanned" as const}:row);
+    const summary=validateMinimums(planSummary(planDays({...args,catalog:diagnosticCatalog,
+      startDate:diagnosticStart,days:14,daysRemaining:remaining})),remaining,args.targetMinutes);
     const all=summary.plan.flatMap(day=>day.tasks);
     const total=all.reduce((sum,row)=>sum+row.minutes,0);
     const past=all.filter(row=>["past_exam","scan5","timed"].includes(row.kind)).reduce((sum,row)=>sum+row.minutes,0);
     return {checkpoint,phase:phaseName(remaining),daysRemaining:remaining,scan5:summary.counts.scan5,
       full:summary.counts.full,timed:summary.counts.timed,pastExam:summary.counts.pastExam,
-      pastExamShare:total?Math.round(past/total*100):0,weeklyMinimumViolations:summary.weeklyMinimumViolations};
+      pastExamShare:total?Math.round(past/total*100):0,weeklyMinimumViolations:summary.weeklyMinimumViolations,
+      assumption:"素材選択確認をチェックポイント前に完了"};
   });
   return {available:true,mode:"active",generatedAt,phase,daysRemaining,targetMinutes:args.targetMinutes,plan14,plan30,
     legacy30:{scan5:legacy.purposeCounts.scan5,full:legacy.purposeCounts.fullSkeleton,
