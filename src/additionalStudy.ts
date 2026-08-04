@@ -16,7 +16,7 @@ function shadowTaskToTodayTask(item:AdaptivePlannerShadow["plan14"]["plan"][numb
     problem_id:item.problemId,title:item.label,kind:item.kind==="scan5"?"5問スキャン":
       item.kind==="timed"?"90分演習":item.kind==="past_exam"?"過去問":"追加学習",
     reason:item.reason,mode,minutes:item.minutes,load:0,triage:"if_time",
-    plan_origin:"shadow_additional",additional_candidate_key:item.taskKey,
+    plan_origin:"adaptive_additional",additional_candidate_key:item.taskKey,
     purpose_label:item.purposeLabel||(
       item.slot==="score_building"?"得点形成":item.slot==="maintenance_selection"?"重要概念の維持":"追加学習"
     )
@@ -43,7 +43,7 @@ export function buildAdditionalStudyCandidates(args:{
     const task=shadowTaskToTodayTask(item);
     if(!task||occupied.has(task.problem_id)||allocated+task.minutes>capacity)continue;
     const priority=purposePriority(item);
-    candidates.push({candidateKey:item.taskKey,source:"shadow",priority,
+    candidates.push({candidateKey:item.taskKey,source:"adaptive",priority,
       purposeLabel:task.purpose_label||"追加学習",reason:item.reason,minutes:task.minutes,task});
     occupied.add(task.problem_id);allocated+=task.minutes;
     if(candidates.length>=3)break;
@@ -52,7 +52,7 @@ export function buildAdditionalStudyCandidates(args:{
     for(const task of args.currentTasks.filter(row=>row.triage==="tomorrow"&&!row.checked)){
       const key=task.additional_candidate_key||`postponed:${task.id||task.problem_id}:${task.kind}`;
       if(candidates.some(row=>row.task.problem_id===task.problem_id)||allocated+task.minutes>capacity)continue;
-      const hydrated:Task={...task,triage:"if_time",plan_origin:"shadow_additional",
+      const hydrated:Task={...task,triage:"if_time",plan_origin:"adaptive_additional",
         additional_candidate_key:key,purpose_label:task.purpose_label||"有効な復習・先送り候補"};
       candidates.push({candidateKey:key,source:task.review_type?"review":"postponed",priority:4,
         purposeLabel:hydrated.purpose_label||"追加学習",reason:task.reason,minutes:task.minutes,task:hydrated});

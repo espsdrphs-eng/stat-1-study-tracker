@@ -48,9 +48,12 @@ import {
 } from "./examReferencePack.ts";
 import { analyzeConceptWeaknesses, buildPastExamRepairCandidates } from "./conceptWeakness.ts";
 import { buildAdaptivePlannerShadow } from "./adaptivePlanner.ts";
+import { ADAPTIVE_PLANNER_VERSION, adaptivePlanDayToTasks } from "./adaptiveTodayPlan.ts";
 import { buildAdditionalStudyCandidates } from "./additionalStudy.ts";
 import { summarizeReviewPortfolio } from "./reviewPortfolio.ts";
 import { BUILT_IN_EXAM_REFERENCE_PACK, builtInReferencePackValidation } from "./builtinExamReferencePack.ts";
+
+const PLANNER_RUNTIME_MODE_META_KEY="planner-runtime-mode";
 
 type SMemory = { problem_id:string; state:"stable"|"check"|"forgotten"|"collapsed"; last_touched?:string; k_trigger_count:number };
 type StoredAttempt = Attempt;
@@ -2376,7 +2379,22 @@ async function bootstrap():Promise<Bootstrap>{
       postponed_at:String(record.postponed_at||""),postponed_to:String(record.postponed_to||""),
       postpone_reason:String(record.postpone_reason||""),postpone_count:Number(record.postpone_count||0)};
   });
-  const generatedTriage=triageTodayTasks(baseTasks,settings.daily_study_minutes,problems,today);
+  const plannerMode=metaEntries.find(entry=>entry.key===PLANNER_RUNTIME_MODE_META_KEY)?.value==="legacy"
+    ?"legacy" as const:"adaptive" as const;
+  const conceptWeaknesses=analyzeConceptWeaknesses({record:referenceRecord,problems,attempts:activeAttempts,
+    reviews,weakNotes,today});
+  const plannerShadow=buildAdaptivePlannerShadow({record:referenceRecord,catalog:pastExamCatalog,
+    weaknesses:conceptWeaknesses,problems,attempts:activeAttempts,reviews,pastSessions,
+    currentTasks:plannerMode==="legacy"?baseTasks:[],today,examDate:settings.exam_date,
+    targetMinutes:settings.daily_study_minutes});
+  const adaptiveTodayTasks=adaptivePlanDayToTasks({
+    day:plannerShadow.plan14.plan.find(day=>day.date===today),problems,reviews,today
+  });
+  // The legacy triage path remains available for rollback and developer comparison,
+  // but normal daily generation uses only the adaptive planner.
+  const generatedTriage=plannerMode==="legacy"
+    ?triageTodayTasks(baseTasks,settings.daily_study_minutes,problems,today)
+    :{tasks:adaptiveTodayTasks};
   const snapshotKey=`today-plan-snapshot:${today}`;
   let snapshot:TodayPlanSnapshot|null=null;
   const storedSnapshot=metaEntries.find(entry=>entry.key===snapshotKey)?.value;
@@ -2388,7 +2406,8 @@ async function bootstrap():Promise<Bootstrap>{
       start_of_day_planned_minutes:snapshotTasks.reduce((sum,task)=>sum+task.minutes,0),
       initial_bucket:Object.fromEntries(snapshotTasks.map(task=>[taskSnapshotId(task),task.triage||"tomorrow"])),
       initial_estimated_minutes:Object.fromEntries(snapshotTasks.map(task=>[taskSnapshotId(task),task.minutes])),
-      tasks:snapshotTasks,created_at:new Date().toISOString()
+      tasks:snapshotTasks,created_at:new Date().toISOString(),
+      planner_source:plannerMode,planner_version:plannerMode==="adaptive"?ADAPTIVE_PLANNER_VERSION:"legacy-v1"
     };
     await db.meta.put({key:snapshotKey,value:JSON.stringify(snapshot)});
   }
@@ -2490,25 +2509,25 @@ async function bootstrap():Promise<Bootstrap>{
         catch{return {}}})()
     }
   };
-  const conceptWeaknesses=analyzeConceptWeaknesses({record:referenceRecord,problems,attempts:activeAttempts,
-    reviews,weakNotes,today});
   const pastExamRepairCandidates=buildPastExamRepairCandidates({record:referenceRecord,sessions:pastSessions,
     attempts:activeAttempts,conceptWeaknesses});
-  const plannerShadow=buildAdaptivePlannerShadow({record:referenceRecord,catalog:pastExamCatalog,
-    weaknesses:conceptWeaknesses,problems,attempts:activeAttempts,reviews,pastSessions,currentTasks:tasks,
-    today,examDate:settings.exam_date,targetMinutes:settings.daily_study_minutes});
   const additionalStudy=buildAdditionalStudyCandidates({
     today,targetMinutes:settings.daily_study_minutes,completedMinutes:actualMinutes,
     activeRemainingMinutes,currentTasks:tasks,shadow:plannerShadow
   });
   const adaptiveLearning={referencePack:buildReferencePackStatus(referenceRecord),pastExamCatalog,
-    conceptWeaknesses,pastExamRepairCandidates,plannerShadow};
+    conceptWeaknesses,pastExamRepairCandidates,plannerShadow,plannerMode,weaknessModel:"concept_evidence_v1" as const};
   return {problems:problems.sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.category.localeCompare(b.category)||a.problem_number-b.problem_number),attempts,reviews,roadmap,weakNotes,pastSessions,answerIndex,problemAliases,dashboard,settings,masterStatus,databaseStatus,adaptiveLearning,
     today:{tasks,totalLoad,plannedMinutes:plannedTotal,remainingMinutes,actualMinutes,targetMinutes:settings.daily_study_minutes,capacityPercent,warning,guidance,
       planned_minutes_total:plannedTotal,completed_minutes_today:actualMinutes,remaining_minutes_today:remainingMinutes,
       postponed_minutes_today:postponedMinutes,target_minutes_today:settings.daily_study_minutes,
       start_of_day_planned_minutes:snapshot.start_of_day_planned_minutes,active_remaining_minutes:activeRemainingMinutes,
       postpone_candidate_minutes:postponeCandidateMinutes,active_total_if_done:activeTotalIfDone,
+      confirmed_plan_minutes:timeSummary.confirmedPlanMinutes,
+      confirmed_remaining_minutes:timeSummary.activeRemainingMinutes,
+      target_remaining_minutes:timeSummary.targetRemainingMinutes,
+      additional_capacity_minutes:timeSummary.additionalCapacityMinutes,
+      planner_source:snapshot.planner_source||"legacy",
       remaining_learning_capacity_minutes:additionalStudy.capacity,
       additionalCandidates:additionalStudy.candidates,
       triageMinutes:{
@@ -2562,6 +2581,46 @@ async function savePastExamSession(body:Record<string,unknown>,existingId?:numbe
 async function currentTodaySnapshots(){
   const rows=await db.meta.filter(row=>row.key.startsWith("today-plan-snapshot:")&&!row.key.startsWith("today-plan-snapshot-history:")).toArray();
   return rows.flatMap(row=>{try{return [JSON.parse(row.value) as TodayPlanSnapshot]}catch{return []}});
+}
+
+async function replaceTodayWithAdaptivePlan(preview:boolean){
+  const today=todayString(),key=`today-plan-snapshot:${today}`;
+  const row=await db.meta.get(key);
+  if(!row?.value)throw new Error("今日の計画が見つかりません");
+  const snapshot=JSON.parse(row.value) as TodayPlanSnapshot;
+  const current=await bootstrap();
+  const proposed=adaptivePlanDayToTasks({
+    day:current.adaptiveLearning.plannerShadow.plan14.plan.find(day=>day.date===today),
+    problems:current.problems,reviews:current.reviews,today
+  });
+  const retained=snapshot.tasks.filter(task=>task.checked||task.triage==="tomorrow"||
+    task.plan_origin==="adaptive_additional");
+  const logical=(task:Task)=>task.id?`review:${task.id}`:
+    `${task.problem_id}|${task.learning_purpose||task.purpose_label||task.kind}|${task.mode}`;
+  const occupied=new Set(retained.map(logical));
+  const added=proposed.filter(task=>!occupied.has(logical(task)));
+  const nextTasks=[...retained,...added];
+  const removed=snapshot.tasks.filter(task=>!retained.includes(task)&&!added.some(row=>logical(row)===logical(task)));
+  const summary={
+    preview,retained:retained.length,added:added.length,removed:removed.length,
+    beforeMinutes:snapshot.tasks.filter(task=>task.triage!=="tomorrow").reduce((sum,task)=>sum+task.minutes,0),
+    afterMinutes:nextTasks.filter(task=>task.triage!=="tomorrow").reduce((sum,task)=>sum+task.minutes,0),
+    retainedTaskIds:retained.map(taskSnapshotId),addedTaskIds:added.map(taskSnapshotId),removedTaskIds:removed.map(taskSnapshotId)
+  };
+  if(preview)return summary;
+  const next:TodayPlanSnapshot={...snapshot,tasks:nextTasks,task_ids:nextTasks.map(taskSnapshotId),
+    initial_bucket:Object.fromEntries(nextTasks.map(task=>[taskSnapshotId(task),task.triage||"tomorrow"])),
+    initial_estimated_minutes:Object.fromEntries(nextTasks.map(task=>[taskSnapshotId(task),task.minutes])),
+    start_of_day_planned_minutes:nextTasks.filter(task=>task.triage!=="tomorrow").reduce((sum,task)=>sum+task.minutes,0),
+    created_at:new Date().toISOString(),planner_source:"adaptive",planner_version:ADAPTIVE_PLANNER_VERSION,
+    activated_at:new Date().toISOString()};
+  await db.transaction("rw",db.meta,async()=>{
+    await db.meta.put({key:`today-plan-snapshot-history:${today}:${Date.now()}`,value:row.value});
+    await db.meta.put({key,value:JSON.stringify(next)});
+    await db.meta.put({key:PLANNER_RUNTIME_MODE_META_KEY,value:"adaptive"});
+  });
+  notifyStudyDataChanged({operation:"activate-adaptive-plan"});
+  return {...summary,preview:false};
 }
 
 async function integrityAudit():Promise<IntegrityAudit>{
@@ -2810,32 +2869,17 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
       await db.meta.put({key:`today-plan-snapshot-history:${today}:${Date.now()}`,value:row.value});
       await db.meta.put({key,value:JSON.stringify(next)});
     });
-    notifyStudyDataChanged({operation:"add-shadow-candidate"});
+    notifyStudyDataChanged({operation:"add-adaptive-candidate"});
     return {ok:true,candidateKey} as T;
+  } else if(path==="/api/today/adaptive-preview"){
+    return await replaceTodayWithAdaptivePlan(true) as T;
+  } else if(path==="/api/planner/mode"){
+    const mode=body.mode==="legacy"?"legacy":"adaptive";
+    await db.meta.put({key:PLANNER_RUNTIME_MODE_META_KEY,value:mode});
+    notifyStudyDataChanged({operation:"planner-mode-for-future"});
+    return {ok:true,mode,appliesFrom:"next-snapshot"} as T;
   } else if(path==="/api/today/recalculate"){
-    const today=todayString(),key=`today-plan-snapshot:${today}`;
-    const row=await db.meta.get(key);
-    if(row?.value){
-      const snapshot=JSON.parse(row.value) as TodayPlanSnapshot;
-      const target=Math.max(30,Number((await db.meta.get("daily_study_minutes"))?.value||150));
-      const [problems,reviews]=await Promise.all([db.problems.toArray(),db.reviews.toArray()]);
-      const reviewMap=new Map(reviews.map(review=>[review.id,review]));
-      const validTasks=snapshot.tasks.filter(task=>{
-        const review=task.id&&task.review_type?reviewMap.get(task.id):undefined;
-        return !review||reviewExecutionState(review,today)==="actionable";
-      });
-      const reorganized=triageTodayTasks(validTasks,target,problems,today).tasks;
-      const nextSnapshot:{[key:string]:unknown}={...snapshot,
-        tasks:reorganized,task_ids:reorganized.map(taskSnapshotId),
-        initial_bucket:Object.fromEntries(reorganized.map(task=>[taskSnapshotId(task),task.triage||"tomorrow"])),
-        initial_estimated_minutes:Object.fromEntries(reorganized.map(task=>[taskSnapshotId(task),task.minutes])),
-        created_at:new Date().toISOString(),locked:true,
-      };
-      await db.meta.put({key:`today-plan-snapshot-history:${today}:${Date.now()}`,value:row.value});
-      await db.meta.put({key,value:JSON.stringify(nextSnapshot)});
-    }
-    await appendImportHistory("今日の計画を再整理","manual",1);
-    return {ok:true} as T;
+    return await replaceTodayWithAdaptivePlan(false) as T;
   } else if(path==="/api/problems"){
     const chapter=body.chapter?Number(body.chapter):null,number=Number(body.problem_number),difficulty=body.difficulty?Number(body.difficulty):null;
     const display=body.source_type==="past_exam"?body.title:labelFor(chapter,body.category,number,difficulty);

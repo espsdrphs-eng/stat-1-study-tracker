@@ -8,11 +8,11 @@ This document is the implementation-level source of truth for data integrity. Le
 - Reference-pack hydration never deletes or rewrites Attempt, Review, pastSession, exposure, or todayPlanSnapshot history.
 - Reapplying the same pack does not create duplicate problem records.
 - UI year lists and planner candidates come from the active normalized catalog, not a fixed year array.
-- Shadow suggestions never mutate the current Today Plan. An additional candidate enters the current snapshot only
+- Adaptive suggestions never mutate the current Today Plan. An additional candidate enters the current snapshot only
   after an explicit user action, and its candidate key is idempotent.
 - Review portfolio totals, due buckets, transition counts, and duplicate warnings use the same
   `reviewExecutionState` and logical Review identity used by integrity diagnostics.
-- Phase diagnostics and shadow simulations are pure reads: they do not change the observation start date,
+- Phase diagnostics and planner simulations are pure reads: they do not change
   Review dates, exposure state, or any todayPlanSnapshot.
 - One answer submission creates at most one Attempt. `submission_id` is the idempotency key.
 - One logical review task has at most one active Review.
@@ -36,8 +36,11 @@ This document is the implementation-level source of truth for data integrity. Le
 - SCAN5/past-session rules and the K/W/N/C learning policy are outside integrity repair and are not rewritten by it.
 - Importing the normalized exam reference pack is idempotent by pack SHA-256 and never mutates Attempts,
   Reviews, past sessions, or Today Plan snapshots.
-- Concept weakness and adaptive plans are derived, read-only views. Shadow planning never becomes the current
-  plan or rewrites a snapshot without a separate explicit activation flow.
+- New daily snapshots use the adaptive planner as the sole normal generation source. A pre-existing current-day
+  snapshot is preserved across an app update. Same-day activation requires a preview and explicit confirmation.
+- Planner rollback affects future snapshot generation only; it never rewinds data or saved snapshots.
+- Confirmed plan time, completed time, confirmed remaining time, target remaining time, additional capacity,
+  and postponed time are calculated by the shared Today time summary.
 
 Any code path that writes Attempts or Reviews must preserve these invariants. A new one-off repair must not be added
 when the condition belongs in `runIntegrityAudit` and the unified repair transaction.

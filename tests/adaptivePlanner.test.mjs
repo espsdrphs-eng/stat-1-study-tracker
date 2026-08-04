@@ -109,3 +109,24 @@ test("D90・D60・D30診断は純粋にフェーズを切り替え、D60以降�
   assert.ok(d30.timed>=2);
   assert.ok(d30.pastExamShare>=50);
 });
+
+test("正式順位はraw weakNoteではなくconcept evidenceの強い証拠を優先する",()=>{
+  const candidates=[
+    {...problem("WB-2-A-01",2),fine_concept_ids:["concept-low"]},
+    {...problem("WB-2-A-02",2),fine_concept_ids:["concept-strong"]}
+  ];
+  const weakness=(conceptId,state,priorityScore,strongFailures,delayedNoReferenceSuccesses=0)=>({
+    conceptId,displayName:conceptId,state,independentOpportunities:5,independentFailures:2,failureRate:.4,
+    strongFailures,weakFailures:0,delayedNoReferenceSuccesses,transferSuccesses:0,distinctProblemCount:1,
+    distinctFailureDateCount:1,recurrenceCount:0,examYearCount:1,examOccurrenceYearCount:1,pastExamFailureCount:0,
+    pastExamFailureYearCount:0,recentExamYearCount:0,examImportance:1,weaknessScore:priorityScore,
+    priorityScore,estimatedRepairMinutes:10,mappingConfidence:"verified",evidenceConfidence:"high",
+    nextRecommendedAction:"",latestEvidenceDate:null,evidenceSummary:[]
+  });
+  const plan=buildAdaptivePlannerShadow({record:baseRecord,catalog,problems:candidates,attempts:[],reviews:[],
+    pastSessions:[],currentTasks:[],today:"2026-08-04",examDate:"2026-11-15",targetMinutes:150,
+    weaknesses:[weakness("concept-low","resolved",200,0,2),weakness("concept-strong","confirmed",50,2)]});
+  const score=plan.plan14.plan[0].tasks.find(task=>task.slot==="score_building");
+  assert.equal(score.problemId,"WB-2-A-02");
+  assert.match(score.reason,/強い証拠/);
+});

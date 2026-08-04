@@ -153,7 +153,7 @@ export default function App() {
   return <div className="app-shell">
     <aside className={`sidebar ${menu?"open":""}`}>
       <div className="brand"><div className="brand-mark">1</div><div><strong>統計一級</strong><span>STUDY TRACKER</span></div><button className="mobile-close" onClick={()=>setMenu(false)}><X/></button></div>
-      <div className={`today-mini ${data.today.warning?"over":""}`}><span>今日の進捗</span><strong>これから {data.today.active_remaining_minutes}分</strong><div className="load-track"><i style={{width:`${Math.min(100,data.today.capacityPercent)}%`}}/></div><small>完了 {data.today.completed_minutes_today}分・目標 {data.today.target_minutes_today}分</small><small>先送り候補 {data.today.postpone_candidate_minutes}分（実行予定外）</small></div>
+      <div className={`today-mini ${data.today.warning?"over":""}`}><span>今日の進捗</span><strong>確定課題の残り {data.today.confirmed_remaining_minutes}分</strong><div className="load-track"><i style={{width:`${Math.min(100,data.today.capacityPercent)}%`}}/></div><small>完了 {data.today.completed_minutes_today}分・目標まであと {data.today.target_remaining_minutes}分</small><small>追加可能 最大{data.today.additional_capacity_minutes}分</small><small>先送り候補 {data.today.postpone_candidate_minutes}分（計画外）</small></div>
       <nav>{navGroups.map(group=><div className="nav-group" key={group.label}><span className="nav-section-label">{group.label}</span>{group.items.map(([key,Icon])=><button key={key} className={page===key?"active":""} onClick={()=>go(key)}><Icon size={19}/><span>{pageTitles[key]}</span>{key==="reviews"&&data.dashboard.pending>0&&<b>{data.dashboard.pending}</b>}</button>)}</div>)}</nav>
       <div className="sidebar-foot"><Gauge size={17}/><div><span>2週間ペース</span><strong className={`pace-${data.dashboard.pace.label}`}>{data.dashboard.pace.label}</strong></div></div>
     </aside>
@@ -187,6 +187,7 @@ function nextQueueTask(data:Bootstrap){
   const must=open.find(task=>task.triage==="must");
   if(must) return {task:must,source:"今日やること > 必ずやる > 1番目"};
   const ifTime=open.find(task=>task.triage==="if_time");
+  if(!ifTime)return {task:null,source:"今日の確定課題は完了"};
   if(ifTime) return {task:ifTime,source:"今日やること > 余裕があれば > 1番目"};
   const review=data.reviews.find(review=>reviewExecutionState(review,data.dashboard.today)==="actionable");
   if(review){
@@ -236,20 +237,21 @@ function DashboardView({data,go,select}:{data:Bootstrap;go:(p:Page)=>void;select
         :<span>今週の最低構成を満たしています</span>}<small>soft quotaのため、今日の上限を超えて自動追加しません。</small></div>
     </section>
     <section className="panel adaptive-shadow-card">
-      <div className="panel-title"><div><span className="eyebrow">ADAPTIVE PLANNER</span><h3>合格逆算プランナー（shadow）</h3></div>
-        <Badge tone={data.adaptiveLearning.referencePack.installed?"blue":"orange"}>{data.adaptiveLearning.referencePack.installed?"比較中":"参照パック未登録"}</Badge></div>
-      {!data.adaptiveLearning.plannerShadow.available?<p>正規化済み参照パックを設定画面から照合すると、現在の計画を変更せず14日・30日の比較を開始できます。</p>:<>
+      <div className="panel-title"><div><span className="eyebrow">ADAPTIVE PLANNER</span><h3>合格逆算プランナー</h3></div>
+        <Badge tone={data.adaptiveLearning.plannerMode==="adaptive"?"green":"orange"}>
+          {data.adaptiveLearning.plannerMode==="adaptive"?"正式運用":"旧方式（ロールバック）"}
+        </Badge></div>
+      {!data.adaptiveLearning.plannerShadow.available?<p>参照データを確認できないため、正式計画を生成できません。</p>:<>
         <div className="adaptive-shadow-summary">
           <span>フェーズ<strong>{data.adaptiveLearning.plannerShadow.phase}</strong></span>
-          <span>scan5<strong>{data.adaptiveLearning.plannerShadow.legacy30.scan5} → {data.adaptiveLearning.plannerShadow.plan30.counts.scan5}</strong></span>
-          <span>full<strong>{data.adaptiveLearning.plannerShadow.legacy30.full} → {data.adaptiveLearning.plannerShadow.plan30.counts.full}</strong></span>
-          <span>timed<strong>{data.adaptiveLearning.plannerShadow.legacy30.timed} → {data.adaptiveLearning.plannerShadow.plan30.counts.timed}</strong></span>
+          <span>30日 scan5<strong>{data.adaptiveLearning.plannerShadow.plan30.counts.scan5}</strong></span>
+          <span>30日 full<strong>{data.adaptiveLearning.plannerShadow.plan30.counts.full}</strong></span>
+          <span>30日 timed<strong>{data.adaptiveLearning.plannerShadow.plan30.counts.timed}</strong></span>
         </div>
-        <p>期限到来Reviewは局所補修枠の最大1件に留め、得点形成枠を毎日確保します。shadow結果は今日の計画へ自動反映しません。</p>
+        <p>得点形成を原則1件、期限到来Reviewを局所補修として最大1件、維持・選択を0～1件配置します。弱点順位はconcept evidenceを使用します。</p>
         {!!data.adaptiveLearning.plannerShadow.plan30.weeklyMinimumViolations.length&&
           <div className="match-warning"><AlertTriangle size={17}/><span>{data.adaptiveLearning.plannerShadow.plan30.weeklyMinimumViolations.slice(0,3).join("／")}</span></div>}
-        <details><summary>比較理由と切替条件</summary>
-          <ul className="compact-list">{data.adaptiveLearning.plannerShadow.comparisonReasons.map(reason=><li key={reason}>{reason}</li>)}</ul>
+        <details><summary>14日計画とフェーズ診断</summary>
           <div className="adaptive-plan-preview">{data.adaptiveLearning.plannerShadow.plan14.plan.map(day=><div key={day.date}>
             <strong>{day.date}</strong><span>{day.tasks.map(task=>`${task.slot==="score_building"?"得点形成":task.slot==="repair"?"局所補修":"維持・選択"}：${task.label}［${task.purposeLabel||"通常配置"}］（${task.minutes}分）`).join("／")}</span>
             <small>合計{day.totalMinutes}分</small>
@@ -259,14 +261,12 @@ function DashboardView({data,go,select}:{data:Bootstrap;go:(p:Page)=>void;select
             <span>scan5 {item.scan5}／full {item.full}／timed {item.timed}</span>
             <small>過去問系 {item.pastExamShare}%・未達 {item.weeklyMinimumViolations.length}件</small>
           </div>)}</div>
-          <strong>{data.adaptiveLearning.plannerShadow.activationEligible?"切替条件を満たしています（明示操作は別途必要）":"まだ切り替えません"}</strong>
-          {!!data.adaptiveLearning.plannerShadow.activationBlockers.length&&<ul className="compact-list">{data.adaptiveLearning.plannerShadow.activationBlockers.map(reason=><li key={reason}>{reason}</li>)}</ul>}
         </details>
       </>}
     </section>
     <section className="section-head"><div><span className="eyebrow">OVERVIEW</span><h2>今週の学習状況</h2></div><span className="muted">直近7日間</span></section>
     <div className="metrics-grid">
-      <Metric label="今日これから" value={data.today.active_remaining_minutes} unit="分" hint={`完了${data.today.completed_minutes_today}分・先送り候補${data.today.postpone_candidate_minutes}分は除外`} tone={data.today.warning?"red":""}/>
+      <Metric label="確定課題の残り" value={data.today.confirmed_remaining_minutes} unit="分" hint={`目標まであと${data.today.target_remaining_minutes}分・追加可能${data.today.additional_capacity_minutes}分`} tone={data.today.warning?"red":""}/>
       <Metric label="A問題進捗" value={d.weekA} unit="題" hint="今週の新規・復習"/>
       <Metric label={d.pace.phase==="foundation"?"過去問（任意）":"過去問GPT採点"} value={d.weekPast} unit="件" hint={d.pace.phase==="foundation"?"基礎期は未実施でも可":"今週の取り込み"}/>
       <Metric label="K再発" value={d.kRecurrence} unit="題" hint="直近2週間" tone={d.kRecurrence>2?"red":""}/>
@@ -555,7 +555,9 @@ function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a
   const [reviewTask,setReviewTask]=useState<Task|null>(null);
   const [postponeTask,setPostponeTask]=useState<{item:Task;initial:ScheduleAction}|null>(null);
   const [todayFilter,setTodayFilter]=useState<"must"|"if_time"|"tomorrow"|"completed"|"all">("must");
-  const [recalculateConfirm,setRecalculateConfirm]=useState(false);
+  const [recalculatePreview,setRecalculatePreview]=useState<{
+    retained:number;added:number;removed:number;beforeMinutes:number;afterMinutes:number
+  }|null>(null);
   const pmap=Object.fromEntries(data.problems.map(problem=>[problem.problem_id,problem]));
   const saveReview=(body:Record<string,unknown>)=>{if(!reviewTask?.id)return;const id=reviewTask.id;setReviewTask(null);
     sessionStorage.removeItem(referenceStorageKey(id));
@@ -579,9 +581,21 @@ function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a
     data.dashboard.pace.phase==="past_practice"?"past_exam_main":
     data.dashboard.pace.phase==="final"?"final_stabilization":"foundation_to_A";
   return <>
-    <div className="page-intro"><div><p>課題を終えたらチェックを付け、GPTの採点結果を取り込んでください。</p><div className="button-row"><button className="text-btn" onClick={()=>go("import")}><ClipboardPaste size={15}/>GPT採点結果を取り込む</button><button className="text-btn" onClick={()=>setRecalculateConfirm(true)}><RefreshCw size={15}/>今日の計画を再整理</button></div></div><div className={`load-pill ${data.today.warning?"over":""}`}><Gauge/><div><span>今日の実行見込み／目標</span><strong>{data.today.active_total_if_done} / {data.today.target_minutes_today}分</strong><small>完了 {data.today.completed_minutes_today}分 + これから {data.today.active_remaining_minutes}分</small><small>先送り候補 {data.today.postpone_candidate_minutes}分は含めない</small></div></div></div>
+    <div className="page-intro"><div><p>課題を終えたらチェックを付け、GPTの採点結果を取り込んでください。</p><div className="button-row"><button className="text-btn" onClick={()=>go("import")}><ClipboardPaste size={15}/>GPT採点結果を取り込む</button><button className="text-btn" onClick={()=>run(
+      ()=>post<typeof recalculatePreview>("/api/today/adaptive-preview",{}).then(result=>setRecalculatePreview(result)),
+      "合格逆算プランとの差分を確認しました"
+    )}><RefreshCw size={15}/>今日の計画を現行方式で再作成</button></div></div><div className={`load-pill ${data.today.warning?"over":""}`}><Gauge/><div><span>確定計画／目標</span><strong>{data.today.confirmed_plan_minutes} / {data.today.target_minutes_today}分</strong><small>完了 {data.today.completed_minutes_today}分 + 確定課題の残り {data.today.confirmed_remaining_minutes}分</small><small>追加可能 最大{data.today.additional_capacity_minutes}分・先送り候補は未計上</small></div></div></div>
     {data.today.warning&&<div className="warning"><AlertTriangle/><div><strong>今日の実行見込みが目標を超えています</strong><p>{data.today.warning}</p></div></div>}
-    <div className="schedule-organizer today-overview"><div><strong>今日の課題</strong><span>朝の計画 {data.today.start_of_day_planned_minutes}分・これから {data.today.active_remaining_minutes}分</span></div><div className="triage-summary four">
+    <div className="today-time-ledger">
+      <span>今日の目標<strong>{data.today.target_minutes_today}分</strong></span>
+      <span>確定計画<strong>{data.today.confirmed_plan_minutes}分</strong></span>
+      <span>完了<strong>{data.today.completed_minutes_today}分</strong></span>
+      <span>確定課題の残り<strong>{data.today.confirmed_remaining_minutes}分</strong></span>
+      <span>目標まであと<strong>{data.today.target_remaining_minutes}分</strong></span>
+      <span>追加可能<strong>最大{data.today.additional_capacity_minutes}分</strong></span>
+      <span>先送り候補<strong>{data.today.postpone_candidate_minutes}分</strong><small>今日の計画には未計上</small></span>
+    </div>
+    <div className="schedule-organizer today-overview"><div><strong>今日の課題</strong><span>朝の計画 {data.today.start_of_day_planned_minutes}分・確定課題の残り {data.today.confirmed_remaining_minutes}分</span></div><div className="triage-summary four">
       {summary.map(item=><button type="button" className={`${item.key} ${todayFilter===item.key?"active":""}`} onClick={()=>setTodayFilter(item.key)} key={item.key}><span>{item.label}</span><strong>{item.count}件 / {item.minutes}分</strong></button>)}
     </div><div className="today-tabs">{summary.map(item=><button className={todayFilter===item.key?"active":""} onClick={()=>setTodayFilter(item.key)} key={item.key}>{item.label}</button>)}<button className={todayFilter==="all"?"active":""} onClick={()=>setTodayFilter("all")}>すべて</button></div></div>
     {!data.today.warning&&<div className="time-guidance"><Clock3 size={16}/><span>{data.today.guidance}</span></div>}
@@ -589,7 +603,7 @@ function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a
       <section className="panel additional-study-panel">
         <div className="panel-title"><div><span className="eyebrow">OPTIONAL EXTRA</span><h3>追加学習候補</h3></div>
           <Badge tone="blue">残り最大 {data.today.remaining_learning_capacity_minutes}分</Badge></div>
-        <p>{data.today.active_remaining_minutes===0?"今日の必須・任意課題は完了しています。": "正式計画を変えず、残り時間で追加できます。"}候補はshadowの合格戦略から選び、追加するまで今日の予定には入りません。</p>
+        <p>{data.today.active_remaining_minutes===0?"今日の必須・任意課題は完了しています。": "確定計画を変えず、残り時間で追加できます。"}候補は合格逆算プランナーと同じ優先順位から選び、追加するまで今日の予定には入りません。</p>
         <div className="additional-candidate-list">{data.today.additionalCandidates.map(candidate=><article key={candidate.candidateKey}>
           <div><strong>{candidate.task.title}</strong><span>{candidate.purposeLabel}・{candidate.minutes}分</span><small>{candidate.reason}</small></div>
           <button className="small primary" disabled={busy} onClick={()=>run(
@@ -607,7 +621,11 @@ function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a
     </section>
     {reviewTask&&<ReviewOutcomeModal item={reviewTask} busy={busy} close={()=>setReviewTask(null)} save={saveReview}/>}
     {postponeTask&&<PostponeReviewModal item={postponeTask.item} initial={postponeTask.initial} busy={busy} close={()=>setPostponeTask(null)} save={postponeReview}/>}
-    {recalculateConfirm&&<Modal title="今日の計画を再整理" close={()=>setRecalculateConfirm(false)}><div className="postpone-review"><p>期限到来タスクは削除せず、必ずやる最大3件・余裕があれば最大2件・目標時間内へ分類し直します。完了状態・実績時間・タスクIDは変わりません。</p><div className="form-actions"><button className="ghost" onClick={()=>setRecalculateConfirm(false)}>キャンセル</button><button className="primary" disabled={busy} onClick={()=>{setRecalculateConfirm(false);run(()=>post("/api/today/recalculate",{}),"今日の実行計画を再整理しました")}}>再整理する</button></div></div></Modal>}
+    {recalculatePreview&&<Modal title="今日の計画を現行方式で再作成" close={()=>setRecalculatePreview(null)}><div className="postpone-review">
+      <p>完了済み・追加済み・先送り済みの課題を保持し、未完了の確定課題だけを合格逆算プランへ置き換えます。</p>
+      <dl><dt>保持</dt><dd>{recalculatePreview.retained}件</dd><dt>追加</dt><dd>{recalculatePreview.added}件</dd><dt>置換対象</dt><dd>{recalculatePreview.removed}件</dd><dt>確定計画</dt><dd>{recalculatePreview.beforeMinutes}分 → {recalculatePreview.afterMinutes}分</dd></dl>
+      <div className="form-actions"><button className="ghost" onClick={()=>setRecalculatePreview(null)}>キャンセル</button><button className="primary" disabled={busy} onClick={()=>{setRecalculatePreview(null);run(()=>post("/api/today/recalculate",{}),"今日の計画を合格逆算プランナーで再作成しました")}}>差分を確定する</button></div>
+    </div></Modal>}
   </>
 }
 function copyText(text:string,label:string,setCopied:(value:string)=>void){
@@ -986,8 +1004,8 @@ function ConceptWeaknessPanel({data}:{data:Bootstrap}){
     .slice(0,5);
   return <section className="panel concept-weakness-panel">
     <div className="panel-title"><div><span className="eyebrow">CONCEPT EVIDENCE</span><h3>独立した学習機会で見る弱点</h3></div>
-      <Badge tone={data.adaptiveLearning.referencePack.installed?"blue":"orange"}>{data.adaptiveLearning.referencePack.installed?"shadow評価":"参照パック未登録"}</Badge></div>
-    <p><strong>新指標（shadowのみ）</strong>：同じ日・同じ問題・同じ文脈の複数指摘は1回にまとめます。raw weakNote件数だけでは順位を決めません。</p>
+      <Badge tone={data.adaptiveLearning.referencePack.installed?"green":"orange"}>{data.adaptiveLearning.referencePack.installed?"正式計画で使用":"参照パック未登録"}</Badge></div>
+    <p><strong>正式な弱点指標</strong>：同じ日・同じ問題・同じ文脈の複数指摘は1回にまとめます。raw weakNote件数だけでは順位を決めません。</p>
     {!data.adaptiveLearning.referencePack.installed?<Empty>参照パック照合後に、concept単位の証拠評価を表示します</Empty>:
       rows.length?<div className="concept-weakness-list">{rows.map(row=><article key={row.conceptId}>
         <div><Badge tone={row.state==="relapsed"||row.state==="confirmed"?"red":row.state==="resolved"?"green":"orange"}>{conceptStateLabels[row.state]}</Badge>
@@ -1040,9 +1058,9 @@ function WeakView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:
   if(!trend.attemptCount) return <><ConceptWeaknessPanel data={data}/><section className="weak-trend-hero"><div><span className="eyebrow">WEAKNESS TRENDS</span><h2>GPT採点が集まると、苦手の傾向が見えてきます</h2><p>この画面はK/W/N/Cが付いた採点だけから、繰り返すミスを探します。ミスなしの採点は学習履歴には残りますが、弱点グラフには加算しません。</p></div></section><section className="panel weak-empty-explanation">{trend.totalAttemptCount?<><Check size={28}/><h3>採点は{trend.totalAttemptCount}件ありますが、弱点として数えるミスは0件です</h3><p>現在の採点はすべて「none（ミスなし）」です。K/W/N/Cが付いた結果を保存すると、テーマ別・分類別・週別のグラフが表示されます。</p></>:<Empty>まだ採点記録がありません。GPT採点結果を取り込むと自動で蓄積されます</Empty>}</section></>;
   return <>
     <ConceptWeaknessPanel data={data}/>
-    <section className="weak-trend-hero"><div><span className="eyebrow">LEGACY WEAKNESS TRENDS</span><h2>旧指標：採点結果から見える苦手傾向</h2><p>現在の正式計画は既存Review・ロードマップとこの履歴集計を使用し、新concept指標はshadow比較中です。本切替後も旧指標は履歴比較として残します。</p></div><div className="trend-summary"><strong>{trend.themes.length}</strong><span>旧方式の検出テーマ</span><small>最多 {trend.topTheme}</small></div></section>
+    <section className="weak-trend-hero"><div><span className="eyebrow">LEGACY WEAKNESS TRENDS</span><h2>旧指標：採点結果から見える苦手傾向</h2><p>旧K/W/N/C集計は履歴比較専用です。正式計画の優先順位には、上のconcept evidenceを使用します。</p></div><div className="trend-summary"><strong>{trend.themes.length}</strong><span>旧方式の検出テーマ</span><small>最多 {trend.topTheme}</small></div></section>
     <div className="trend-metrics"><Metric label="保存済みの全採点" value={trend.totalAttemptCount} unit="件" hint={`ミスなし ${trend.noErrorCount}件`}/><Metric label="ミスあり採点" value={trend.attemptCount} unit="件" hint="K/W/N/Cが1つ以上"/><Metric label="主なミス型" value={dominantError} hint={`${errorCounts[dominantError]||0}件`}/><Metric label="K発生率" value={trend.kRate} unit="%" hint="ミスあり採点に占める割合"/></div>
-    <section className="weak-reading-guide"><strong>旧指標の数え方</strong><span>1回の採点にK/W/N/Cが1つでもあれば「ミスあり採点」1件です。テーマの点数は重要度（K=5、N=3、W=2、C=1）の履歴集計です。上のshadow指標と同じランキングには混ぜません。</span></section>
+    <section className="weak-reading-guide"><strong>旧指標の数え方</strong><span>1回の採点にK/W/N/Cが1つでもあれば「ミスあり採点」1件です。テーマの点数は重要度（K=5、N=3、W=2、C=1）の履歴集計です。正式なconceptランキングには混ぜません。</span></section>
     <div className="trend-grid">
       <section className="panel theme-chart"><div className="panel-title"><div><span className="eyebrow">BY THEME</span><h3>苦手テーマ上位</h3></div><BarChart3 size={19}/></div>
         {topThemes.map(theme=><div className="theme-bar-row" key={theme.label}><div><strong>{theme.label}</strong><span>採点 {theme.count}件</span></div><div className="theme-bar"><i style={{width:`${theme.score/maxTheme*100}%`}}/></div><b>{theme.score}</b></div>)}
@@ -1400,7 +1418,7 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
     <details className="advanced-management"><summary>高度な管理</summary><div className="advanced-management-body">
     <section className="panel reference-pack-import" id="exam-reference-pack-import">
       <div className="panel-title"><div><span className="eyebrow">EXAM REFERENCE</span><h3>正規化済み参照パック</h3></div>
-        <Badge tone={data.adaptiveLearning.referencePack.installed?"green":"orange"}>{data.adaptiveLearning.referencePack.installed?"shadow稼働中":"未登録"}</Badge></div>
+        <Badge tone={data.adaptiveLearning.referencePack.installed?"green":"orange"}>{data.adaptiveLearning.referencePack.installed?"正式データ":"未登録"}</Badge></div>
       <p>manifest・全ファイルhash・schema・件数を端末内で検証し、live problem masterと差分照合します。既存の過去問を無条件に上書きせず、解決不能な白本IDは計画から除外します。</p>
       <label className={`master-file-button secondary ${busy?"disabled":""}`}><Archive size={16}/>stat1_exam_reference_pack_v1.zipを検証
         <input disabled={busy} type="file" accept=".zip,application/zip" onChange={event=>{const file=event.target.files?.[0];if(file)void previewReferencePack(file);event.target.value=""}}/>
@@ -1444,11 +1462,27 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
           <button className="primary" disabled={busy||!referencePreview.validation.valid} onClick={()=>{
             const preview=referencePreview;setReferencePreview(null);
             run(()=>post("/api/exam-reference-pack/import",{data:preview.data,packHash:preview.validation.packHash,validation:preview.validation}),
-              "参照パックを照合し、shadow比較を開始しました");
+              "参照パックを照合し、合格逆算プランナーへ反映しました");
           }}>解決可能なデータだけを採用</button>
           <button className="ghost" onClick={()=>setReferencePreview(null)}>キャンセル</button>
         </div>
       </div>}
+    </section>
+    <section className="panel">
+      <div className="panel-title"><div><span className="eyebrow">PLANNER ROLLBACK</span><h3>計画生成方式</h3></div>
+        <Badge tone={data.adaptiveLearning.plannerMode==="adaptive"?"green":"orange"}>
+          {data.adaptiveLearning.plannerMode==="adaptive"?"合格逆算":"旧方式"}
+        </Badge></div>
+      <p>変更は次に作成する日次計画から適用され、保存済みのtodayPlanSnapshotや学習履歴は巻き戻しません。</p>
+      <div className="button-row">
+        <button className="secondary" disabled={busy||data.adaptiveLearning.plannerMode==="adaptive"} onClick={()=>run(
+          ()=>post("/api/planner/mode",{mode:"adaptive"}),"次回計画から合格逆算プランナーを使用します"
+        )}>合格逆算へ戻す</button>
+        <button className="ghost" disabled={busy||data.adaptiveLearning.plannerMode==="legacy"} onClick={()=>{
+          if(window.confirm("旧方式へのロールバックは次回の日次計画から適用します。現在の計画と履歴は変更しません。"))
+            run(()=>post("/api/planner/mode",{mode:"legacy"}),"次回計画だけを旧方式へ切り替えました");
+        }}>旧方式へ一時ロールバック</button>
+      </div>
     </section>
     <section className="panel master-import-panel master-import-primary" id="problem-master-import"><div className="panel-title"><div><span className="eyebrow">CANONICAL DATA</span><h3>問題マスター取り込み</h3></div><Badge tone="green">バックアップ復元とは別機能</Badge></div>
       <p>ChatGPTで作成した problem_master / aliases JSON を読み込み、問題ID・表示名・テーマ・GPT取り込み補正に使います。統合JSON内の answer_index は互換データとして保存できますが、日常画面では使いません。通常のバックアップ復元とは別機能です。</p>

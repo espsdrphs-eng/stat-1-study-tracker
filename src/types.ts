@@ -194,6 +194,7 @@ export type TodayPlanSnapshot = {
   date:string;task_ids:string[];start_of_day_planned_minutes:number;
   initial_bucket:Record<string,"must"|"if_time"|"tomorrow">;
   initial_estimated_minutes:Record<string,number>;tasks:Task[];created_at:string;
+  planner_source?:"adaptive"|"legacy";planner_version?:string;activated_at?:string;
 };
 export type WeakNote = {
   id:number; date:string; problem_id:string; error_type:string; theme:string; mistake:string;
@@ -251,7 +252,7 @@ export type Task = {
   grading_contract?:GradingContractSnapshot;contract_id?:string;contract_version?:string;contract_hash?:string;
   contract_locked_at?:string;explicitly_out_of_scope_parts?:string[];graded_parts?:string[];
   graded_part_ids?:string[];graded_findings?:GradedFinding[];
-  plan_origin?:"shadow_additional";additional_candidate_key?:string;purpose_label?:string;
+  plan_origin?:"adaptive_planner"|"adaptive_additional"|"legacy_planner";additional_candidate_key?:string;purpose_label?:string;
 };
 export type WeaknessInsight = {
   theme:string; score:number; level:"重点"|"注意"|"観察"; confidence:"参考"|"暫定"|"分析可能";
@@ -298,6 +299,7 @@ export type AdaptivePlanTask = {
   minutes:number;reason:string;requiresUserSelection:boolean;
   purpose?:string;purposeLabel?:string;basis?:string;exposure?:PastExamExposure;
   previousEventDate?:string;simulationProtected?:boolean;
+  reviewId?:number;mode?:"check"|"skeleton"|"main_calc"|"full"|"scan5";
 };
 export type AdaptivePlanDay = {date:string;tasks:AdaptivePlanTask[];totalMinutes:number};
 export type AdaptivePlanSummary = {
@@ -306,7 +308,7 @@ export type AdaptivePlanSummary = {
   weeklyMinimumViolations:string[];dailyCapacityViolations:number;
 };
 export type AdaptivePlannerShadow = {
-  available:boolean;mode:"unavailable"|"shadow";generatedAt:string;phase:string;daysRemaining:number;
+  available:boolean;mode:"unavailable"|"shadow"|"active";generatedAt:string;phase:string;daysRemaining:number;
   targetMinutes:number;plan14:AdaptivePlanSummary;plan30:AdaptivePlanSummary;
   legacy30:{scan5:number;full:number;timed:number;totalTasks:number};
   comparisonReasons:string[];activationEligible:boolean;activationBlockers:string[];
@@ -324,7 +326,7 @@ export type ReviewPortfolioSummary = {
   activeDuplicateLogicalKeys:number;
 };
 export type AdditionalStudyCandidate = {
-  candidateKey:string;source:"shadow"|"postponed"|"review";priority:number;
+  candidateKey:string;source:"adaptive"|"postponed"|"review";priority:number;
   purposeLabel:string;reason:string;minutes:number;task:Task;
 };
 export type PastExamRepairCandidate = {
@@ -338,6 +340,8 @@ export type AdaptiveLearning = {
   conceptWeaknesses:ConceptWeaknessInsight[];
   pastExamRepairCandidates:PastExamRepairCandidate[];
   plannerShadow:AdaptivePlannerShadow;
+  plannerMode:"adaptive"|"legacy";
+  weaknessModel:"concept_evidence_v1";
 };
 export type Dashboard = {
   today:string; weekA:number; weekPast:number; kRecurrence:number; pending:number; overdue:number;
@@ -406,6 +410,9 @@ export type Bootstrap = {
     postponed_minutes_today:number;target_minutes_today:number;
     start_of_day_planned_minutes:number;active_remaining_minutes:number;
     postpone_candidate_minutes:number;active_total_if_done:number;
+    confirmed_plan_minutes:number;confirmed_remaining_minutes:number;
+    target_remaining_minutes:number;additional_capacity_minutes:number;
+    planner_source:"adaptive"|"legacy";
     triageCounts:{must:number;if_time:number;tomorrow:number;completed:number};
     completedTasks:Task[];remaining_learning_capacity_minutes:number;
     additionalCandidates:AdditionalStudyCandidate[]};

@@ -97,5 +97,5 @@ full skeleton、timed full、scan5は週間soft quotaです。既存実績が不
 Persistence, idempotency, execution gating, and repair invariants are defined in
 [`SYSTEM_INVARIANTS.md`](./SYSTEM_INVARIANTS.md). Do not add another task-specific repair path.
 
-正規化済み過去問参照パック、concept証拠評価、過去問露出、shadow plannerの正本は
+正規化済み過去問参照パック、concept証拠評価、過去問露出、合格逆算プランナーの正本は
 [`ADAPTIVE_PLANNER_SPEC.md`](./ADAPTIVE_PLANNER_SPEC.md) とし、この文書へ重複実装しません。

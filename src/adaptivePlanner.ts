@@ -33,9 +33,19 @@ function phasePolicy(record:StoredExamReferencePack|undefined|null,daysRemaining
 
 function chooseWhitebook(args:{
   problems:Problem[];attempts:Attempt[];chapters:number[];used:Map<string,string>;date:string;
-  allowNew:boolean;mode:"skeleton"|"full";
+  allowNew:boolean;mode:"skeleton"|"full";weaknesses:ConceptWeaknessInsight[];
 }){
   const attempted=attemptedDateMap(args.attempts);
+  const weaknessMap=new Map(args.weaknesses.map(row=>[row.conceptId,row]));
+  const evidencePriority=(problem:Problem)=>{
+    const rows=(problem.fine_concept_ids||[]).map(id=>weaknessMap.get(id)).filter(Boolean) as ConceptWeaknessInsight[];
+    if(!rows.length)return 0;
+    return Math.max(...rows.map(row=>{
+      const stateWeight=["confirmed","repairing","relapsed"].includes(row.state)?3:
+        row.state==="suspected"?2:row.state==="transfer_pending"?1:0;
+      return stateWeight*1000+row.priorityScore;
+    }));
+  };
   const rows=args.problems.filter(problem=>problem.category==="A"&&args.chapters.includes(Number(problem.chapter))&&
     !["review_needed","metadata_review_needed"].includes(String(problem.metadata_status||""))&&
     (args.allowNew||!isNewWhitebook(problem,attempted)))
@@ -44,7 +54,7 @@ function chooseWhitebook(args:{
       const recentlyA=args.used.get(a.problem_id),recentlyB=args.used.get(b.problem_id);
       const blockedA=recentlyA&&recentlyA>addCalendarDays(args.date,-7)?1:0;
       const blockedB=recentlyB&&recentlyB>addCalendarDays(args.date,-7)?1:0;
-      return blockedA-blockedB||rank(a.strategy_rank)-rank(b.strategy_rank)||
+      return blockedA-blockedB||evidencePriority(b)-evidencePriority(a)||rank(a.strategy_rank)-rank(b.strategy_rank)||
         String(attempted.get(a.problem_id)||"").localeCompare(String(attempted.get(b.problem_id)||""))||
         a.problem_id.localeCompare(b.problem_id);
     });
@@ -134,10 +144,18 @@ function planDays(args:{
   const acceleratePast=recentEligibleSuccesses>=2;
   const makeWhitebook=(date:string,chapters:number[],mode:"skeleton"|"full",reason:string,
     slot:SlotTask["slot"]="score_building")=>{
-    const problem=chooseWhitebook({problems:args.problems,attempts:args.attempts,chapters,used:usedProblems,date,allowNew,mode});
+    const problem=chooseWhitebook({problems:args.problems,attempts:args.attempts,chapters,used:usedProblems,date,allowNew,mode,
+      weaknesses:args.weaknesses});
+    const concept=problem?(problem.fine_concept_ids||[]).map(id=>args.weaknesses.find(row=>row.conceptId===id))
+      .filter(Boolean).sort((a,b)=>Number(b?.priorityScore||0)-Number(a?.priorityScore||0))[0]:undefined;
+    const evidenceReason=concept?.state==="suspected"?`・${concept.displayName}の要診断`:
+      concept&&["confirmed","repairing","relapsed"].includes(concept.state)?`・${concept.displayName}の強い証拠を優先`:"";
     return problem?task({date,slot,kind:mode==="full"?"full":"whitebook",
       label:problem.display_label||problem.title,problemId:problem.problem_id,
-      minutes:modeMinutes(mode),reason,requiresUserSelection:false}):null;
+      minutes:modeMinutes(mode),reason:`${reason}${evidenceReason}`,
+      purpose:concept?.state==="suspected"?"concept_diagnosis":undefined,
+      purposeLabel:concept?.state==="suspected"?"弱点診断":undefined,
+      conceptId:concept?.conceptId,mode,requiresUserSelection:false}):null;
   };
   const makePast=(date:string,kind:"past_exam"|"scan5"|"timed",minutes:number,reason:string)=>{
     const selected=choosePastExam({catalog:args.catalog,daysRemaining:args.daysRemaining,used:usedPast,date});
@@ -192,6 +210,7 @@ function planDays(args:{
     if(review&&tasks.reduce((sum,row)=>sum+row.minutes,0)+Number(review.grading_contract?.estimatedMinutes||review.estimated_minutes||5)<=args.targetMinutes){
       const minutes=Number(review.grading_contract?.estimatedMinutes||review.estimated_minutes||5);
       tasks.push(task({date,slot:"repair",kind:"review",label:`${review.problem_id} 局所補修`,problemId:review.problem_id,
+        reviewId:review.id,mode:review.grading_contract?.mode||review.effective_mode||review.inferred_mode||"check",
         minutes,reason:"期限到来Reviewから最大1件",requiresUserSelection:false}));
       usedReviews.add(review.id);
     }
@@ -233,18 +252,16 @@ export function buildAdaptivePlannerShadow(args:{
   const empty=validateMinimums(planSummary([]),daysRemaining,args.targetMinutes);
   if(!args.record)return {available:false,mode:"unavailable",generatedAt,phase,daysRemaining,targetMinutes:args.targetMinutes,
     plan14:empty,plan30:empty,legacy30:{scan5:0,full:0,timed:0,totalTasks:0},
-    comparisonReasons:["正規化済み参照パックを取り込むとshadow比較を開始できます。"],
+    comparisonReasons:["正規化済み参照パックを取り込むと計画を生成できます。"],
     activationEligible:false,activationBlockers:["参照パック未登録"],weeklyTarget:{},weeklyActual:{},phaseDiagnostics:[]};
   const plan14=validateMinimums(planSummary(planDays({...args,startDate:args.today,days:14,daysRemaining})),daysRemaining,args.targetMinutes);
   const plan30=validateMinimums(planSummary(planDays({...args,startDate:args.today,days:30,daysRemaining})),daysRemaining,args.targetMinutes);
   const legacy=simulateThirtyDays({startDate:args.today,tasks:args.currentTasks,problems:args.problems,targetMinutes:args.targetMinutes,
     pastSessions:args.pastSessions as unknown as Array<Record<string,unknown>>});
   const policy=phasePolicy(args.record,daysRemaining),weekly=weeklyActual({startDate:args.today,attempts:args.attempts,pastSessions:args.pastSessions,problems:args.problems});
-  const shadowDays=Math.max(0,Math.floor((Date.parse(`${args.today}T12:00:00`)-Date.parse(args.record.shadowStartedAt))/86400000));
   const blockers=[
     ...(!args.record.validation.valid?["参照パック検証エラー"]:[]),
     ...(args.record.reconciliation.pastExamConflicts?["過去問master差分の確認待ち"]:[]),
-    ...(shadowDays<14?[`shadow観察 ${shadowDays}/14日`]:[]),
     ...(plan14.weeklyMinimumViolations.length||plan14.dailyCapacityViolations?["14日シミュレーションに未達あり"]:[])
   ];
   const phaseDiagnostics=([
@@ -259,7 +276,7 @@ export function buildAdaptivePlannerShadow(args:{
       full:summary.counts.full,timed:summary.counts.timed,pastExam:summary.counts.pastExam,
       pastExamShare:total?Math.round(past/total*100):0,weeklyMinimumViolations:summary.weeklyMinimumViolations};
   });
-  return {available:true,mode:"shadow",generatedAt,phase,daysRemaining,targetMinutes:args.targetMinutes,plan14,plan30,
+  return {available:true,mode:"active",generatedAt,phase,daysRemaining,targetMinutes:args.targetMinutes,plan14,plan30,
     legacy30:{scan5:legacy.purposeCounts.scan5,full:legacy.purposeCounts.fullSkeleton,
       timed:legacy.purposeCounts.timedFull,totalTasks:args.currentTasks.length},
     comparisonReasons:[

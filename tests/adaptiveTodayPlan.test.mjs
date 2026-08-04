@@ -1,0 +1,50 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import {adaptivePlanDayToTasks} from "../src/adaptiveTodayPlan.ts";
+
+const problem=(id)=>({
+  id:1,problem_id:id,title:id,display_label:id,category:"A",chapter:4,problem_number:1,
+  theme:"theme",canonical_problem_type:"type",canonical_keywords:[],strategy_rank:"A+"
+});
+
+test("正式日次計画は得点形成1件・補修最大1件・維持0～1件へ変換する",()=>{
+  const contract={contractId:"review:9:1",contractVersion:"STAT1-CONTRACT-v2",contractHash:"hash",
+    createdAt:"2026-08-01T00:00:00Z",problemId:"WB-4-A-02",sourceAttemptId:2,
+    learningPurpose:"retrieval_check",learningStage:"maintenance",mode:"check",reviewScope:"check_only",
+    targetedParts:[],gradedParts:[{id:"first_step",label:"初手",cueLabel:"初手",allowedErrorTypes:["N","none"],completionCriterionId:"recall"}],
+    explicitlyOutOfScopePartIds:[],explicitlyOutOfScopeParts:[],completionCriteria:[{id:"recall",displayText:"短く想起"}],
+    hiddenAnswerKey:[],completionConditions:["短く想起"],requiredEvidence:["初手"],allowedErrorTypes:["N"],
+    requiresKEvidence:false,allowedReferenceLevel:0,estimatedMinutes:5,sheetType:"check_sheet"};
+  const review={id:9,problem_id:"WB-4-A-02",due_date:"2026-08-04",interval_days:3,
+    review_type:"main_calc_retry",status:"pending",generated_from_attempt_id:2,
+    policy_validity:"valid",exclude_from_planning:false,effective_mode:"check",
+    grading_contract:contract,contract_id:contract.contractId,contract_hash:contract.contractHash};
+  const day={date:"2026-08-04",totalMinutes:55,tasks:[
+    {taskKey:"score",date:"2026-08-04",slot:"score_building",kind:"whitebook",label:"A",
+      problemId:"WB-4-A-01",minutes:35,reason:"得点形成",requiresUserSelection:false},
+    {taskKey:"repair",date:"2026-08-04",slot:"repair",kind:"review",label:"repair",
+      problemId:"WB-4-A-02",reviewId:9,minutes:5,reason:"局所補修",requiresUserSelection:false},
+    {taskKey:"maint",date:"2026-08-04",slot:"maintenance_selection",kind:"whitebook",label:"M",
+      problemId:"WB-5-A-01",minutes:15,reason:"維持",requiresUserSelection:false}
+  ]};
+  const tasks=adaptivePlanDayToTasks({day,problems:[problem("WB-4-A-01"),problem("WB-4-A-02"),problem("WB-5-A-01")],
+    reviews:[review],today:"2026-08-04"});
+  assert.equal(tasks.filter(row=>row.kind==="得点形成").length,1);
+  assert.equal(tasks.filter(row=>row.id===9).length,1);
+  assert.equal(tasks.filter(row=>row.kind==="維持・選択").length,1);
+  assert.equal(tasks.every(row=>row.plan_origin==="adaptive_planner"),true);
+  assert.equal(tasks.find(row=>row.id===9)?.triage,"must");
+  assert.equal(tasks.find(row=>row.kind==="維持・選択")?.triage,"if_time");
+});
+
+test("選択確認と同一論理課題は確定計画へ重複投入しない",()=>{
+  const day={date:"2026-08-04",totalMinutes:45,tasks:[
+    {taskKey:"confirm",date:"2026-08-04",slot:"maintenance_selection",kind:"exposure_confirmation",
+      label:"素材確認",minutes:10,reason:"unknown",requiresUserSelection:true},
+    ...[1,2].map(index=>({taskKey:`score-${index}`,date:"2026-08-04",slot:"score_building",
+      kind:"whitebook",label:"A",problemId:"WB-4-A-01",minutes:35,reason:"得点形成",requiresUserSelection:false}))
+  ]};
+  const tasks=adaptivePlanDayToTasks({day,problems:[problem("WB-4-A-01")],reviews:[],today:"2026-08-04"});
+  assert.equal(tasks.length,1);
+  assert.equal(tasks[0].problem_id,"WB-4-A-01");
+});

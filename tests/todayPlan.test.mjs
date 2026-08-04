@@ -27,3 +27,12 @@ test("完了済みタスクと先送り候補は残り予定へ重複加算し�
   assert.equal(result.warning,"");
   assert.match(result.guidance,/先送り候補40分は今日の実行予定に含めていません/);
 });
+
+test("目標・確定計画・残り・追加可能時間を別々に計算する",()=>{
+  const result=summarizeTodayTime([task(30,"must"),task(45,"tomorrow")],10,150,40);
+  assert.equal(result.confirmedPlanMinutes,40);
+  assert.equal(result.activeRemainingMinutes,30);
+  assert.equal(result.targetRemainingMinutes,140);
+  assert.equal(result.additionalCapacityMinutes,110);
+  assert.equal(result.postponeCandidateMinutes,45);
+});

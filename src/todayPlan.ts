@@ -8,9 +8,13 @@ export function summarizeTodayTime(tasks:Task[],completedMinutes:number,targetMi
     .filter(task=>!task.checked&&task.triage==="tomorrow")
     .reduce((sum,task)=>sum+task.minutes,0);
   const activeTotalIfDone=completedMinutes+activeRemainingMinutes;
+  const confirmedPlanMinutes=activeTotalIfDone;
+  const targetRemainingMinutes=Math.max(0,targetMinutes-completedMinutes);
+  const additionalCapacityMinutes=Math.max(0,targetMinutes-confirmedPlanMinutes);
   const excess=activeTotalIfDone-targetMinutes;
   return {
     startOfDayMinutes,completedMinutes,activeRemainingMinutes,postponeCandidateMinutes,
+    confirmedPlanMinutes,targetRemainingMinutes,additionalCapacityMinutes,
     activeTotalIfDone,capacityPercent:Math.round(activeTotalIfDone/targetMinutes*100),
     warning:excess>10
       ?`完了${completedMinutes}分 + 今日これから${activeRemainingMinutes}分 = ${activeTotalIfDone}分です。目標${targetMinutes}分を${excess}分超えます。必ずやる問題を1件明日に送ると目標内に近づきます。`
