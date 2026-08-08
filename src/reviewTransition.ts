@@ -1,12 +1,41 @@
 import type { AssessmentTiming, LearningPurpose } from "./types.ts";
 import type { LearningPrescription } from "./learningPolicyResolver.ts";
 
+type ObjectiveRetentionEvidence={
+  assessmentTiming?:string;result?:string;actualReferenceLevel?:number;hintUsed?:boolean;
+  targetIssueResolved?:boolean;minimumPassConditionMet?:boolean;errorTypes?:string[];
+  unresolvedCarryover?:string[];gradedPartIds?:string[];
+  gradedFindings?:Array<{graded_part_id:string;error_type:string;resolved:boolean}>;
+};
+
+/**
+ * A deterministic graduation decision for one Review execution. It deliberately
+ * ignores the historical mark (◎/○), so a valid STAT1-REVIEW-v9 success can end
+ * a same-problem Review series without rewriting old marks.
+ */
+export function isObjectiveDelayedRetrievalSuccess(input:ObjectiveRetentionEvidence){
+  if(input.assessmentTiming!=="delayed_retrieval"||input.result!=="success")return false;
+  if(Number(input.actualReferenceLevel||0)!==0||input.hintUsed)return false;
+  if(input.targetIssueResolved!==true||input.minimumPassConditionMet!==true)return false;
+  if((input.errorTypes||[]).some(error=>["K","W","N","C"].includes(String(error))))return false;
+  if((input.unresolvedCarryover||[]).some(value=>String(value).trim()))return false;
+  const partIds=[...new Set((input.gradedPartIds||[]).filter(Boolean))];
+  const findings=input.gradedFindings||[];
+  if(!partIds.length||findings.length!==partIds.length)return false;
+  const byPart=new Map(findings.map(finding=>[finding.graded_part_id,finding]));
+  return partIds.every(id=>{
+    const finding=byPart.get(id);
+    return !!finding&&finding.resolved===true&&finding.error_type==="none";
+  });
+}
+
 export type ReviewTransitionInput={
   prescription:LearningPrescription;
   result:"success"|"partial"|"failed";
   referenceClosedReproduction:boolean;
   crossProblemEvidence?:boolean;
   verifiedTransferTargetAvailable?:boolean;
+  objectiveRetentionSuccess?:boolean;
 };
 export type ReviewTransitionResult={
   retentionSuccess:boolean;
@@ -24,6 +53,17 @@ export function resolveReviewTransition(input:ReviewTransitionInput):ReviewTrans
   }
   if(prescription.assessmentTiming==="same_session_correction"){
     return {retentionSuccess:false,stable:false,nextPurpose:"error_repair",nextTiming:"delayed_retrieval",userSelectionRequired:false,reason:"答案直後の修正成功は長期保持の証拠にしない"};
+  }
+  const objectiveSuccess=input.objectiveRetentionSuccess??true;
+  if(!objectiveSuccess){
+    return {retentionSuccess:false,stable:false,nextPurpose:prescription.learningPurpose,
+      nextTiming:"delayed_retrieval",userSelectionRequired:false,
+      reason:"参照なし・全対象解決の客観条件を満たしていないため、同じ目的の遅延確認を継続する"};
+  }
+  if(prescription.learningPurpose==="retrieval_check"){
+    return {retentionSuccess:true,stable:false,nextPurpose:undefined,nextTiming:undefined,
+      userSelectionRequired:true,
+      reason:"参照なしの遅延想起で全対象を解決したため同一問題のretrieval系列を卒業し、必要なら別問題の転移候補へ進む"};
   }
   if(prescription.learningPurpose==="error_repair"){
     return {retentionSuccess:true,stable:false,nextPurpose:"integration_check",nextTiming:"delayed_retrieval",userSelectionRequired:false,reason:"遅延再生で補修できたため全体統合へ進む"};

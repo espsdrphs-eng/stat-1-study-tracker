@@ -7,11 +7,10 @@ import { buildReviewGradingPrompt } from "./gradingPrompt.ts";
 import { metadataQuality } from "./metadataQuality.ts";
 import { getSheetType, resolveReviewCard, type ResolvedReviewCard } from "./reviewCardResolver.ts";
 import { LEARNING_POLICY_VERSION, resolveLearningPolicy } from "./learningPolicyResolver.ts";
-import { simulateThirtyDays } from "./learningSimulation.ts";
 import { analyzeLegacyKReorganization } from "./legacyKRepair.ts";
 import { classifyKPolicyValidity } from "./legacyKPolicy.ts";
 import { analyzeSourceMismatchRepair, resolveReviewOrigin } from "./reviewOrigin.ts";
-import { deriveExposure, scanMetrics, sessionStudyMinutes, simulateScanPlan, validatePastExamSession } from "./pastExamWorkflow.ts";
+import { deriveExposure, scanMetrics, sessionStudyMinutes, validatePastExamSession } from "./pastExamWorkflow.ts";
 import { runIntegrityAudit } from "./integrityEngine.ts";
 import {
   buildPastExamCatalog,buildReferencePackStatus,EXAM_REFERENCE_EXPOSURE_META_KEY,
@@ -372,23 +371,19 @@ export async function createDiagnosticPack():Promise<DiagnosticPackResult>{
   const adaptiveShadow=buildAdaptivePlannerShadow({record:referenceRecord,catalog:referenceCatalog,
     weaknesses:conceptWeaknesses,problems,attempts,reviews,pastSessions,currentTasks:currentSnapshot?.tasks||[],
     today,examDate,targetMinutes:Math.max(30,Number(settings.daily_study_minutes||150))});
-  const adaptiveReferenceAudit={referencePack:buildReferencePackStatus(referenceRecord),
+  const {legacy30:_legacy30,comparisonReasons:_legacyComparison,...formalAdaptiveAudit}=adaptiveShadow;
+  const adaptiveReferenceAudit={plannerSource:"adaptive",referencePack:buildReferencePackStatus(referenceRecord),
     exposureCounts:Object.fromEntries([...new Set(referenceCatalog.map(row=>row.exposure))]
       .map(state=>[state,referenceCatalog.filter(row=>row.exposure===state).length])),
     conceptStateCounts:Object.fromEntries([...new Set(conceptWeaknesses.map(row=>row.state))]
       .map(state=>[state,conceptWeaknesses.filter(row=>row.state===state).length])),
     topConceptWeaknesses:conceptWeaknesses.slice(0,20),
     repairCandidates:buildPastExamRepairCandidates({record:referenceRecord,sessions:pastSessions,attempts,conceptWeaknesses}),
-    shadow:adaptiveShadow};
+    adaptivePlanner:formalAdaptiveAudit};
   const plannerAudit={...buildPlannerAudit(snapshotRows,reviews,attempts,Math.max(30,Number(settings.daily_study_minutes||150))),
-    scanSoftQuotaSimulation:[119,90,60,30].map(daysRemaining=>({daysRemaining,...simulateScanPlan({startDate:today,daysRemaining,days:30})})),
-    thirtyDaySimulation:simulateThirtyDays({startDate:today,targetMinutes:Math.max(30,Number(settings.daily_study_minutes||150)),
-      problems,tasks:reviews.filter(review=>review.status!=="done").map(review=>{
-        const card=cards.get(review.id)!;return {id:review.id,problem_id:card.canonicalProblemId,title:card.displayLabel,
-          kind:review.review_type,reason:review.reason||"",mode:card.effectiveMode,minutes:card.estimatedMinutes,load:1,
-          due_date:review.due_date,deduplication_key:review.deduplication_key,review_scope:card.effectiveReviewScope,
-          task_origin:card.taskOrigin,error_type:card.primaryErrorType} as import("./types.ts").Task;
-      }),pastSessions})};
+    plannerSource:"adaptive",formalPlan14:adaptiveShadow.plan14,formalPlan30:adaptiveShadow.plan30,
+    weeklyActual:adaptiveShadow.weeklyActual,weeklyTarget:adaptiveShadow.weeklyTarget,
+    phaseDiagnostics:adaptiveShadow.phaseDiagnostics};
   const pendingAudits=promptAudits.filter((_,index)=>["pending","overdue","deferred"].includes(reviews[index]?.status));
   const countWarning=(code:string)=>pendingAudits.filter(item=>item.mismatchWarnings.some(warning=>warning.code===code)).length;
   const promptAuditFile={generatedAt:new Date().toISOString(),summary:{tasks:promptAudits.length,pendingTasks:pendingAudits.length,

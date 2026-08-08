@@ -8,8 +8,9 @@ const purposePriority=(task:AdaptivePlannerShadow["plan14"]["plan"][number]["tas
 };
 
 function shadowTaskToTodayTask(item:AdaptivePlannerShadow["plan14"]["plan"][number]["tasks"][number]):Task|null{
-  if(!item.problemId||item.requiresUserSelection||item.kind==="exposure_confirmation"||item.kind==="review"||
-    item.simulationProtected&&["unseen","unknown"].includes(String(item.exposure)))return null;
+  // Past-exam protection is enforced by the formal planner's final selector.
+  // Rechecking it here would incorrectly keep protected material blocked after D60.
+  if(!item.problemId||item.requiresUserSelection||item.kind==="exposure_confirmation"||item.kind==="review")return null;
   const mode=item.kind==="scan5"?"scan":item.kind==="timed"?"exam_90min":
     item.kind==="full"||item.kind==="past_exam"?"full":"skeleton";
   return {

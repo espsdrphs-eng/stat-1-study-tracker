@@ -248,7 +248,7 @@ function DashboardView({data,go,select}:{data:Bootstrap;go:(p:Page)=>void;select
           <span>30日 full<strong>{data.adaptiveLearning.plannerShadow.plan30.counts.full}</strong></span>
           <span>30日 timed<strong>{data.adaptiveLearning.plannerShadow.plan30.counts.timed}</strong></span>
         </div>
-        <p>得点形成を原則1件、期限到来Reviewを局所補修として最大1件、維持・選択を0～1件配置します。弱点順位はconcept evidenceを使用します。</p>
+        <p>得点形成を1～2件、期限到来Reviewを局所補修として最大1件、維持・選択を0～1件配置します。直近7日の実績不足とconcept evidenceを正式順位に使用します。</p>
         {!!data.adaptiveLearning.plannerShadow.plan30.weeklyMinimumViolations.length&&
           <div className="match-warning"><AlertTriangle size={17}/><span>{data.adaptiveLearning.plannerShadow.plan30.weeklyMinimumViolations.slice(0,3).join("／")}</span></div>}
         <details><summary>14日計画とフェーズ診断</summary>

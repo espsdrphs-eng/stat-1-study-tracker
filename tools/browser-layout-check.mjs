@@ -33,6 +33,24 @@ try {
       throw new Error(`${size.name}: Today Plan horizontal overflow ${today.scrollWidth - today.clientWidth}px`);
     }
 
+    if (size.width <= 850) await page.locator(".menu-btn").click();
+    const navigation = await page.evaluate(() => {
+      const sidebar = document.querySelector(".sidebar");
+      const button = [...document.querySelectorAll(".sidebar nav button")]
+        .find((element) => element.textContent?.trim() === "設定");
+      if (!(sidebar instanceof HTMLElement) || !(button instanceof HTMLElement)) return { reachable: false };
+      button.scrollIntoView({ block: "nearest" });
+      const side = sidebar.getBoundingClientRect(), target = button.getBoundingClientRect();
+      return {
+        reachable: target.top >= side.top && target.bottom <= side.bottom,
+        overflowY: getComputedStyle(sidebar).overflowY,
+        scrollHeight: sidebar.scrollHeight,
+        clientHeight: sidebar.clientHeight,
+      };
+    });
+    if (!navigation.reachable || !["auto", "scroll"].includes(navigation.overflowY)) {
+      throw new Error(`${size.name}: Settings navigation is not reachable: ${JSON.stringify(navigation)}`);
+    }
     await page.getByRole("button", { name: "設定", exact: true })
       .evaluate((element) => element.click());
     await page.waitForTimeout(150);
@@ -53,7 +71,7 @@ try {
       throw new Error(`${size.name}: Settings first-level structure is invalid: ${JSON.stringify(settings)}`);
     }
     await page.screenshot({ path: `outputs/${size.name}-settings.png`, fullPage: true });
-    results.push({ ...size, today, settings, status: "PASS" });
+    results.push({ ...size, today, navigation, settings, status: "PASS" });
     await context.close();
   }
   console.log(JSON.stringify(results, null, 2));

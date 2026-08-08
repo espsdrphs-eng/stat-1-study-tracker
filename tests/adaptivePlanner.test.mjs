@@ -36,7 +36,10 @@ test("期限Reviewが多くても得点形成枠を残し、repairは1日最大1
     due_date:"2026-07-01",interval_days:3,review_type:"main_calc_retry",status:"pending",generated_from_attempt_id:index+1,
     learning_purpose:"error_repair",grading_contract:{estimatedMinutes:20}}));
   const shadow=build("2026-07-29","2026-11-15",reviews);
-  assert.equal(shadow.plan14.plan.every(day=>day.tasks.filter(task=>task.slot==="score_building").length===1),true);
+  assert.equal(shadow.plan14.plan.every(day=>{
+    const count=day.tasks.filter(task=>task.slot==="score_building").length;
+    return count>=1&&count<=2;
+  }),true);
   assert.equal(shadow.plan14.plan.every(day=>day.tasks.filter(task=>task.slot==="repair").length<=1),true);
   assert.equal(shadow.plan14.dailyCapacityViolations,0);
 });
@@ -136,10 +139,77 @@ test("正式順位はraw weakNoteではなくconcept evidenceの強い証拠を�
     priorityScore,estimatedRepairMinutes:10,mappingConfidence:"verified",evidenceConfidence:"high",
     nextRecommendedAction:"",latestEvidenceDate:null,evidenceSummary:[]
   });
-  const plan=buildAdaptivePlannerShadow({record:baseRecord,catalog,problems:candidates,attempts:[],reviews:[],
-    pastSessions:[],currentTasks:[],today:"2026-08-04",examDate:"2026-11-15",targetMinutes:150,
+  const plan=buildAdaptivePlannerShadow({record:baseRecord,catalog,problems:candidates,attempts:[{
+    id:90,problem_id:"WB-4-A-99",date:"2026-08-04",mode:"full",error_types:["none"],exam_score_eligible:false
+  }],reviews:[],pastSessions:[{id:91,date:"2026-08-04",session_kind:"scan_only",questions:[]}],
+    currentTasks:[],today:"2026-08-04",examDate:"2026-11-15",targetMinutes:150,
     weaknesses:[weakness("concept-low","resolved",200,0,2),weakness("concept-strong","confirmed",50,2)]});
   const score=plan.plan14.plan[0].tasks.find(task=>task.slot==="score_building");
   assert.equal(score.problemId,"WB-2-A-02");
   assert.match(score.reason,/強い証拠/);
+});
+
+test("150分設定で候補が十分ならfoundationのcore planを60〜90分にし、直近卒業問題を避ける",()=>{
+  const graduated={id:501,problem_id:"WB-2-A-01",date:"2026-08-03",mode:"check",error_types:["none"],
+    assessment_timing:"delayed_retrieval",actual_reference_level:0,hint_used:false,target_issue_resolved:true,
+    minimum_pass_condition_met:true,unresolved_carryover:[],graded_part_ids:["problem_type"],
+    graded_findings:[{graded_part_id:"problem_type",error_type:"none",resolved:true}]};
+  const plan=buildAdaptivePlannerShadow({record:baseRecord,catalog,weaknesses:[],problems:whitebook,attempts:[graduated],
+    reviews:[],pastSessions:[],currentTasks:[],today:"2026-08-04",examDate:"2026-11-15",targetMinutes:150});
+  const firstWeek=plan.plan14.plan.slice(0,7);
+  assert.equal(firstWeek.every(day=>day.totalMinutes>=60&&day.totalMinutes<=90),true);
+  assert.equal(firstWeek.flatMap(day=>day.tasks).some(task=>task.problemId==="WB-2-A-01"),false);
+});
+
+test("直近7日の実績不足を翌日の正式候補へ優先し、実績があれば重ねて強制しない",()=>{
+  const missing=buildAdaptivePlannerShadow({record:baseRecord,catalog,weaknesses:[],problems:whitebook,attempts:[],reviews:[],
+    pastSessions:[],currentTasks:[],today:"2026-08-04",examDate:"2026-11-15",targetMinutes:150});
+  const firstThree=missing.plan14.plan.slice(0,3).flatMap(day=>day.tasks);
+  assert.ok(firstThree.some(task=>task.kind==="scan5"));
+  assert.ok(firstThree.some(task=>task.reason.includes("第5章実績不足")));
+  assert.ok(firstThree.some(task=>task.reason.includes("第7章実績不足")));
+  const attempts=[5,7].map((chapter,index)=>({id:600+index,problem_id:`WB-${chapter}-A-01`,date:"2026-08-03",mode:"skeleton",error_types:["none"]}));
+  const satisfied=buildAdaptivePlannerShadow({record:baseRecord,catalog,weaknesses:[],problems:whitebook,attempts,reviews:[],
+    pastSessions:[{id:610,date:"2026-08-03",session_kind:"scan_only",questions:[]}],currentTasks:[],
+    today:"2026-08-04",examDate:"2026-11-15",targetMinutes:150});
+  assert.equal(satisfied.plan14.plan[0].tasks.some(task=>/(scan5|第5章|第7章)実績不足/.test(task.reason)),false);
+});
+
+test("残り60日より前はprompt_scannedでも2024・2025の保護問題を最終選択しない",()=>{
+  const protectedRecord=record({data:{...baseRecord.data,pastExamProblems:[
+    {...baseRecord.data.pastExamProblems[0],year:2024,problem_id:"PE-2024-Q01",simulation_protection_default:true},
+    {...baseRecord.data.pastExamProblems[1],year:2021,problem_id:"PE-2021-Q01",simulation_protection_default:false}
+  ]}});
+  const protectedCatalog=buildPastExamCatalog({record:protectedRecord,sessions:[],exposureOverrides:{
+    "PY-2024-Q1":"prompt_scanned","PY-2021-Q1":"prompt_scanned"
+  }});
+  const plan=buildAdaptivePlannerShadow({record:protectedRecord,catalog:protectedCatalog,weaknesses:[],problems:whitebook,
+    attempts:[],reviews:[],pastSessions:[],currentTasks:[],today:"2026-08-04",examDate:"2026-11-15",targetMinutes:150});
+  const selected=plan.plan14.plan.flatMap(day=>day.tasks).filter(task=>task.referenceProblemId);
+  assert.equal(selected.some(task=>task.referenceProblemId==="PE-2024-Q01"),false);
+  assert.ok(selected.some(task=>task.referenceProblemId==="PE-2021-Q01"));
+});
+
+test("同一問題を卒業したconceptは別問題のtransfer_checkへ展開できる",()=>{
+  const candidates=[
+    {...problem("WB-2-A-01",2),fine_concept_ids:["concept-transfer"]},
+    {...problem("WB-2-A-02",2),fine_concept_ids:["concept-transfer"]},
+  ];
+  const graduated={id:701,problem_id:"WB-2-A-01",date:"2026-08-03",mode:"check",error_types:["none"],
+    assessment_timing:"delayed_retrieval",actual_reference_level:0,hint_used:false,target_issue_resolved:true,
+    minimum_pass_condition_met:true,unresolved_carryover:[],graded_part_ids:["problem_type"],
+    graded_findings:[{graded_part_id:"problem_type",error_type:"none",resolved:true}]};
+  const weakness={conceptId:"concept-transfer",displayName:"転移対象",state:"transfer_pending",independentOpportunities:3,
+    independentFailures:1,failureRate:33,strongFailures:1,weakFailures:0,delayedNoReferenceSuccesses:1,
+    transferSuccesses:0,distinctProblemCount:1,distinctFailureDateCount:1,recurrenceCount:0,examYearCount:1,
+    examOccurrenceYearCount:1,pastExamFailureCount:0,pastExamFailureYearCount:0,recentExamYearCount:0,
+    examImportance:1,weaknessScore:10,priorityScore:10,estimatedRepairMinutes:10,mappingConfidence:"verified",
+    evidenceConfidence:"medium",nextRecommendedAction:"別問題",latestEvidenceDate:"2026-08-03",evidenceSummary:[]};
+  const plan=buildAdaptivePlannerShadow({record:baseRecord,catalog,weaknesses:[weakness],problems:candidates,
+    attempts:[graduated,{id:702,problem_id:"WB-4-A-99",date:"2026-08-03",mode:"full",error_types:["none"]}],
+    reviews:[],pastSessions:[{id:703,date:"2026-08-03",session_kind:"scan_only",questions:[]}],currentTasks:[],
+    today:"2026-08-04",examDate:"2026-11-15",targetMinutes:150});
+  const transfer=plan.plan14.plan[0].tasks.find(task=>task.problemId==="WB-2-A-02");
+  assert.equal(transfer?.purpose,"transfer_check");
+  assert.equal(transfer?.purposeLabel,"別問題で転移確認");
 });

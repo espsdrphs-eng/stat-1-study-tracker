@@ -7,7 +7,7 @@ const browser=await chromium.launch({
   headless:true
 });
 const url=process.env.APP_URL||"http://127.0.0.1:4174/";
-const expectedYears=[2019,2021,2022,2023,2024,2025];
+const expectedYears=[2016,2017,2018,2019,2021,2022,2023,2024,2025];
 const sizes=[
   {name:"ipad-landscape",width:1180,height:820},
   {name:"ipad-portrait",width:820,height:1180},

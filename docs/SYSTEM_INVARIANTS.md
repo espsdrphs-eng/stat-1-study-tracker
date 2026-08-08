@@ -7,6 +7,8 @@ This document is the implementation-level source of truth for data integrity. Le
 - The active past-exam catalog contains only schedulable `verified_problem` records; metadata-only and no-exam years never enter study selection.
 - Reference-pack hydration never deletes or rewrites Attempt, Review, pastSession, exposure, or todayPlanSnapshot history.
 - Reapplying the same pack does not create duplicate problem records.
+- The verified 2016-2018 supplement upgrades exactly 15 existing canonical catalog rows, starts them at unknown
+  exposure, and never changes saved exposure or learning history.
 - UI year lists and planner candidates come from the active normalized catalog, not a fixed year array.
 - Adaptive suggestions never mutate the current Today Plan. An additional candidate enters the current snapshot only
   after an explicit user action, and its candidate key is idempotent.
@@ -32,6 +34,8 @@ This document is the implementation-level source of truth for data integrity. Le
 - Rebuild and repair operations are idempotent and do not create a new Review when an active logical key exists.
 - An exact duplicate Attempt remains as history, is linked to its canonical Attempt, and does not generate new planning or metrics.
 - A successful newer Attempt supersedes only older pending repair/retrieval Reviews for the same covered graded parts.
+- A retrieval Review graduates without a successor only after deterministic delayed, no-reference, no-hint,
+  all-parts-resolved evidence. Historical marks are not rewritten and same-session success never graduates.
 - Attempt insertion, source Review completion, stale Review supersession, next Review upsert, and correction logging are one transaction.
 - SCAN5/past-session rules and the K/W/N/C learning policy are outside integrity repair and are not rewritten by it.
 - Importing the normalized exam reference pack is idempotent by pack SHA-256 and never mutates Attempts,
@@ -41,6 +45,8 @@ This document is the implementation-level source of truth for data integrity. Le
 - Planner rollback affects future snapshot generation only; it never rewinds data or saved snapshots.
 - Confirmed plan time, completed time, confirmed remaining time, target remaining time, additional capacity,
   and postponed time are calculated by the shared Today time summary.
+- Formal planner diagnostics declare `adaptive` as their source; legacy comparisons never contribute to formal
+  plan counts, phase quotas, or diagnostic-pack planner totals.
 
 Any code path that writes Attempts or Reviews must preserve these invariants. A new one-off repair must not be added
 when the condition belongs in `runIntegrityAudit` and the unified repair transaction.

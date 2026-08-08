@@ -14,7 +14,7 @@ const pastProblem=(year,question)=>({
   related_s_problem_ids:[],linked_past_exam_ids:[]
 });
 
-test("既存20問DBへ2019・2021を冪等追加し履歴・露出・snapshotを保持する",async()=>{
+test("既存20問DBへ2016〜2019・2021を冪等追加し履歴・露出・snapshotを保持する",async()=>{
   await db.open();
   await db.transaction("rw",db.tables,async()=>{for(const table of db.tables)await table.clear()});
   await db.problems.bulkPut([2022,2023,2024,2025].flatMap(year=>
@@ -39,11 +39,13 @@ test("既存20問DBへ2019・2021を冪等追加し履歴・露出・snapshotを
   };
   const first=await localGet("/api/bootstrap");
   const core=first.problems.filter(row=>row.category==="past_exam"&&row.schedulable);
-  assert.equal(core.length,30);
+  assert.equal(core.length,45);
   assert.deepEqual([...new Set(core.map(row=>Number(row.problem_id.slice(3,7))))].sort(),
-    [2019,2021,2022,2023,2024,2025]);
-  assert.equal(first.adaptiveLearning.pastExamCatalog.length,30);
-  assert.equal(first.adaptiveLearning.pastExamCatalog.some(row=>[2016,2017,2018,2020].includes(row.year)),false);
+    [2016,2017,2018,2019,2021,2022,2023,2024,2025]);
+  assert.equal(first.adaptiveLearning.pastExamCatalog.length,45);
+  assert.equal(first.adaptiveLearning.pastExamCatalog.some(row=>row.year===2020),false);
+  assert.equal(first.adaptiveLearning.pastExamCatalog.filter(row=>[2016,2017,2018].includes(row.year)).every(row=>
+    row.availability==="verified_problem"&&row.schedulable&&row.exposure==="unknown"&&!row.simulationProtected),true);
   assert.equal(first.adaptiveLearning.pastExamCatalog.find(row=>row.canonicalProblemId==="PY-2024-Q1")?.exposure,
     "prompt_scanned");
   const countAfterFirst=await db.problems.count();

@@ -20,7 +20,7 @@ import { finalizeStudyUpdateForSave } from "./studyCycle.ts";
 import { LEARNING_POLICY_VERSION, resolveLearningPolicy } from "./learningPolicyResolver.ts";
 import { quotaCandidatesWithinCapacity, taskDraftFromPrescription, weeklySoftQuota } from "./taskScheduler.ts";
 import { examScoreEligibility, taskScoreForAttempt } from "./scoreEligibility.ts";
-import { resolveReviewTransition } from "./reviewTransition.ts";
+import { isObjectiveDelayedRetrievalSuccess, resolveReviewTransition } from "./reviewTransition.ts";
 import { analyzeLegacyKReorganization } from "./legacyKRepair.ts";
 import { classifyKPolicyValidity, excludeLegacyKFromPlanning, planningErrorsForSource } from "./legacyKPolicy.ts";
 import { analyzeSourceMismatchRepair, resolveReviewOrigin, REVIEW_ORIGIN_POLICY_VERSION } from "./reviewOrigin.ts";
@@ -903,12 +903,31 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
       ?{...basePlan,interval_days:Math.min(7,basePlan.interval_days||7),review_reason:"許可参照段階を超えたため、次回間隔を軽く短縮する。"}
       :basePlan;
   const effectiveErrors=(input.effective_error_types?.length?input.effective_error_types:errors).filter(error=>["K","W","N","C"].includes(String(error)));
-  const delayedPrescription=resolveLearningPolicy({problemId:input.problem_id,problem,source:{...input,
-    error_types:effectiveErrors.length?effectiveErrors:["none"],learning_purpose:effectiveErrors.length?"error_repair":"retrieval_check",
-    assessment_timing:"delayed_retrieval"},targetedParts:input.targeted_parts});
-  const delayedDraft=taskDraftFromPrescription({prescription:delayedPrescription,sourceAttemptId:id,sourceDate:date,errors:effectiveErrors});
-  const delayedInterval=Math.max(0,Math.round((Date.parse(delayedDraft.dueDate)-Date.parse(date))/86400000));
-  if(!(problem.category==="S"&&!effectiveErrors.length)&&sourceReview?.assessment_timing!=="same_session_correction")await addOrReplaceReview({
+  const completionResult=input.review_outcome||(["◎","○"].includes(input.mark)?"success":input.mark==="△"?"partial":"failed");
+  const objectiveGraduation=!!sourceReview&&isObjectiveDelayedRetrievalSuccess({
+    assessmentTiming, result:completionResult, actualReferenceLevel, hintUsed:!!input.hint_used,
+    targetIssueResolved:input.target_issue_resolved,minimumPassConditionMet:input.minimum_pass_condition_met,
+    errorTypes:effectiveErrors,unresolvedCarryover:input.unresolved_carryover,
+    gradedPartIds:input.graded_part_ids||sourceReview.grading_contract?.gradedParts.map(part=>part.id),
+    gradedFindings:input.graded_findings
+  });
+  const sourceAttemptForTransition=sourceReview?await db.attempts.get(sourceReview.generated_from_attempt_id):undefined;
+  const sourcePrescription=sourceReview?(sourceReview.grading_contract
+    ?prescriptionFromContract(sourceReview.grading_contract,planningErrorsForSource(sourceAttemptForTransition||input))
+    :resolveLearningPolicy({problemId:input.problem_id,problem,source:{...input,...sourceReview},
+      learningPurpose:sourceReview.learning_purpose,learningStage:sourceReview.learning_stage,
+      assessmentTiming:sourceReview.assessment_timing||"delayed_retrieval",targetedParts:sourceReview.targeted_parts})):undefined;
+  const transition=sourcePrescription?resolveReviewTransition({prescription:sourcePrescription,result:completionResult,
+    referenceClosedReproduction:referenceClosed||actualReferenceLevel===0,objectiveRetentionSuccess:objectiveGraduation,
+    crossProblemEvidence:false,verifiedTransferTargetAvailable:false}):undefined;
+  const nextPurpose=sourceReview?transition?.nextPurpose:(effectiveErrors.length?"error_repair":"retrieval_check");
+  const delayedPrescription=nextPurpose?resolveLearningPolicy({problemId:input.problem_id,problem,source:{...input,
+    error_types:effectiveErrors.length?effectiveErrors:["none"],learning_purpose:nextPurpose,
+    assessment_timing:"delayed_retrieval"},learningPurpose:nextPurpose,
+    targetedParts:nextPurpose===sourcePrescription?.learningPurpose?input.targeted_parts:undefined}):undefined;
+  const delayedDraft=delayedPrescription?taskDraftFromPrescription({prescription:delayedPrescription,sourceAttemptId:id,sourceDate:date,errors:effectiveErrors}):undefined;
+  const delayedInterval=delayedDraft?Math.max(0,Math.round((Date.parse(delayedDraft.dueDate)-Date.parse(date))/86400000)):0;
+  if(delayedPrescription&&delayedDraft&&!(problem.category==="S"&&!effectiveErrors.length)&&sourceReview?.assessment_timing!=="same_session_correction")await addOrReplaceReview({
     problem_id:input.problem_id,due_date:await reviewDueDate(date,delayedInterval),
     review_type:plan.review_type,status:"pending",generated_from_attempt_id:id,duration_minutes:delayedPrescription.estimatedMinutes,
     reason:delayedPrescription.schedulingReason,task_origin:"review_attempt",attempt_exists:true,
@@ -1108,9 +1127,19 @@ async function completeReview(id:number,body:Record<string,unknown>){
     :resolveLearningPolicy({problemId:review.problem_id,problem,source:{...source,...review},
       learningPurpose:review.learning_purpose,learningStage:review.learning_stage,
       assessmentTiming:review.assessment_timing||"delayed_retrieval",targetedParts:review.targeted_parts});
+  const objectiveFindings=successful?(review.grading_contract?.gradedParts||[]).map(part=>({
+    graded_part_id:part.id,error_type:"none" as const,evidence:"自己確認で対象を再現",resolved:true
+  })):[];
+  const objectiveRetentionSuccess=isObjectiveDelayedRetrievalSuccess({
+    assessmentTiming:currentPrescription.assessmentTiming,result:outcome.result,
+    actualReferenceLevel,hintUsed:hintUsed,targetIssueResolved:successful,
+    minimumPassConditionMet:successful,errorTypes:successful?[]:currentPrescription.effectiveErrorTypes,
+    unresolvedCarryover:successful?[]:source.unresolved_carryover,
+    gradedPartIds:review.grading_contract?.gradedParts.map(part=>part.id)||[],gradedFindings:objectiveFindings
+  });
   const transition=resolveReviewTransition({prescription:currentPrescription,result:outcome.result,
     referenceClosedReproduction:referenceClosed||actualReferenceLevel===0,crossProblemEvidence:false,
-    verifiedTransferTargetAvailable:false});
+    verifiedTransferTargetAvailable:false,objectiveRetentionSuccess});
   const plan=linkedS?createSReviewPlan(successful?"stable":outcome.result==="partial"?"check":"forgotten"):
     createAdaptiveReviewPlan(source,review,outcome,[]);
   const sourceErrors=linkedS?[]:currentPrescription.effectiveErrorTypes;
@@ -1125,8 +1154,11 @@ async function completeReview(id:number,body:Record<string,unknown>){
     next_action:plan.review_instruction||"",memo:"復習結果から自動記録",
     score_text:"",score_numeric:null,score_max:null,result_summary:`復習結果：${outcome.result}${outcome.hint_used?"・ヒント使用":""}`,
     improvement_guidance:linkedS?"":source.improvement_guidance,required_derivation:linkedS?"":source.required_derivation,
-    corrected_answer:linkedS?"":source.corrected_answer,resolution_evidence:"",answer_change_summary:"",
-    required_work_shown:[],graded_parts:[],assumed_correct_parts:[],unresolved_carryover:[],
+    corrected_answer:linkedS?"":source.corrected_answer,resolution_evidence:successful?"対象partを参照なしで再現":"",answer_change_summary:"",
+    target_issue_resolved:successful,minimum_pass_condition_met:successful,
+    required_work_shown:[],graded_parts:review.grading_contract?.gradedParts.map(part=>part.label)||[],
+    graded_part_ids:review.grading_contract?.gradedParts.map(part=>part.id)||[],graded_findings:objectiveFindings,
+    assumed_correct_parts:[],unresolved_carryover:successful?[]:source.unresolved_carryover||[],
     auto_imported:false,import_confidence:1,grading_confidence:1,rubric_version:"REVIEW-SELF-v1",
     uncertain_points:[],generated_from_review_id:id,is_review_attempt:true,hint_used:outcome.hint_used,
     hint_level:String(body.hint_level|| (outcome.hint_used?"unspecified":"none")),
@@ -2037,7 +2069,13 @@ async function installExamReferencePack(args:{
     try{
       savedRecord=JSON.parse(current.value) as StoredExamReferencePack;
       if(args.origin==="built_in"&&savedRecord.packHash!==packHash){
-        return {unchanged:true,status:buildReferencePackStatus(savedRecord)};
+        const verifiedSupplement=savedRecord.data.pastExamProblems.filter(row=>
+          [2016,2017,2018].includes(row.year)&&row.availability==="verified_problem"&&row.schedulable
+        );
+        // Preserve an explicitly newer/manual record. The built-in update is applied only
+        // when the existing v1 record still has the former metadata-only 2016-2018 rows.
+        if(verifiedSupplement.length===15)
+          return {unchanged:true,status:buildReferencePackStatus(savedRecord)};
       }
     }catch{savedRecord=null}
   }

@@ -8,6 +8,7 @@ import { addCalendarDays } from "./reviewSchedulePolicy.ts";
 import { daysUntilExam } from "./studyProgress.ts";
 import { reviewExecutionState } from "./integrityEngine.ts";
 import { simulateThirtyDays } from "./learningSimulation.ts";
+import { isObjectiveDelayedRetrievalSuccess } from "./reviewTransition.ts";
 
 type SlotTask=AdaptivePlanDay["tasks"][number];
 const unique=<T,>(values:T[])=>[...new Set(values)];
@@ -17,7 +18,7 @@ const attemptedDateMap=(attempts:Attempt[])=>{
   return map;
 };
 const isNewWhitebook=(problem:Problem,attempted:Map<string,string>)=>!attempted.has(problem.problem_id);
-const modeMinutes=(mode:string)=>mode==="full"?35:mode==="main_calc"?20:mode==="skeleton"?15:5;
+const modeMinutes=(mode:string)=>mode==="full"?35:mode==="main_calc"?20:mode==="skeleton"?25:5;
 
 function phaseName(daysRemaining:number){
   if(daysRemaining>=91)return "foundation_to_A";
@@ -33,7 +34,7 @@ function phasePolicy(record:StoredExamReferencePack|undefined|null,daysRemaining
 
 function chooseWhitebook(args:{
   problems:Problem[];attempts:Attempt[];chapters:number[];used:Map<string,string>;date:string;
-  allowNew:boolean;mode:"skeleton"|"full";weaknesses:ConceptWeaknessInsight[];
+  allowNew:boolean;mode:"skeleton"|"full";weaknesses:ConceptWeaknessInsight[];avoidProblemIds?:Set<string>;
 }){
   const attempted=attemptedDateMap(args.attempts);
   const weaknessMap=new Map(args.weaknesses.map(row=>[row.conceptId,row]));
@@ -58,7 +59,9 @@ function chooseWhitebook(args:{
         String(attempted.get(a.problem_id)||"").localeCompare(String(attempted.get(b.problem_id)||""))||
         a.problem_id.localeCompare(b.problem_id);
     });
-  const selected=rows.find(problem=>!args.used.get(problem.problem_id)||args.used.get(problem.problem_id)!>addCalendarDays(args.date,-7))||rows[0];
+  const preferred=rows.filter(problem=>!args.avoidProblemIds?.has(problem.problem_id));
+  const pool=preferred.length?preferred:rows;
+  const selected=pool.find(problem=>!args.used.get(problem.problem_id)||args.used.get(problem.problem_id)!<=addCalendarDays(args.date,-7));
   if(selected)args.used.set(selected.problem_id,args.date);
   return selected;
 }
@@ -72,7 +75,7 @@ function choosePastExam(args:{
   catalog:ExamReferenceCatalogItem[];daysRemaining:number;used:Map<string,string>;date:string;
 }){
   const rows=args.catalog.filter(row=>row.schedulable&&row.availability==="verified_problem"&&
-    row.exposure!=="unknown"&&!(args.daysRemaining>=61&&row.simulationProtected&&["unseen","unknown"].includes(row.exposure)))
+    row.exposure!=="unknown"&&!(args.daysRemaining>=61&&row.simulationProtected&&["unseen","unknown","prompt_scanned"].includes(row.exposure)))
     .sort((a,b)=>pastRank(a.exposure)-pastRank(b.exposure)||a.year-b.year||a.questionNumber-b.questionNumber);
   // A simulation must not invent a second purpose after merely placing the
   // first task. Reuse requires a persisted Attempt/exposure event in a later run.
@@ -131,7 +134,7 @@ function validateMinimums(summary:AdaptivePlanSummary,daysRemaining:number,targe
 
 function planDays(args:{
   startDate:string;days:number;daysRemaining:number;targetMinutes:number;record?:StoredExamReferencePack|null;
-  catalog:ExamReferenceCatalogItem[];problems:Problem[];attempts:Attempt[];reviews:Review[];
+  catalog:ExamReferenceCatalogItem[];problems:Problem[];attempts:Attempt[];reviews:Review[];pastSessions:PastSession[];
   weaknesses:ConceptWeaknessInsight[];
 }){
   const result:AdaptivePlanDay[]=[],usedProblems=new Map<string,string>(),usedPast=new Map<string,string>();
@@ -142,19 +145,32 @@ function planDays(args:{
   const recentEligibleSuccesses=args.attempts.filter(attempt=>attempt.date>=addCalendarDays(args.startDate,-14)&&
     attempt.exam_score_eligible&&Number(attempt.score_numeric||0)>=70).length;
   const acceleratePast=recentEligibleSuccesses>=2;
+  const recentGraduatedProblems=new Set(args.attempts.filter(attempt=>attempt.date>=addCalendarDays(args.startDate,-14)&&
+    isObjectiveDelayedRetrievalSuccess({assessmentTiming:attempt.assessment_timing,result:
+      (attempt.error_types||[]).some(error=>["K","W","N","C"].includes(String(error)))?"partial":"success",
+      actualReferenceLevel:attempt.actual_reference_level,hintUsed:attempt.hint_used,
+      targetIssueResolved:attempt.target_issue_resolved,minimumPassConditionMet:attempt.minimum_pass_condition_met,
+      errorTypes:attempt.error_types,unresolvedCarryover:attempt.unresolved_carryover,
+      gradedPartIds:attempt.graded_part_ids,gradedFindings:attempt.graded_findings})
+  ).map(attempt=>attempt.problem_id));
+  const actualAtStart=weeklyActual({startDate:args.startDate,attempts:args.attempts,
+    pastSessions:args.pastSessions,problems:args.problems});
+  let weekActual={...actualAtStart};
   const makeWhitebook=(date:string,chapters:number[],mode:"skeleton"|"full",reason:string,
     slot:SlotTask["slot"]="score_building")=>{
     const problem=chooseWhitebook({problems:args.problems,attempts:args.attempts,chapters,used:usedProblems,date,allowNew,mode,
-      weaknesses:args.weaknesses});
+      weaknesses:args.weaknesses,avoidProblemIds:recentGraduatedProblems});
     const concept=problem?(problem.fine_concept_ids||[]).map(id=>args.weaknesses.find(row=>row.conceptId===id))
       .filter(Boolean).sort((a,b)=>Number(b?.priorityScore||0)-Number(a?.priorityScore||0))[0]:undefined;
     const evidenceReason=concept?.state==="suspected"?`・${concept.displayName}の要診断`:
+      concept?.state==="transfer_pending"?`・${concept.displayName}を別問題で転移確認`:
       concept&&["confirmed","repairing","relapsed"].includes(concept.state)?`・${concept.displayName}の強い証拠を優先`:"";
+    const purpose=concept?.state==="suspected"?"concept_diagnosis":
+      concept?.state==="transfer_pending"?"transfer_check":undefined;
     return problem?task({date,slot,kind:mode==="full"?"full":"whitebook",
       label:problem.display_label||problem.title,problemId:problem.problem_id,
       minutes:modeMinutes(mode),reason:`${reason}${evidenceReason}`,
-      purpose:concept?.state==="suspected"?"concept_diagnosis":undefined,
-      purposeLabel:concept?.state==="suspected"?"弱点診断":undefined,
+      purpose,purposeLabel:purpose==="concept_diagnosis"?"弱点診断":purpose==="transfer_check"?"別問題で転移確認":undefined,
       conceptId:concept?.conceptId,mode,requiresUserSelection:false}):null;
   };
   const makePast=(date:string,kind:"past_exam"|"scan5"|"timed",minutes:number,reason:string)=>{
@@ -178,25 +194,28 @@ function planDays(args:{
       reason:`${reason}・${purposeLabel}`,purpose,purposeLabel,basis,exposure:selected.exposure,
       previousEventDate:latest?.date,simulationProtected:selected.simulationProtected,requiresUserSelection:false});
   };
+  let materialConfirmationPlanned=false;
   for(let offset=0;offset<args.days;offset++){
     const date=addCalendarDays(args.startDate,offset),weekday=offset%7;
+    if(offset>0&&offset%7===0)weekActual={chapter5:0,chapter7:0,chapter8:0,scan5:0,fullOrTimed:0,pastExam:0};
     // 最低枠は7日単位で評価するため、境界をまたぐ週は週初めのphaseで一貫させる。
     // 日次強制ではなく7〜14日配分を正本とし、次週から新phaseへ切り替える。
     const phase=phaseName(Math.max(0,args.daysRemaining-Math.floor(offset/7)*7));
     let score:SlotTask|null=null,phaseMaintenance:SlotTask|null=null;
     if(phase==="foundation_to_A"){
-      if(weekday===5)score=makePast(date,"scan5",50,"scan_plus_oneを週1回確保");
-      else if(weekday===6)score=makeWhitebook(date,[2,4,6],"full","得点形成のfull/timedを週1回確保");
+      if(weekActual.scan5<1&&!materialConfirmationPlanned)score=makePast(date,"scan5",50,"直近7日のscan5実績不足を優先補完");
+      else if(weekActual.fullOrTimed<1)score=makeWhitebook(date,[2,4,6],"full","直近7日のfull/timed実績不足を優先補完");
       else if(acceleratePast&&weekday===4)score=makePast(date,"past_exam",35,"参照なし本番得点が安定したため過去問を前倒し");
       else score=makeWhitebook(date,[2,4,6],"skeleton","第2・4・6章の得点形成");
-      if(weekday===1)phaseMaintenance=makeWhitebook(date,[5],"skeleton","第5章を週1回維持","maintenance_selection");
-      if(weekday===3)phaseMaintenance=makeWhitebook(date,[7],"skeleton","第7章を週1回維持","maintenance_selection");
+      if(weekActual.chapter5<1)phaseMaintenance=makeWhitebook(date,[5],"skeleton","直近7日の第5章実績不足を優先補完","maintenance_selection");
+      else if(weekActual.chapter7<1)phaseMaintenance=makeWhitebook(date,[7],"skeleton","直近7日の第7章実績不足を優先補完","maintenance_selection");
     }else if(phase==="A_and_past_parallel"){
-      if(weekday===0)score=makePast(date,"scan5",50,"過去問scan_plus_one");
+      if(weekActual.scan5<1&&!materialConfirmationPlanned)score=makePast(date,"scan5",50,"直近7日のscan5実績不足を優先補完");
       else if(weekday===3)score=makePast(date,"past_exam",35,"過去問答案で得点較正");
       else score=makeWhitebook(date,[2,4,6],"full","A問題と過去問を並行");
-      if(weekday===1)phaseMaintenance=makeWhitebook(date,[5,7],"skeleton","第5・7章を20〜25%維持","maintenance_selection");
-      if(weekday===4)phaseMaintenance=makeWhitebook(date,[8],"skeleton","第8章を20〜25%維持","maintenance_selection");
+      if(weekActual.chapter5<1)phaseMaintenance=makeWhitebook(date,[5],"skeleton","直近7日の第5章実績不足を優先補完","maintenance_selection");
+      else if(weekActual.chapter7<1)phaseMaintenance=makeWhitebook(date,[7],"skeleton","直近7日の第7章実績不足を優先補完","maintenance_selection");
+      else if(weekActual.chapter8<1)phaseMaintenance=makeWhitebook(date,[8],"skeleton","第8章を20〜25%維持","maintenance_selection");
     }else if(phase==="past_exam_main"){
       if(weekday===0)score=makePast(date,"timed",90,"週1回の3問90分演習");
       else if([2,4,6].includes(weekday))score=makePast(date,weekday===4?"scan5":"past_exam",weekday===4?45:35,"過去問主軸");
@@ -205,7 +224,20 @@ function planDays(args:{
       if(weekday===6)score=makeWhitebook(date,[2,4,5,6,7,8],"full","確認済み弱点の得点安定化");
       else score=makePast(date,weekday===0?"timed":weekday===3?"scan5":"past_exam",weekday===0?90:weekday===3?45:35,"本番形式と選題判断を固定");
     }
-    const tasks:SlotTask[]=[];if(score&&score.minutes<=args.targetMinutes)tasks.push(score);
+    const tasks:SlotTask[]=[];
+    if(score?.kind==="exposure_confirmation"){
+      materialConfirmationPlanned=true;
+      tasks.push(score);
+      score=makeWhitebook(date,[2,4,5,6,7,8],"skeleton","露出確認待ちの間も得点形成を止めない");
+    }
+    if(score&&score.minutes<=args.targetMinutes)tasks.push(score);
+    const coreFloor=Math.min(90,Math.max(60,Math.round(args.targetMinutes*.4)));
+    if(["foundation_to_A","A_and_past_parallel"].includes(phase)&&score&&score.kind!=="scan5"&&
+      tasks.reduce((sum,row)=>sum+row.minutes,0)<coreFloor){
+      const secondScore=makeWhitebook(date,[2,4,6,5,7,8],"full","利用可能時間を別問題の得点形成・転移へ配分");
+      if(secondScore&&tasks.reduce((sum,row)=>sum+row.minutes,0)+secondScore.minutes<=Math.min(args.targetMinutes,90))
+        tasks.push(secondScore);
+    }
     const review=activeReviews.find(row=>!usedReviews.has(row.id)&&row.due_date<=date);
     if(review&&tasks.reduce((sum,row)=>sum+row.minutes,0)+Number(review.grading_contract?.estimatedMinutes||review.estimated_minutes||5)<=args.targetMinutes){
       const minutes=Number(review.grading_contract?.estimatedMinutes||review.estimated_minutes||5);
@@ -214,13 +246,22 @@ function planDays(args:{
         minutes,reason:"期限到来Reviewから最大1件",requiresUserSelection:false}));
       usedReviews.add(review.id);
     }
-    if(phaseMaintenance&&tasks.reduce((sum,row)=>sum+row.minutes,0)+phaseMaintenance.minutes<=args.targetMinutes)
+    if(phaseMaintenance&&tasks.reduce((sum,row)=>sum+row.minutes,0)+phaseMaintenance.minutes<=Math.min(args.targetMinutes,90))
       tasks.push(phaseMaintenance);
     const maintenanceConcept=args.weaknesses.find(row=>["transfer_pending","resolved"].includes(row.state)&&
       !tasks.some(item=>item.conceptId===row.conceptId));
     if(!phaseMaintenance&&maintenanceConcept&&tasks.reduce((sum,row)=>sum+row.minutes,0)+10<=args.targetMinutes&&score?.kind!=="scan5"){
       tasks.push(task({date,slot:"maintenance_selection",kind:"review",label:`${maintenanceConcept.displayName} 短時間確認`,
         conceptId:maintenanceConcept.conceptId,minutes:10,reason:"転移・保持の確認",requiresUserSelection:true}));
+    }
+    for(const row of tasks){
+      const plannedProblem=row.problemId?args.problems.find(problem=>problem.problem_id===row.problemId):undefined;
+      if(plannedProblem?.chapter===5)weekActual.chapter5++;
+      if(plannedProblem?.chapter===7)weekActual.chapter7++;
+      if(plannedProblem?.chapter===8)weekActual.chapter8++;
+      if(row.kind==="scan5")weekActual.scan5++;
+      if(row.kind==="full"||row.kind==="timed")weekActual.fullOrTimed++;
+      if(["past_exam","scan5","timed"].includes(row.kind)&&row.referenceProblemId)weekActual.pastExam++;
     }
     result.push({date,tasks,totalMinutes:tasks.reduce((sum,row)=>sum+row.minutes,0)});
   }
@@ -235,11 +276,11 @@ function weeklyActual(args:{startDate:string;attempts:Attempt[];pastSessions:Pas
     chapter5:attempts.filter(attempt=>problemMap.get(attempt.problem_id)?.chapter===5).length,
     chapter7:attempts.filter(attempt=>problemMap.get(attempt.problem_id)?.chapter===7).length,
     chapter8:attempts.filter(attempt=>problemMap.get(attempt.problem_id)?.chapter===8).length,
-    scan5:sessions.filter(session=>!!session.session_kind).length,
+    scan5:sessions.filter(session=>["scan_only","scan_plus_one","selected_three_timed"].includes(String(session.session_kind))).length,
     fullOrTimed:attempts.filter(attempt=>attempt.mode==="full"||attempt.exam_score_eligible).length+
       sessions.filter(session=>session.session_kind==="selected_three_timed").length,
     pastExam:attempts.filter(attempt=>problemMap.get(attempt.problem_id)?.category==="past_exam").length+
-      sessions.filter(session=>!!session.session_kind).length
+      sessions.filter(session=>["scan_only","scan_plus_one","selected_three_timed"].includes(String(session.session_kind))).length
   };
 }
 

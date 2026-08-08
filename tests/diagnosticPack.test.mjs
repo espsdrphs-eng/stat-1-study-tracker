@@ -60,6 +60,15 @@ test("診断ZIPは実データを変更せず適応planner監査を含む8ファ
   assert.equal(Object.keys(zip.files).some(name=>/pdf|image/i.test(name)),false);
   const appInfo=JSON.parse(await zip.file("app-info.json").async("string"));
   assert.equal(appInfo.readOnlyVerification.verified,true);
+  const plannerAudit=JSON.parse(await zip.file("planner-audit.json").async("string"));
+  const adaptiveAudit=JSON.parse(await zip.file("adaptive-reference-audit.json").async("string"));
+  assert.equal(plannerAudit.plannerSource,"adaptive");
+  assert.ok(plannerAudit.formalPlan14&&plannerAudit.formalPlan30);
+  assert.equal("thirtyDaySimulation" in plannerAudit,false);
+  assert.equal(adaptiveAudit.plannerSource,"adaptive");
+  assert.ok(adaptiveAudit.adaptivePlanner);
+  assert.equal("shadow" in adaptiveAudit,false);
+  assert.equal("legacy30" in adaptiveAudit.adaptivePlanner,false);
   const after={attempts:await db.attempts.count(),reviews:await db.reviews.count(),snapshots:await db.meta.where("key").startsWith("today-plan-snapshot:").toArray()};
   assert.deepEqual(after,before);
 });

@@ -113,9 +113,7 @@ export function validateReferencePackData(data:ExamReferencePackData):Omit<Refer
   if(duplicateConcept.length)errors.push(`重複concept ID: ${unique(duplicateConcept).join("、")}`);
   if(past.some(row=>row.year===2020))errors.push("2020年に問題レコードがあります");
   if(metadataOnly.some(row=>row.schedulable||row.gradable))errors.push("metadata onlyに出題可能なレコードがあります");
-  if(past.filter(row=>[2016,2017,2018].includes(row.year)).some(row=>row.availability!=="metadata_only"))
-    errors.push("2016〜2018年にmetadata only以外のレコードがあります");
-  if(core.some(row=>![2019,2021,2022,2023,2024,2025].includes(row.year)))
+  if(core.some(row=>![2016,2017,2018,2019,2021,2022,2023,2024,2025].includes(row.year)))
     errors.push("core対象外年度が出題可能です");
   if(past.filter(row=>[2024,2025].includes(row.year)&&row.schedulable).some(row=>!row.simulation_protection_default))
     errors.push("2024・2025年の模試保護がありません");

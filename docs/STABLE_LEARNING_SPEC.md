@@ -33,6 +33,8 @@ Kは今回答案に「型、方針・入口、出発式、主役量、道具、�
 
 `same_session_correction` は答案直後に対象部分だけを5分以内で直します。同日にfull/full skeletonを追加せず、成功しても定着成功にしません。K/N/W/Cは別に `delayed_retrieval` を1/2/3/7日後に作り、その結果だけをerror repairの定着判定へ使います。
 
+`delayed_retrieval` の同一問題Review系列はmarkの `◎` に依存せず卒業できます。参照0・ヒントなし・success・最低合格条件達成・対象問題解決・全graded partが `none + resolved`・K/W/N/Cなし・未解決carryoverなしを同時に満たす客観成功を正本とします。`retrieval_check` はそこで終了し、必要なintegrationや別問題transferは別purpose／別Reviewとして扱います。参照使用、same-session、未解決errorでは卒業しません。過去markは書き換えません。
+
 自動タスクは `policy_version`、`source_attempt_id`、`deduplication_key` を持ち、同じ問題・目的・timing・source・policy版の未完了タスクを重複作成しません。日付は `earliest_date`、`preferred_date`、`latest_date` で持ち、容量不足時も期間内だけで調整します。
 
 ## 得点の分離
