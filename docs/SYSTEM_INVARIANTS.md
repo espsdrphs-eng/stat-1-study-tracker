@@ -36,6 +36,10 @@ This document is the implementation-level source of truth for data integrity. Le
 - A successful newer Attempt supersedes only older pending repair/retrieval Reviews for the same covered graded parts.
 - A retrieval Review graduates without a successor only after deterministic delayed, no-reference, no-hint,
   all-parts-resolved evidence. Historical marks are not rewritten and same-session success never graduates.
+- Mark is an app-owned learning-state result, independent of score bands: repair success is `○`, while only an
+  objectively successful delayed retrieval is `◎`. Prompt examples never prefill outcome-like values.
+- A clean past-exam full/timed performance does not create a recurring same-problem Review. SCAN5 remains outside
+  Attempt, mathematical error, mastery, and graduation transitions.
 - Attempt insertion, source Review completion, stale Review supersession, next Review upsert, and correction logging are one transaction.
 - SCAN5/past-session rules and the K/W/N/C learning policy are outside integrity repair and are not rewritten by it.
 - Importing the normalized exam reference pack is idempotent by pack SHA-256 and never mutates Attempts,

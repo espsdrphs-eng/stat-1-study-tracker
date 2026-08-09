@@ -223,7 +223,8 @@ export function prescriptionFromContract(contract:GradingContractSnapshot,effect
     allowedReferenceLevel:contract.allowedReferenceLevel,estimatedMinutes:contract.estimatedMinutes,
     completionConditions:[...contract.completionConditions],requiredEvidence:[...contract.requiredEvidence],
     allowedErrorTypes:contract.allowedErrorTypes as Array<"K"|"W"|"N"|"C">,effectiveErrorTypes:errors,
-    kPolicyValidity:"valid",requiresKEvidence:contract.requiresKEvidence,successTransition:contract.learningPurpose==="retrieval_check"?"integration_check":undefined,
+    kPolicyValidity:"valid",requiresKEvidence:contract.requiresKEvidence,
+    successTransition:contract.learningPurpose==="error_repair"?"retrieval_check":contract.learningPurpose==="retrieval_check"?"stable":undefined,
     failureTransition:"error_repair",schedulingReason:`固定採点契約 ${contract.contractId}`,policyVersion:contract.contractVersion};
 }
 

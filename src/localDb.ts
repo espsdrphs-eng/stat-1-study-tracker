@@ -20,7 +20,7 @@ import { finalizeStudyUpdateForSave } from "./studyCycle.ts";
 import { LEARNING_POLICY_VERSION, resolveLearningPolicy } from "./learningPolicyResolver.ts";
 import { quotaCandidatesWithinCapacity, taskDraftFromPrescription, weeklySoftQuota } from "./taskScheduler.ts";
 import { examScoreEligibility, taskScoreForAttempt } from "./scoreEligibility.ts";
-import { isObjectiveDelayedRetrievalSuccess, resolveReviewTransition } from "./reviewTransition.ts";
+import { resolveLearningEvaluation, resolveReviewTransition } from "./reviewTransition.ts";
 import { analyzeLegacyKReorganization } from "./legacyKRepair.ts";
 import { classifyKPolicyValidity, excludeLegacyKFromPlanning, planningErrorsForSource } from "./legacyKPolicy.ts";
 import { analyzeSourceMismatchRepair, resolveReviewOrigin, REVIEW_ORIGIN_POLICY_VERSION } from "./reviewOrigin.ts";
@@ -800,6 +800,45 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     conclusion_reached:input.conclusion_reached,incomplete_reason:input.incomplete_reason,
   };
   const examEligibility=examScoreEligibility(scoreCandidate,problem);
+  const effectiveErrors=(input.effective_error_types?.length?input.effective_error_types:errors)
+    .filter(error=>["K","W","N","C"].includes(String(error)));
+  const sourceAttemptForTransition=sourceReview?await db.attempts.get(sourceReview.generated_from_attempt_id):undefined;
+  const sourcePrescription=sourceReview?(()=>{
+    const resolved=sourceReview.grading_contract
+      ?prescriptionFromContract(sourceReview.grading_contract,planningErrorsForSource(sourceAttemptForTransition||input))
+      :resolveLearningPolicy({problemId:input.problem_id,problem,source:{...input,...sourceReview},
+        learningPurpose:sourceReview.learning_purpose,learningStage:sourceReview.learning_stage,
+        assessmentTiming:sourceReview.assessment_timing||"delayed_retrieval",targetedParts:sourceReview.targeted_parts});
+    return {...resolved,assessmentTiming:sourceReview.assessment_timing||resolved.assessmentTiming};
+  })():undefined;
+  const learningPurpose=input.learning_purpose||sourcePrescription?.learningPurpose||
+    (examEligibility.eligible?"exam_performance":input.generated_from_review_id?"error_repair":"integration_check");
+  const rawGptMark=String(input.mark||"");
+  const rawGptMarkWasPresent=input.raw_gpt_mark_present??!!rawGptMark;
+  const evaluation=resolveLearningEvaluation({
+    learningPurpose,assessmentTiming,result:String(input.review_outcome||"") as "success"|"partial"|"failed",
+    reviewOutcome:input.review_outcome,actualReferenceLevel,allowedReferenceLevel:allowedReference,
+    hintUsed:!!input.hint_used,referenceClosedReproduction:referenceClosed,
+    targetIssueResolved:input.target_issue_resolved,minimumPassConditionMet:input.minimum_pass_condition_met,
+    errorTypes:effectiveErrors.length?effectiveErrors:["none"],unresolvedCarryover:input.unresolved_carryover,
+    gradedPartIds:input.graded_part_ids||sourceReview?.grading_contract?.gradedParts.map(part=>part.id),
+    gradedFindings:input.graded_findings,requireGradedEvidence:!!sourceReview
+  });
+  const appCorrectionFields=[
+    rawGptMarkWasPresent&&rawGptMark!==evaluation.mark?"mark":"",
+    input.review_outcome&&input.review_outcome!==evaluation.reviewOutcome?"review_outcome":"",
+  ].filter(Boolean);
+  input={...input,mark:evaluation.mark,review_outcome:evaluation.reviewOutcome,
+    learning_purpose:learningPurpose,
+    auto_corrected:!!input.auto_corrected||appCorrectionFields.length>0,
+    correction_fields:[...new Set([...(input.correction_fields||[]),...appCorrectionFields])],
+    correction_reason:appCorrectionFields.length
+      ?`${String(input.correction_reason||"")}${input.correction_reason?" / ":""}markと学習状態を採点契約・答案証拠・履歴からアプリ側で決定`
+      :input.correction_reason};
+  const completionResult=evaluation.reviewOutcome,objectiveGraduation=evaluation.graduated;
+  const transition=sourcePrescription?resolveReviewTransition({prescription:sourcePrescription,result:completionResult,
+    referenceClosedReproduction:referenceClosed||actualReferenceLevel===0,
+    objectiveRetentionSuccess:objectiveGraduation,crossProblemEvidence:false,verifiedTransferTargetAvailable:false}):undefined;
   const id=Number(await db.attempts.add({
     id:undefined as unknown as number,problem_id:input.problem_id,date,mode:input.mode||problem.recommended_mode,
     time_minutes:actualMinutes,mark:input.mark||"△",score_label:input.score_label||"B",
@@ -834,7 +873,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     raw_gpt_problem_id:input.raw_gpt_problem_id||input.problem_id,raw_gpt_theme:input.raw_gpt_theme||"",
     auto_corrected:!!input.auto_corrected,correction_fields:input.correction_fields||[],
     correction_reason:input.correction_reason||"",consistency_score:input.consistency_score
-    ,learning_purpose:input.learning_purpose||sourceReview?.grading_contract?.learningPurpose||(examEligibility.eligible?"exam_performance":input.generated_from_review_id?"error_repair":"integration_check")
+    ,learning_purpose:learningPurpose
     ,learning_stage:input.learning_stage||sourceReview?.grading_contract?.learningStage||(examEligibility.eligible?"performance":input.generated_from_review_id?"repair":"acquisition")
     ,assessment_timing:assessmentTiming,task_score:taskScoreForAttempt(scoreCandidate),exam_score:examEligibility.examScore
     ,exam_score_eligible:examEligibility.eligible,time_limit_minutes:examEligibility.timeLimitMinutes||undefined
@@ -860,7 +899,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
   });
   if(input.generated_from_review_id){
     await db.reviews.update(input.generated_from_review_id,{
-      status:"done",completion_result:input.review_outcome||(["◎","○"].includes(input.mark)?"success":input.mark==="△"?"partial":"failed"),
+      status:"done",completion_result:completionResult,
       hint_used:!!input.hint_used,hint_level:input.hint_level||"none",
       after_hint_reproduced:!!input.after_hint_reproduced,
       reference_level:actualReferenceLevel,actual_reference_level:actualReferenceLevel,
@@ -902,32 +941,15 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     :input.generated_from_review_id&&exceedsAllowed
       ?{...basePlan,interval_days:Math.min(7,basePlan.interval_days||7),review_reason:"許可参照段階を超えたため、次回間隔を軽く短縮する。"}
       :basePlan;
-  const effectiveErrors=(input.effective_error_types?.length?input.effective_error_types:errors).filter(error=>["K","W","N","C"].includes(String(error)));
-  const completionResult=input.review_outcome||(["◎","○"].includes(input.mark)?"success":input.mark==="△"?"partial":"failed");
-  const objectiveGraduation=!!sourceReview&&isObjectiveDelayedRetrievalSuccess({
-    assessmentTiming, result:completionResult, actualReferenceLevel, hintUsed:!!input.hint_used,
-    targetIssueResolved:input.target_issue_resolved,minimumPassConditionMet:input.minimum_pass_condition_met,
-    errorTypes:effectiveErrors,unresolvedCarryover:input.unresolved_carryover,
-    gradedPartIds:input.graded_part_ids||sourceReview.grading_contract?.gradedParts.map(part=>part.id),
-    gradedFindings:input.graded_findings
-  });
-  const sourceAttemptForTransition=sourceReview?await db.attempts.get(sourceReview.generated_from_attempt_id):undefined;
-  const sourcePrescription=sourceReview?(sourceReview.grading_contract
-    ?prescriptionFromContract(sourceReview.grading_contract,planningErrorsForSource(sourceAttemptForTransition||input))
-    :resolveLearningPolicy({problemId:input.problem_id,problem,source:{...input,...sourceReview},
-      learningPurpose:sourceReview.learning_purpose,learningStage:sourceReview.learning_stage,
-      assessmentTiming:sourceReview.assessment_timing||"delayed_retrieval",targetedParts:sourceReview.targeted_parts})):undefined;
-  const transition=sourcePrescription?resolveReviewTransition({prescription:sourcePrescription,result:completionResult,
-    referenceClosedReproduction:referenceClosed||actualReferenceLevel===0,objectiveRetentionSuccess:objectiveGraduation,
-    crossProblemEvidence:false,verifiedTransferTargetAvailable:false}):undefined;
-  const nextPurpose=sourceReview?transition?.nextPurpose:(effectiveErrors.length?"error_repair":"retrieval_check");
+  const nextPurpose=sourceReview?transition?.nextPurpose:(effectiveErrors.length?"error_repair":
+    problem.source_type==="past_exam"?undefined:"retrieval_check");
   const delayedPrescription=nextPurpose?resolveLearningPolicy({problemId:input.problem_id,problem,source:{...input,
     error_types:effectiveErrors.length?effectiveErrors:["none"],learning_purpose:nextPurpose,
     assessment_timing:"delayed_retrieval"},learningPurpose:nextPurpose,
     targetedParts:nextPurpose===sourcePrescription?.learningPurpose?input.targeted_parts:undefined}):undefined;
   const delayedDraft=delayedPrescription?taskDraftFromPrescription({prescription:delayedPrescription,sourceAttemptId:id,sourceDate:date,errors:effectiveErrors}):undefined;
   const delayedInterval=delayedDraft?Math.max(0,Math.round((Date.parse(delayedDraft.dueDate)-Date.parse(date))/86400000)):0;
-  if(delayedPrescription&&delayedDraft&&!(problem.category==="S"&&!effectiveErrors.length)&&sourceReview?.assessment_timing!=="same_session_correction")await addOrReplaceReview({
+  if(delayedPrescription&&delayedDraft&&!(problem.category==="S"&&!effectiveErrors.length))await addOrReplaceReview({
     problem_id:input.problem_id,due_date:await reviewDueDate(date,delayedInterval),
     review_type:plan.review_type,status:"pending",generated_from_attempt_id:id,duration_minutes:delayedPrescription.estimatedMinutes,
     reason:delayedPrescription.schedulingReason,task_origin:"review_attempt",attempt_exists:true,
@@ -973,7 +995,10 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
       linked_s_problems:related.join(";"),related_s_problem_ids:related
     });
   }
-  if(primary!=="none") await db.problems.update(input.problem_id,{completion_status:"review_pending"});
+  if(objectiveGraduation||(problem.source_type==="past_exam"&&!effectiveErrors.length&&completionResult==="success"))
+    await db.problems.update(input.problem_id,{completion_status:"completed"});
+  else if(primary!=="none"||delayedPrescription)
+    await db.problems.update(input.problem_id,{completion_status:"review_pending"});
   if(problem.category==="S"){
     const old=await db.sMemory.get(input.problem_id);
     await db.sMemory.put({problem_id:input.problem_id,state:sState,last_touched:date,k_trigger_count:old?.k_trigger_count||0});
@@ -1122,29 +1147,34 @@ async function completeReview(id:number,body:Record<string,unknown>){
   };
   const related=[...(problem.related_s_problem_ids||[]),...list(problem.linked_s_problems)];
   const successful=outcome.result==="success";
-  const currentPrescription=review.grading_contract
+  const resolvedPrescription=review.grading_contract
     ?prescriptionFromContract(review.grading_contract,planningErrorsForSource(source))
     :resolveLearningPolicy({problemId:review.problem_id,problem,source:{...source,...review},
       learningPurpose:review.learning_purpose,learningStage:review.learning_stage,
       assessmentTiming:review.assessment_timing||"delayed_retrieval",targetedParts:review.targeted_parts});
+  const currentPrescription={...resolvedPrescription,
+    assessmentTiming:review.assessment_timing||resolvedPrescription.assessmentTiming};
   const objectiveFindings=successful?(review.grading_contract?.gradedParts||[]).map(part=>({
     graded_part_id:part.id,error_type:"none" as const,evidence:"自己確認で対象を再現",resolved:true
   })):[];
-  const objectiveRetentionSuccess=isObjectiveDelayedRetrievalSuccess({
-    assessmentTiming:currentPrescription.assessmentTiming,result:outcome.result,
-    actualReferenceLevel,hintUsed:hintUsed,targetIssueResolved:successful,
-    minimumPassConditionMet:successful,errorTypes:successful?[]:currentPrescription.effectiveErrorTypes,
+  const evaluation=resolveLearningEvaluation({
+    learningPurpose:currentPrescription.learningPurpose,assessmentTiming:currentPrescription.assessmentTiming,
+    result:outcome.result,reviewOutcome:outcome.result,actualReferenceLevel,
+    allowedReferenceLevel:allowedReference,hintUsed,referenceClosedReproduction:referenceClosed,
+    targetIssueResolved:successful,minimumPassConditionMet:successful,
+    errorTypes:successful?["none"]:currentPrescription.effectiveErrorTypes,
     unresolvedCarryover:successful?[]:source.unresolved_carryover,
-    gradedPartIds:review.grading_contract?.gradedParts.map(part=>part.id)||[],gradedFindings:objectiveFindings
+    gradedPartIds:review.grading_contract?.gradedParts.map(part=>part.id)||[],gradedFindings:objectiveFindings,
+    requireGradedEvidence:true
   });
-  const transition=resolveReviewTransition({prescription:currentPrescription,result:outcome.result,
+  const transition=resolveReviewTransition({prescription:currentPrescription,result:evaluation.reviewOutcome,
     referenceClosedReproduction:referenceClosed||actualReferenceLevel===0,crossProblemEvidence:false,
-    verifiedTransferTargetAvailable:false,objectiveRetentionSuccess});
-  const plan=linkedS?createSReviewPlan(successful?"stable":outcome.result==="partial"?"check":"forgotten"):
+    verifiedTransferTargetAvailable:false,objectiveRetentionSuccess:evaluation.graduated});
+  const plan=linkedS?createSReviewPlan(evaluation.reviewOutcome==="success"?"stable":evaluation.reviewOutcome==="partial"?"check":"forgotten"):
     createAdaptiveReviewPlan(source,review,outcome,[]);
   const sourceErrors=linkedS?[]:currentPrescription.effectiveErrorTypes;
-  const errors=successful?[]:sourceErrors.length?sourceErrors:["K"];
-  const date=todayString(),mark=successful?(outcome.hint_used?"○":"◎"):outcome.result==="partial"?"△":"×";
+  const errors=evaluation.reviewOutcome==="success"?[]:sourceErrors.length?sourceErrors:["K"];
+  const date=todayString(),mark=evaluation.mark;
   const attemptId=Number(await db.attempts.add({
     ...source,id:undefined as unknown as number,problem_id:review.problem_id,date,
     mode:currentPrescription.mode==="exam_90min"?"full":currentPrescription.mode,
@@ -1175,7 +1205,7 @@ async function completeReview(id:number,body:Record<string,unknown>){
     retention_eligible:transition.retentionSuccess,problem_type_key:problem.metadata_status==="ok"?problem.canonical_problem_type:undefined,
     grading_contract:review.grading_contract,contract_id:review.contract_id,contract_version:review.contract_version,contract_hash:review.contract_hash
   }));
-  await db.reviews.update(id,{status:"done",completion_result:outcome.result,hint_used:outcome.hint_used,
+  await db.reviews.update(id,{status:"done",completion_result:evaluation.reviewOutcome,hint_used:outcome.hint_used,
     hint_level:String(body.hint_level|| (outcome.hint_used?"unspecified":"none")),after_hint_reproduced:!!outcome.after_hint_reproduced,
     reference_level:actualReferenceLevel,actual_reference_level:actualReferenceLevel,
     allowed_reference_level:allowedReference,reference_closed_reproduction:referenceClosed,
@@ -1184,9 +1214,9 @@ async function completeReview(id:number,body:Record<string,unknown>){
     saved_gpt_feedback:!!body.saved_gpt_feedback||!!body.gpt_explanation,
     external_reference:!!body.external_reference,gpt_explanation:!!body.saved_gpt_feedback||!!body.gpt_explanation,
     completion_time_minutes:outcome.time_minutes,completed_at:new Date().toISOString()});
-  if(currentPrescription.assessmentTiming!=="same_session_correction"&&transition.nextPurpose&&!(problem.category==="S"&&successful)){
+  if(transition.nextPurpose&&!(problem.category==="S"&&evaluation.reviewOutcome==="success")){
     const nextPrescription=resolveLearningPolicy({problemId:review.problem_id,problem,source:{...source,...review,
-      error_types:successful?["none"]:errors,learning_purpose:transition.nextPurpose,
+      error_types:evaluation.reviewOutcome==="success"?["none"]:errors,learning_purpose:transition.nextPurpose,
       assessment_timing:transition.nextTiming||"delayed_retrieval"},learningPurpose:transition.nextPurpose,
       assessmentTiming:transition.nextTiming||"delayed_retrieval",targetedParts:review.targeted_parts});
     const nextDraft=taskDraftFromPrescription({prescription:nextPrescription,sourceAttemptId:attemptId,sourceDate:date,errors:nextPrescription.effectiveErrorTypes});
@@ -1204,11 +1234,11 @@ async function completeReview(id:number,body:Record<string,unknown>){
       retention_eligible:nextPrescription.assessmentTiming==="delayed_retrieval",success_transition:nextPrescription.successTransition,
       failure_transition:nextPrescription.failureTransition,...planFields(plan),interval_days:nextInterval});
   }
-  if(successful){
+  if(evaluation.reviewOutcome==="success"){
     const resolved=(await db.weakNotes.toArray()).filter(note=>note.generated_from_attempt_id===source.id);
     for(const note of resolved) await db.weakNotes.update(note.id,{is_resolved:1});
   }
-  if(!linkedS&&!successful&&source.error_point) await db.weakNotes.add({
+  if(!linkedS&&evaluation.reviewOutcome!=="success"&&source.error_point) await db.weakNotes.add({
     id:undefined as unknown as number,date,problem_id:review.problem_id,error_type:errors[0],theme:problem.theme,
     mistake:source.error_point,correction_rule:source.next_action||plan.review_instruction||"",is_resolved:0,
     source_text:"",auto_generated:true,generated_from_attempt_id:attemptId
@@ -1227,11 +1257,11 @@ async function completeReview(id:number,body:Record<string,unknown>){
   }
   if(problem.category==="S"){
     const old=await db.sMemory.get(problem.problem_id);
-    const state:SState=successful?"stable":outcome.result==="partial"?"check":"forgotten";
+    const state:SState=evaluation.reviewOutcome==="success"?"stable":evaluation.reviewOutcome==="partial"?"check":"forgotten";
     await db.sMemory.put({problem_id:problem.problem_id,state,last_touched:date,k_trigger_count:old?.k_trigger_count||0});
   }
   await refreshLinkedSMemory(related);
-  await db.problems.update(review.problem_id,{completion_status:successful?"active":"review_pending"});
+  await db.problems.update(review.problem_id,{completion_status:evaluation.graduated?"completed":"review_pending"});
 }
 
 async function postponeReview(id:number,body:Record<string,unknown>){

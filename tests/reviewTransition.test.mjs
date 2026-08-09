@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { resolveLearningPolicy } from "../src/learningPolicyResolver.ts";
-import { isObjectiveDelayedRetrievalSuccess,resolveReviewTransition } from "../src/reviewTransition.ts";
+import { isObjectiveDelayedRetrievalSuccess,resolveLearningEvaluation,resolveReviewTransition } from "../src/reviewTransition.ts";
 
 test("same-session success never counts as retention",()=>{
   const prescription=resolveLearningPolicy({problemId:"WB-6-A-20",source:{error_types:["W"],assessment_timing:"same_session_correction"}});
@@ -10,11 +10,11 @@ test("same-session success never counts as retention",()=>{
   assert.equal(result.nextTiming,"delayed_retrieval");
 });
 
-test("delayed repair success transitions to integration",()=>{
+test("delayed repair success transitions once to retrieval check",()=>{
   const prescription=resolveLearningPolicy({problemId:"WB-6-A-20",source:{error_types:["N"],assessment_timing:"delayed_retrieval",learning_purpose:"error_repair"}});
   const result=resolveReviewTransition({prescription,result:"success",referenceClosedReproduction:true});
-  assert.equal(result.retentionSuccess,true);
-  assert.equal(result.nextPurpose,"integration_check");
+  assert.equal(result.retentionSuccess,false);
+  assert.equal(result.nextPurpose,"retrieval_check");
 });
 
 const objectiveEvidence=(overrides={})=>({assessmentTiming:"delayed_retrieval",result:"success",actualReferenceLevel:0,
@@ -41,4 +41,26 @@ test("参照・ヒント・未解決・finding失敗のいずれかがあれば�
     {graded_part_id:"part-a",error_type:"W",resolved:false},
     {graded_part_id:"part-b",error_type:"none",resolved:true},
   ]})),false);
+});
+
+test("markはscoreではなく課題証拠と保持段階から決まる",()=>{
+  const repair=resolveLearningEvaluation({...objectiveEvidence(),learningPurpose:"error_repair",reviewOutcome:"success"});
+  assert.equal(repair.mark,"○");
+  assert.equal(repair.graduated,false);
+
+  const retained=resolveLearningEvaluation({...objectiveEvidence(),learningPurpose:"retrieval_check",reviewOutcome:"success"});
+  assert.equal(retained.mark,"◎");
+  assert.equal(retained.graduated,true);
+});
+
+test("高得点相当でも採点対象に未解決があれば◎にしない",()=>{
+  const result=resolveLearningEvaluation({...objectiveEvidence({
+    gradedFindings:[
+      {graded_part_id:"part-a",error_type:"W",resolved:false},
+      {graded_part_id:"part-b",error_type:"none",resolved:true},
+    ],errorTypes:["W"]
+  }),learningPurpose:"retrieval_check",reviewOutcome:"success"});
+  assert.equal(result.mark,"△");
+  assert.equal(result.reviewOutcome,"partial");
+  assert.equal(result.graduated,false);
 });

@@ -79,6 +79,14 @@ test("復習採点プロンプトは前回課題と今回の改善を比較す�
   assert.match(prompt,/actual_reference_level: 1/);
   assert.match(prompt,/one_line_hint: true/);
   assert.match(prompt,/Kを返す場合は答案中の根拠をk_evidenceへ引用/);
+  assert.match(prompt,/最終markはアプリが履歴と証拠から再計算/);
+  assert.match(prompt,/graduation gate候補/);
+  assert.doesNotMatch(prompt,/^\s*mark:\s*["']?[○◎△×]/m);
+  assert.doesNotMatch(prompt,/score_numeric:\s*82\b/);
+  assert.doesNotMatch(prompt,/review_after_days:\s*14\b/);
+  assert.doesNotMatch(prompt,/review_outcome:\s*["']success/);
+  assert.doesNotMatch(prompt,/target_issue_resolved:\s*true/);
+  assert.doesNotMatch(prompt,/minimum_pass_condition_met:\s*true/);
   const mainCalc=buildReviewGradingPrompt({
     problemId:"WB-6-A-05",date:"2026-07-03",mode:"main_calc",previousErrors:["N"],
     previousErrorPoint:"尤度微分を省略",requiresFullAnswer:false

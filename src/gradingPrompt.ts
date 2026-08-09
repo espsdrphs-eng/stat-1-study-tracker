@@ -98,7 +98,7 @@ Kは、今回答案中に型・方針・出発式・主役の量・道具・大�
 最後に、以下のYAMLを必ず出してください。
 アプリ取り込み用なので、YAML内ではLaTeXを使わず、自然な日本語またはプレーンテキストで書いてください。
 next_action には日付や「何日後」を書かないでください。
-review_after_days は error_types から決めてください。Kあり=1、Nあり=2、Wあり=3、Cあり=7、none=14。複数なら最短です。
+mark、次回状態、卒業可否、review_after_daysはアプリが答案証拠と学習履歴から決めるため出力しないでください。
 
 \`\`\`yaml
 study_update:
@@ -108,29 +108,25 @@ study_update:
   task_origin: "first_attempt"
   mode: "${mode}"
   review_method: ""
-  mark: "△"
   score_text: ""
-  score_numeric:
+  score_numeric: null
   time_minutes:
   result_summary: ""
   exam_selection_rank: ""
-  error_types:
-    - "N"
-  primary_error_type: "N"
+  error_types: [] # K/W/N/C/noneから答案に該当するものを入れる
+  primary_error_type: "" # K/W/N/C/none
   k_evidence: []
   main_theme: "${context.theme||""}"
   themes:
     - "${context.theme||""}"
   error_point: ""
   next_action: ""
-  review_after_days: 2
   linked_s_problems: []
   linked_past_exams: []
   ignored_parts: []
-  weak_notes:
-    - ""
+  weak_notes: []
   s_check_suggestions: []
-  grading_confidence: 85
+  grading_confidence: null
   rubric_version: "${GRADING_RUBRIC_VERSION}"
   evaluation_scope: "full"
   graded_parts:
@@ -192,8 +188,8 @@ rubric_version: ${GRADING_RUBRIC_VERSION}
 10. main_calcまたはfullで必要な計算は、「整理すると」で飛ばさず、積分範囲、添字変換、微分、式変形、場合分け、定理の条件が追える途中式を書く。
 11. 次回の直し方は、今回の答案を引用または要約して「残す部分」「置き換える部分」「次回何も見ずに書く部分」に分ける。
 12. result_summary、error_point、next_actionは各1〜2文で簡潔にする。詳細な式変形はrequired_derivationへ分離する。
-13. next_actionには日付や復習間隔を書かない。「何をするか」だけを書く。復習間隔はreview_after_daysにのみ入れる。
-14. review_after_daysはerror_typesから決める。Kあり=1、Nあり=2、Wあり=3、Cあり=7、none=14。複数なら最短を採用する。
+13. next_actionには日付や復習間隔を書かない。「何をするか」だけを書く。
+14. mark、次回状態、卒業可否、review_after_daysはアプリが採点証拠と履歴から決めるため出力しない。
 15. 採点説明は次の順で出力する。
    【採点と根拠】
    【今回の答案に沿った修正版答案】
@@ -207,16 +203,12 @@ study_update:
   date: "${date}"
   mode: "full"
   time_minutes: 30
-  mark: "△"
-  score_label: "B"
-  score_numeric: 72
+  score_label: "" # S/A/B/Cを答案から判定
+  score_numeric: null # 0〜100を答案から算出
   result_summary: "答案全体の短い評価"
-  error_types:
-    - "K"
-    - "W"
-  primary_error_type: "K"
-  k_evidence:
-    - "K判定の根拠となる今回答案中の記述"
+  error_types: [] # K/W/N/C/none
+  primary_error_type: "" # K/W/N/C/none
+  k_evidence: []
   error_point: "最重要の失点箇所"
   next_action: "日付を書かず、次に行う具体的な復習だけを書く"
   improvement_guidance: |
@@ -227,12 +219,11 @@ study_update:
     main_calc/fullまたは採点対象のN/Wで必要な途中計算。skeleton/checkで計算が対象外なら空欄
   corrected_answer: |
     fullは修正版答案、main_calcは該当計算、skeletonは最終式を含まない設計図、checkは確認項目だけ
-  review_after_days: 1
   themes:
     - "主テーマ"
   linked_s_problems: []
   linked_past_exams: []
-  grading_confidence: 85
+  grading_confidence: null
   rubric_version: "${GRADING_RUBRIC_VERSION}"
   evaluation_scope: "full"
   graded_parts:
@@ -240,11 +231,7 @@ study_update:
   assumed_correct_parts: []
   unresolved_carryover: []
   uncertain_points: []
-  weak_notes:
-    - theme: "主テーマ"
-      error_type: "K"
-      mistake: "今回のミス"
-      correction_rule: "次回の修正ルール"
+  weak_notes: []
 
 exam_selection_rank や「本番で選ぶか」の判定は出力しないでください。
 修正版答案は一般論ではなく、貼り付けられた私の答案の順序・記号・誤りに対応させてください。
@@ -303,6 +290,8 @@ target_kind：${contract.targetKind||""}
 graded_parts：
 ${gradedParts.map(part=>`- ${part.id}｜${part.label}｜許可: ${part.allowedErrorTypes.join("/")}`).join("\n")||"なし"}
 explicitly_out_of_scope_parts：${outOfScope.join(" / ")||"なし"}`:`legacy contract（保存前に契約化が必要）`;
+  const graduationGate=contract?.learningPurpose==="retrieval_check"&&context.assessmentTiming==="delayed_retrieval"&&
+    actualReferenceLevel===0&&!hintUsed;
   return `あなたは統計検定1級・統計数理の復習答案採点者です。
 rubric_version: ${REVIEW_RUBRIC_VERSION}
 
@@ -344,9 +333,13 @@ ${allowed}
    形式的な骨格欄・見出し（方針、今見る量、道具、ゴール、「ここから先は計算」）の未記入は、targetedPartsに明示されていない限りKにもNにも使わない。
    行列・ベクトル・成分の取り違え（例：W1にベクトル全体を置く誤記）は、大きな方針が保たれている限りCとして扱う。
 5. 参照が許可範囲内で、表示を隠して白紙再現できればsuccess可。許可超過または白紙再現なしはsuccess不可。
-6. next_actionに日付を書かない。review_after_daysはK=1、N=2、W=3、C=7、none=14（複数は最短）。
-7. result_summary、error_point、next_actionは各1〜2文。解消済みの履歴や長い一般論を繰り返さない。
-8. 最後に次のYAMLをコードブロックで出力する。
+6. markを点数だけで決めない。×＝最低クリア条件未達か重大な未解決、△＝採点対象に未解決が残る、
+   ○＝今回の課題には成功したがgraduation gate未達、◎＝アプリから明示されたgraduation gateを満たしたdelayed retrieval成功。
+   graduation gateが明示されていなければ◎を推測しない。最終markはアプリが履歴と証拠から再計算するためYAMLへ出力しない。
+   今回のgraduation gate候補：${graduationGate?"eligible（全対象resolved・最低条件達成も必要）":"not_eligible"}
+7. next_actionに日付を書かない。review_after_days、次のlearning state、卒業可否はアプリが決定するため出力しない。
+8. result_summary、error_point、next_actionは各1〜2文。解消済みの履歴や長い一般論を繰り返さない。
+9. 最後に次のYAMLをコードブロックで出力する。空欄・null・[]は答案から判定した値で置き換える。
 
 study_update:
   contract_id: "${contract?.contractId||""}"
@@ -356,13 +349,11 @@ study_update:
   date: "${context.date}"
   mode: "${contract?.mode||context.mode}"
   time_minutes: ${context.timeMinutes||15}
-  mark: "○"
-  score_label: "A"
-  score_numeric: 82
+  score_label: "" # S/A/B/Cを答案から判定
+  score_numeric: null # 0〜100を答案から算出
   result_summary: "前回課題がどこまで改善したか"
-  error_types:
-    - "none"
-  primary_error_type: "none"
+  error_types: [] # K/W/N/C/none
+  primary_error_type: "" # K/W/N/C/none
   k_evidence: []
   error_point: "今回まだ残った課題。なければ空文字"
   next_action: "日付を書かず、次に確認する内容だけを書く"
@@ -374,11 +365,10 @@ study_update:
     main_calc/fullまたは前回N/Wの修正確認に必要な途中計算。skeleton/checkで計算が対象外なら空欄
   corrected_answer: |
     fullは修正版答案、main_calcは指定計算、skeletonは最終式を含まない設計図、checkは確認項目だけ
-  review_after_days: 14
   themes:
     - "${context.theme||"主テーマ"}"
   linked_s_problems: []
-  grading_confidence: 90
+  grading_confidence: null
   rubric_version: "${REVIEW_RUBRIC_VERSION}"
   learning_purpose: "${contract?.learningPurpose||context.learningPurpose||"error_repair"}"
   learning_stage: "${contract?.learningStage||context.learningStage||"repair"}"
@@ -389,17 +379,17 @@ study_update:
   evaluation_scope: "${fullScope?"full":"conditional_full"}"
   graded_part_ids: ${gradedIds.length?`\n${gradedIds.map(id=>`    - "${id}"`).join("\n")}`:"[]"}
   graded_findings:
-    - graded_part_id: "${gradedIds[0]||""}"
-      error_type: "none"
-      evidence: "今回答案中の具体的な根拠"
-      resolved: true
+${gradedIds.length?gradedIds.map(id=>`    - graded_part_id: "${id}"
+      error_type: "" # K/W/N/C/none
+      evidence: ""
+      resolved: null`).join("\n"):"    []"}
   graded_parts: ${gradedLabels.length?`\n${gradedLabels.map(part=>`    - "${part.replaceAll('"','\\"')}"`).join("\n")}`:"[]"}
   explicitly_out_of_scope_parts: ${outOfScope.length?`\n${outOfScope.map(part=>`    - "${part.replaceAll('"','\\"')}"`).join("\n")}`:"[]"}
 ${fullScope?"  assumed_correct_parts: []":"  assumed_correct_parts:\n    - \"提出対象外として正しいと仮定した部分\""}
   unresolved_carryover: []
   uncertain_points: []
   generated_from_review_id: ${context.reviewId||0}
-  review_outcome: "success"
+  review_outcome: "" # success/partial/failed
   hint_used: ${hintUsed}
   hint_level: "${hintLevel}"
   after_hint_reproduced: ${hintUsed?referenceClosed:false}
@@ -414,14 +404,12 @@ ${fullScope?"  assumed_correct_parts: []":"  assumed_correct_parts:\n    - \"提
   official_answer: ${context.officialAnswer??hintLevel==="official_answer"}
   external_reference: ${context.externalReference??hintLevel==="external_reference"}
   gpt_explanation: ${context.gptExplanation??hintLevel==="saved_gpt_feedback"}
-  target_issue_resolved: true
-  minimum_pass_condition_met: true
+  target_issue_resolved: null
+  minimum_pass_condition_met: null
   resolution_evidence: |
-    改善を示す今回答案中の式または文章をそのまま引用
-  answer_change_summary: "前回答案から実際に追加・変更された内容"
-  required_work_shown:
-    - "今回答案で確認できた途中式または作業1"
-    - "今回答案で確認できた途中式または作業2"
+
+  answer_change_summary: ""
+  required_work_shown: []
   weak_notes: []
 
 今回の答案と指定範囲だけを根拠に、短く説明してからYAMLを出力してください。`;

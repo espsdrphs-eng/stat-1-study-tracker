@@ -180,6 +180,21 @@ review_after_days: 2
   assert.deepEqual(result.updates[0].error_types, ["W", "N"]);
 });
 
+test("mark未出力時はscoreから◎を推測せず中立値として保存層へ渡す",()=>{
+  const result=parseStudyText(`study_update:
+  problem_id: "WB-2-S-06"
+  date: "2026-08-10"
+  mode: "check"
+  score_numeric: 98
+  error_types: ["none"]
+  primary_error_type: "none"
+  target_issue_resolved: true
+  minimum_pass_condition_met: true
+  rubric_version: "STAT1-REVIEW-v9"`,problems);
+  assert.equal(result.updates[0].mark,"△");
+  assert.equal(result.updates[0].raw_gpt_mark_present,false);
+});
+
 test("保存済みエイリアスで問題IDの表記ゆれを正本へ解決する",()=>{
   const result=parseStudyText(`study_update:
   problem_id: "第2章S問6"

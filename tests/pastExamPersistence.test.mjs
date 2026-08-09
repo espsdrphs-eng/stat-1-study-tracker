@@ -29,6 +29,56 @@ test("scan_only保存はAttemptもReviewも作らず通常答案採点と混同�
   const saved=await db.pastSessions.orderBy("id").last();assert.equal(saved.exam_score_eligible,false);assert.equal(saved.questions[4].actualScore,null);
 });
 
+test("past_exam full/timedのclean答案は採点対象だが同一問題の定期Reviewを作らない",async()=>{
+  await localGet("/api/bootstrap");
+  const problemId="PY-2019-Q1";
+  const oldAttempts=(await db.attempts.toArray()).filter(row=>row.problem_id===problemId).map(row=>row.id);
+  const oldReviews=(await db.reviews.toArray()).filter(row=>row.problem_id===problemId).map(row=>row.id);
+  if(oldAttempts.length)await db.attempts.bulkDelete(oldAttempts);
+  if(oldReviews.length)await db.reviews.bulkDelete(oldReviews);
+  await localPost("/api/attempts",{
+    submission_id:"past-full-clean-2019-q1",problem_id:problemId,problem_id_confirmed:true,problem_id_source:"yaml",
+    date:"2026-08-10",mode:"full",actual_minutes:30,time_limit_minutes:35,conclusion_reached:true,
+    mark:"◎",score_text:"A",score_numeric:88,error_types:["none"],primary_error_type:"none",
+    error_point:"",next_action:"別問題で転移確認",review_outcome:"success",target_issue_resolved:true,
+    minimum_pass_condition_met:true,actual_reference_level:0,evaluation_scope:"full",
+    learning_purpose:"exam_performance",assessment_timing:"independent_performance",rubric_version:"STAT1-REVIEW-v9"
+  });
+  const saved=(await db.attempts.toArray()).find(row=>row.submission_id==="past-full-clean-2019-q1");
+  assert.ok(saved);
+  assert.equal(saved.mark,"○");
+  assert.equal(saved.exam_score_eligible,true);
+  assert.equal((await db.reviews.toArray()).filter(row=>row.problem_id===problemId&&["pending","overdue"].includes(row.status)).length,0);
+  assert.equal((await db.problems.get(problemId)).completion_status,"completed");
+});
+
+test("past_exam full/timed失敗は同一問題のrepairだけを作りcandidate relationを自動採用しない",async()=>{
+  await localGet("/api/bootstrap");
+  const problemId="PY-2021-Q1";
+  const oldAttempts=(await db.attempts.toArray()).filter(row=>row.problem_id===problemId).map(row=>row.id);
+  const oldReviews=(await db.reviews.toArray()).filter(row=>row.problem_id===problemId).map(row=>row.id);
+  if(oldAttempts.length)await db.attempts.bulkDelete(oldAttempts);
+  if(oldReviews.length)await db.reviews.bulkDelete(oldReviews);
+  await localPost("/api/attempts",{
+    submission_id:"past-timed-fail-2021-q1",problem_id:problemId,problem_id_confirmed:true,problem_id_source:"yaml",
+    date:"2026-08-10",mode:"timed_single",actual_minutes:35,time_limit_minutes:35,conclusion_reached:true,
+    mark:"○",score_text:"C",score_numeric:48,error_types:["W"],primary_error_type:"W",
+    error_point:"主要計算の式変形を誤った",next_action:"主要計算だけを再現する",review_outcome:"partial",
+    target_issue_resolved:false,minimum_pass_condition_met:false,actual_reference_level:0,evaluation_scope:"full",
+    targeted_parts:["主要計算の式変形"],learning_purpose:"exam_performance",
+    assessment_timing:"independent_performance",rubric_version:"STAT1-REVIEW-v9"
+  });
+  const saved=(await db.attempts.toArray()).find(row=>row.submission_id==="past-timed-fail-2021-q1");
+  assert.ok(saved);
+  assert.equal(saved.mark,"×");
+  assert.equal(saved.exam_score_eligible,true);
+  const repairs=(await db.reviews.toArray()).filter(row=>row.problem_id===problemId&&
+    ["pending","overdue"].includes(row.status)&&(row.grading_contract?.learningPurpose||row.learning_purpose)==="error_repair");
+  assert.ok(repairs.length>=1);
+  assert.ok(repairs.every(row=>row.problem_id===problemId&&(!row.target_problem_id||row.target_problem_id===problemId)));
+  assert.ok(repairs.every(row=>!row.relation_id));
+});
+
 test("scan5分析は専用rubricでpastSessionへ保存しReviewを作らない",async()=>{
   const saved=await db.pastSessions.orderBy("id").last(),before=await db.reviews.count();
   await localPost(`/api/past-sessions/${saved.id}/analysis`,{text:`scan_update:\n  session_id: "${saved.id}"\n  primary_selection_error: "none"\n  rubric_version: "STAT1-SCAN5-v1"`});

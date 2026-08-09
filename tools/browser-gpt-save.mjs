@@ -38,11 +38,14 @@ try{
     const request=indexedDB.open("stat-1-study-tracker");
     const db=await new Promise((resolve,reject)=>{request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error)});
     const stores=Array.from(db.objectStoreNames);
-    const count=await new Promise((resolve,reject)=>{const tx=db.transaction("attempts","readonly"),req=tx.objectStore("attempts").count();req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error)});
-    db.close();return {stores,count};
+    const {count,latestMark}=await new Promise((resolve,reject)=>{const tx=db.transaction("attempts","readonly"),store=tx.objectStore("attempts"),countReq=store.count(),cursorReq=store.openCursor(null,"prev");let count=0,latestMark="";
+      countReq.onsuccess=()=>{count=Number(countReq.result);if(latestMark||count===0)resolve({count,latestMark})};countReq.onerror=()=>reject(countReq.error);
+      cursorReq.onsuccess=()=>{latestMark=String(cursorReq.result?.value?.mark||"");if(countReq.readyState==="done")resolve({count,latestMark})};cursorReq.onerror=()=>reject(cursorReq.error)});
+    db.close();return {stores,count,latestMark};
   });
   if(!result.stores.includes("attempts")||result.count<1)throw new Error(`保存後のDB検証に失敗: ${JSON.stringify(result)}`);
-  console.log(JSON.stringify({status:"PASS",url:baseURL,attemptCount:result.count,stores:result.stores},null,2));
+  if(result.latestMark!=="○")throw new Error(`scoreやGPT入力markではなくアプリ側の学習状態markを保存できていません: ${JSON.stringify(result)}`);
+  console.log(JSON.stringify({status:"PASS",url:baseURL,attemptCount:result.count,latestMark:result.latestMark,stores:result.stores},null,2));
 }finally{
   await browser.close();
 }

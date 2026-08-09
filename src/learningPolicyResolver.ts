@@ -179,7 +179,7 @@ export function resolveLearningPolicy(input:LearningPolicyInput):LearningPrescri
     reviewScope,targetKind,targetedParts:targets,mode,sheetType:sheet(mode),allowedReferenceLevel,
     estimatedMinutes,completionConditions,requiredEvidence,allowedErrorTypes,effectiveErrorTypes:effective,kPolicyValidity,
     requiresKEvidence:allowedErrorTypes.includes("K"),
-    successTransition:timing==="same_session_correction"?"delayed_retrieval":purpose==="error_repair"?"integration_check":purpose==="integration_check"?"transfer_check":purpose==="transfer_check"?"exam_performance":"stable",
+    successTransition:timing==="same_session_correction"?"delayed_retrieval":purpose==="error_repair"?"retrieval_check":purpose==="retrieval_check"?"stable":purpose==="integration_check"?"transfer_check":purpose==="transfer_check"?"exam_performance":"stable",
     failureTransition:"error_repair",
     schedulingReason:timing==="same_session_correction"?"答案直後に対象箇所だけを修正する":"時間を空けて参照なしの保持を確認する",
     policyVersion:LEARNING_POLICY_VERSION,

@@ -37,10 +37,6 @@ function stringArray(value:unknown){
   if(Array.isArray(value)) return value.map(String).map(x=>x.trim()).filter(Boolean);
   return scalar(value).split(/[;,、\n]+/).map(x=>x.trim()).filter(Boolean);
 }
-function markFromScore(score:number|null|undefined){
-  if(score==null||Number.isNaN(score)) return "△";
-  return score>=90?"◎":score>=75?"○":score>=50?"△":"×";
-}
 function scoreLabel(scoreText:string,score:number|null|undefined){
   const label=scoreText.match(/[SABC]/i)?.[0].toUpperCase();
   if(label) return label;
@@ -198,7 +194,9 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
   const reviewMethod=scalar(raw.review_method)||inferReviewMethod(errors,primary,days);
   const rawActualMinutes=raw.actual_minutes??raw.time_minutes;
   const actualMinutes=rawActualMinutes==null?undefined:Number(rawActualMinutes);
-  const mark=scalar(raw.mark)||markFromScore(scoreNumeric);
+  // mark is a learning-state indicator, not a score band. The persistence layer
+  // recomputes it from the Review contract and evidence; △ is only a neutral preview fallback.
+  const mark=scalar(raw.mark)||"△";
   const rawResultSummary=scalar(raw.result_summary)||extractLine(text,/最終結論/);
   const resultSummary=japaneseizeMathText(rawResultSummary);
   const examRank=scalar(raw.exam_selection_rank)||extractLine(text,/本番で選ぶべきか/).match(/[SABC]/i)?.[0]?.toUpperCase()||"";
@@ -341,6 +339,7 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
     main_theme:scalar(raw.main_theme)||themes[0]||"",raw_gpt_problem_id:rawCandidate,raw_gpt_theme:parsedThemes.join(" / "),
     problem_id_source:problemIdSource,problem_id_confirmed:!!problemIdSource,
     raw_import_data:raw,
+    raw_gpt_mark_present:!!scalar(raw.mark),
     auto_corrected:!!raw.auto_corrected||mergedCorrectionFields.length>0,correction_fields:mergedCorrectionFields,
     math_localized:rawResultSummary!==resultSummary||rawErrorPoint!==errorPoint||rawNextAction!==nextAction||
       rawImprovementGuidance!==improvementGuidance||rawRequiredDerivation!==requiredDerivation||rawCorrectedAnswer!==correctedAnswer||

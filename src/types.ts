@@ -467,4 +467,6 @@ export type StudyUpdate = {
   explicitly_out_of_scope_parts?:string[];
   graded_part_ids?:string[];graded_findings?:GradedFinding[];
   submission_id?:string;source_review_id?:number;
+  /** Import provenance only. The persisted mark is recalculated by the app. */
+  raw_gpt_mark_present?:boolean;
 };

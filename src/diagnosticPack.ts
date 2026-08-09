@@ -127,6 +127,9 @@ function buildPromptAudit(review:Review,card:ResolvedReviewCard){
   if(scope==="targeted_patch"&&!card.allowedErrorTypes.includes("K")&&!prompt.includes("指定範囲外の空欄や未記入を誤りの根拠にしない")) warnings.push({
     code:"out_of_scope_blank_can_be_k",message:"指定範囲外の骨格項目の空欄をK判定に利用できる文面です。"
   });
+  if(/(?:mark:\s*["']?[○◎△×]|score_numeric:\s*82\b|review_after_days:\s*14\b|review_outcome:\s*["']success|target_issue_resolved:\s*true|minimum_pass_condition_met:\s*true)/.test(prompt))warnings.push({
+    code:"fixed_grading_result_example",message:"採点プロンプトに答案結果を誘導する固定値が残っています。"
+  });
   const expectedSheet=getSheetType(card.effectiveMode);
   if(review.sheet_type&&review.sheet_type!==expectedSheet)consistencyWarnings.push({code:"mode_sheet_mismatch",message:`保存済み${review.sheet_type}は表示時に${expectedSheet}へ解決されます。`});
   return {

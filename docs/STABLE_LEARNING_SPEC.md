@@ -33,7 +33,9 @@ Kは今回答案に「型、方針・入口、出発式、主役量、道具、�
 
 `same_session_correction` は答案直後に対象部分だけを5分以内で直します。同日にfull/full skeletonを追加せず、成功しても定着成功にしません。K/N/W/Cは別に `delayed_retrieval` を1/2/3/7日後に作り、その結果だけをerror repairの定着判定へ使います。
 
-`delayed_retrieval` の同一問題Review系列はmarkの `◎` に依存せず卒業できます。参照0・ヒントなし・success・最低合格条件達成・対象問題解決・全graded partが `none + resolved`・K/W/N/Cなし・未解決carryoverなしを同時に満たす客観成功を正本とします。`retrieval_check` はそこで終了し、必要なintegrationや別問題transferは別purpose／別Reviewとして扱います。参照使用、same-session、未解決errorでは卒業しません。過去markは書き換えません。
+markは点数記号ではなく今回の学習状態です。`×` は最低条件未達または重大な未解決、`△` は採点対象に未解決あり、`○` は今回の課題に成功したが保持確認前、`◎` は参照なしの遅延保持確認に成功して同一問題系列を卒業できる状態を表します。scoreだけでは決めず、GPT値を正本にせず、保存時に契約・答案証拠・履歴からアプリが再計算します。
+
+局所的な `error_repair` 成功は `○` とし、同一問題には `retrieval_check` を1回だけ生成します。`delayed_retrieval` の参照0・ヒントなし・success・最低合格条件達成・対象問題解決・全graded partが `none + resolved`・K/W/N/Cなし・未解決carryoverなしを同時に満たすと `◎` で卒業します。必要なintegrationや別問題transferは別purpose／別Reviewとして扱います。参照使用、same-session、未解決errorでは卒業しません。過去markは書き換えません。
 
 自動タスクは `policy_version`、`source_attempt_id`、`deduplication_key` を持ち、同じ問題・目的・timing・source・policy版の未完了タスクを重複作成しません。日付は `earliest_date`、`preferred_date`、`latest_date` で持ち、容量不足時も期間内だけで調整します。
 
@@ -43,7 +45,7 @@ check、targeted patch、main calculation、skeleton、conditional fullの点数
 
 ## 遷移と安定判定
 
-基本遷移は error repair → integration check → transfer check → exam performance → stable です。同一問題の成功だけで問題型をstableにしません。型のstableには、別のcanonical problem IDまたは過去問でのeligibleなtransfer/performance成功が必要です。
+基本遷移は error repair → retrieval check → 同一問題卒業です。integration checkは問題全体の構成確認が必要な場合の独立purpose、transfer checkは別問題での転移確認です。同一問題の成功だけで問題型をstableにしません。型のstableには、別のcanonical problem IDまたは過去問でのeligibleなtransfer/performance成功が必要です。
 
 generic metadataでは転移先を推測しません。verified/confirmedな候補がなければ自動タスク化せず、ユーザー選択候補にします。GPTの関連提案はcandidate止まりで、1 Attemptから自動補修は最大1件です。
 
@@ -94,6 +96,10 @@ full skeleton、timed full、scan5は週間soft quotaです。既存実績が不
 採点対象は日本語文ではなく `GradedPartContract.id` を正本とし、順序や表記の違いは不一致にしない。各 `graded_finding` の誤り分類は、そのIDに定義された `allowedErrorTypes` で個別に検証する。checkだからNを一律禁止せず、説明項目の正当なNは保存する一方、数式実行項目で許可されていないNは保存しない。
 
 完了条件は想起を妨げない短いcueだけを表示し、正しい式・係数・導出は `hiddenAnswerKey` に分離する。ヒント、前回ミス、修正ルール、保存済み解説、外部参照を開いた時点で参照段階を記録する。`invalid_legacy_k`、契約未確定、または不可能なpurpose/mode/scopeのReviewは実行・参照・プロンプトコピー・保存を禁止する。
+
+`STAT1-REVIEW-v9` のYAML契約には固定のmark、score、outcome、次回間隔、解消フラグを模範値として置かない。GPTは答案証拠を返し、mark、卒業、次purpose、次回Reviewの有無と間隔は保存トランザクション内でアプリが決定する。不整合なGPT値は履歴を書き換えず今回保存値だけを補正し、補正ログへ残す。
+
+過去問の `scan_only` はAttempt・数学的K/W/N/C・mastery・通常Reviewを作らない。過去問のfull/timed答案は通常どおり採点し、失敗時だけ同一問題の局所repairへ接続できる。cleanな独立performanceまたはrepair後の保持成功から同じ過去問の定期反復は作らず、転移は別の白本／過去問で確認する。verified relation以外を自動採用せず、simulation protectionを最終候補選択まで維持する。
 # Data integrity source
 
 Persistence, idempotency, execution gating, and repair invariants are defined in
