@@ -34,6 +34,18 @@ This document is the implementation-level source of truth for data integrity. Le
 - Rebuild and repair operations are idempotent and do not create a new Review when an active logical key exists.
 - An exact duplicate Attempt remains as history, is linked to its canonical Attempt, and does not generate new planning or metrics.
 - A successful newer Attempt supersedes only older pending repair/retrieval Reviews for the same covered graded parts.
+- Current unresolved targets are reconstructed per stable graded-part ID from the newest evidence that actually graded
+  that part. A newer targeted Attempt never resolves omitted parts by implication.
+- A partially stale repair is kept as immutable history and replaced by one Review containing only still-unassessed or
+  currently unresolved parts. Old action prose and derived fields are not copied into the replacement.
+- Reconciliation runs after Attempt save/import/edit/delete and Review completion. It is idempotent and keeps at most
+  one active error-repair state per problem; identical input cannot grow Review rows.
+- `scan_only` is not mathematical graded evidence. Past-exam full/timed Attempts use the same part-level reconciliation
+  as whitebook Attempts without weakening simulation protection.
+- A saved Today Plan keeps its problem slot, order, triage, and initial minutes. Its purpose, graded parts, and action
+  text are a read-only overlay from the current active Review; the stored snapshot is not rewritten.
+- A Review contradicted or superseded by newer graded evidence cannot reveal references, create a grading prompt,
+  complete, or save an Attempt. Current evidence is checked again immediately before each operation.
 - A retrieval Review graduates without a successor only after deterministic delayed, no-reference, no-hint,
   all-parts-resolved evidence. Historical marks are not rewritten and same-session success never graduates.
 - Mark is an app-owned learning-state result, independent of score bands: repair success is `○`, while only an

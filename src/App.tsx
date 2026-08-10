@@ -364,7 +364,7 @@ function ReviewPlanDetails({item:rawItem,compact=false,resolved}:{item:Partial<R
   const [reference,setReference]=useState<ReferenceState>(()=>readReferenceState(item.id));
   const [referenceClosedReproduction,setReferenceClosedReproduction]=useState(()=>readReferenceClosed(item.id));
   const [openReferencePanel,setOpenReferencePanel]=useState<OpenReferencePanel>(null);
-  const lockContract=()=>{if(item.id&&!item.contract_locked_at)void post(`/api/reviews/${item.id}/contract-lock`,{}).catch(()=>undefined)};
+  const lockContract=async()=>{if(item.id&&!item.contract_locked_at)await post(`/api/reviews/${item.id}/contract-lock`,{})};
   if(!item.review_method&&!item.review_reason&&!resolved) return null;
   const executionState=item.id?reviewExecutionState(rawItem as Review,todayString()):"actionable";
   const actionable=!item.id||executionState==="actionable"&&!!resolved&&!resolved.reviewNeeded;
@@ -373,9 +373,9 @@ function ReviewPlanDetails({item:rawItem,compact=false,resolved}:{item:Partial<R
   const allowed=allowedReferenceLevel(item);
   const hasSavedFeedback=!!item.has_saved_gpt_feedback;
   const hasPreviousAttempt=item.attempt_exists!==false;
-  const reveal=(level:Exclude<ReferenceLevel,0>,panel:Exclude<OpenReferencePanel,null>)=>{
+  const reveal=async(level:Exclude<ReferenceLevel,0>,panel:Exclude<OpenReferencePanel,null>)=>{
     if(!actionable)return;
-    lockContract();
+    try{await lockContract()}catch(error){window.alert(error instanceof Error?error.message:"この復習課題は現在実行できません");return}
     const next=revealReference(reference,level);
     setReference(next);rememberReferenceState(item.id,next);setOpenReferencePanel(panel);
     if(item.id)void post(`/api/reviews/${item.id}/reference`,{actual_reference_level:next.actual_reference_level}).catch(()=>undefined);
@@ -467,7 +467,7 @@ function ReviewPlanDetails({item:rawItem,compact=false,resolved}:{item:Partial<R
         <Field label="実際に見た参照"><input value={`${reference.actual_reference_level}. ${referenceLabels[reference.actual_reference_level]}`} readOnly/></Field>
       </div>
       {usedReference&&<label className="after-hint-check"><input type="checkbox" checked={referenceClosedReproduction} onChange={event=>{setReferenceClosedReproduction(event.target.checked);rememberReferenceClosed(item.id,event.target.checked)}}/><span>表示を隠してから、該当部分を白紙で再現した</span></label>}
-      <button className="ghost small review-prompt-copy" onClick={async()=>{lockContract();await navigator.clipboard.writeText(reviewPrompt);setPromptCopied(true);setTimeout(()=>setPromptCopied(false),1800)}}>{promptCopied?<Check size={14}/>:<Copy size={14}/>} {promptCopied?"復習採点プロンプトをコピーしました":"入力内容を含むGPT採点プロンプトをコピー"}</button>
+      <button className="ghost small review-prompt-copy" onClick={async()=>{try{await lockContract();await navigator.clipboard.writeText(reviewPrompt);setPromptCopied(true);setTimeout(()=>setPromptCopied(false),1800)}catch(error){window.alert(error instanceof Error?error.message:"この復習課題は現在実行できません")}}}>{promptCopied?<Check size={14}/>:<Copy size={14}/>} {promptCopied?"復習採点プロンプトをコピーしました":"入力内容を含むGPT採点プロンプトをコピー"}</button>
     </div>}
     {item.status==="done"&&<div className="post-review-summary"><span>復習後の確認</span>
       <p><b>前回ミス：</b>{item.previous_error_point||"記録なし"}</p>
@@ -658,7 +658,7 @@ function StudyPromptButtons({item,resolved}:{item:Partial<Review&Task>;resolved?
   const isFirst=(item.task_origin||"first_attempt")==="first_attempt"&&!item.id;
   return <div className="prompt-button-row">
     <button type="button" className={isFirst?"primary small":"ghost small"} onClick={()=>void copyText(firstPrompt,"first",setCopied)}><Copy size={14}/>{copied==="first"?"コピー済み":"初回採点プロンプト"}</button>
-    <button type="button" className="ghost small" disabled={!reviewPrompt} onClick={()=>{if(item.id)void post(`/api/reviews/${item.id}/contract-lock`,{}).catch(()=>undefined);if(reviewPrompt)void copyText(reviewPrompt,"review",setCopied)}}><Copy size={14}/>{copied==="review"?"コピー済み":"復習採点プロンプト"}</button>
+    <button type="button" className="ghost small" disabled={!reviewPrompt} onClick={async()=>{try{if(item.id)await post(`/api/reviews/${item.id}/contract-lock`,{});if(reviewPrompt)await copyText(reviewPrompt,"review",setCopied)}catch(error){window.alert(error instanceof Error?error.message:"この復習課題は現在実行できません")}}}><Copy size={14}/>{copied==="review"?"コピー済み":"復習採点プロンプト"}</button>
     <button type="button" className="ghost small" onClick={()=>void copyText(repairPrompt,"repair",setCopied)}><Copy size={14}/>{copied==="repair"?"コピー済み":"理解補修プロンプト"}</button>
   </div>;
 }
@@ -1279,7 +1279,9 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
   }|null>(null);
   const [integrityPreview,setIntegrityPreview]=useState<{
     preview:boolean;before:{activeIssueCount:number;historyWarningCount:number;counts:Record<string,number>};
-    changes:{duplicateAttempts:number;reviewsSuperseded:number;contractsRebound:number;datesCorrected:number};
+    changes:{duplicateAttempts:number;reviewsSuperseded:number;contractsRebound:number;datesCorrected:number;
+      staleReviewsSuperseded:number;reviewsReplaced:number;todayActionsUpdated:number;ambiguousProblems:number};
+    details?:Array<{problemId:string;reviewIds:number[];sourceAttemptId?:number;reason:string}>;
   }|null>(null);
   const saveBlob=(content:string|Blob,name:string,type:string)=>{
     const payload=content instanceof Blob?content:new Blob([content],{type});
@@ -1411,7 +1413,14 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
         <span>active問題 <strong>{health?.activeIssueCount||0}件</strong></span><span>履歴上の警告 <strong>{health?.historyWarningCount||0}件</strong></span></div>
       {integrityPreview&&<div className="legacy-k-preview"><span>重複Attempt <strong>{integrityPreview.changes.duplicateAttempts}件</strong></span>
         <span>終了予定Review <strong>{integrityPreview.changes.reviewsSuperseded}件</strong></span>
+        <span>stale終了 <strong>{integrityPreview.changes.staleReviewsSuperseded||0}件</strong></span>
+        <span>現在targetで置換 <strong>{integrityPreview.changes.reviewsReplaced||0}件</strong></span>
+        <span>今日の一手・表示同期 <strong>{integrityPreview.changes.todayActionsUpdated||0}件</strong></span>
+        <span>自動判断しない問題 <strong>{integrityPreview.changes.ambiguousProblems||0}件</strong></span>
         <span>契約補正 <strong>{integrityPreview.changes.contractsRebound}件</strong></span><span>日付補正 <strong>{integrityPreview.changes.datesCorrected}件</strong></span></div>}
+      {!!integrityPreview?.details?.length&&<details className="review-consistency-details"><summary>stale Reviewの対象問題と根拠</summary><ul>
+        {integrityPreview.details.map((row,index)=><li key={`${row.problemId}-${index}`}><strong>{row.problemId}</strong>：Review {row.reviewIds.join("・")||"新規不足"}／source Attempt {row.sourceAttemptId||"要確認"}／{row.reason}</li>)}
+      </ul></details>}
       <div className="button-row"><button className="secondary" disabled={busy} onClick={()=>run(()=>post("/api/integrity/audit",{}),"全体整合性を確認しました")}>全体整合性を確認</button>
         <button className="ghost" disabled={busy} onClick={()=>void previewIntegrity()}>修復内容をプレビュー</button>
         {integrityPreview&&<button className="primary" disabled={busy} onClick={()=>{setIntegrityPreview(null);run(()=>post("/api/integrity/repair",{}),"全体整合性を安全に整えました")}}>安全に整える</button>}</div>

@@ -2,6 +2,7 @@ import type { Attempt, GradingContractSnapshot, ProblemAlias, Review, TodayPlanS
 import { resolveCanonicalProblemId } from "./examReadiness.ts";
 import { addCalendarDays, resolveReviewSchedule } from "./reviewSchedulePolicy.ts";
 import { isActionableReview, validateGradingContract } from "./gradingContract.ts";
+import { analyzeReviewReconciliation, type ReconciliationAudit } from "./reviewReconciliation.ts";
 
 export const ACTIVE_REVIEW_STATUSES = new Set(["pending", "overdue"]);
 
@@ -159,7 +160,8 @@ export type IntegrityCategory =
   | "duplicate_contract_id" | "repeated_deduplication_key" | "inactive_pending"
   | "expired_same_session" | "date_interval_mismatch" | "source_target_mismatch"
   | "contract_top_level_mismatch" | "stale_today_snapshot" | "unstable_graded_part"
-  | "stale_review_after_success";
+  | "stale_review_after_success" | "partially_stale_review" | "stale_delayed_check"
+  | "graduated_but_pending" | "obsolete_today_action";
 
 export type IntegrityIssue = {
   category: IntegrityCategory;
@@ -176,6 +178,7 @@ export type IntegrityAudit = {
   counts: Record<IntegrityCategory, number>;
   activeIssueCount: number;
   historyWarningCount: number;
+  reconciliation: ReconciliationAudit;
 };
 
 export function runIntegrityAudit(args: {
@@ -192,6 +195,7 @@ export function runIntegrityAudit(args: {
   const attemptsById = new Map(attempts.map((row) => [row.id, row]));
   const reviewsById = new Map(reviews.map((row) => [row.id, row]));
   const active = reviews.filter((row) => ACTIVE_REVIEW_STATUSES.has(row.status));
+  const reconciliation=analyzeReviewReconciliation({attempts,reviews,aliases,today,todayPlanSnapshots});
 
   for (const duplicate of classifyExactDuplicateAttempts(attempts)) {
     const classified = attemptsById.get(duplicate.duplicateAttemptId)?.duplicate_of_attempt_id === duplicate.canonicalAttemptId;
@@ -284,17 +288,33 @@ export function runIntegrityAudit(args: {
       reviewIds: [task.id], detail: `${snapshot.date} snapshot refers to ${state} Review ${task.id}`, repairable: false });
   }
 
+  const reviewMap=new Map(reviews.map(row=>[row.id,row]));
+  for(const problem of reconciliation.problems)for(const action of problem.reviewsToSupersede){
+    const review=reviewMap.get(action.reviewId);
+    const category:IntegrityCategory=action.category==="partially_stale_repair"?"partially_stale_review":
+      action.category==="stale_delayed_check"?"stale_delayed_check":
+        action.category==="graduated_but_pending"?"graduated_but_pending":"stale_review_after_success";
+    if(issues.some(issue=>issue.category===category&&issue.reviewIds?.includes(action.reviewId)))continue;
+    issues.push({category,severity:"active",reviewIds:[action.reviewId],
+      attemptIds:[Number(review?.source_attempt_id||review?.generated_from_attempt_id||0),problem.desiredSourceAttemptId||0].filter(Boolean),
+      detail:`${problem.problemId} / Review ${action.reviewId}: ${action.reason}`,repairable:action.category!=="orphan_review"});
+  }
+  for(let index=0;index<reconciliation.staleTodayActions;index++)issues.push({
+    category:"obsolete_today_action",severity:"history",detail:"Today Planの保存枠を現在のactive Reviewへ表示同期する必要があります",repairable:false,
+  });
+
   const categories: IntegrityCategory[] = [
     "orphan_reference", "exact_duplicate_attempt", "duplicate_logical_review", "duplicate_contract_id",
     "repeated_deduplication_key", "inactive_pending", "expired_same_session", "date_interval_mismatch",
     "source_target_mismatch", "contract_top_level_mismatch", "stale_today_snapshot",
-    "unstable_graded_part", "stale_review_after_success",
+    "unstable_graded_part", "stale_review_after_success", "partially_stale_review",
+    "stale_delayed_check", "graduated_but_pending", "obsolete_today_action",
   ];
   const counts = Object.fromEntries(categories.map((category) =>
     [category, issues.filter((issue) => issue.category === category).length])) as Record<IntegrityCategory, number>;
   return {
     generatedAt: new Date().toISOString(), issues, counts,
     activeIssueCount: issues.filter((issue) => issue.severity === "active").length,
-    historyWarningCount: issues.filter((issue) => issue.severity === "history").length,
+    historyWarningCount: issues.filter((issue) => issue.severity === "history").length,reconciliation,
   };
 }

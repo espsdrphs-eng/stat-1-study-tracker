@@ -7,6 +7,7 @@ if(!source)throw new Error("usage: node tools/regenerate-diagnostic-from-pack.mj
 const output=process.argv[3]||"outputs/diagnostic-pack-2026-07-18-stable.zip";
 const applySourceRepair=process.argv.includes("--apply-source-repair");
 const applyLegacyRepair=process.argv.includes("--apply-legacy-k");
+const applyIntegrityRepair=process.argv.includes("--apply-integrity-repair");
 const inputZip=await JSZip.loadAsync(await readFile(source));
 const learning=JSON.parse(await inputZip.file("learning-data.json").async("string"));
 
@@ -38,12 +39,21 @@ const fingerprint=async()=>({attempts:await db.attempts.count(),reviews:await db
   scoreTime:(await db.attempts.toArray()).map(row=>`${row.id}:${row.score_numeric}:${row.time_minutes}`).sort(),
   snapshots:(await db.meta.filter(row=>row.key.startsWith("today-plan-snapshot:")).toArray()).map(row=>[row.key,row.value]).sort()});
 const before=await fingerprint();
-let legacyRepairResult=null,repairResult=null,secondRepairPreview=null;
+let legacyRepairResult=null,repairResult=null,secondRepairPreview=null,integrityPreview=null,integrityRepairResult=null,integrityAfter=null;
 if(applyLegacyRepair)legacyRepairResult=await localPost("/api/legacy-k/reorganize",{});
 if(applySourceRepair){
   repairResult=await localPost("/api/source-mismatch/reorganize",{});
   secondRepairPreview=await localPost("/api/source-mismatch/preview",{});
   if(secondRepairPreview.source_mismatch_count!==0)throw new Error(`source repair is not idempotent: ${JSON.stringify({repairResult,secondRepairPreview})}`);
+}
+if(applyIntegrityRepair){
+  integrityPreview=await localPost("/api/integrity/preview",{});
+  integrityRepairResult=await localPost("/api/integrity/repair",{});
+  integrityAfter=await localPost("/api/integrity/audit",{});
+  const secondIntegrityRepair=await localPost("/api/integrity/repair",{});
+  if(Object.values(secondIntegrityRepair.changes).some(value=>Number(value)!==0)){
+    throw new Error(`integrity repair is not idempotent: ${JSON.stringify(secondIntegrityRepair.changes)}`);
+  }
 }
 const { createDiagnosticPack }=await import("../src/diagnosticPack.ts");
 const result=await createDiagnosticPack();
@@ -56,5 +66,5 @@ if(!preserved)throw new Error(`diagnostic fixture data changed unsafely: ${JSON.
 await mkdir(output.replace(/[\\/][^\\/]+$/,"")||".",{recursive:true});
 await writeFile(output,Buffer.from(await result.blob.arrayBuffer()));
 console.log(JSON.stringify({status:"PASS",source,output,before:{attempts:before.attempts,reviews:before.reviews,problems:before.problems,weakNotes:before.weakNotes},
-  after:{attempts:after.attempts,reviews:after.reviews,problems:after.problems,weakNotes:after.weakNotes},legacyRepairResult,repairResult,secondRepairPreview,preserved,readOnlyVerified:result.summary.readOnlyVerified},null,2));
+  after:{attempts:after.attempts,reviews:after.reviews,problems:after.problems,weakNotes:after.weakNotes},legacyRepairResult,repairResult,secondRepairPreview,integrityPreview,integrityRepairResult,integrityAfter,preserved,readOnlyVerified:result.summary.readOnlyVerified},null,2));
 await db.close();
