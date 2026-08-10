@@ -34,8 +34,11 @@ This document is the implementation-level source of truth for data integrity. Le
 - Rebuild and repair operations are idempotent and do not create a new Review when an active logical key exists.
 - An exact duplicate Attempt remains as history, is linked to its canonical Attempt, and does not generate new planning or metrics.
 - A successful newer Attempt supersedes only older pending repair/retrieval Reviews for the same covered graded parts.
-- Current unresolved targets are reconstructed per stable graded-part ID from the newest evidence that actually graded
-  that part. A newer targeted Attempt never resolves omitted parts by implication.
+- Current unresolved targets are reconstructed per stable target identity from the newest evidence that actually graded
+  that target. The identity comes from a known grading slot or explicit Review lineage, never an Attempt ID, fuzzy text,
+  or error-type similarity. A newer targeted Attempt never resolves omitted targets by implication.
+- An active error repair contains at most one item per stable target identity. Attempt-specific graded-part IDs remain
+  immutable history and may be backfilled only into the current contract through deterministic lineage.
 - A partially stale repair is kept as immutable history and replaced by one Review containing only still-unassessed or
   currently unresolved parts. Old action prose and derived fields are not copied into the replacement.
 - Reconciliation runs after Attempt save/import/edit/delete and Review completion. It is idempotent and keeps at most

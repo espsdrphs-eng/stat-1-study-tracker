@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "start": "vite preview --host 0.0.0.0 --port 4174",
     "check": "tsc -b",
-    "test": "node --experimental-strip-types --test tests/*.test.mjs",
+    "test": "node tools/run-tests.mjs",
     "test:browser-save": "node tools/browser-gpt-save.mjs",
     "test:browser-scan5": "node tools/browser-scan5-import.mjs",
     "test:browser-layout": "node tools/browser-layout-check.mjs",

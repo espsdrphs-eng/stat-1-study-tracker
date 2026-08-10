@@ -1,25 +1,35 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
+import {existsSync,readFileSync} from "node:fs";
+
+const appCommit=process.env.GITHUB_SHA||process.env.VITE_APP_COMMIT||"local-build";
+type TestReport={commit:string;testCount:number;generatedAt:string;command:string};
+const testReport:TestReport=(()=>{
+  const fallback={commit:"unverified",testCount:0,generatedAt:"unknown",command:"npm test"};
+  if(!existsSync("outputs/test-report.json"))return fallback;
+  try{
+    const parsed=JSON.parse(readFileSync("outputs/test-report.json","utf8")) as TestReport;
+    return parsed.commit===appCommit?parsed:fallback;
+  }catch{return fallback}
+})();
+const testReportText=[
+  `Release verification (${testReport.generatedAt})`,
+  `Diagnostic pack commit: ${appCommit}`,
+  `Test report commit: ${testReport.commit}`,
+  `Unit tests: ${testReport.testCount>0?`PASS (${testReport.testCount}/${testReport.testCount}, ${testReport.command})`:"UNVERIFIED FOR THIS COMMIT"}`,
+  "Type check and production build are enforced by the GitHub Pages workflow.",
+].join("\n");
 
 export default defineConfig({
   base: "./",
   define: {
-    __APP_COMMIT__: JSON.stringify(process.env.GITHUB_SHA || process.env.VITE_APP_COMMIT || "local-build"),
+    __APP_COMMIT__: JSON.stringify(appCommit),
     __APP_DEPLOYED_AT__: JSON.stringify(process.env.VITE_DEPLOYED_AT || new Date().toISOString()),
-    __APP_TEST_REPORT__: JSON.stringify([
-      "Release verification (2026-08-10)",
-      "Type check: PASS (npm run check)",
-      "Unit tests: PASS (261/261, npm test)",
-      "Production build: PASS (npm run build)",
-      "Integrity fixture: PASS (idempotent repair, submission deduplication, reference-pack import)",
-      "Adaptive planner fixture: PASS (objective graduation, rolling quotas, 60-90 minute core plan)",
-      "Mark/graduation fixture: PASS (repair ○ -> delayed retrieval ◎; score-independent)",
-      "Past-exam grading fixture: PASS (scan-only isolated; full/timed transition verified)",
-      "Simulation protection fixture: PASS (2024/2025 hard gate before D60)",
-      "Past-exam core fixture: PASS (legacy 20 -> core 45, idempotent bootstrap, history preserved)",
-      "Note: these commands run during implementation; the iPad export itself does not execute developer tools."
-    ].join("\n"))
+    __APP_TEST_REPORT__: JSON.stringify(testReportText),
+    __APP_TEST_REPORT_COMMIT__:JSON.stringify(testReport.commit),
+    __APP_TEST_COUNT__:JSON.stringify(testReport.testCount),
+    __APP_TEST_REPORT_GENERATED_AT__:JSON.stringify(testReport.generatedAt),
   },
   plugins: [
     react(),

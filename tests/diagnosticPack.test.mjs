@@ -3,6 +3,11 @@ import assert from "node:assert/strict";
 import "fake-indexeddb/auto";
 import JSZip from "jszip";
 
+globalThis.__APP_COMMIT__="fixture-diagnostic-commit";
+globalThis.__APP_TEST_REPORT_COMMIT__="fixture-diagnostic-commit";
+globalThis.__APP_TEST_COUNT__=999;
+globalThis.__APP_TEST_REPORT_GENERATED_AT__="2026-08-11T00:00:00.000Z";
+globalThis.__APP_TEST_REPORT__="Diagnostic pack commit: fixture-diagnostic-commit\nTest report commit: fixture-diagnostic-commit\nUnit tests: PASS (999/999, npm test)";
 const { diagnosticAuditInternals,createDiagnosticPack }=await import("../src/diagnosticPack.ts");
 const { localGet,db }=await import("../src/localDb.ts");
 
@@ -60,6 +65,12 @@ test("診断ZIPは実データを変更せず適応planner監査を含む8ファ
   assert.equal(Object.keys(zip.files).some(name=>/pdf|image/i.test(name)),false);
   const appInfo=JSON.parse(await zip.file("app-info.json").async("string"));
   assert.equal(appInfo.readOnlyVerification.verified,true);
+  assert.deepEqual(appInfo.testVerification,{commit:"fixture-diagnostic-commit",testCount:999,
+    generatedAt:"2026-08-11T00:00:00.000Z",matchesDiagnosticCommit:true});
+  const testReport=await zip.file("test-report.txt").async("string");
+  assert.match(testReport,/Diagnostic pack commit: fixture-diagnostic-commit/);
+  assert.match(testReport,/Test report commit: fixture-diagnostic-commit/);
+  assert.match(testReport,/999\/999/);
   const plannerAudit=JSON.parse(await zip.file("planner-audit.json").async("string"));
   const adaptiveAudit=JSON.parse(await zip.file("adaptive-reference-audit.json").async("string"));
   assert.equal(plannerAudit.plannerSource,"adaptive");

@@ -151,6 +151,7 @@ export function gradedPartContracts(args: {
   sourceAttempt?: Attempt;
   purpose: LearningPurpose;
 }): GradedPartContract[] {
+  const stableKey=(id:string)=>`target:${args.problemId}:slot:${id}`;
   if (args.purpose === "retrieval_check") {
     return definitions
       .filter((row) => ["problem_type", "first_step", "focal_quantity", "critical_condition"].includes(row.id))
@@ -160,6 +161,7 @@ export function gradedPartContracts(args: {
         cueLabel: row.cueLabel,
         allowedErrorTypes: row.errors,
         completionCriterionId: row.criterion,
+        stableTargetKey: stableKey(row.id),
       }));
   }
   if (args.purpose === "exam_performance") {
@@ -170,9 +172,18 @@ export function gradedPartContracts(args: {
       cueLabel: row.cueLabel,
       allowedErrorTypes: row.errors,
       completionCriterionId: row.criterion,
+      stableTargetKey: stableKey(row.id),
     }];
   }
-  const rows = args.texts.flatMap((text, index) => {
+  const sourceContractParts=(args.sourceAttempt?.grading_contract?.gradedParts||[])
+    .filter((part):part is GradedPartContract=>typeof part!=="string"&&!!part?.id);
+  const unresolvedIds=(args.sourceAttempt?.graded_findings||[])
+    .filter(row=>!row.resolved&&row.error_type!=="none").map(row=>row.graded_part_id);
+  const unresolvedParts=unresolvedIds.map(id=>sourceContractParts.find(part=>part.id===id))
+    .filter((part):part is GradedPartContract=>!!part);
+  const inheritedParts=unresolvedParts.length===args.texts.length?unresolvedParts:
+    sourceContractParts.length===args.texts.length?sourceContractParts:[];
+  const rows:GradedPartContract[] = args.texts.flatMap<GradedPartContract>((text, index) => {
     const known = definitions.filter((definition) => definition.patterns.some((pattern) => pattern.test(text)));
     if (known.length) {
       return known.map((row) => ({
@@ -181,6 +192,7 @@ export function gradedPartContracts(args: {
         cueLabel: row.cueLabel,
         allowedErrorTypes: row.errors,
         completionCriterionId: row.criterion,
+        stableTargetKey: stableKey(row.id),
       }));
     }
     const normalized = normalize(text);
@@ -188,12 +200,18 @@ export function gradedPartContracts(args: {
     const suffix = args.sourceAttempt?.id
       ? `${args.sourceAttempt.id}:${index + 1}`
       : hash(`${args.problemId}:${normalized}`);
+    const inherited=inheritedParts[index];
+    if(inherited)return [{...inherited,label:text,cueLabel:inherited.cueLabel||text}];
+    const stableTargetKey=args.sourceAttempt?.submission_id
+      ?`target:${args.problemId}:submission:${args.sourceAttempt.submission_id}:slot:${index+1}`
+      :undefined;
     return [{
       id: args.sourceAttempt?.id ? `part:${args.problemId}:${suffix}` : `target_${suffix}`,
       label: text,
       cueLabel: "指定箇所",
       allowedErrorTypes: inferredErrors(text, args.sourceAttempt),
       completionCriterionId: `reproduce_${suffix}`,
+      stableTargetKey,
     }];
   });
   return unique(rows, (row) => row.id);

@@ -357,10 +357,15 @@ export async function createDiagnosticPack():Promise<DiagnosticPackResult>{
   const deployAt=typeof __APP_DEPLOYED_AT__!=="undefined"?__APP_DEPLOYED_AT__:"unknown";
   const commit=typeof __APP_COMMIT__!=="undefined"?__APP_COMMIT__:"unknown";
   const testReport=typeof __APP_TEST_REPORT__!=="undefined"?__APP_TEST_REPORT__:"ビルド時検証情報なし";
+  const testReportCommit=typeof __APP_TEST_REPORT_COMMIT__!=="undefined"?__APP_TEST_REPORT_COMMIT__:"unknown";
+  const testCount=typeof __APP_TEST_COUNT__!=="undefined"?__APP_TEST_COUNT__:0;
+  const testReportGeneratedAt=typeof __APP_TEST_REPORT_GENERATED_AT__!=="undefined"?__APP_TEST_REPORT_GENERATED_AT__:"unknown";
   const appInfo={commit,buildVersion:APP_BUILD_VERSION,databaseVersion:db.verno,requiredDatabaseVersion:DB_VERSION,
     learningPolicyVersion:LEARNING_POLICY_VERSION,
     schemaVersion:APP_SCHEMA_VERSION,problemMasterVersion:metaRows.find(row=>row.key==="problem_master_version")?.value||"unversioned",
-    deployedAt:deployAt,exportedAt:new Date().toISOString(),privacy:{pdfIncluded:false,imageIncluded:false,binaryIncluded:false,
+    deployedAt:deployAt,exportedAt:new Date().toISOString(),testVerification:{commit:testReportCommit,testCount,
+      generatedAt:testReportGeneratedAt,matchesDiagnosticCommit:commit==="unknown"||commit==="local-build"||commit===testReportCommit},
+    privacy:{pdfIncluded:false,imageIncluded:false,binaryIncluded:false,
       freeFormMemoIncluded:false,rawGptTextIncluded:false},
     physicalModel:{attempts:"答案とGPT評価",reviews:"復習タスクと復習計画",problemRelations:"独立storeなし"}};
   const parseMetaJson=<T,>(key:string,fallback:T)=>{

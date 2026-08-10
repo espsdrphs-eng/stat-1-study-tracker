@@ -1281,7 +1281,9 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
     preview:boolean;before:{activeIssueCount:number;historyWarningCount:number;counts:Record<string,number>};
     changes:{duplicateAttempts:number;reviewsSuperseded:number;contractsRebound:number;datesCorrected:number;
       staleReviewsSuperseded:number;reviewsReplaced:number;todayActionsUpdated:number;ambiguousProblems:number};
-    details?:Array<{problemId:string;reviewIds:number[];sourceAttemptId?:number;reason:string}>;
+    stableIdentity:{stableTargetsResolved:number;stableGenerationsUnified:number;duplicateStableTargets:number};
+    details?:Array<{problemId:string;reviewIds:number[];sourceAttemptId?:number;reason:string;
+      beforeTargetCount:number;distinctStableTargetCount:number;duplicateGenerationCount:number;afterTargetCount:number}>;
   }|null>(null);
   const saveBlob=(content:string|Blob,name:string,type:string)=>{
     const payload=content instanceof Blob?content:new Blob([content],{type});
@@ -1410,16 +1412,19 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
     <section className="panel integrity-health-card"><div className="panel-title"><div><span className="eyebrow">SYSTEM</span><h3>システム状態</h3></div>
       <Badge tone={health?.activeIssueCount?"orange":"green"}>{health?.activeIssueCount?"要対応":"正常"}</Badge></div>
       <div className="integrity-health-summary"><span>最終診断 <strong>{health?.generatedAt?new Date(health.generatedAt).toLocaleString("ja-JP"):"未実施"}</strong></span>
-        <span>active問題 <strong>{health?.activeIssueCount||0}件</strong></span><span>履歴上の警告 <strong>{health?.historyWarningCount||0}件</strong></span></div>
+        <span>active問題 <strong>{health?.activeIssueCount||0}件</strong></span><span>履歴上の警告レコード <strong>{health?.historyWarningCount||0}件</strong></span></div>
       {integrityPreview&&<div className="legacy-k-preview"><span>重複Attempt <strong>{integrityPreview.changes.duplicateAttempts}件</strong></span>
         <span>終了予定Review <strong>{integrityPreview.changes.reviewsSuperseded}件</strong></span>
         <span>stale終了 <strong>{integrityPreview.changes.staleReviewsSuperseded||0}件</strong></span>
         <span>現在targetで置換 <strong>{integrityPreview.changes.reviewsReplaced||0}件</strong></span>
         <span>今日の一手・表示同期 <strong>{integrityPreview.changes.todayActionsUpdated||0}件</strong></span>
+        <span>stable target確定 <strong>{integrityPreview.stableIdentity?.stableTargetsResolved||0}件</strong></span>
+        <span>世代統合 <strong>{integrityPreview.stableIdentity?.stableGenerationsUnified||0}件</strong></span>
+        <span>active世代重複 <strong>{integrityPreview.stableIdentity?.duplicateStableTargets||0}件</strong></span>
         <span>自動判断しない問題 <strong>{integrityPreview.changes.ambiguousProblems||0}件</strong></span>
         <span>契約補正 <strong>{integrityPreview.changes.contractsRebound}件</strong></span><span>日付補正 <strong>{integrityPreview.changes.datesCorrected}件</strong></span></div>}
       {!!integrityPreview?.details?.length&&<details className="review-consistency-details"><summary>stale Reviewの対象問題と根拠</summary><ul>
-        {integrityPreview.details.map((row,index)=><li key={`${row.problemId}-${index}`}><strong>{row.problemId}</strong>：Review {row.reviewIds.join("・")||"新規不足"}／source Attempt {row.sourceAttemptId||"要確認"}／{row.reason}</li>)}
+        {integrityPreview.details.map((row,index)=><li key={`${row.problemId}-${index}`}><strong>{row.problemId}</strong>：Review {row.reviewIds.join("・")||"新規不足"}／source Attempt {row.sourceAttemptId||"要確認"}／target {row.beforeTargetCount}→{row.afterTargetCount}（stable {row.distinctStableTargetCount}、世代重複 {row.duplicateGenerationCount}）／{row.reason}</li>)}
       </ul></details>}
       <div className="button-row"><button className="secondary" disabled={busy} onClick={()=>run(()=>post("/api/integrity/audit",{}),"全体整合性を確認しました")}>全体整合性を確認</button>
         <button className="ghost" disabled={busy} onClick={()=>void previewIntegrity()}>修復内容をプレビュー</button>

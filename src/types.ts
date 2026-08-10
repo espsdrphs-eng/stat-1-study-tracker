@@ -75,6 +75,8 @@ export type GradingErrorType="K"|"W"|"N"|"C"|"none";
 export type GradedPartContract={
   id:string;label:string;cueLabel:string;allowedErrorTypes:GradingErrorType[];
   completionCriterionId:string;
+  /** Attempt-independent identity. Legacy `id` remains immutable history. */
+  stableTargetKey?:string;stable_target_key?:string;
 };
 export type GradedFinding={
   graded_part_id:string;error_type:GradingErrorType;evidence:string;resolved:boolean;

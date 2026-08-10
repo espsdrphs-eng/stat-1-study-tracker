@@ -77,3 +77,31 @@ test("safe integrity repair replaces a partially stale repair and hydrates Today
   await localPost("/api/integrity/repair",{});
   assert.equal(await db.reviews.count(),count);
 });
+
+test("stable-key backfill hydrates the same pending Review and is idempotent",async()=>{
+  const today=todayString();
+  await db.transaction("rw",[db.attempts,db.reviews,db.meta],async()=>{
+    await db.attempts.clear();await db.reviews.clear();
+    for(const row of await db.meta.where("key").startsWith("today-plan-snapshot:").toArray())await db.meta.delete(row.key);
+    await db.attempts.add({id:3,problem_id:"WB-4-A-29",date:"2026-08-09",mode:"check",time_minutes:5,
+      mark:"△",score_label:"B",error_type:"N",error_types:["N"],error_point:"A",next_action:"A",memo:"",
+      graded_part_ids:["A"],graded_parts:["A"],graded_findings:[finding("A")]});
+    const legacy=contract(20,["A"]);
+    await db.reviews.add({id:20,problem_id:"WB-4-A-29",due_date:today,review_type:"targeted_patch",status:"pending",
+      generated_from_attempt_id:3,source_attempt_id:3,learning_purpose:"error_repair",assessment_timing:"delayed_retrieval",
+      effective_mode:"skeleton",review_scope:"targeted_patch",sheet_type:"skeleton_sheet",target_kind:"mathematical_patch",
+      targeted_parts:["A"],graded_part_ids:["A"],grading_contract:legacy,contract_id:legacy.contractId,
+      contract_version:legacy.contractVersion,contract_hash:legacy.contractHash,policy_version:"STAT1-LEARNING-v1"});
+  });
+  const beforeCount=await db.reviews.count();
+  const preview=await localPost("/api/integrity/preview",{});
+  assert.equal(preview.changes.reviewsReplaced,1);
+  await localPost("/api/integrity/repair",{});
+  assert.equal(await db.reviews.count(),beforeCount);
+  const hydrated=await db.reviews.get(20);
+  assert.equal(hydrated.status,"pending");
+  assert.equal(hydrated.grading_contract.gradedParts[0].stableTargetKey,"target:WB-4-A-29:slot:A");
+  const second=await localPost("/api/integrity/repair",{});
+  assert.equal(Object.values(second.changes).every(value=>Number(value)===0),true);
+  assert.equal(await db.reviews.count(),beforeCount);
+});

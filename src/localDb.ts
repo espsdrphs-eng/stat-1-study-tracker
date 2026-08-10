@@ -713,7 +713,9 @@ async function addOrReplaceReview(review:ReviewInsert){
 
 type ReconcileApplySummary={
   audit:ReconciliationAudit;reviewsSuperseded:number;reviewsReplaced:number;todayActionsUpdated:number;
-  ambiguousProblems:number;details:Array<{problemId:string;reviewIds:number[];sourceAttemptId?:number;reason:string}>;
+  ambiguousProblems:number;stableTargetsResolved:number;stableGenerationsUnified:number;duplicateStableTargets:number;
+  details:Array<{problemId:string;reviewIds:number[];sourceAttemptId?:number;reason:string;
+    beforeTargetCount:number;distinctStableTargetCount:number;duplicateGenerationCount:number;afterTargetCount:number}>;
 };
 
 function contractWithReconciledParts(args:{
@@ -779,10 +781,15 @@ async function reconcileProblemLearningState(problemId?:string,preview=false):Pr
     problemId:plan!.problemId,reviewIds:plan!.reviewsToSupersede.map(row=>row.reviewId),
     sourceAttemptId:plan!.desiredSourceAttemptId,
     reason:[...new Set(plan!.reviewsToSupersede.map(row=>row.reason))].join(" / ")||"現在の未解決targetからReviewを生成",
+    beforeTargetCount:plan!.activeReviewTargetCount,distinctStableTargetCount:plan!.distinctStableTargetCount,
+    duplicateGenerationCount:plan!.multiGenerationDuplicateCount,afterTargetCount:plan!.desiredRepairParts.length,
   }]:[]);
   const summary:ReconcileApplySummary={audit,reviewsSuperseded:plans.reduce((sum,plan)=>sum+(plan?.reviewsToSupersede.length||0),0),
     reviewsReplaced:plans.filter(plan=>plan?.replacementRequired||plan?.retentionCheckRequired).length,
-    todayActionsUpdated:audit.staleTodayActions,ambiguousProblems:audit.ambiguousProblems,details};
+    todayActionsUpdated:audit.staleTodayActions,ambiguousProblems:audit.ambiguousProblems,
+    stableTargetsResolved:audit.stableIdentityTargetCount,
+    stableGenerationsUnified:audit.stableIdentityGenerationsUnified,
+    duplicateStableTargets:audit.duplicateStableTargets,details};
   if(preview)return summary;
   const reviewMap=new Map(reviews.map(row=>[row.id,row]));
   const problemMap=new Map(problems.map(row=>[resolveCanonicalProblemId(row.problem_id,aliases),row]));
@@ -826,14 +833,27 @@ async function reconcileProblemLearningState(problemId?:string,preview=false):Pr
       continue;
     }
     if(!plan.replacementRequired||!plan.desiredSourceAttemptId||!plan.desiredRepairParts.length)continue;
-    const problem=problemMap.get(plan.problemId),source=attemptMap.get(plan.desiredSourceAttemptId);
-    if(!problem||!source)continue;
+    const problem=problemMap.get(plan.problemId),desiredSource=attemptMap.get(plan.desiredSourceAttemptId);
+    if(!problem||!desiredSource)continue;
+    const survivingActive=plan.activeRepairReviewIds.map(id=>reviewMap.get(id)).filter((row):row is Review=>
+      !!row&&!plan.reviewsToSupersede.some(action=>action.reviewId===row.id));
+    const survivingSource=survivingActive.length===1?attemptMap.get(Number(survivingActive[0].source_attempt_id||survivingActive[0].generated_from_attempt_id)):undefined;
+    const source=survivingSource&&survivingSource.id>=desiredSource.id?survivingSource:desiredSource;
     const {contract,prescription}=contractWithReconciledParts({problem,source,parts:plan.desiredRepairParts,
       findings:plan.desiredRepairFindings,createdAt:now});
     const oldRows=plan.activeRepairReviewIds.map(id=>reviewMap.get(id)).filter(Boolean) as Review[];
     const oldDue=oldRows.map(row=>row.due_date).filter(Boolean).sort()[0];
     const dueDate=oldDue&&oldDue>todayString()?oldDue:todayString();
     const interval=Math.max(0,differenceInCalendarDays(dueDate,source.date)||0);
+    if(survivingActive.length===1&&plan.reviewsToSupersede.length===0){
+      const current=survivingActive[0],revision=Math.max(1,Number(current.contract_revision||1))+1;
+      const bound=bindContractToReview(contract,current.id,revision);
+      await db.reviews.update(current.id,{...taskFieldsFromContract(bound),contract_revision:revision,
+        targeted_parts:bound.targetedParts,graded_parts:bound.gradedParts.map(part=>part.label),
+        graded_part_ids:bound.gradedParts.map(part=>part.id),graded_findings:plan.desiredRepairFindings,
+        logical_review_key:logicalReviewKey({review:{...current,grading_contract:bound},aliases,sourceAttempt:source})});
+      continue;
+    }
     const inserted=await addOrReplaceReview({problem_id:problem.problem_id,due_date:dueDate,
       review_type:prescription.reviewScope,status:"pending",generated_from_attempt_id:source.id,
       source_attempt_id:source.id,source_date:source.date,review_after_days:interval,interval_days:interval,
@@ -2913,7 +2933,9 @@ async function repairIntegrity(preview=false){
     reviewsReplaced:reconciliationPreview.reviewsReplaced,
     todayActionsUpdated:reconciliationPreview.todayActionsUpdated,
     ambiguousProblems:reconciliationPreview.ambiguousProblems,
-  }};
+  },stableIdentity:{stableTargetsResolved:reconciliationPreview.stableTargetsResolved,
+    stableGenerationsUnified:reconciliationPreview.stableGenerationsUnified,
+    duplicateStableTargets:reconciliationPreview.duplicateStableTargets}};
   const now=new Date().toISOString(),today=todayString();
   const changes={duplicateAttempts:0,reviewsSuperseded:0,contractsRebound:0,datesCorrected:0,
     staleReviewsSuperseded:0,reviewsReplaced:0,todayActionsUpdated:0,ambiguousProblems:0};
@@ -3055,7 +3077,10 @@ async function repairIntegrity(preview=false){
   const summary={...after,repairedAt:now};
   await db.meta.put({key:"integrity_audit_summary",value:JSON.stringify(summary)});
   return {preview:false,before,after,changes,success:after.activeIssueCount===0,
-    reconciliation:after.reconciliation,details:reconciliationPreview.details};
+    reconciliation:after.reconciliation,details:reconciliationPreview.details,
+    stableIdentity:{stableTargetsResolved:reconciliationPreview.stableTargetsResolved,
+      stableGenerationsUnified:reconciliationPreview.stableGenerationsUnified,
+      duplicateStableTargets:reconciliationPreview.duplicateStableTargets}};
 }
 
 export async function localPost<T>(path:string,body:any):Promise<T>{

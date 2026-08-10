@@ -48,7 +48,7 @@ test("a target omitted by the latest targeted patch is not guessed resolved",()=
   assert.deepEqual(audit.problems[0].desiredRepairParts.map(row=>row.id),["C"]);
 });
 
-test("a later full answer retires old differently-keyed targets but keeps its new unresolved target",()=>{
+test("a later full answer does not guess that differently-keyed targets were graded",()=>{
   const old=attempt(1,"2026-08-01",[finding("old-broad-A"),finding("old-broad-B")]);
   const newer=attempt(2,"2026-08-05",[finding("current-N","N",false)],{
     mode:"full",review_scope:"full_answer",
@@ -56,7 +56,23 @@ test("a later full answer retires old differently-keyed targets but keeps its ne
   });
   const plan=analyzeReviewReconciliation({attempts:[old,newer],
     reviews:[review(10,1,["old-broad-A","old-broad-B"])],today:"2026-08-10"}).problems[0];
-  assert.deepEqual(plan.desiredRepairParts.map(row=>row.id),["current-N"]);
+  assert.deepEqual(plan.desiredRepairParts.map(row=>row.id),["current-N","old-broad-A","old-broad-B"]);
+});
+
+test("a later full answer updates old targets when their stable slots are explicit",()=>{
+  const a=part("part:WB-4-A-29:1:1"),b=part("part:WB-4-A-29:1:2");
+  a.stableTargetKey="target:WB-4-A-29:review:10:slot:1";
+  b.stableTargetKey="target:WB-4-A-29:review:10:slot:2";
+  const old=attempt(1,"2026-08-01",[finding(a.id),finding(b.id)],{
+    grading_contract:{...contract([a.id]),gradedParts:[a,b]},graded_part_ids:[a.id,b.id],graded_parts:[a.id,b.id],
+  });
+  const a2={...a,id:"part:WB-4-A-29:2:1"},b2={...b,id:"part:WB-4-A-29:2:2"},e={...part("new-E"),stableTargetKey:"target:WB-4-A-29:slot:new-E"};
+  const newer=attempt(2,"2026-08-05",[
+    finding(a2.id,"none",true),finding(b2.id,"none",true),finding(e.id,"N",false),
+  ],{mode:"full",review_scope:"full_answer",grading_contract:{...contract([a2.id,b2.id,e.id]),mode:"full",reviewScope:"full_answer",gradedParts:[a2,b2,e]}});
+  const oldReview=review(10,1,[a.id,b.id],{grading_contract:{...contract([a.id,b.id]),gradedParts:[a,b]}});
+  const plan=analyzeReviewReconciliation({attempts:[old,newer],reviews:[oldReview],today:"2026-08-10"}).problems[0];
+  assert.deepEqual(plan.desiredRepairParts.map(row=>row.stableTargetKey),["target:WB-4-A-29:slot:new-E"]);
   assert.equal(plan.reviewsToSupersede[0].category,"stale_repair");
 });
 

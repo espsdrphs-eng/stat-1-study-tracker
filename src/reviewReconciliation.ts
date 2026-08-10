@@ -2,13 +2,14 @@ import type {
   Attempt, GradedFinding, GradedPartContract, GradingErrorType, ProblemAlias, Review, TodayPlanSnapshot,
 } from "./types.ts";
 import { resolveCanonicalProblemId } from "./examReadiness.ts";
+import {buildStableTargetIndex,type StableTargetIndex} from "./stableTargetIdentity.ts";
 
 const ACTIVE_STATUSES=new Set(["pending","overdue"]);
 const STANDARD_PURPOSES=new Set(["error_repair","retrieval_check"]);
 
 export type LearningEvidenceEvent={
   problemId:string;part:GradedPartContract;attemptId:number;attemptDate:string;
-  errorType:GradingErrorType;resolved:boolean;evidence:string;
+  stableTargetKey:string;errorType:GradingErrorType;resolved:boolean;evidence:string;
 };
 
 export type ProblemReconciliation={
@@ -26,6 +27,9 @@ export type ProblemReconciliation={
   retentionSourceAttemptId?:number;
   graduated:boolean;
   ambiguousReasons:string[];
+  activeReviewTargetCount:number;
+  distinctStableTargetCount:number;
+  multiGenerationDuplicateCount:number;
 };
 
 export type ReconciliationAudit={
@@ -42,6 +46,11 @@ export type ReconciliationAudit={
   staleTodayActions:number;
   replacementsRequired:number;
   ambiguousProblems:number;
+  stableIdentityTargetCount:number;
+  stableIdentityGenerationsUnified:number;
+  duplicateStableTargets:number;
+  currentReviewMismatches:number;
+  orphanActiveTargets:number;
 };
 
 function reviewPurpose(review:Review){
@@ -68,20 +77,6 @@ function attemptAfter(attempt:Attempt,source:Attempt|undefined){
 
 function attemptAtOrAfter(attempt:Attempt,source:Attempt|undefined){
   return !source||attempt.id>=source.id;
-}
-
-function comprehensivelyGrades(attempt:Attempt,partId:string){
-  const contract=attempt.grading_contract;
-  if(contract?.explicitlyOutOfScopePartIds?.includes(partId))return false;
-  if((attempt.graded_findings||[]).some(row=>row.graded_part_id===partId)||
-    (attempt.graded_part_ids||[]).includes(partId))return true;
-  const scope=String(contract?.reviewScope||attempt.review_scope||attempt.evaluation_scope||"");
-  const mode=String(contract?.mode||attempt.mode||"");
-  // A modern full-answer Attempt is evidence about the complete answer even
-  // when a newly discovered issue received a different stable part id. Narrow
-  // patches/checks never get this treatment, so omitted targets remain open.
-  return (attempt.graded_findings||[]).length>0&&
-    (scope==="full_answer"||["full","timed","timed_single","past_exam"].includes(mode));
 }
 
 function errorsFor(attempt:Attempt){
@@ -120,16 +115,19 @@ function partCatalog(attempts:Attempt[],reviews:Review[]){
   return rows;
 }
 
-function evidenceEvents(attempt:Attempt,catalog:Map<string,GradedPartContract>):LearningEvidenceEvent[]{
+function evidenceEvents(attempt:Attempt,catalog:Map<string,GradedPartContract>,stableIndex:StableTargetIndex):LearningEvidenceEvent[]{
   if(!validAttempt(attempt))return [];
   const explicit=attempt.graded_findings||[];
   if(explicit.length)return explicit.flatMap(finding=>{
     if(!finding.graded_part_id||finding.error_type==="K"&&!kIsUsable(attempt))return [];
-    const part=catalog.get(finding.graded_part_id)||{
+    const resolution=stableIndex.attemptPart(attempt.id,finding.graded_part_id);
+    if(!resolution?.key)return [];
+    const part=resolution.part||catalog.get(finding.graded_part_id)||{
       id:finding.graded_part_id,label:finding.graded_part_id,cueLabel:finding.graded_part_id,
       allowedErrorTypes:[finding.error_type,"none"],completionCriterionId:`preserve_${finding.graded_part_id}`,
     } satisfies GradedPartContract;
-    return [{problemId:attempt.problem_id,part,attemptId:attempt.id,attemptDate:attempt.date,
+    return [{problemId:attempt.problem_id,part:{...part,stableTargetKey:resolution.key},stableTargetKey:resolution.key,
+      attemptId:attempt.id,attemptDate:attempt.date,
       errorType:finding.error_type,resolved:finding.resolved&&finding.error_type==="none",evidence:finding.evidence||""}];
   });
   const ids=attempt.graded_part_ids||[];
@@ -137,12 +135,14 @@ function evidenceEvents(attempt:Attempt,catalog:Map<string,GradedPartContract>):
   const errors=errorsFor(attempt);
   const success=(attempt.minimum_pass_condition_met===true||attempt.target_issue_resolved===true)&&errors.length===0;
   if(success)return ids.flatMap(id=>{
-    const part=catalog.get(id);return part?[{problemId:attempt.problem_id,part,attemptId:attempt.id,
+    const resolution=stableIndex.attemptPart(attempt.id,id),part=resolution?.part||catalog.get(id);return part&&resolution?.key?[{problemId:attempt.problem_id,
+      part:{...part,stableTargetKey:resolution.key},stableTargetKey:resolution.key,attemptId:attempt.id,
       attemptDate:attempt.date,errorType:"none" as const,resolved:true,evidence:attempt.resolution_evidence||""}]:[];
   });
   if(ids.length===1&&errors.length===1){
     if(errors[0]==="K"&&!kIsUsable(attempt))return [];
-    const part=catalog.get(ids[0]);return part?[{problemId:attempt.problem_id,part,attemptId:attempt.id,
+    const resolution=stableIndex.attemptPart(attempt.id,ids[0]),part=resolution?.part||catalog.get(ids[0]);return part&&resolution?.key?[{problemId:attempt.problem_id,
+      part:{...part,stableTargetKey:resolution.key},stableTargetKey:resolution.key,attemptId:attempt.id,
       attemptDate:attempt.date,errorType:errors[0],resolved:false,evidence:attempt.error_point||""}]:[];
   }
   return [];
@@ -172,6 +172,7 @@ export function analyzeReviewReconciliation(args:{
   attempts:Attempt[];reviews:Review[];aliases?:ProblemAlias[];today:string;todayPlanSnapshots?:TodayPlanSnapshot[];
 }):ReconciliationAudit{
   const aliases=args.aliases||[],catalog=partCatalog(args.attempts,args.reviews);
+  const stableIndex=buildStableTargetIndex({attempts:args.attempts,reviews:args.reviews,aliases});
   const canonical=(value:string)=>resolveCanonicalProblemId(value,aliases);
   const attempts=args.attempts.filter(validAttempt).map(row=>({...row,problem_id:canonical(row.problem_id)})).sort(attemptOrder);
   const reviews=args.reviews.map(row=>({...row,problem_id:canonical(row.problem_id)}));
@@ -185,28 +186,28 @@ export function analyzeReviewReconciliation(args:{
     const repairs=active.filter(row=>reviewPurpose(row)==="error_repair");
     const delayed=active.filter(row=>reviewPurpose(row)==="retrieval_check");
     const attemptMap=new Map(problemAttempts.map(row=>[row.id,row]));
-    const events=problemAttempts.flatMap(attempt=>evidenceEvents(attempt,catalog));
+    const events=problemAttempts.flatMap(attempt=>evidenceEvents(attempt,catalog,stableIndex));
     const lastEvent=new Map<string,LearningEvidenceEvent>();
-    for(const event of events)lastEvent.set(event.part.id,event);
+    for(const event of events)lastEvent.set(event.stableTargetKey,event);
     const desired=new Map<string,LearningEvidenceEvent>();
-    for(const event of lastEvent.values())if(!event.resolved)desired.set(event.part.id,event);
+    for(const event of lastEvent.values())if(!event.resolved)desired.set(event.stableTargetKey,event);
     const ambiguous:string[]=[];
     for(const repair of repairs){
       const source=attemptMap.get(Number(repair.source_attempt_id||repair.generated_from_attempt_id||0));
-      const parts=partsFromContract(repair);
+      const parts=partsFromContract(repair).map(part=>({part,resolution:stableIndex.reviewPart(repair.id,part.id)}));
       if(!source)continue;
       if(!parts.length)ambiguous.push(`Review ${repair.id}: 安定したgraded part IDがない`);
-      for(const part of parts){
-        const later=events.filter(event=>event.part.id===part.id&&attemptAfter(attemptMap.get(event.attemptId)!,source)).at(-1);
-        const laterComprehensive=problemAttempts.filter(attempt=>attemptAfter(attempt,source)&&
-          comprehensivelyGrades(attempt,part.id)).at(-1);
-        if(!later&&laterComprehensive)desired.delete(part.id);
-        if(!later&&!laterComprehensive&&!lastEvent.has(part.id))desired.set(part.id,{problemId,part,attemptId:source.id,
-          attemptDate:source.date,errorType:(errorsFor(source)[0]||"N"),resolved:false,evidence:source.error_point||""});
+      for(const {part,resolution} of parts){
+        if(!resolution?.key){ambiguous.push(`Review ${repair.id} / ${part.id}: ${resolution?.reason||"stable target identity is missing"}`);continue;}
+        const key=resolution.key;
+        const later=events.filter(event=>event.stableTargetKey===key&&attemptAfter(attemptMap.get(event.attemptId)!,source)).at(-1);
+        if(!later&&!lastEvent.has(key))desired.set(key,{problemId,part:{...part,stableTargetKey:key},stableTargetKey:key,
+          attemptId:source.id,attemptDate:source.date,errorType:(errorsFor(source)[0]||"N"),resolved:false,
+          evidence:source.error_point||""});
       }
     }
-    const desiredRows=[...desired.values()].sort((a,b)=>a.part.id.localeCompare(b.part.id));
-    const desiredIds=desiredRows.map(row=>row.part.id);
+    const desiredRows=[...desired.values()].sort((a,b)=>a.stableTargetKey.localeCompare(b.stableTargetKey));
+    const desiredIds=desiredRows.map(row=>row.stableTargetKey);
     const desiredSource=desiredRows.map(row=>attemptMap.get(row.attemptId)).filter((row):row is Attempt=>!!row).sort(attemptOrder).at(-1);
     const latestGraduation=[...problemAttempts].filter(objectiveGraduation).sort(attemptOrder).at(-1);
     const latestAttempt=problemAttempts.at(-1);
@@ -214,11 +215,13 @@ export function analyzeReviewReconciliation(args:{
     const latestUnresolved=desiredRows.map(row=>attemptMap.get(row.attemptId)).filter((row):row is Attempt=>!!row).sort(attemptOrder).at(-1);
     const graduated=!!latestGraduation&&(!latestUnresolved||attemptOrder(latestGraduation,latestUnresolved)>0);
     const latestSuccessfulRepair=[...problemAttempts].filter(attempt=>{
-      const rows=evidenceEvents(attempt,catalog);
+      const rows=evidenceEvents(attempt,catalog,stableIndex);
       return attempt.minimum_pass_condition_met===true&&attempt.target_issue_resolved===true&&errorsFor(attempt).length===0&&
         rows.length>0&&rows.every(row=>row.resolved)&&!objectiveGraduation(attempt);
     }).sort(attemptOrder).at(-1);
     const supersedes:ProblemReconciliation["reviewsToSupersede"]=[];
+    const stableIdsForReview=(review:Review)=>stableIndex.reviewParts(review.id)
+      .map(row=>row.key).filter((key):key is string=>!!key);
 
     for(const review of active){
       const source=attemptMap.get(Number(review.source_attempt_id||review.generated_from_attempt_id||0));
@@ -245,37 +248,44 @@ export function analyzeReviewReconciliation(args:{
       for(const review of viableRepairs)supersedes.push({reviewId:review.id,category:"contradictory_review",
         reason:"現在未解決の採点対象がない"});
     }else{
-      const exact=viableRepairs.filter(review=>sameIds(partsFromContract(review).map(part=>part.id),desiredIds));
+      const exact=viableRepairs.filter(review=>sameIds(stableIdsForReview(review),desiredIds));
       const preferred=[...exact].sort((a,b)=>Number(b.source_attempt_id||b.generated_from_attempt_id)-Number(a.source_attempt_id||a.generated_from_attempt_id)||b.id-a.id)[0];
       for(const review of viableRepairs){
         if(review.id===preferred?.id)continue;
-        const ids=partsFromContract(review).map(part=>part.id);
+        const ids=stableIdsForReview(review);
         const overlap=ids.filter(id=>desired.has(id));
         supersedes.push({reviewId:review.id,
           category:viableRepairs.length>1&&sameIds(ids,desiredIds)?"duplicate_active_review":overlap.length&&overlap.length<ids.length?"partially_stale_repair":"stale_repair",
           reason:`現在の未解決targetは ${desiredIds.join(", ")}`});
       }
-      if(preferred&&desiredSource&&Number(preferred.source_attempt_id||preferred.generated_from_attempt_id)!==desiredSource.id){
+      if(preferred&&desiredSource&&Number(preferred.source_attempt_id||preferred.generated_from_attempt_id)<desiredSource.id){
         supersedes.push({reviewId:preferred.id,category:"wrong_source_review",
           reason:`最新の未解決証拠はAttempt ${desiredSource.id}`});
       }
     }
     const normalized=uniqueSupersedes(supersedes);
     const remainingRepairs=repairs.filter(row=>!normalized.some(item=>item.reviewId===row.id));
+    const remainingStableIds=remainingRepairs.length===1?stableIdsForReview(remainingRepairs[0]):[];
+    const stableKeysPersisted=remainingRepairs.length===1&&partsFromContract(remainingRepairs[0]).every(part=>
+      !!part.stableTargetKey&&part.stableTargetKey===stableIndex.reviewPart(remainingRepairs[0].id,part.id)?.key);
     const replacementRequired=!ambiguous.length&&!graduated&&desiredIds.length>0&&(repairs.length>0||latestAttemptHasUnresolved)&&
-      !(remainingRepairs.length===1&&sameIds(partsFromContract(remainingRepairs[0]).map(part=>part.id),desiredIds)&&
-        Number(remainingRepairs[0].source_attempt_id||remainingRepairs[0].generated_from_attempt_id)===desiredSource?.id);
+      !(remainingRepairs.length===1&&sameIds(remainingStableIds,desiredIds)&&stableKeysPersisted&&
+        Number(remainingRepairs[0].source_attempt_id||remainingRepairs[0].generated_from_attempt_id)>=Number(desiredSource?.id||0));
     const oldestRepairSource=repairs.map(row=>attemptMap.get(Number(row.source_attempt_id||row.generated_from_attempt_id||0)))
       .filter((row):row is Attempt=>!!row).sort(attemptOrder)[0];
     const retentionCheckRequired=!ambiguous.length&&!graduated&&desiredIds.length===0&&repairs.length>0&&delayed.length===0&&
       !!latestSuccessfulRepair&&(!oldestRepairSource||attemptAfter(latestSuccessfulRepair,oldestRepairSource));
+    const activeRepairStableIds=repairs.flatMap(stableIdsForReview);
+    const distinctActiveStableIds=new Set(activeRepairStableIds);
     if(active.length||desiredIds.length||ambiguous.length)problems.push({problemId,
       activeRepairReviewIds:repairs.map(row=>row.id),activeDelayedReviewIds:delayed.map(row=>row.id),
       desiredRepairParts:desiredRows.map(row=>row.part),desiredRepairFindings:desiredRows.map(row=>({
         graded_part_id:row.part.id,error_type:row.errorType,evidence:row.evidence,resolved:false,
       })),desiredSourceAttemptId:desiredSource?.id,reviewsToSupersede:normalized,replacementRequired,graduated,
       retentionCheckRequired,retentionSourceAttemptId:retentionCheckRequired?latestSuccessfulRepair?.id:undefined,
-      ambiguousReasons:[...new Set(ambiguous)]});
+      ambiguousReasons:[...new Set(ambiguous)],activeReviewTargetCount:repairs.reduce((sum,row)=>sum+partsFromContract(row).length,0),
+      distinctStableTargetCount:distinctActiveStableIds.size,
+      multiGenerationDuplicateCount:Math.max(0,activeRepairStableIds.length-distinctActiveStableIds.size)});
   }
 
   const allSupersedes=problems.flatMap(row=>row.reviewsToSupersede);
@@ -291,7 +301,11 @@ export function analyzeReviewReconciliation(args:{
     const problemId=canonical(task.problem_id);
     const stale=!review||!activeReview(review)||allSupersedes.some(row=>row.reviewId===review.id);
     const current=activeByProblem.get(problemId)||[];
-    if(stale&&current.length)staleTodayActions++;
+    const taskParts=task.grading_contract?.gradedParts||[];
+    const taskKeys=taskParts.map(part=>part.stableTargetKey).filter((key):key is string=>!!key);
+    const currentKeys=current.flatMap(row=>stableIndex.reviewParts(row.id).map(part=>part.key).filter((key):key is string=>!!key));
+    const targetMismatch=taskKeys.length>0&&currentKeys.length>0&&!sameIds(taskKeys,currentKeys);
+    if((stale&&current.length)||targetMismatch)staleTodayActions++;
   }
   const count=(category:ProblemReconciliation["reviewsToSupersede"][number]["category"])=>
     allSupersedes.filter(row=>row.category===category).length;
@@ -301,7 +315,12 @@ export function analyzeReviewReconciliation(args:{
     wrongSourceReviews:count("wrong_source_review"),orphanReviews:count("orphan_review"),
     graduatedButPending:count("graduated_but_pending"),staleDelayedChecks:count("stale_delayed_check"),staleTodayActions,
     replacementsRequired:problems.filter(row=>row.replacementRequired||row.retentionCheckRequired).length,
-    ambiguousProblems:problems.filter(row=>row.ambiguousReasons.length).length};
+    ambiguousProblems:problems.filter(row=>row.ambiguousReasons.length).length,
+    stableIdentityTargetCount:stableIndex.stableTargetCount,
+    stableIdentityGenerationsUnified:stableIndex.unifiedGenerationCount,
+    duplicateStableTargets:problems.reduce((sum,row)=>sum+row.multiGenerationDuplicateCount,0),
+    currentReviewMismatches:problems.filter(row=>row.replacementRequired).length,
+    orphanActiveTargets:problems.reduce((sum,row)=>sum+row.ambiguousReasons.length,0)};
 }
 
 export function reconciliationForProblem(audit:ReconciliationAudit,problemId:string,aliases:ProblemAlias[]=[]){

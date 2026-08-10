@@ -3,6 +3,7 @@ import { resolveCanonicalProblemId } from "./examReadiness.ts";
 import { addCalendarDays, resolveReviewSchedule } from "./reviewSchedulePolicy.ts";
 import { isActionableReview, validateGradingContract } from "./gradingContract.ts";
 import { analyzeReviewReconciliation, type ReconciliationAudit } from "./reviewReconciliation.ts";
+import {buildStableTargetIndex} from "./stableTargetIdentity.ts";
 
 export const ACTIVE_REVIEW_STATUSES = new Set(["pending", "overdue"]);
 
@@ -67,7 +68,7 @@ export function logicalReviewKey(args: {
   const mode = contract?.mode || review.effective_mode || review.inferred_mode || "";
   const scope = contract?.reviewScope || review.effective_review_scope || review.review_scope || "";
   const targetKind = contract?.targetKind || review.target_kind || "";
-  const gradedPartIds = [...(contract?.gradedParts.map((part) => part.id) || review.graded_part_ids || [])].sort();
+  const gradedPartIds = [...(contract?.gradedParts.map((part) => part.stableTargetKey||part.stable_target_key||part.id) || review.graded_part_ids || [])].sort();
   const sourceKey = sourceAttempt?.submission_id
     ? `submission:${sourceAttempt.submission_id}`
     : `attempt:${canonicalAttemptId(sourceAttempt) || review.source_attempt_id || review.generated_from_attempt_id || 0}`;
@@ -161,7 +162,8 @@ export type IntegrityCategory =
   | "expired_same_session" | "date_interval_mismatch" | "source_target_mismatch"
   | "contract_top_level_mismatch" | "stale_today_snapshot" | "unstable_graded_part"
   | "stale_review_after_success" | "partially_stale_review" | "stale_delayed_check"
-  | "graduated_but_pending" | "obsolete_today_action";
+  | "graduated_but_pending" | "obsolete_today_action" | "duplicate_stable_target"
+  | "stale_stable_target" | "current_review_target_mismatch" | "orphan_active_target";
 
 export type IntegrityIssue = {
   category: IntegrityCategory;
@@ -196,6 +198,7 @@ export function runIntegrityAudit(args: {
   const reviewsById = new Map(reviews.map((row) => [row.id, row]));
   const active = reviews.filter((row) => ACTIVE_REVIEW_STATUSES.has(row.status));
   const reconciliation=analyzeReviewReconciliation({attempts,reviews,aliases,today,todayPlanSnapshots});
+  const stableTargets=buildStableTargetIndex({attempts,reviews,aliases});
 
   for (const duplicate of classifyExactDuplicateAttempts(attempts)) {
     const classified = attemptsById.get(duplicate.duplicateAttemptId)?.duplicate_of_attempt_id === duplicate.canonicalAttemptId;
@@ -252,19 +255,12 @@ export function runIntegrityAudit(args: {
         if (/^target_[a-z0-9]+$/.test(part.id)) issues.push({ category: "unstable_graded_part", severity: "history",
           reviewIds: [review.id], detail: `Review ${review.id} retains fixed legacy part id ${part.id}`, repairable: false });
       }
-    }
-    const purpose=contract?.learningPurpose||review.learning_purpose;
-    if(["error_repair","retrieval_check"].includes(String(purpose||""))&&source){
-      const reviewParts=new Set(contract?.gradedParts.map(part=>part.id)||review.graded_part_ids||[]);
-      const newerSuccess=attempts.find(attempt=>
-        attempt.id>source.id&&resolveCanonicalProblemId(attempt.problem_id,aliases)===
-          resolveCanonicalProblemId(review.problem_id,aliases)&&
-        (attempt.minimum_pass_condition_met===true||attempt.target_issue_resolved===true||
-          (attempt.error_types||[]).every(error=>error==="none"))&&
-        reviewParts.size>0&&[...reviewParts].every(part=>(attempt.graded_part_ids||[]).includes(part))
-      );
-      if(newerSuccess)issues.push({category:"stale_review_after_success",severity:"active",reviewIds:[review.id],
-        attemptIds:[newerSuccess.id],detail:`Review ${review.id} was resolved by newer Attempt ${newerSuccess.id}`,repairable:true});
+      const stableRows=stableTargets.reviewParts(review.id);
+      const stableKeys=stableRows.map(row=>row.key).filter((key):key is string=>!!key);
+      if(stableRows.some(row=>row.ambiguous))issues.push({category:"orphan_active_target",severity:"active",
+        reviewIds:[review.id],detail:`Review ${review.id} has a target without explicit lineage`,repairable:false});
+      if(new Set(stableKeys).size<stableKeys.length)issues.push({category:"duplicate_stable_target",severity:"active",
+        reviewIds:[review.id],detail:`Review ${review.id} contains multiple generations of the same stable target`,repairable:true});
     }
   }
 
@@ -289,7 +285,17 @@ export function runIntegrityAudit(args: {
   }
 
   const reviewMap=new Map(reviews.map(row=>[row.id,row]));
-  for(const problem of reconciliation.problems)for(const action of problem.reviewsToSupersede){
+  for(const problem of reconciliation.problems){
+    if(problem.multiGenerationDuplicateCount>0&&!issues.some(issue=>issue.category==="duplicate_stable_target"&&
+      issue.reviewIds?.some(id=>problem.activeRepairReviewIds.includes(id))))issues.push({category:"duplicate_stable_target",severity:"active",
+      reviewIds:problem.activeRepairReviewIds,detail:`${problem.problemId} has ${problem.multiGenerationDuplicateCount} duplicate target generations`,repairable:true});
+    if(problem.replacementRequired)issues.push({category:"current_review_target_mismatch",severity:"active",
+      reviewIds:problem.activeRepairReviewIds,attemptIds:problem.desiredSourceAttemptId?[problem.desiredSourceAttemptId]:undefined,
+      detail:`${problem.problemId} current Review does not match the unresolved stable target set`,repairable:true});
+    for(const reason of problem.ambiguousReasons)if(!issues.some(issue=>issue.category==="orphan_active_target"&&
+      issue.reviewIds?.some(id=>problem.activeRepairReviewIds.includes(id))))issues.push({category:"orphan_active_target",severity:"active",
+        reviewIds:problem.activeRepairReviewIds,detail:`${problem.problemId}: ${reason}`,repairable:false});
+    for(const action of problem.reviewsToSupersede){
     const review=reviewMap.get(action.reviewId);
     const category:IntegrityCategory=action.category==="partially_stale_repair"?"partially_stale_review":
       action.category==="stale_delayed_check"?"stale_delayed_check":
@@ -298,6 +304,10 @@ export function runIntegrityAudit(args: {
     issues.push({category,severity:"active",reviewIds:[action.reviewId],
       attemptIds:[Number(review?.source_attempt_id||review?.generated_from_attempt_id||0),problem.desiredSourceAttemptId||0].filter(Boolean),
       detail:`${problem.problemId} / Review ${action.reviewId}: ${action.reason}`,repairable:action.category!=="orphan_review"});
+    if(["stale_repair","partially_stale_repair","contradictory_review"].includes(action.category))issues.push({
+      category:"stale_stable_target",severity:"active",reviewIds:[action.reviewId],
+      detail:`${problem.problemId} active Review retains a target contradicted by stable evidence`,repairable:true});
+    }
   }
   for(let index=0;index<reconciliation.staleTodayActions;index++)issues.push({
     category:"obsolete_today_action",severity:"history",detail:"Today Planの保存枠を現在のactive Reviewへ表示同期する必要があります",repairable:false,
@@ -309,6 +319,7 @@ export function runIntegrityAudit(args: {
     "source_target_mismatch", "contract_top_level_mismatch", "stale_today_snapshot",
     "unstable_graded_part", "stale_review_after_success", "partially_stale_review",
     "stale_delayed_check", "graduated_but_pending", "obsolete_today_action",
+    "duplicate_stable_target", "stale_stable_target", "current_review_target_mismatch", "orphan_active_target",
   ];
   const counts = Object.fromEntries(categories.map((category) =>
     [category, issues.filter((issue) => issue.category === category).length])) as Record<IntegrityCategory, number>;

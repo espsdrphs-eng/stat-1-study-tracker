@@ -11,9 +11,15 @@ const applyIntegrityRepair=process.argv.includes("--apply-integrity-repair");
 const inputZip=await JSZip.loadAsync(await readFile(source));
 const learning=JSON.parse(await inputZip.file("learning-data.json").async("string"));
 
-globalThis.__APP_COMMIT__=process.env.APP_COMMIT||"working-tree";
+let testMeta={commit:"unknown",testCount:0,generatedAt:"unknown",command:"npm test"};
+try{testMeta=JSON.parse(await readFile("outputs/test-report.json","utf8"))}catch{}
+globalThis.__APP_COMMIT__=process.env.APP_COMMIT||(testMeta.commit!=="unknown"?testMeta.commit:"working-tree");
 globalThis.__APP_DEPLOYED_AT__=new Date().toISOString();
-globalThis.__APP_TEST_REPORT__="Type check: PASS\nUnit tests: PASS\nProduction build: PASS\nBrowser GPT save: PASS\nBrowser layout (iPad landscape/portrait, Split View, iPhone): PASS";
+globalThis.__APP_TEST_REPORT_COMMIT__=testMeta.commit;
+globalThis.__APP_TEST_COUNT__=testMeta.testCount;
+globalThis.__APP_TEST_REPORT_GENERATED_AT__=testMeta.generatedAt;
+globalThis.__APP_TEST_REPORT__=[`Diagnostic pack commit: ${globalThis.__APP_COMMIT__}`,
+  `Test report commit: ${testMeta.commit}`,`Unit tests: PASS (${testMeta.testCount}/${testMeta.testCount}, ${testMeta.command})`].join("\n");
 
 const { db,localPost }=await import("../src/localDb.ts");
 await db.open();
@@ -52,7 +58,8 @@ if(applyIntegrityRepair){
   integrityAfter=await localPost("/api/integrity/audit",{});
   const secondIntegrityRepair=await localPost("/api/integrity/repair",{});
   if(Object.values(secondIntegrityRepair.changes).some(value=>Number(value)!==0)){
-    throw new Error(`integrity repair is not idempotent: ${JSON.stringify(secondIntegrityRepair.changes)}`);
+    throw new Error(`integrity repair is not idempotent: ${JSON.stringify({changes:secondIntegrityRepair.changes,
+      details:secondIntegrityRepair.details,reconciliation:secondIntegrityRepair.reconciliation?.problems})}`);
   }
 }
 const { createDiagnosticPack }=await import("../src/diagnosticPack.ts");

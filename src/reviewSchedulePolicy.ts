@@ -112,7 +112,7 @@ function sourceAttemptFor(review:Review,attempts:Attempt[]){
 }
 
 function contractPartIds(review:Review){
-  const values=review.grading_contract?.gradedParts?.map(part=>part.id)||
+  const values=review.grading_contract?.gradedParts?.map(part=>part.stableTargetKey||part.stable_target_key||part.id)||
     review.graded_part_ids||review.graded_parts||[];
   return [...new Set(values.map(String).filter(Boolean))].sort();
 }
