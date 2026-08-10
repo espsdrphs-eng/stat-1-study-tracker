@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import "fake-indexeddb/auto";
 
 const {db,localGet,localPost}=await import("../src/localDb.ts");
+const {todayString}=await import("../src/importParser.ts");
 
 const part=(id)=>({id,label:id,cueLabel:id,allowedErrorTypes:["K","W","N","C","none"],completionCriterionId:`criterion-${id}`});
 const contract=(reviewId,ids)=>({
@@ -17,6 +18,7 @@ const contract=(reviewId,ids)=>({
 const finding=(id,error="N",resolved=false)=>({graded_part_id:id,error_type:error,evidence:`${id}-evidence`,resolved});
 
 test("safe integrity repair replaces a partially stale repair and hydrates Today action without rewriting snapshot",async()=>{
+  const today=todayString();
   await localGet("/api/bootstrap");
   await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.meta],async()=>{
     await Promise.all([db.attempts.clear(),db.reviews.clear(),db.weakNotes.clear()]);
@@ -36,21 +38,21 @@ test("safe integrity repair replaces a partially stale repair and hydrates Today
         minimum_pass_condition_met:false,target_issue_resolved:false},
     ]);
     const grading=contract(10,["A","B","C","D"]);
-    await db.reviews.add({id:10,problem_id:"WB-4-A-29",due_date:"2026-08-10",review_type:"targeted_patch",status:"pending",
+    await db.reviews.add({id:10,problem_id:"WB-4-A-29",due_date:today,review_type:"targeted_patch",status:"pending",
       generated_from_attempt_id:1,source_attempt_id:1,source_date:"2026-08-01",review_after_days:9,interval_days:9,
       schedule_origin:"policy",learning_purpose:"error_repair",learning_stage:"repair",assessment_timing:"delayed_retrieval",
       effective_mode:"skeleton",review_scope:"targeted_patch",sheet_type:"skeleton_sheet",target_kind:"mathematical_patch",
       targeted_parts:["A","B","C","D"],graded_part_ids:["A","B","C","D"],grading_contract:grading,
       contract_id:grading.contractId,contract_version:grading.contractVersion,contract_hash:grading.contractHash,
       policy_version:"STAT1-LEARNING-v1",origin:"direct_attempt",origin_verified:true});
-    const snapshot={date:"2026-08-10",task_ids:["review:10"],start_of_day_planned_minutes:10,
+    const snapshot={date:today,task_ids:["review:10"],start_of_day_planned_minutes:10,
       initial_bucket:{"review:10":"must"},initial_estimated_minutes:{"review:10":10},created_at:"fixture",
       tasks:[{id:10,problem_id:"WB-4-A-29",title:"第4章A問29",kind:"復習",reason:"old action",mode:"skeleton",
         minutes:10,load:.5,review_type:"targeted_patch",triage:"must",targeted_parts:["A","B","C","D"],grading_contract:grading}]};
-    await db.meta.put({key:"today-plan-snapshot:2026-08-10",value:JSON.stringify(snapshot)});
+    await db.meta.put({key:`today-plan-snapshot:${today}`,value:JSON.stringify(snapshot)});
   });
 
-  const snapshotBefore=(await db.meta.get("today-plan-snapshot:2026-08-10")).value;
+  const snapshotBefore=(await db.meta.get(`today-plan-snapshot:${today}`)).value;
   const preview=await localPost("/api/integrity/preview",{});
   assert.equal(preview.changes.staleReviewsSuperseded,1);
   assert.equal(preview.changes.reviewsReplaced,1);
@@ -63,7 +65,7 @@ test("safe integrity repair replaces a partially stale repair and hydrates Today
   const active=rows.filter(row=>["pending","overdue"].includes(row.status));
   assert.equal(active.length,1);
   assert.deepEqual(active[0].grading_contract.gradedParts.map(row=>row.id).sort(),["C","E"]);
-  assert.equal((await db.meta.get("today-plan-snapshot:2026-08-10")).value,snapshotBefore);
+  assert.equal((await db.meta.get(`today-plan-snapshot:${today}`)).value,snapshotBefore);
   const bootstrap=await localGet("/api/bootstrap");
   assert.equal(bootstrap.today.tasks.length,1);
   assert.equal(bootstrap.today.tasks[0].id,active[0].id);
