@@ -37,8 +37,15 @@ This document is the implementation-level source of truth for data integrity. Le
 - Current unresolved targets are reconstructed per stable target identity from the newest evidence that actually graded
   that target. The identity comes from a known grading slot or explicit Review lineage, never an Attempt ID, fuzzy text,
   or error-type similarity. A newer targeted Attempt never resolves omitted targets by implication.
+- A persisted dynamic stable target uses `target:<problemId>:root:<opaque UUID>`. Its value contains no Review,
+  Attempt, submission, or Attempt-specific graded-part identity. `target:<problemId>:review:...`, `:attempt:...`, and
+  `:submission:...` are legacy-invalid keys: they are audit evidence only and never lineage anchors.
+- An existing target inherits the exact same root through Review -> Attempt -> successor Review for every generation.
+  A new root may be issued only for a genuinely new target and only at the persistence boundary; pure audit, resolver,
+  prompt, and render paths never issue roots.
 - An active error repair contains at most one item per stable target identity. Attempt-specific graded-part IDs remain
-  immutable history and may be backfilled only into the current contract through deterministic lineage.
+  immutable history. Explicit lineage components without a valid root are backfilled into the current contract with one
+  opaque root only after preview and explicit safe repair; ambiguous components are not merged.
 - A partially stale repair is kept as immutable history and replaced by one Review containing only still-unassessed or
   currently unresolved parts. Old action prose and derived fields are not copied into the replacement.
 - Reconciliation runs after Attempt save/import/edit/delete and Review completion. It is idempotent and keeps at most

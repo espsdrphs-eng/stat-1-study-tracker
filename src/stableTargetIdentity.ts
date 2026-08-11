@@ -4,11 +4,16 @@ import {resolveCanonicalProblemId} from "./examReadiness.ts";
 type OwnerKind="attempt"|"review";
 type Node={
   nodeId:string;ownerKind:OwnerKind;ownerId:number;problemId:string;index:number;
-  rawId:string;part:GradedPartContract;persistedKey?:string;knownKey?:string;
+  rawId:string;part:GradedPartContract;persistedKey?:string;validPersistedKey?:string;knownKey?:string;
 };
 
 export type StableTargetResolution={
-  key?:string;rawId:string;part:GradedPartContract;ambiguous:boolean;reason?:string;
+  /** A valid key already persisted in the lineage. Never an audit-only component id. */
+  key?:string;
+  /** Identity used while replaying this lineage. It is never written to IndexedDB. */
+  identityKey?:string;
+  rawId:string;part:GradedPartContract;ambiguous:boolean;needsBackfill:boolean;
+  invalidPersistedKeys:string[];reason?:string;
 };
 
 export type StableTargetIndex={
@@ -17,18 +22,53 @@ export type StableTargetIndex={
   attemptParts:(attemptId:number)=>StableTargetResolution[];
   reviewParts:(reviewId:number)=>StableTargetResolution[];
   stableTargetCount:number;ambiguousTargetCount:number;unifiedGenerationCount:number;
+  invalidPersistedKeyCount:number;
 };
 
 const LEGACY_DYNAMIC=/^(?:part:[^:]+:\d+:\d+|target_[a-z0-9]+)$/i;
+const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const stableSlotKey=(problemId:string,id:string)=>`target:${problemId}:slot:${id}`;
+
+function dynamicPartReference(rawId:string){
+  const match=/^part:(.+):(\d+):(\d+)$/.exec(rawId);
+  return match?{problemId:match[1],sourceAttemptId:Number(match[2]),slot:Number(match[3])}:undefined;
+}
 
 export function isKnownStablePartId(id:string){
   return !!id&&!LEGACY_DYNAMIC.test(id);
 }
 
+/**
+ * Stable keys have exactly two supported origins: a canonical registry slot or
+ * an opaque persistent root. Review, Attempt and submission identities are
+ * deliberately not valid, even when an older build persisted them.
+ */
+export function isValidStableTargetKey(problemId:string,value:unknown):value is string{
+  const key=String(value||"");
+  const slotPrefix=`target:${problemId}:slot:`;
+  const rootPrefix=`target:${problemId}:root:`;
+  if(key.startsWith(slotPrefix)){
+    const id=key.slice(slotPrefix.length);
+    return isKnownStablePartId(id)&&!id.includes(":review:")&&!id.includes(":attempt:")&&!id.includes(":submission:");
+  }
+  return key.startsWith(rootPrefix)&&UUID.test(key.slice(rootPrefix.length));
+}
+
+export function issueStableTargetKey(problemId:string){
+  return `target:${problemId}:root:${crypto.randomUUID()}`;
+}
+
 export function stableTargetKeyForPart(problemId:string,part:GradedPartContract){
-  return part.stableTargetKey||part.stable_target_key||
-    (isKnownStablePartId(part.id)?stableSlotKey(problemId,part.id):undefined);
+  const persisted=part.stableTargetKey||part.stable_target_key;
+  if(isValidStableTargetKey(problemId,persisted))return persisted;
+  return isKnownStablePartId(part.id)?stableSlotKey(problemId,part.id):undefined;
+}
+
+export function withStableTargetKey(part:GradedPartContract,key:string|undefined){
+  const normalized={...part};
+  delete normalized.stableTargetKey;
+  delete normalized.stable_target_key;
+  return key?{...normalized,stableTargetKey:key}:normalized;
 }
 
 function partsFromAttempt(attempt:Attempt):GradedPartContract[]{
@@ -64,8 +104,10 @@ function partsFromReview(review:Review):GradedPartContract[]{
 }
 
 /**
- * Builds target identity only from persisted slots and explicit Review lineage.
- * It intentionally never compares labels, error text, or error type similarity.
+ * Builds lineage only from persisted slots and explicit Review/Attempt links.
+ * Labels, error text and error type similarity are never identity evidence.
+ * Audit-only component ids may contain row ids; they are never exposed as a
+ * stableTargetKey and are replaced by one opaque root during an explicit repair.
  */
 export function buildStableTargetIndex(args:{
   attempts:Attempt[];reviews:Review[];aliases?:ProblemAlias[];
@@ -75,90 +117,123 @@ export function buildStableTargetIndex(args:{
   const nodes:Node[]=[];
   for(const attempt of args.attempts){
     const problemId=canonical(attempt.problem_id);
-    partsFromAttempt(attempt).forEach((part,index)=>nodes.push({nodeId:`a:${attempt.id}:${index}`,ownerKind:"attempt",
-      ownerId:attempt.id,problemId,index,rawId:part.id,part,persistedKey:part.stableTargetKey||part.stable_target_key,
-      knownKey:isKnownStablePartId(part.id)?stableSlotKey(problemId,part.id):undefined}));
+    partsFromAttempt(attempt).forEach((part,index)=>{
+      const persistedKey=part.stableTargetKey||part.stable_target_key;
+      const validPersistedKey=isValidStableTargetKey(problemId,persistedKey)?persistedKey:undefined;
+      nodes.push({nodeId:`a:${attempt.id}:${index}`,ownerKind:"attempt",ownerId:attempt.id,problemId,index,
+        rawId:part.id,part,persistedKey,validPersistedKey,
+        knownKey:!validPersistedKey&&isKnownStablePartId(part.id)?stableSlotKey(problemId,part.id):undefined});
+    });
   }
   for(const review of args.reviews){
     const problemId=canonical(review.problem_id);
-    partsFromReview(review).forEach((part,index)=>nodes.push({nodeId:`r:${review.id}:${index}`,ownerKind:"review",
-      ownerId:review.id,problemId,index,rawId:part.id,part,persistedKey:part.stableTargetKey||part.stable_target_key,
-      knownKey:isKnownStablePartId(part.id)?stableSlotKey(problemId,part.id):undefined}));
+    partsFromReview(review).forEach((part,index)=>{
+      const persistedKey=part.stableTargetKey||part.stable_target_key;
+      const validPersistedKey=isValidStableTargetKey(problemId,persistedKey)?persistedKey:undefined;
+      nodes.push({nodeId:`r:${review.id}:${index}`,ownerKind:"review",ownerId:review.id,problemId,index,
+        rawId:part.id,part,persistedKey,validPersistedKey,
+        knownKey:!validPersistedKey&&isKnownStablePartId(part.id)?stableSlotKey(problemId,part.id):undefined});
+    });
   }
   const parent=new Map(nodes.map(node=>[node.nodeId,node.nodeId]));
+  const conflicts=new Map<string,Set<string>>();
   const find=(id:string):string=>{
     const current=parent.get(id)!;
     if(current===id)return id;
     const root=find(current);parent.set(id,root);return root;
   };
   const anchors=(root:string)=>nodes.filter(node=>find(node.nodeId)===root)
-    .flatMap(node=>[node.persistedKey,node.knownKey].filter((value):value is string=>!!value));
+    .flatMap(node=>[node.validPersistedKey,node.knownKey].filter((value):value is string=>!!value));
+  const recordConflict=(left:string,right:string,keys:Set<string>)=>{
+    const message=`conflicting stable target keys: ${[...keys].sort().join(", ")}`;
+    for(const root of [left,right])conflicts.set(root,new Set([...(conflicts.get(root)||[]),message]));
+  };
   const union=(left:Node|undefined,right:Node|undefined)=>{
     if(!left||!right||left.problemId!==right.problemId)return;
     const a=find(left.nodeId),b=find(right.nodeId);if(a===b)return;
     const keys=new Set([...anchors(a),...anchors(b)]);
-    if(keys.size>1)return;
+    if(keys.size>1){recordConflict(a,b,keys);return;}
     parent.set(b,a);
+    if(conflicts.has(b))conflicts.set(a,new Set([...(conflicts.get(a)||[]),...conflicts.get(b)!]));
   };
   const byProblemRaw=new Map<string,Node[]>();
   for(const node of nodes){
     const key=`${node.problemId}|${node.rawId}`;
     byProblemRaw.set(key,[...(byProblemRaw.get(key)||[]),node]);
   }
-  // Persisted raw IDs are an explicit slot reference; equal IDs are not fuzzy matching.
+  // Exact stored IDs are explicit references, not fuzzy text matching.
   for(const rows of byProblemRaw.values())for(const node of rows.slice(1))union(rows[0],node);
+  // A persisted opaque root is the strongest explicit lineage evidence. It is
+  // allowed to survive a later raw-id/label change, so connect equal roots
+  // before replaying Review -> Attempt transitions.
+  const byPersistedRoot=new Map<string,Node[]>();
+  for(const node of nodes)if(node.validPersistedKey){
+    const key=`${node.problemId}|${node.validPersistedKey}`;
+    byPersistedRoot.set(key,[...(byPersistedRoot.get(key)||[]),node]);
+  }
+  for(const rows of byPersistedRoot.values())for(const node of rows.slice(1))union(rows[0],node);
   const attemptNodes=(id:number)=>nodes.filter(node=>node.ownerKind==="attempt"&&node.ownerId===id);
   const reviewNodes=(id:number)=>nodes.filter(node=>node.ownerKind==="review"&&node.ownerId===id);
   const attemptMap=new Map(args.attempts.map(row=>[row.id,row]));
   const reviewMap=new Map(args.reviews.map(row=>[row.id,row]));
-  const unionPositionally=(left:Node[],right:Node[])=>{
-    if(left.length&&left.length===right.length)left.forEach((node,index)=>union(node,right[index]));
-  };
-  // An Attempt made from a Review evaluates that Review's contract slots.
+  // An Attempt made from a Review evaluates that exact contract.
   for(const attempt of args.attempts){
     const sourceReview=reviewMap.get(Number(attempt.source_review_id||attempt.generated_from_review_id||0));
     if(!sourceReview)continue;
     const left=attemptNodes(attempt.id),right=reviewNodes(sourceReview.id);
     for(const node of left)union(node,right.find(item=>item.rawId===node.rawId));
-    unionPositionally(left,right);
   }
-  // A successor Review is generated from the unresolved slots of its source Attempt.
+  // A successor Review inherits only the unresolved slots explicitly carried by its source Attempt.
   for(const review of args.reviews){
     const source=attemptMap.get(Number(review.source_attempt_id||review.generated_from_attempt_id||0));
     if(!source)continue;
     const target=reviewNodes(review.id),allSource=attemptNodes(source.id);
     for(const node of target)union(node,allSource.find(item=>item.rawId===node.rawId));
-    const unresolvedIds=(source.graded_findings||[])
-      .filter(row=>!row.resolved&&row.error_type!=="none").map(row=>row.graded_part_id);
-    const unresolved=unresolvedIds.map(id=>allSource.find(node=>node.rawId===id)).filter((node):node is Node=>!!node);
-    if(unresolved.length===target.length)unionPositionally(target,unresolved);
-    else if(allSource.length===target.length)unionPositionally(target,allSource);
+    // Legacy dynamic ids encode an explicit source-Attempt generation and slot:
+    // part:<problem>:<sourceAttemptId>:<slot>. When a successor Review expands
+    // the contract, only slots that also existed in the source Attempt inherit
+    // lineage; additional slots are genuinely new targets. This is structural
+    // lineage, never label/error-text similarity.
+    for(const node of target){
+      const reference=dynamicPartReference(node.rawId);
+      if(!reference||canonical(reference.problemId)!==node.problemId||reference.sourceAttemptId!==source.id)continue;
+      const inherited=allSource.find(candidate=>dynamicPartReference(candidate.rawId)?.slot===reference.slot);
+      union(node,inherited);
+    }
   }
   const components=new Map<string,Node[]>();
   for(const node of nodes){const root=find(node.nodeId);components.set(root,[...(components.get(root)||[]),node]);}
+  const ordered=[...components.entries()].sort(([,left],[,right])=>left[0].problemId.localeCompare(right[0].problemId)||
+    left.map(row=>row.nodeId).sort()[0].localeCompare(right.map(row=>row.nodeId).sort()[0]));
   const result=new Map<string,StableTargetResolution>();
   let ambiguousTargetCount=0,unifiedGenerationCount=0;
-  for(const rows of components.values()){
-    const explicit=[...new Set(rows.flatMap(node=>[node.persistedKey,node.knownKey].filter((v):v is string=>!!v)))];
-    let key:string|undefined,reason:string|undefined;
-    if(explicit.length===1)key=explicit[0];
+  ordered.forEach(([componentRoot,rows],componentIndex)=>{
+    const explicit=[...new Set(rows.flatMap(node=>[node.validPersistedKey,node.knownKey].filter((v):v is string=>!!v)))];
+    const invalidPersistedKeys=[...new Set(rows.flatMap(node=>node.persistedKey&&!node.validPersistedKey?[node.persistedKey]:[]))];
+    const conflictReasons=[...new Set([...(conflicts.get(componentRoot)||[])])];
+    let key:string|undefined,identityKey:string|undefined,reason:string|undefined;
+    if(conflictReasons.length)reason=conflictReasons.join(" / ");
+    else if(explicit.length===1){key=explicit[0];identityKey=key;}
     else if(explicit.length>1)reason=`conflicting stable target keys: ${explicit.join(", ")}`;
-    else{
-      const reviewRoot=[...rows].filter(node=>node.ownerKind==="review")
-        .sort((a,b)=>a.ownerId-b.ownerId||a.index-b.index)[0];
-      if(reviewRoot)key=`target:${reviewRoot.problemId}:review:${reviewRoot.ownerId}:slot:${reviewRoot.index+1}`;
-      else{
-        const withSubmission=[...rows].map(node=>node.ownerKind==="attempt"?attemptMap.get(node.ownerId):undefined)
-          .find(attempt=>!!attempt?.submission_id);
-        if(withSubmission)key=`target:${rows[0].problemId}:submission:${withSubmission.submission_id}:slot:${rows[0].index+1}`;
-        else reason="explicit lineage or stable slot is missing";
-      }
+    else if(rows.length>1)identityKey=`lineage:${rows[0].problemId}:${componentIndex+1}`;
+    else {
+      const only=rows[0],review=only.ownerKind==="review"?reviewMap.get(only.ownerId):undefined;
+      const reference=dynamicPartReference(only.rawId);
+      // A current Review part whose dynamic id explicitly names its own source
+      // Attempt is a newly introduced target, not an ambiguous historical
+      // generation. Repair may mint its first opaque root exactly once.
+      if(review&&["pending","overdue"].includes(String(review.status||""))&&reference&&
+        canonical(reference.problemId)===only.problemId&&
+        reference.sourceAttemptId===Number(review.source_attempt_id||review.generated_from_attempt_id||0)){
+        identityKey=`lineage:${rows[0].problemId}:${componentIndex+1}`;
+      }else reason="explicit lineage or stable slot is missing";
     }
     if(rows.length>1)unifiedGenerationCount+=rows.length-1;
-    if(!key)ambiguousTargetCount++;
-    for(const node of rows)result.set(node.nodeId,{key,rawId:node.rawId,
-      part:key?{...node.part,stableTargetKey:key}:node.part,ambiguous:!key,reason});
-  }
+    if(!identityKey)ambiguousTargetCount++;
+    for(const node of rows)result.set(node.nodeId,{key,identityKey,rawId:node.rawId,
+      part:withStableTargetKey(node.part,key),ambiguous:!identityKey,needsBackfill:!!identityKey&&!key,
+      invalidPersistedKeys,reason});
+  });
   const ownerRows=(kind:OwnerKind,id:number)=>nodes.filter(node=>node.ownerKind===kind&&node.ownerId===id)
     .map(node=>result.get(node.nodeId)!).filter(Boolean);
   const ownerPart=(kind:OwnerKind,id:number,rawId:string)=>{
@@ -168,7 +243,8 @@ export function buildStableTargetIndex(args:{
   return {
     attemptPart:(id,raw)=>ownerPart("attempt",id,raw),reviewPart:(id,raw)=>ownerPart("review",id,raw),
     attemptParts:id=>ownerRows("attempt",id),reviewParts:id=>ownerRows("review",id),
-    stableTargetCount:new Set([...result.values()].map(row=>row.key).filter(Boolean)).size,
+    stableTargetCount:new Set([...result.values()].map(row=>row.identityKey).filter(Boolean)).size,
     ambiguousTargetCount,unifiedGenerationCount,
+    invalidPersistedKeyCount:nodes.filter(node=>!!node.persistedKey&&!node.validPersistedKey).length,
   };
 }

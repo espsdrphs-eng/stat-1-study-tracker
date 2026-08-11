@@ -5,16 +5,20 @@ import "fake-indexeddb/auto";
 const {db,localGet,localPost}=await import("../src/localDb.ts");
 const {todayString}=await import("../src/importParser.ts");
 
-const part=(id)=>({id,label:id,cueLabel:id,allowedErrorTypes:["K","W","N","C","none"],completionCriterionId:`criterion-${id}`});
-const contract=(reviewId,ids)=>({
+const part=(id,stableTargetKey,label=id)=>({id,label,cueLabel:label,allowedErrorTypes:["K","W","N","C","none"],
+  completionCriterionId:`criterion-${id}`,...(stableTargetKey?{stableTargetKey}:{})});
+const contract=(reviewId,ids)=>{
+  const parts=ids.map(row=>typeof row==="string"?part(row):row);
+  return ({
   contractId:`review:${reviewId}:1`,contractVersion:"STAT1-CONTRACT-v2",contractHash:`hash-${reviewId}-${ids.join("-")}`,
   createdAt:"2026-08-01T00:00:00Z",problemId:"WB-4-A-29",reviewId,sourceReviewId:reviewId,sourceAttemptId:1,
   learningPurpose:"error_repair",learningStage:"repair",mode:"skeleton",reviewScope:"targeted_patch",
-  targetKind:"mathematical_patch",targetedParts:ids,gradedParts:ids.map(part),
+  targetKind:"mathematical_patch",targetedParts:parts.map(row=>row.label),gradedParts:parts,
   explicitlyOutOfScopePartIds:[],explicitlyOutOfScopeParts:["対象外"],completionCriteria:[{id:"repair",displayText:"再現"}],
-  hiddenAnswerKey:[],completionConditions:["再現"],requiredEvidence:ids,allowedErrorTypes:["K","W","N","C"],
+  hiddenAnswerKey:[],completionConditions:["再現"],requiredEvidence:parts.map(row=>row.label),allowedErrorTypes:["K","W","N","C"],
   requiresKEvidence:true,allowedReferenceLevel:0,estimatedMinutes:10,sheetType:"skeleton_sheet",
-});
+  });
+};
 const finding=(id,error="N",resolved=false)=>({graded_part_id:id,error_type:error,evidence:`${id}-evidence`,resolved});
 
 test("safe integrity repair replaces a partially stale repair and hydrates Today action without rewriting snapshot",async()=>{
@@ -56,7 +60,7 @@ test("safe integrity repair replaces a partially stale repair and hydrates Today
   const preview=await localPost("/api/integrity/preview",{});
   assert.equal(preview.changes.staleReviewsSuperseded,1);
   assert.equal(preview.changes.reviewsReplaced,1);
-  assert.equal(preview.changes.todayActionsUpdated,1);
+  assert.equal(preview.changes.todayActionsUpdated,0);
   await assert.rejects(()=>localPost("/api/reviews/10/contract-lock",{}),/最新答案/);
   await assert.rejects(()=>localPost("/api/reviews/10/reference",{actual_reference_level:1}),/最新答案/);
   await localPost("/api/integrity/repair",{});
@@ -104,4 +108,91 @@ test("stable-key backfill hydrates the same pending Review and is idempotent",as
   const second=await localPost("/api/integrity/repair",{});
   assert.equal(Object.values(second.changes).every(value=>Number(value)===0),true);
   assert.equal(await db.reviews.count(),beforeCount);
+});
+
+test("production-style review-id roots reconcile WB-4-A-29 from ten rows to four and backfill once",async()=>{
+  const today=todayString(),problemId="WB-4-A-29";
+  const legacy=(reviewId,index)=>`target:${problemId}:review:${reviewId}:slot:${index}`;
+  const rows=(generation,reviewId,slots)=>slots.map(slot=>
+    part(`part:${problemId}:${generation}:${slot}`,legacy(reviewId,slot),`target-${slot}`));
+  const withPit=(generation,reviewId,slots)=>[
+    ...rows(generation,reviewId,slots),
+    part("probability_integral_transform_explanation",legacy(reviewId,slots.length+1),"PIT explanation"),
+  ];
+  const p93=rows(93,286,[1,2]);
+  const p119=withPit(119,296,[1,2,3,4,5,7]);
+  const p136=withPit(136,313,[1,2,3,4,5,7,8]);
+  const p150=withPit(150,327,[1,2,3,4,5,7,8]);
+  const attemptRow=(id,parts,findings,sourceReviewId)=>({id,problem_id:problemId,date:`2026-08-${id===172?11:id===150?8:id===119?5:1}`,
+    mode:"check",time_minutes:5,mark:"△",score_label:"B",error_type:"N",error_types:["N"],error_point:"fixture",
+    next_action:"fixture",memo:"",graded_part_ids:parts.map(row=>row.id),graded_parts:parts.map(row=>row.label),
+    graded_findings:findings,grading_contract:{...contract(sourceReviewId||id,parts),sourceAttemptId:id},
+    source_review_id:sourceReviewId,generated_from_review_id:sourceReviewId});
+  const reviewRow=(id,sourceAttemptId,parts,status="done")=>{
+    const grading={...contract(id,parts),sourceAttemptId};
+    return {id,problem_id:problemId,due_date:today,review_type:"targeted_patch",status,
+      generated_from_attempt_id:sourceAttemptId,source_attempt_id:sourceAttemptId,source_date:today,
+      review_after_days:0,interval_days:0,schedule_origin:"manual",learning_purpose:"error_repair",
+      assessment_timing:"delayed_retrieval",effective_mode:"skeleton",review_scope:"targeted_patch",
+      sheet_type:"skeleton_sheet",target_kind:"mathematical_patch",targeted_parts:parts.map(row=>row.label),
+      graded_part_ids:parts.map(row=>row.id),grading_contract:grading,contract_id:grading.contractId,
+      contract_version:grading.contractVersion,contract_hash:grading.contractHash,policy_version:"STAT1-LEARNING-v1"};
+  };
+  const unresolved=parts=>parts.map(row=>finding(row.id));
+  const latestFindings=p150.map((row,index)=>finding(row.id,[1,2,3,5].includes(index)?"none":"N",[1,2,3,5].includes(index)));
+  const bloated=[p93[0],p93[1],p119[0],p119[1],p119[4],p119[5],p150[0],p150[4],p150[6],p150[7]];
+  await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.meta],async()=>{
+    await db.attempts.clear();await db.reviews.clear();
+    for(const row of await db.meta.where("key").startsWith("today-plan-snapshot:").toArray())await db.meta.delete(row.key);
+    await db.problems.put({id:429,problem_id:problemId,source_type:"whitebook",category:"A",chapter:4,problem_number:29,
+      title:"anonymous fixture",display_label:"chapter 4 A29",theme:"transform",canonical_problem_type:"transform",
+      canonical_keywords:[],priority:"repair",role:"training",recommended_mode:"check",linked_past_exams:"",
+      linked_s_problems:"",linked_a_problems:"",notes:"",completion_status:"review_pending",master_version:"fixture",metadata_status:"ok"});
+    await db.attempts.bulkAdd([
+      attemptRow(93,[],[]),
+      attemptRow(119,p93,unresolved(p93),286),
+      attemptRow(136,p119,unresolved(p119),296),
+      attemptRow(150,p136,unresolved(p136),313),
+      attemptRow(172,p150,latestFindings,327),
+    ]);
+    await db.reviews.bulkAdd([
+      reviewRow(286,93,p93),reviewRow(296,119,p119),reviewRow(313,136,p136),reviewRow(327,150,p150),
+      reviewRow(363,172,bloated,"pending"),
+    ]);
+    const active=reviewRow(363,172,bloated,"pending");
+    await db.meta.put({key:`today-plan-snapshot:${today}`,value:JSON.stringify({date:today,task_ids:["review:363"],
+      start_of_day_planned_minutes:10,initial_bucket:{"review:363":"must"},initial_estimated_minutes:{"review:363":10},
+      created_at:"fixture",tasks:[{...active,title:"A29",kind:"review",reason:"old targets",minutes:10,load:.5,
+        triage:"must",mode:"skeleton"}]})});
+  });
+  const snapshotBefore=(await db.meta.get(`today-plan-snapshot:${today}`)).value;
+  const preview=await localPost("/api/integrity/preview",{});
+  const detail=preview.details.find(row=>row.problemId===problemId);
+  assert.equal(detail.beforeTargetCount,10);
+  assert.equal(detail.afterTargetCount,4);
+  assert.equal(preview.before.counts.invalid_stable_target_key>0,true);
+  const attemptsBefore=await db.attempts.count(),reviewsBefore=await db.reviews.count();
+  await localPost("/api/integrity/repair",{});
+  assert.equal(await db.attempts.count(),attemptsBefore);
+  const active=(await db.reviews.toArray()).filter(row=>["pending","overdue"].includes(row.status));
+  assert.equal(active.length,1);
+  assert.equal(active[0].grading_contract.gradedParts.length,4);
+  assert.deepEqual(active[0].grading_contract.gradedParts.map(row=>row.id).sort(),[
+    `part:${problemId}:150:1`,`part:${problemId}:150:5`,`part:${problemId}:150:8`,"probability_integral_transform_explanation",
+  ].sort());
+  for(const row of active[0].grading_contract.gradedParts){
+    assert.match(row.stableTargetKey,/^target:WB-4-A-29:(?:root:[0-9a-f-]{36}|slot:[a-z0-9_]+)$/i);
+    assert.doesNotMatch(row.stableTargetKey,/:review:|:attempt:|:submission:/);
+  }
+  const afterFirst=await db.reviews.count();
+  assert.equal((await db.meta.get(`today-plan-snapshot:${today}`)).value,snapshotBefore);
+  const bootstrap=await localGet("/api/bootstrap");
+  const displayed=bootstrap.today.tasks.find(row=>row.problem_id===problemId);
+  assert.equal(displayed.grading_contract.gradedParts.length,4);
+  assert.equal(afterFirst,reviewsBefore+1);
+  const second=await localPost("/api/integrity/repair",{});
+  assert.equal(await db.reviews.count(),afterFirst);
+  assert.equal(second.changes.staleReviewsSuperseded,0);
+  assert.equal(second.changes.reviewsReplaced,0);
+  assert.equal(second.changes.todayActionsUpdated,0);
 });

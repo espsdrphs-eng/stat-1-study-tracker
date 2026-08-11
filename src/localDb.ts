@@ -53,6 +53,7 @@ import { buildAdditionalStudyCandidates } from "./additionalStudy.ts";
 import { summarizeReviewPortfolio } from "./reviewPortfolio.ts";
 import { BUILT_IN_EXAM_REFERENCE_PACK, builtInReferencePackValidation } from "./builtinExamReferencePack.ts";
 import { analyzeReviewReconciliation, reconciliationForProblem, type ReconciliationAudit } from "./reviewReconciliation.ts";
+import {isValidStableTargetKey,issueStableTargetKey,stableTargetKeyForPart,withStableTargetKey} from "./stableTargetIdentity.ts";
 
 const PLANNER_RUNTIME_MODE_META_KEY="planner-runtime-mode";
 
@@ -641,15 +642,34 @@ const planFields=(plan:ReviewPlan)=>({
 });
 type ReviewInsert=Omit<Review,"id">;
 async function addOrReplaceReview(review:ReviewInsert){
-  const [problem,attempts,aliases,examMeta]=await Promise.all([
-    db.problems.get(review.problem_id),db.attempts.toArray(),db.problemAliases.toArray(),db.meta.get("exam_date")
+  const [problem,attempts,aliases,examMeta,storedReviews]=await Promise.all([
+    db.problems.get(review.problem_id),db.attempts.toArray(),db.problemAliases.toArray(),db.meta.get("exam_date"),db.reviews.toArray()
   ]);
   if(!problem){
     return Number(await db.reviews.add({id:undefined as unknown as number,...review,status:"review_needed",review_needed_reason:"problem_masterに対象問題がありません"}));
   }
   const card=resolveReviewCard({item:review,problems:[problem],attempts,aliases,today:todayString(),examDate:examMeta?.value||""});
-  const contractFields=taskFieldsFromContract(card.gradingContract);
-  const sourceAttempt=attempts.find(attempt=>attempt.id===Number(review.source_attempt_id||review.generated_from_attempt_id||0));
+  const sourceAttemptId=Number(review.source_attempt_id||review.generated_from_attempt_id||0);
+  const inheritedRoots=new Map<string,Set<string>>();
+  for(const existing of storedReviews.filter(item=>
+    resolveCanonicalProblemId(item.problem_id,aliases)===card.canonicalProblemId&&
+    Number(item.source_attempt_id||item.generated_from_attempt_id||0)===sourceAttemptId)){
+    for(const part of existing.grading_contract?.gradedParts||[]){
+      if(typeof part==="string")continue;
+      const key=part.stableTargetKey||part.stable_target_key;
+      if(!key||!isValidStableTargetKey(card.canonicalProblemId,key))continue;
+      inheritedRoots.set(part.id,new Set([...(inheritedRoots.get(part.id)||[]),key]));
+    }
+  }
+  const inheritedContract={...card.gradingContract,gradedParts:card.gradingContract.gradedParts.map(part=>{
+    const roots=[...(inheritedRoots.get(part.id)||[])];
+    return roots.length===1?withStableTargetKey(part,roots[0]):part;
+  })};
+  // Dynamic roots are issued only at this persistence boundary. Pure resolver
+  // calls must never mint a new identity on every render or audit.
+  const gradingContract=materializeContractStableRoots(card.canonicalProblemId,inheritedContract);
+  const contractFields=taskFieldsFromContract(gradingContract);
+  const sourceAttempt=attempts.find(attempt=>attempt.id===sourceAttemptId);
   const sourceDate=String(review.source_date||sourceAttempt?.date||"");
   const reviewAfterDays=Number.isFinite(Number(review.review_after_days??review.interval_days))
     ?Number(review.review_after_days??review.interval_days):undefined;
@@ -657,7 +677,7 @@ async function addOrReplaceReview(review:ReviewInsert){
   const policyDueDate=scheduleOrigin==="policy"&&sourceDate&&reviewAfterDays!=null
     ?addCalendarDays(sourceDate,reviewAfterDays):review.due_date;
   const candidate={...review,id:0,problem_id:card.canonicalProblemId,...contractFields} as Review;
-  const activeReviews=(await db.reviews.toArray()).filter(item=>ACTIVE_REVIEW_STATUSES.has(item.status));
+  const activeReviews=storedReviews.filter(item=>ACTIVE_REVIEW_STATUSES.has(item.status));
   const logicalKey=logicalReviewKey({review:candidate,aliases,sourceAttempt});
   const exactLogical=activeReviews.find(item=>{
     const existingSource=attempts.find(attempt=>attempt.id===Number(item.source_attempt_id||item.generated_from_attempt_id||0));
@@ -703,7 +723,7 @@ async function addOrReplaceReview(review:ReviewInsert){
     // Contract fields are applied last so legacy mode/scope fields cannot overwrite the immutable contract.
     ...contractFields
   }));
-  const persistedContract=bindContractToReview(card.gradingContract,insertedId,1);
+  const persistedContract=bindContractToReview(gradingContract,insertedId,1);
   await db.reviews.update(insertedId,{
     ...taskFieldsFromContract(persistedContract),
     logical_review_key:logicalKey,contract_revision:1,
@@ -751,6 +771,20 @@ function contractWithReconciledParts(args:{
   const contract:GradingContractSnapshot={...withoutIdentity,contractHash,
     contractId:`review:pending:${contractHash.slice(3)}`};
   return {contract,prescription};
+}
+
+function materializeStableRoots(problemId:string,parts:GradingContractSnapshot["gradedParts"]){
+  return parts.map(part=>withStableTargetKey(part,
+    stableTargetKeyForPart(problemId,part)||issueStableTargetKey(problemId)));
+}
+
+function materializeContractStableRoots(problemId:string,contract:GradingContractSnapshot){
+  const gradedParts=materializeStableRoots(problemId,contract.gradedParts);
+  if(gradedParts.every((part,index)=>part.stableTargetKey===contract.gradedParts[index]?.stableTargetKey))return contract;
+  const withoutIdentity={...contract,gradedParts};
+  const {contractId:_oldId,contractHash:_oldHash,createdAt:_createdAt,...hashPayload}=withoutIdentity;
+  const contractHash=computeContractHash(hashPayload);
+  return {...withoutIdentity,contractHash,contractId:`review:pending:${contractHash.slice(3)}`};
 }
 
 async function currentReconciliationAudit(todayPlanSnapshots:TodayPlanSnapshot[]=[]){
@@ -839,7 +873,8 @@ async function reconcileProblemLearningState(problemId?:string,preview=false):Pr
       !!row&&!plan.reviewsToSupersede.some(action=>action.reviewId===row.id));
     const survivingSource=survivingActive.length===1?attemptMap.get(Number(survivingActive[0].source_attempt_id||survivingActive[0].generated_from_attempt_id)):undefined;
     const source=survivingSource&&survivingSource.id>=desiredSource.id?survivingSource:desiredSource;
-    const {contract,prescription}=contractWithReconciledParts({problem,source,parts:plan.desiredRepairParts,
+    const materializedParts=materializeStableRoots(plan.problemId,plan.desiredRepairParts);
+    const {contract,prescription}=contractWithReconciledParts({problem,source,parts:materializedParts,
       findings:plan.desiredRepairFindings,createdAt:now});
     const oldRows=plan.activeRepairReviewIds.map(id=>reviewMap.get(id)).filter(Boolean) as Review[];
     const oldDue=oldRows.map(row=>row.due_date).filter(Boolean).sort()[0];

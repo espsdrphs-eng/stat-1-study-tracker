@@ -61,8 +61,8 @@ test("a later full answer does not guess that differently-keyed targets were gra
 
 test("a later full answer updates old targets when their stable slots are explicit",()=>{
   const a=part("part:WB-4-A-29:1:1"),b=part("part:WB-4-A-29:1:2");
-  a.stableTargetKey="target:WB-4-A-29:review:10:slot:1";
-  b.stableTargetKey="target:WB-4-A-29:review:10:slot:2";
+  a.stableTargetKey="target:WB-4-A-29:root:00000000-0000-4000-8000-000000000001";
+  b.stableTargetKey="target:WB-4-A-29:root:00000000-0000-4000-8000-000000000002";
   const old=attempt(1,"2026-08-01",[finding(a.id),finding(b.id)],{
     grading_contract:{...contract([a.id]),gradedParts:[a,b]},graded_part_ids:[a.id,b.id],graded_parts:[a.id,b.id],
   });
@@ -129,7 +129,7 @@ test("scan-only evidence never creates or resolves mathematical repair targets",
   assert.equal(plan.reviewsToSupersede.length,0);
 });
 
-test("a stale Today Plan copy is diagnosed while the stored snapshot remains input-only",()=>{
+test("a stale Today Plan copy is overlaid from current Review while the stored snapshot remains input-only",()=>{
   const old=attempt(1,"2026-08-01",[finding("A")]);
   const newer=attempt(2,"2026-08-05",[finding("A","none",true),finding("E")]);
   const stale=review(10,1,["A"]),current=review(11,2,["E"]);
@@ -137,7 +137,7 @@ test("a stale Today Plan copy is diagnosed while the stored snapshot remains inp
     initial_bucket:{"review:10":"must"},initial_estimated_minutes:{"review:10":5},created_at:"fixture",
     tasks:[{id:10,problem_id:"WB-4-A-29",title:"fixture",kind:"復習",reason:"old",mode:"check",minutes:5,load:.2,review_type:"targeted_patch"}]};
   const audit=analyzeReviewReconciliation({attempts:[old,newer],reviews:[stale,current],today:"2026-08-10",todayPlanSnapshots:[snapshot]});
-  assert.equal(audit.staleTodayActions,1);
+  assert.equal(audit.staleTodayActions,0);
   assert.equal(snapshot.tasks[0].id,10);
 });
 

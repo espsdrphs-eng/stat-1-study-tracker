@@ -202,16 +202,12 @@ export function gradedPartContracts(args: {
       : hash(`${args.problemId}:${normalized}`);
     const inherited=inheritedParts[index];
     if(inherited)return [{...inherited,label:text,cueLabel:inherited.cueLabel||text}];
-    const stableTargetKey=args.sourceAttempt?.submission_id
-      ?`target:${args.problemId}:submission:${args.sourceAttempt.submission_id}:slot:${index+1}`
-      :undefined;
     return [{
       id: args.sourceAttempt?.id ? `part:${args.problemId}:${suffix}` : `target_${suffix}`,
       label: text,
       cueLabel: "指定箇所",
       allowedErrorTypes: inferredErrors(text, args.sourceAttempt),
       completionCriterionId: `reproduce_${suffix}`,
-      stableTargetKey,
     }];
   });
   return unique(rows, (row) => row.id);

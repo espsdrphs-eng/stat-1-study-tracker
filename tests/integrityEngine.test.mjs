@@ -140,3 +140,45 @@ test("changing a problem-specific label keeps the persisted part id",()=>{
   const renamed={...original,gradedParts:[{...original.gradedParts[0],label:"更新した表示名"}]};
   assert.equal(original.gradedParts[0].id,renamed.gradedParts[0].id);
 });
+
+test("a non-hydratable current target keeps System status non-normal without mislabelling snapshot history",()=>{
+  const source=attempt(1),old=review(10,1,{status:"superseded"});
+  const ambiguousContract={...contract(),gradedParts:[{...contract().gradedParts[0],id:"part:WB-4-A-24:999:1"}]};
+  const current=review(11,1,{grading_contract:ambiguousContract,contract_id:ambiguousContract.contractId,
+    contract_hash:ambiguousContract.contractHash,graded_part_ids:["part:WB-4-A-24:999:1"]});
+  const snapshot={date:"2026-07-26",task_ids:["review:10"],start_of_day_planned_minutes:5,
+    initial_bucket:{"review:10":"must"},initial_estimated_minutes:{"review:10":5},created_at:"fixture",
+    tasks:[{id:10,problem_id:"WB-4-A-24",title:"old",kind:"review",reason:"old",mode:"check",minutes:5,
+      load:.2,review_type:"light_check",grading_contract:old.grading_contract}]};
+  const audit=runIntegrityAudit({attempts:[source],reviews:[old,current],today:"2026-07-26",todayPlanSnapshots:[snapshot]});
+  assert.equal(audit.counts.obsolete_today_action,0);
+  assert.equal(audit.counts.orphan_active_target>0,true);
+  assert.equal(audit.activeIssueCount>0,true);
+});
+
+test("Attempt-dependent stable keys are retained only as explicit history warnings",()=>{
+  const source=attempt(1);
+  source.grading_contract={...contract(),gradedParts:[{
+    ...contract().gradedParts[0],
+    stableTargetKey:"target:WB-4-A-24:attempt:1:slot:1",
+  }]};
+  const audit=runIntegrityAudit({attempts:[source],reviews:[],today:"2026-07-26"});
+  const warning=audit.issues.find(issue=>issue.category==="invalid_stable_target_key"&&issue.attemptIds?.includes(1));
+  assert.equal(warning?.severity,"history");
+  assert.equal(audit.activeIssueCount,0);
+});
+
+test("exact duplicate active target labels are a sanity warning and never an identity merge rule",()=>{
+  const source=attempt(1);
+  const duplicateLabelContract={...contract(),gradedParts:[
+    {...contract().gradedParts[0],id:"part:WB-4-A-24:1:1",label:"same label",
+      stableTargetKey:"target:WB-4-A-24:root:00000000-0000-4000-8000-000000000001"},
+    {...contract().gradedParts[0],id:"part:WB-4-A-24:1:2",label:"same label",
+      stableTargetKey:"target:WB-4-A-24:root:00000000-0000-4000-8000-000000000002"},
+  ]};
+  const row=review(12,1,{grading_contract:duplicateLabelContract,contract_id:duplicateLabelContract.contractId,
+    contract_hash:duplicateLabelContract.contractHash,graded_part_ids:duplicateLabelContract.gradedParts.map(part=>part.id)});
+  const audit=runIntegrityAudit({attempts:[source],reviews:[row],today:"2026-07-26"});
+  assert.equal(audit.counts.duplicate_active_target_label,1);
+  assert.equal(audit.counts.duplicate_stable_target,0);
+});

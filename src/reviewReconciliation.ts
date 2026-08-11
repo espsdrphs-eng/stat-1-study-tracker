@@ -2,14 +2,14 @@ import type {
   Attempt, GradedFinding, GradedPartContract, GradingErrorType, ProblemAlias, Review, TodayPlanSnapshot,
 } from "./types.ts";
 import { resolveCanonicalProblemId } from "./examReadiness.ts";
-import {buildStableTargetIndex,type StableTargetIndex} from "./stableTargetIdentity.ts";
+import {buildStableTargetIndex,type StableTargetIndex,withStableTargetKey} from "./stableTargetIdentity.ts";
 
 const ACTIVE_STATUSES=new Set(["pending","overdue"]);
 const STANDARD_PURPOSES=new Set(["error_repair","retrieval_check"]);
 
 export type LearningEvidenceEvent={
   problemId:string;part:GradedPartContract;attemptId:number;attemptDate:string;
-  stableTargetKey:string;errorType:GradingErrorType;resolved:boolean;evidence:string;
+  stableIdentityKey:string;stableTargetKey?:string;errorType:GradingErrorType;resolved:boolean;evidence:string;
 };
 
 export type ProblemReconciliation={
@@ -17,6 +17,8 @@ export type ProblemReconciliation={
   activeRepairReviewIds:number[];
   activeDelayedReviewIds:number[];
   desiredRepairParts:GradedPartContract[];
+  /** Audit-only lineage ids aligned with desiredRepairParts. Never persisted. */
+  desiredRepairIdentityKeys:string[];
   desiredRepairFindings:GradedFinding[];
   desiredSourceAttemptId?:number;
   reviewsToSupersede:Array<{reviewId:number;reason:string;category:
@@ -63,8 +65,9 @@ function activeReview(review:Review){
 }
 
 function validAttempt(attempt:Attempt){
+  const nonMathematical=new Set(["scan","scan5","scan_only"]);
   return !attempt.duplicate_of_attempt_id&&!attempt.exclude_from_metrics&&
-    !["scan","scan5","scan_only"].includes(String(attempt.mode||attempt.evaluation_scope||""));
+    !nonMathematical.has(String(attempt.mode||""))&&!nonMathematical.has(String(attempt.evaluation_scope||""));
 }
 
 function attemptOrder(left:Attempt,right:Attempt){
@@ -121,12 +124,13 @@ function evidenceEvents(attempt:Attempt,catalog:Map<string,GradedPartContract>,s
   if(explicit.length)return explicit.flatMap(finding=>{
     if(!finding.graded_part_id||finding.error_type==="K"&&!kIsUsable(attempt))return [];
     const resolution=stableIndex.attemptPart(attempt.id,finding.graded_part_id);
-    if(!resolution?.key)return [];
+    if(!resolution?.identityKey)return [];
     const part=resolution.part||catalog.get(finding.graded_part_id)||{
       id:finding.graded_part_id,label:finding.graded_part_id,cueLabel:finding.graded_part_id,
       allowedErrorTypes:[finding.error_type,"none"],completionCriterionId:`preserve_${finding.graded_part_id}`,
     } satisfies GradedPartContract;
-    return [{problemId:attempt.problem_id,part:{...part,stableTargetKey:resolution.key},stableTargetKey:resolution.key,
+    return [{problemId:attempt.problem_id,part:withStableTargetKey(part,resolution.key),
+      stableIdentityKey:resolution.identityKey,stableTargetKey:resolution.key,
       attemptId:attempt.id,attemptDate:attempt.date,
       errorType:finding.error_type,resolved:finding.resolved&&finding.error_type==="none",evidence:finding.evidence||""}];
   });
@@ -135,14 +139,14 @@ function evidenceEvents(attempt:Attempt,catalog:Map<string,GradedPartContract>,s
   const errors=errorsFor(attempt);
   const success=(attempt.minimum_pass_condition_met===true||attempt.target_issue_resolved===true)&&errors.length===0;
   if(success)return ids.flatMap(id=>{
-    const resolution=stableIndex.attemptPart(attempt.id,id),part=resolution?.part||catalog.get(id);return part&&resolution?.key?[{problemId:attempt.problem_id,
-      part:{...part,stableTargetKey:resolution.key},stableTargetKey:resolution.key,attemptId:attempt.id,
+    const resolution=stableIndex.attemptPart(attempt.id,id),part=resolution?.part||catalog.get(id);return part&&resolution?.identityKey?[{problemId:attempt.problem_id,
+      part:withStableTargetKey(part,resolution.key),stableIdentityKey:resolution.identityKey,stableTargetKey:resolution.key,attemptId:attempt.id,
       attemptDate:attempt.date,errorType:"none" as const,resolved:true,evidence:attempt.resolution_evidence||""}]:[];
   });
   if(ids.length===1&&errors.length===1){
     if(errors[0]==="K"&&!kIsUsable(attempt))return [];
-    const resolution=stableIndex.attemptPart(attempt.id,ids[0]),part=resolution?.part||catalog.get(ids[0]);return part&&resolution?.key?[{problemId:attempt.problem_id,
-      part:{...part,stableTargetKey:resolution.key},stableTargetKey:resolution.key,attemptId:attempt.id,
+    const resolution=stableIndex.attemptPart(attempt.id,ids[0]),part=resolution?.part||catalog.get(ids[0]);return part&&resolution?.identityKey?[{problemId:attempt.problem_id,
+      part:withStableTargetKey(part,resolution.key),stableIdentityKey:resolution.identityKey,stableTargetKey:resolution.key,attemptId:attempt.id,
       attemptDate:attempt.date,errorType:errors[0],resolved:false,evidence:attempt.error_point||""}]:[];
   }
   return [];
@@ -188,9 +192,9 @@ export function analyzeReviewReconciliation(args:{
     const attemptMap=new Map(problemAttempts.map(row=>[row.id,row]));
     const events=problemAttempts.flatMap(attempt=>evidenceEvents(attempt,catalog,stableIndex));
     const lastEvent=new Map<string,LearningEvidenceEvent>();
-    for(const event of events)lastEvent.set(event.stableTargetKey,event);
+    for(const event of events)lastEvent.set(event.stableIdentityKey,event);
     const desired=new Map<string,LearningEvidenceEvent>();
-    for(const event of lastEvent.values())if(!event.resolved)desired.set(event.stableTargetKey,event);
+    for(const event of lastEvent.values())if(!event.resolved)desired.set(event.stableIdentityKey,event);
     const ambiguous:string[]=[];
     for(const repair of repairs){
       const source=attemptMap.get(Number(repair.source_attempt_id||repair.generated_from_attempt_id||0));
@@ -198,16 +202,17 @@ export function analyzeReviewReconciliation(args:{
       if(!source)continue;
       if(!parts.length)ambiguous.push(`Review ${repair.id}: 安定したgraded part IDがない`);
       for(const {part,resolution} of parts){
-        if(!resolution?.key){ambiguous.push(`Review ${repair.id} / ${part.id}: ${resolution?.reason||"stable target identity is missing"}`);continue;}
-        const key=resolution.key;
-        const later=events.filter(event=>event.stableTargetKey===key&&attemptAfter(attemptMap.get(event.attemptId)!,source)).at(-1);
-        if(!later&&!lastEvent.has(key))desired.set(key,{problemId,part:{...part,stableTargetKey:key},stableTargetKey:key,
+        if(!resolution?.identityKey){ambiguous.push(`Review ${repair.id} / ${part.id}: ${resolution?.reason||"stable target identity is missing"}`);continue;}
+        const key=resolution.identityKey;
+        const later=events.filter(event=>event.stableIdentityKey===key&&attemptAfter(attemptMap.get(event.attemptId)!,source)).at(-1);
+        if(!later&&!lastEvent.has(key))desired.set(key,{problemId,part:withStableTargetKey(part,resolution.key),
+          stableIdentityKey:key,stableTargetKey:resolution.key,
           attemptId:source.id,attemptDate:source.date,errorType:(errorsFor(source)[0]||"N"),resolved:false,
           evidence:source.error_point||""});
       }
     }
-    const desiredRows=[...desired.values()].sort((a,b)=>a.stableTargetKey.localeCompare(b.stableTargetKey));
-    const desiredIds=desiredRows.map(row=>row.stableTargetKey);
+    const desiredRows=[...desired.values()].sort((a,b)=>a.stableIdentityKey.localeCompare(b.stableIdentityKey));
+    const desiredIds=desiredRows.map(row=>row.stableIdentityKey);
     const desiredSource=desiredRows.map(row=>attemptMap.get(row.attemptId)).filter((row):row is Attempt=>!!row).sort(attemptOrder).at(-1);
     const latestGraduation=[...problemAttempts].filter(objectiveGraduation).sort(attemptOrder).at(-1);
     const latestAttempt=problemAttempts.at(-1);
@@ -221,7 +226,7 @@ export function analyzeReviewReconciliation(args:{
     }).sort(attemptOrder).at(-1);
     const supersedes:ProblemReconciliation["reviewsToSupersede"]=[];
     const stableIdsForReview=(review:Review)=>stableIndex.reviewParts(review.id)
-      .map(row=>row.key).filter((key):key is string=>!!key);
+      .map(row=>row.identityKey).filter((key):key is string=>!!key);
 
     for(const review of active){
       const source=attemptMap.get(Number(review.source_attempt_id||review.generated_from_attempt_id||0));
@@ -244,7 +249,10 @@ export function analyzeReviewReconciliation(args:{
     }
 
     const viableRepairs=repairs.filter(row=>!supersedes.some(item=>item.reviewId===row.id));
-    if(desiredIds.length===0){
+    // Ambiguous legacy lineage is never auto-resolved. A missing replay event
+    // is not evidence that the target succeeded, so keep the Review executable
+    // until a real graded Attempt establishes its persistent root.
+    if(desiredIds.length===0&&!ambiguous.length){
       for(const review of viableRepairs)supersedes.push({reviewId:review.id,category:"contradictory_review",
         reason:"現在未解決の採点対象がない"});
     }else{
@@ -279,7 +287,8 @@ export function analyzeReviewReconciliation(args:{
     const distinctActiveStableIds=new Set(activeRepairStableIds);
     if(active.length||desiredIds.length||ambiguous.length)problems.push({problemId,
       activeRepairReviewIds:repairs.map(row=>row.id),activeDelayedReviewIds:delayed.map(row=>row.id),
-      desiredRepairParts:desiredRows.map(row=>row.part),desiredRepairFindings:desiredRows.map(row=>({
+      desiredRepairParts:desiredRows.map(row=>row.part),desiredRepairIdentityKeys:desiredIds,
+      desiredRepairFindings:desiredRows.map(row=>({
         graded_part_id:row.part.id,error_type:row.errorType,evidence:row.evidence,resolved:false,
       })),desiredSourceAttemptId:desiredSource?.id,reviewsToSupersede:normalized,replacementRequired,graduated,
       retentionCheckRequired,retentionSourceAttemptId:retentionCheckRequired?latestSuccessfulRepair?.id:undefined,
@@ -300,12 +309,13 @@ export function analyzeReviewReconciliation(args:{
     const review=reviews.find(row=>row.id===task.id);
     const problemId=canonical(task.problem_id);
     const stale=!review||!activeReview(review)||allSupersedes.some(row=>row.reviewId===review.id);
-    const current=activeByProblem.get(problemId)||[];
-    const taskParts=task.grading_contract?.gradedParts||[];
-    const taskKeys=taskParts.map(part=>part.stableTargetKey).filter((key):key is string=>!!key);
-    const currentKeys=current.flatMap(row=>stableIndex.reviewParts(row.id).map(part=>part.key).filter((key):key is string=>!!key));
-    const targetMismatch=taskKeys.length>0&&currentKeys.length>0&&!sameIds(taskKeys,currentKeys);
-    if((stale&&current.length)||targetMismatch)staleTodayActions++;
+    const current=(activeByProblem.get(problemId)||[]).filter(row=>!allSupersedes.some(action=>action.reviewId===row.id));
+    // The stored snapshot remains immutable, while bootstrap overlays the
+    // current active Review for the same problem. A stale stored row therefore
+    // is a history warning, not an obsolete action, when that overlay exists;
+    // if no current row exists the slot is hidden and cannot affect today's UI.
+    const displayReview=!stale&&review?review:current[0];
+    if(displayReview&&stableIndex.reviewParts(displayReview.id).some(part=>part.ambiguous))staleTodayActions++;
   }
   const count=(category:ProblemReconciliation["reviewsToSupersede"][number]["category"])=>
     allSupersedes.filter(row=>row.category===category).length;
