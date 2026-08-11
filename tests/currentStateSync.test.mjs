@@ -4,6 +4,7 @@ import "fake-indexeddb/auto";
 import {buildGradingContractSnapshot,repairTargets} from "../src/gradingContract.ts";
 import {analyzeReviewReconciliation} from "../src/reviewReconciliation.ts";
 import {attemptModeSatisfiesTask,projectTodayTaskChecked,qualifyingAttemptForTodayTask} from "../src/todayTaskProjection.ts";
+import {runIntegrityAudit} from "../src/integrityEngine.ts";
 
 const problem=(problemId)=>({id:1,problem_id:problemId,source_type:"whitebook",category:"A",chapter:5,problem_number:28,
   title:"fixture",display_label:"fixture",theme:"fixture",canonical_problem_type:"fixture",canonical_keywords:[],
@@ -76,6 +77,8 @@ test("Today projection requires task mode, creation time, and exact Review contr
   assert.equal(attemptModeSatisfiesTask("full","full"),true);
   assert.equal(attemptModeSatisfiesTask("full","skeleton"),false);
   assert.equal(projectTodayTaskChecked({task:fullTask,attempts:[attempt],snapshot}),true);
+  assert.equal(projectTodayTaskChecked({task:{...fullTask,checked:true},attempts:[],snapshot}),false,
+    "snapshot checked state is not current Attempt evidence");
   assert.equal(qualifyingAttemptForTodayTask({task:fullTask,attempts:[{...attempt,saved_at:"2026-08-10T23:00:00Z"}],snapshot}),undefined);
 
   const reviewTask={...fullTask,id:364,review_type:"targeted_patch",mode:"check",graded_part_ids:["A"],contract_hash:"hash"};
@@ -83,4 +86,18 @@ test("Today projection requires task mode, creation time, and exact Review contr
   const reviewAttempt={...attempt,mode:"check",source_review_id:364,generated_from_review_id:364,contract_hash:"hash",
     graded_part_ids:["A"],graded_findings:[{graded_part_id:"A",error_type:"N",evidence:"N",resolved:false}]};
   assert.equal(projectTodayTaskChecked({task:reviewTask,attempts:[reviewAttempt],snapshot}),true);
+});
+
+test("integrity audit rejects an unprojected completed Today task and accepts the canonical projection",()=>{
+  const task={problem_id:"WB-5-A-28",title:"A28",kind:"score",reason:"new",mode:"full",minutes:35,load:1,checked:false};
+  const snapshot={date:"2026-08-11",task_ids:[],start_of_day_planned_minutes:35,initial_bucket:{},
+    initial_estimated_minutes:{},tasks:[task],created_at:"2026-08-11T00:00:00Z"};
+  const attempt={...legacyAttempt(210,"WB-5-A-28","remaining N","repair N"),saved_at:"2026-08-11T01:00:00Z"};
+  const stale=runIntegrityAudit({attempts:[attempt],reviews:[],today:"2026-08-11",todayPlanSnapshots:[snapshot],
+    currentTodayTasks:[task]});
+  assert.equal(stale.counts.today_task_completion_mismatch,1);
+  const current={...task,checked:projectTodayTaskChecked({task,attempts:[attempt],snapshot})};
+  const healthy=runIntegrityAudit({attempts:[attempt],reviews:[],today:"2026-08-11",todayPlanSnapshots:[snapshot],
+    currentTodayTasks:[current]});
+  assert.equal(healthy.counts.today_task_completion_mismatch,0);
 });

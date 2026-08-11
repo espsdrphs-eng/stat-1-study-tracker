@@ -29,6 +29,11 @@ This document is the implementation-level source of truth for data integrity. Le
 - Policy schedules persist `sourceDate`, `reviewAfterDays`, `reviewDate`, `scheduleOrigin`, and `policyVersion` together.
 - A manual schedule is preserved and is not diagnosed as a policy date mismatch.
 - Today Plan snapshots are immutable history. The UI rechecks the current Review before enabling an action.
+- GPT import preview, Attempt persistence, Review completion, and reload reconciliation use the same canonical
+  lifecycle projection. `assessment_timing` records when evidence was collected and never promotes an
+  `error_repair` execution into graduation; only the persisted Review phase can make retrieval graduation eligible.
+- A saved Today task's historical `checked` copy is not current execution evidence. Current completion comes from an
+  explicit completion record or a qualifying Attempt after the snapshot; Dashboard NEXT ACTION consumes that projection.
 - The active `GradingContractSnapshot` is the only source for purpose, mode, scope, sheet, minutes, and graded parts.
 - Diagnostic, preview, repair, and post-repair verification use the same `runIntegrityAudit` classifier.
 - Rebuild and repair operations are idempotent and do not create a new Review when an active logical key exists.

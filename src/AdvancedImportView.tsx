@@ -6,6 +6,7 @@ import { createAttemptReviewPlan } from "./reviewRules";
 import { buildGradingPrompt, GRADING_RUBRIC_VERSION, REVIEW_RUBRIC_VERSION } from "./gradingPrompt";
 import { reviewDaysForErrors, sanitizeStudyUpdateTiming, timingWarningMessage, timingWarnings } from "./reviewTiming";
 import { finalizeStudyUpdateForSave, prepareImportedStudyUpdate } from "./studyCycle";
+import { projectStudyUpdateLifecycle } from "./studyUpdateLifecycle";
 import { reviewExecutionMessage, reviewExecutionState, selectCurrentReviewsForProblem } from "./integrityEngine";
 import type { AnswerIndexEntry, Attempt, Problem, ProblemAlias, Review, StudyUpdate } from "./types";
 
@@ -96,6 +97,13 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
   const [saveFailed,setSaveFailed]=useState(false);
   const gradingPrompt=buildGradingPrompt(todayString());
   const newSubmissionId=()=>globalThis.crypto?.randomUUID?.()||`submission-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const projectForPreview=(update:StudyUpdate)=>{
+    const sourceReview=update.generated_from_review_id?reviews.find(row=>row.id===update.generated_from_review_id):undefined;
+    const sourceAttempt=sourceReview?attempts.find(row=>row.id===sourceReview.generated_from_attempt_id):undefined;
+    const problem=problems.find(row=>row.problem_id===update.problem_id);
+    return projectStudyUpdateLifecycle({update:finalizeStudyUpdateForSave(update),sourceReview,sourceAttempt,problem}).update;
+  };
+  const projectedUpdates=updates.map(projectForPreview);
 
   useEffect(()=>{
     if(text||updates.length) sessionStorage.setItem(draftKey,JSON.stringify({text,updates,savedAt:new Date().toISOString()}));
@@ -148,9 +156,9 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
 
   const remove=(index:number)=>setUpdates(rows=>rows.filter((_,i)=>i!==index));
 
-  const firstMissing=updates.map((row,index)=>({index,missing:missingRequiredFields(row)[0]})).find(item=>item.missing);
-  const allMissing=updates.flatMap((row,index)=>missingRequiredFields(row).map(item=>({...item,index})));
-  const invalidSourceUpdates=updates.flatMap((row,index)=>{
+  const firstMissing=projectedUpdates.map((row,index)=>({index,missing:missingRequiredFields(row)[0]})).find(item=>item.missing);
+  const allMissing=projectedUpdates.flatMap((row,index)=>missingRequiredFields(row).map(item=>({...item,index})));
+  const invalidSourceUpdates=projectedUpdates.flatMap((row,index)=>{
     if(!row.generated_from_review_id)return [];
     const review=reviews.find(item=>item.id===row.generated_from_review_id);
     const state=reviewExecutionState(review,todayString());
@@ -160,7 +168,7 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
     }).current;
     return [{index,row,review,state,message:reviewExecutionMessage(state,review),successors}];
   });
-  const canSave=updates.length>0&&allMissing.length===0&&!updates.some(row=>row.requires_problem_confirmation)&&invalidSourceUpdates.length===0;
+  const canSave=projectedUpdates.length>0&&allMissing.length===0&&!projectedUpdates.some(row=>row.requires_problem_confirmation)&&invalidSourceUpdates.length===0;
 
   const scrollToMissing=(index:number,field:string)=>{
     setEditing(true);
@@ -175,7 +183,7 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
   };
 
   const saveUpdates=async()=>{
-    const snapshot=updates.map(update=>sanitizeStudyUpdateTiming(finalizeStudyUpdateForSave(update)));
+    const snapshot=projectedUpdates.map(update=>sanitizeStudyUpdateTiming(update));
     sessionStorage.setItem(draftKey,JSON.stringify({text,updates:snapshot,savedAt:new Date().toISOString()}));
     const ok=await run(()=>post("/api/import",{updates:snapshot}),`${snapshot.length}件を保存しました`);
     if(!ok){setSaveFailed(true);return}
@@ -223,7 +231,7 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
             <Pencil size={14}/>{editing?"確認表示に戻る":"修正"}
           </button>
         </div>
-        <div className="import-cards">{updates.map((update,index)=>{
+        <div className="import-cards">{projectedUpdates.map((update,index)=>{
           const related=update.related_s_problem_ids||[];
           const errors=(update.error_types?.length?update.error_types:[update.primary_error_type||update.error_type||"none"]).filter(Boolean);
           const realErrors=errors.filter(error=>error!=="none");

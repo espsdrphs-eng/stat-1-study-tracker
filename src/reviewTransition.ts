@@ -14,6 +14,13 @@ type LearningEvaluationEvidence=ObjectiveRetentionEvidence&{
   requireGradedEvidence?:boolean;
 };
 
+export type CanonicalLearningLifecycleDecision=LearningEvaluationDecision&{
+  lifecyclePhase:LearningPurpose;
+  graduationEligible:boolean;
+  nextTransition:LearningPurpose|"graduated"|"none";
+  transition?:ReviewTransitionResult;
+};
+
 export type LearningEvaluationDecision={
   reviewOutcome:"success"|"partial"|"failed";mark:"×"|"△"|"○"|"◎";
   graduated:boolean;allGradedPartsResolved:boolean;reason:string;
@@ -67,6 +74,34 @@ export function resolveLearningEvaluation(input:LearningEvaluationEvidence):Lear
   return {reviewOutcome,mark,graduated,allGradedPartsResolved:allResolved,
     reason:graduated?"参照なしの遅延保持確認に成功した":reviewOutcome==="success"?"今回の課題には成功したが保持確認は未完了":
       reviewOutcome==="partial"?"採点対象に未解決が残る":"最低クリア条件未達または重大な未解決がある"};
+}
+
+/**
+ * The one app-owned lifecycle projection used by preview, persistence and
+ * reload reconciliation. assessmentTiming describes when evidence was
+ * collected; it never promotes a repair execution into a graduation phase.
+ */
+export function resolveCanonicalLearningLifecycle(input:LearningEvaluationEvidence&{
+  learningPurpose:LearningPurpose;
+  prescription?:LearningPrescription;
+  crossProblemEvidence?:boolean;
+  verifiedTransferTargetAvailable?:boolean;
+}):CanonicalLearningLifecycleDecision{
+  const evaluation=resolveLearningEvaluation(input);
+  const graduationEligible=input.learningPurpose==="retrieval_check"&&input.assessmentTiming==="delayed_retrieval";
+  const referenceClosed=!!input.referenceClosedReproduction||Number(input.actualReferenceLevel||0)===0;
+  const transition=input.prescription?resolveReviewTransition({
+    prescription:input.prescription,result:evaluation.reviewOutcome,
+    referenceClosedReproduction:referenceClosed,crossProblemEvidence:input.crossProblemEvidence,
+    verifiedTransferTargetAvailable:input.verifiedTransferTargetAvailable,
+    objectiveRetentionSuccess:evaluation.graduated,
+  }):undefined;
+  const nextTransition:CanonicalLearningLifecycleDecision["nextTransition"]=evaluation.graduated?"graduated":transition?.nextPurpose||(
+    evaluation.reviewOutcome!=="success"?"error_repair":
+      input.learningPurpose==="error_repair"?"retrieval_check":
+        input.learningPurpose==="retrieval_check"?"retrieval_check":"none"
+  );
+  return {...evaluation,lifecyclePhase:input.learningPurpose,graduationEligible,nextTransition,transition};
 }
 
 export type ReviewTransitionInput={

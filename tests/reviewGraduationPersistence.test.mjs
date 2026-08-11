@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import "fake-indexeddb/auto";
 import {buildGradingContractSnapshot,taskFieldsFromContract} from "../src/gradingContract.ts";
+import {projectStudyUpdateLifecycle} from "../src/studyUpdateLifecycle.ts";
 
 const {db,localGet,localPost}=await import("../src/localDb.ts");
 
@@ -74,6 +75,31 @@ test("WB-2-A-24相当の客観成功はscoreに依存せず◎となり同一ret
   const active=(await db.reviews.where("problem_id").equals("WB-2-A-24").toArray()).filter(row=>
     ["pending","overdue"].includes(row.status)&&(row.grading_contract?.learningPurpose||row.learning_purpose)==="retrieval_check");
   assert.equal(active.length,0);
+});
+
+test("Review 365 equivalent preview, save, and reload share the canonical repair mark",async()=>{
+  const problemId="WB-6-A-19",repair=await makeRepairReview(problemId);
+  const sourceReview=await db.reviews.get(repair.reviewId);
+  const sourceAttempt=await db.attempts.get(sourceReview.generated_from_attempt_id);
+  const problem=await db.problems.get(problemId);
+  const update=successUpdate(problemId,repair.reviewId,repair.contract,{
+    date:"2026-08-11",score_numeric:95,mark:"△",assessment_timing:"delayed_retrieval",
+    resolution_evidence:"採点対象を参照なしで修正した",answer_change_summary:"対象を修正した",
+    required_work_shown:repair.contract.gradedParts.map(part=>part.label),
+  });
+  const preview=projectStudyUpdateLifecycle({update,sourceReview,sourceAttempt,problem});
+  assert.equal(preview.update.mark,"○");
+  assert.equal(preview.lifecycle.graduated,false);
+  assert.equal(preview.lifecycle.nextTransition,"retrieval_check");
+  await localPost("/api/attempts",update);
+  const saved=(await db.attempts.where("problem_id").equals(problemId).toArray())
+    .find(row=>row.generated_from_review_id===repair.reviewId);
+  assert.equal(saved.mark,preview.update.mark);
+  await localGet("/api/bootstrap");
+  assert.equal((await db.attempts.get(saved.id)).mark,preview.update.mark);
+  const retrieval=(await db.reviews.where("problem_id").equals(problemId).toArray()).filter(row=>
+    ["pending","overdue"].includes(row.status)&&(row.grading_contract?.learningPurpose||row.learning_purpose)==="retrieval_check");
+  assert.equal(retrieval.length,1);
 });
 
 test("参照を使った成功は卒業せず同じ目的の遅延確認を残す",async()=>{

@@ -51,5 +51,8 @@ export function qualifyingAttemptForTodayTask(args:{
 export function projectTodayTaskChecked(args:{
   task:Task;attempts:Attempt[];snapshot:TodayPlanSnapshot;aliases?:ProblemAlias[];manuallyChecked?:boolean;
 }){
-  return !!args.manuallyChecked||!!args.task.checked||!!qualifyingAttemptForTodayTask(args);
+  // `task.checked` inside a persisted snapshot is historical display state,
+  // not current execution evidence. Explicit completion metadata and a
+  // qualifying Attempt are the only current sources of truth.
+  return !!args.manuallyChecked||!!qualifyingAttemptForTodayTask(args);
 }

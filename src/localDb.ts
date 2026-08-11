@@ -2,7 +2,7 @@ import Dexie, { type EntityTable } from "dexie";
 import type { AnswerIndexEntry, Attempt, Bootstrap, CorrectionLog, DataDiagnostic, GradingContractSnapshot, MasterImportLog, PastExamExposure, PastSession, Problem, ProblemAlias, ProblemRelation, Review, Roadmap, StudyUpdate, Task, TodayPlanSnapshot, WeakNote } from "./types";
 import { japaneseizeMathText } from "./mathJapanese.ts";
 import { analyzeWeaknesses } from "./weaknessAnalytics.ts";
-import { createAdaptiveReviewPlan, createAttemptReviewPlan, createSReviewPlan, enforceReviewEvidence, normalizedErrors, type ReviewOutcome, type ReviewPlan, type SState } from "./reviewRules.ts";
+import { createAdaptiveReviewPlan, createAttemptReviewPlan, createSReviewPlan, type ReviewOutcome, type ReviewPlan, type SState } from "./reviewRules.ts";
 import { postponedDueDate } from "./reviewScheduling.ts";
 import { applyWeakNoteQuizResult } from "./weakNoteQuiz.ts";
 import { selectMixedPractice } from "./studyScheduler.ts";
@@ -14,14 +14,14 @@ import { buildProgressPlan, daysUntilExam } from "./studyProgress.ts";
 import { calculateExamReadinessMetrics } from "./examReadiness.ts";
 import { correctedDueDate, resolveReviewCard } from "./reviewCardResolver.ts";
 import { CHAPTER_META, officialProblemEntries, STRATEGY_A_PLUS_ORDER, STRATEGY_S_ORDER, strategyRankFor } from "./officialMaster.ts";
-import { REVIEW_RUBRIC_VERSION } from "./gradingPrompt.ts";
 import { allowedReferenceLevel, referenceDecision, type ReferenceLevel } from "./reviewExperience.ts";
 import { applyCanonicalMaster, parseAliasesPayload, parseAnswerIndexPayload, parseIntegratedMasterPayload, parseProblemMasterPayload, relatedSIntegrity } from "./masterData.ts";
 import { finalizeStudyUpdateForSave } from "./studyCycle.ts";
 import { LEARNING_POLICY_VERSION, resolveLearningPolicy } from "./learningPolicyResolver.ts";
 import { quotaCandidatesWithinCapacity, taskDraftFromPrescription, weeklySoftQuota } from "./taskScheduler.ts";
 import { examScoreEligibility, taskScoreForAttempt } from "./scoreEligibility.ts";
-import { resolveLearningEvaluation, resolveReviewTransition } from "./reviewTransition.ts";
+import { resolveCanonicalLearningLifecycle } from "./reviewTransition.ts";
+import { projectStudyUpdateLifecycle } from "./studyUpdateLifecycle.ts";
 import { analyzeLegacyKReorganization } from "./legacyKRepair.ts";
 import { classifyKPolicyValidity, excludeLegacyKFromPlanning, planningErrorsForSource } from "./legacyKPolicy.ts";
 import { analyzeSourceMismatchRepair, resolveReviewOrigin, REVIEW_ORIGIN_POLICY_VERSION } from "./reviewOrigin.ts";
@@ -986,77 +986,42 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     const staleReason=await staleEvidenceReason(sourceReview);
     if(staleReason)throw new Error(`この復習課題は最新答案により終了または更新されています。${staleReason}`);
   }
-  if(input.generated_from_review_id&&[REVIEW_RUBRIC_VERSION,"STAT1-REVIEW-v8","STAT1-REVIEW-v7","STAT1-REVIEW-v6","STAT1-REVIEW-v5","STAT1-REVIEW-v4"].includes(input.rubric_version||"")){
-    const source=sourceReview?await db.attempts.get(sourceReview.generated_from_attempt_id):undefined;
-    const previousErrors=source?normalizedErrors(source):[];
-    input=enforceReviewEvidence(input,previousErrors,input.rubric_version||REVIEW_RUBRIC_VERSION) as StudyUpdate&Record<string,unknown>;
-  }
   const date=input.date||todayString();
-  const localizedNextAction=japaneseizeMathText(input.next_action||"");
-  const improvementGuidance=japaneseizeMathText(input.improvement_guidance||"");
-  const requiredDerivation=japaneseizeMathText(input.required_derivation||"");
-  const correctedAnswer=japaneseizeMathText(input.corrected_answer||"");
-  const primary=input.primary_error_type||input.error_type||"none";
-  const errors=input.error_types?.length?input.error_types:[primary];
-  const kPolicyValidity=classifyKPolicyValidity(input);
-  const hasRealError=errors.some(error=>["K","W","N","C"].includes(String(error)));
-  const localizedErrorPoint=japaneseizeMathText(input.error_point||(hasRealError?"":"大きな問題なし"));
   const actualMinutes=Number(input.actual_minutes??input.time_minutes??0);
   const actualReferenceLevel=Math.min(5,Math.max(0,Number(input.actual_reference_level??input.reference_level??(
     input.external_reference?5:input.official_answer?4:input.saved_gpt_feedback||input.gpt_explanation?3:
       input.previous_mistake?2:input.one_line_hint?1:0
   ))));
-  const allowedReference=Math.min(5,Math.max(0,Number(input.allowed_reference_level??0)));
   const referenceClosed=!!(input.reference_closed_reproduction??input.after_hint_reproduced);
   const related=[...new Set([...(problem.related_s_problem_ids||[]),...list(problem.linked_s_problems)])];
-  const assessmentTiming=input.assessment_timing||(input.generated_from_review_id?"delayed_retrieval":"independent_performance");
+  const requestedAssessmentTiming=input.assessment_timing||(input.generated_from_review_id?"delayed_retrieval":"independent_performance");
   const scoreCandidate:Partial<Attempt>={
     mode:String(input.mode||problem.recommended_mode),score_numeric:input.score_numeric??null,
     time_minutes:actualMinutes,actual_reference_level:actualReferenceLevel,
-    evaluation_scope:String(input.evaluation_scope||""),assessment_timing:assessmentTiming,
+    evaluation_scope:String(input.evaluation_scope||""),assessment_timing:requestedAssessmentTiming,
     time_limit_minutes:Number(input.time_limit_minutes||0)||undefined,
     conclusion_reached:input.conclusion_reached,incomplete_reason:input.incomplete_reason,
   };
   const examEligibility=examScoreEligibility(scoreCandidate,problem);
-  const effectiveErrors=(input.effective_error_types?.length?input.effective_error_types:errors)
-    .filter(error=>["K","W","N","C"].includes(String(error)));
   const sourceAttemptForTransition=sourceReview?await db.attempts.get(sourceReview.generated_from_attempt_id):undefined;
-  const sourcePrescription=sourceReview?(()=>{
-    const resolved=sourceReview.grading_contract
-      ?prescriptionFromContract(sourceReview.grading_contract,planningErrorsForSource(sourceAttemptForTransition||input))
-      :resolveLearningPolicy({problemId:input.problem_id,problem,source:{...input,...sourceReview},
-        learningPurpose:sourceReview.learning_purpose,learningStage:sourceReview.learning_stage,
-        assessmentTiming:sourceReview.assessment_timing||"delayed_retrieval",targetedParts:sourceReview.targeted_parts});
-    return {...resolved,assessmentTiming:sourceReview.assessment_timing||resolved.assessmentTiming};
-  })():undefined;
-  const learningPurpose=input.learning_purpose||sourcePrescription?.learningPurpose||
-    (examEligibility.eligible?"exam_performance":input.generated_from_review_id?"error_repair":"integration_check");
-  const rawGptMark=String(input.mark||"");
-  const rawGptMarkWasPresent=input.raw_gpt_mark_present??!!rawGptMark;
-  const evaluation=resolveLearningEvaluation({
-    learningPurpose,assessmentTiming,result:String(input.review_outcome||"") as "success"|"partial"|"failed",
-    reviewOutcome:input.review_outcome,actualReferenceLevel,allowedReferenceLevel:allowedReference,
-    hintUsed:!!input.hint_used,referenceClosedReproduction:referenceClosed,
-    targetIssueResolved:input.target_issue_resolved,minimumPassConditionMet:input.minimum_pass_condition_met,
-    errorTypes:effectiveErrors.length?effectiveErrors:["none"],unresolvedCarryover:input.unresolved_carryover,
-    gradedPartIds:input.graded_part_ids||sourceReview?.grading_contract?.gradedParts.map(part=>part.id),
-    gradedFindings:input.graded_findings,requireGradedEvidence:!!sourceReview
-  });
-  const appCorrectionFields=[
-    rawGptMarkWasPresent&&rawGptMark!==evaluation.mark?"mark":"",
-    input.review_outcome&&input.review_outcome!==evaluation.reviewOutcome?"review_outcome":"",
-  ].filter(Boolean);
-  input={...input,mark:evaluation.mark,review_outcome:evaluation.reviewOutcome,
-    learning_purpose:learningPurpose,
-    auto_corrected:!!input.auto_corrected||appCorrectionFields.length>0,
-    correction_fields:[...new Set([...(input.correction_fields||[]),...appCorrectionFields])],
-    correction_reason:appCorrectionFields.length
-      ?`${String(input.correction_reason||"")}${input.correction_reason?" / ":""}markと学習状態を採点契約・答案証拠・履歴からアプリ側で決定`
-      :input.correction_reason};
+  const projected=projectStudyUpdateLifecycle({update:input,sourceReview,sourceAttempt:sourceAttemptForTransition,problem,
+    defaultLearningPurpose:examEligibility.eligible?"exam_performance":input.generated_from_review_id?"error_repair":"integration_check"});
+  input=projected.update as StudyUpdate&Record<string,unknown>;
+  const evaluation=projected.lifecycle,sourcePrescription=projected.prescription,transition=evaluation.transition;
+  const learningPurpose=evaluation.lifecyclePhase,assessmentTiming=input.assessment_timing||requestedAssessmentTiming;
+  scoreCandidate.assessment_timing=assessmentTiming;
+  const allowedReference=Math.min(5,Math.max(0,Number(sourcePrescription?.allowedReferenceLevel??input.allowed_reference_level??0)));
+  const primary=input.primary_error_type||input.error_type||"none";
+  const errors=input.error_types?.length?input.error_types:[primary];
+  const effectiveErrors=(input.effective_error_types||[]).filter(error=>["K","W","N","C"].includes(String(error)));
+  const kPolicyValidity=classifyKPolicyValidity(input);
+  const hasRealError=errors.some(error=>["K","W","N","C"].includes(String(error)));
+  const localizedNextAction=japaneseizeMathText(input.next_action||"");
+  const improvementGuidance=japaneseizeMathText(input.improvement_guidance||"");
+  const requiredDerivation=japaneseizeMathText(input.required_derivation||"");
+  const correctedAnswer=japaneseizeMathText(input.corrected_answer||"");
+  const localizedErrorPoint=japaneseizeMathText(input.error_point||(hasRealError?"":"大きな問題なし"));
   const completionResult=evaluation.reviewOutcome,objectiveGraduation=evaluation.graduated;
-  const transition=sourcePrescription?resolveReviewTransition({prescription:sourcePrescription,result:completionResult,
-    referenceClosedReproduction:referenceClosed||actualReferenceLevel===0,
-    objectiveRetentionSuccess:objectiveGraduation,crossProblemEvidence:false,verifiedTransferTargetAvailable:false}):undefined;
   const id=Number(await db.attempts.add({
     id:undefined as unknown as number,problem_id:input.problem_id,date,mode:input.mode||problem.recommended_mode,
     time_minutes:actualMinutes,mark:input.mark||"△",score_label:input.score_label||"B",
@@ -1391,7 +1356,8 @@ async function completeReview(id:number,body:Record<string,unknown>){
       part.allowedErrorTypes.find(value=>value!=="none"&&value!=="K")||"N") as "W"|"N"|"C";
     return {graded_part_id:part.id,error_type:error,evidence:"自己確認で今回の採点対象を再現できなかった",resolved:false};
   });
-  const evaluation=resolveLearningEvaluation({
+  const evaluation=resolveCanonicalLearningLifecycle({
+    prescription:currentPrescription,
     learningPurpose:currentPrescription.learningPurpose,assessmentTiming:currentPrescription.assessmentTiming,
     result:outcome.result,reviewOutcome:outcome.result,actualReferenceLevel,
     allowedReferenceLevel:allowedReference,hintUsed,referenceClosedReproduction:referenceClosed,
@@ -1401,9 +1367,7 @@ async function completeReview(id:number,body:Record<string,unknown>){
     gradedPartIds:review.grading_contract?.gradedParts.map(part=>part.id)||[],gradedFindings:objectiveFindings,
     requireGradedEvidence:true
   });
-  const transition=resolveReviewTransition({prescription:currentPrescription,result:evaluation.reviewOutcome,
-    referenceClosedReproduction:referenceClosed||actualReferenceLevel===0,crossProblemEvidence:false,
-    verifiedTransferTargetAvailable:false,objectiveRetentionSuccess:evaluation.graduated});
+  const transition=evaluation.transition!;
   const plan=linkedS?createSReviewPlan(evaluation.reviewOutcome==="success"?"stable":evaluation.reviewOutcome==="partial"?"check":"forgotten"):
     createAdaptiveReviewPlan(source,review,outcome,[]);
   const sourceErrors=linkedS?[]:currentPrescription.effectiveErrorTypes;
@@ -2818,7 +2782,8 @@ async function bootstrap():Promise<Bootstrap>{
       resolveReviewOrigin({review,attempts,aliases:problemAliases,relations:storedRelations,problems}).valid;
   }).map(review=>review.id);
   const integrityHealth=runIntegrityAudit({
-    attempts,reviews:rawReviews,aliases:problemAliases,today,todayPlanSnapshots:[snapshot],validCrossTargetReviewIds
+    attempts,reviews:rawReviews,aliases:problemAliases,today,todayPlanSnapshots:[snapshot],validCrossTargetReviewIds,
+    currentTodayTasks:tasks,
   });
   const masterStatus={
     problem_count:problems.length,answer_count:answerIndex.length,
