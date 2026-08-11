@@ -60,10 +60,12 @@ const fingerprint=async()=>({attempts:await db.attempts.count(),reviews:await db
 const before=await fingerprint();
 const focusIds=["WB-4-A-29","WB-6-A-19","WB-6-A-23","WB-6-S-22","WB-2-A-06","WB-6-S-15"];
 const focusAudit=async()=>{
-  const [{analyzeReviewReconciliation},{buildStableTargetIndex}]=await Promise.all([
-    import("../src/reviewReconciliation.ts"),import("../src/stableTargetIdentity.ts")
+  const [{analyzeReviewReconciliation},{buildStableTargetIndex},{resolveReviewCard}]=await Promise.all([
+    import("../src/reviewReconciliation.ts"),import("../src/stableTargetIdentity.ts"),import("../src/reviewCardResolver.ts")
   ]);
-  const [attempts,reviews,aliases]=await Promise.all([db.attempts.toArray(),db.reviews.toArray(),db.problemAliases.toArray()]);
+  const [attempts,reviews,aliases,problems]=await Promise.all([
+    db.attempts.toArray(),db.reviews.toArray(),db.problemAliases.toArray(),db.problems.toArray(),
+  ]);
   const today=new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Tokyo",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
   const audit=analyzeReviewReconciliation({attempts,reviews,aliases,today});
   const index=buildStableTargetIndex({attempts,reviews,aliases});
@@ -72,10 +74,18 @@ const focusAudit=async()=>{
     const repair=active.filter(row=>(row.grading_contract?.learningPurpose||row.learning_purpose)==="error_repair");
     const plan=audit.problems.find(row=>row.problemId===problemId);
     const identityKeys=repair.flatMap(row=>index.reviewParts(row.id).map(part=>part.identityKey).filter(Boolean));
+    const latestAttempt=attempts.filter(row=>row.problem_id===problemId).sort((a,b)=>b.id-a.id)[0];
+    const display=repair[0]?resolveReviewCard({item:repair[0],problems,attempts,aliases,today}):null;
     return {problemId,activeReviewIds:repair.map(row=>row.id),activeReviewTargetCount:repair.reduce((sum,row)=>
       sum+(row.grading_contract?.gradedParts?.length||row.graded_part_ids?.length||0),0),
       distinctStableTargetCount:new Set(identityKeys).size,multiGenerationDuplicateCount:identityKeys.length-new Set(identityKeys).size,
-      currentUnresolvedTargetCount:plan?.desiredRepairParts.length||0,ambiguousReasons:plan?.ambiguousReasons||[]};
+      currentUnresolvedTargetCount:plan?.desiredRepairParts.length||0,stalePayloadCount:plan?.stalePayloadCount||0,
+      latestAttemptId:latestAttempt?.id,latestFindings:latestAttempt?.graded_findings||[],
+      currentPayload:repair.flatMap(row=>(row.grading_contract?.gradedParts||[]).map(part=>({
+        stableTargetKey:part.stableTargetKey||part.stable_target_key,label:part.label,currentEvidence:part.currentEvidence,
+        evidenceSourceAttemptId:part.evidenceSourceAttemptId,
+      }))),oneLineHint:display?.oneLineHint.value,todayActions:display?.todayActions.value,
+      completionConditions:display?.completionConditions.value,ambiguousReasons:plan?.ambiguousReasons||[]};
   });
 };
 const focusBefore=await focusAudit();

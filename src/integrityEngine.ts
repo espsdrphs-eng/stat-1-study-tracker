@@ -4,6 +4,7 @@ import { addCalendarDays, resolveReviewSchedule } from "./reviewSchedulePolicy.t
 import { isActionableReview, validateGradingContract } from "./gradingContract.ts";
 import { analyzeReviewReconciliation, type ReconciliationAudit } from "./reviewReconciliation.ts";
 import {buildStableTargetIndex,isValidStableTargetKey} from "./stableTargetIdentity.ts";
+import {currentTargetDisplay,currentTargetLabels} from "./currentTargetPayload.ts";
 
 export const ACTIVE_REVIEW_STATUSES = new Set(["pending", "overdue"]);
 
@@ -164,7 +165,8 @@ export type IntegrityCategory =
   | "stale_review_after_success" | "partially_stale_review" | "stale_delayed_check"
   | "graduated_but_pending" | "obsolete_today_action" | "duplicate_stable_target"
   | "stale_stable_target" | "current_review_target_mismatch" | "orphan_active_target"
-  | "invalid_stable_target_key" | "duplicate_active_target_label";
+  | "invalid_stable_target_key" | "duplicate_active_target_label"
+  | "stale_target_payload" | "current_target_display_mismatch";
 
 export type IntegrityIssue = {
   category: IntegrityCategory;
@@ -272,6 +274,24 @@ export function runIntegrityAudit(args: {
       const duplicateLabels=[...new Set(labels.filter((label,index)=>labels.indexOf(label)!==index))];
       if(duplicateLabels.length)issues.push({category:"duplicate_active_target_label",severity:"active",reviewIds:[review.id],
         detail:`Review ${review.id} repeats exact target labels: ${duplicateLabels.join(", ")}`,repairable:true});
+      if(contract.learningPurpose==="error_repair"){
+        const currentLabels=currentTargetLabels(contract.gradedParts);
+        const expectedDisplay=currentTargetDisplay(contract.gradedParts);
+        const same=(left:string[]|undefined,right:string[])=>JSON.stringify(left||[])===JSON.stringify(right);
+        const countText=contract.completionConditions.join(" ").match(/指定された(\d+)点/);
+        const completionCount=countText?Number(countText[1]):currentLabels.length;
+        const storedHint=review.derived_fields?.oneLineHint?.value;
+        const storedActions=review.derived_fields?.todayActions?.value;
+        if((review.targeted_parts!==undefined&&!same(review.targeted_parts,currentLabels))||
+          (review.graded_parts!==undefined&&!same(review.graded_parts,currentLabels))||
+          (review.required_evidence!==undefined&&!same(review.required_evidence,currentLabels))||
+          (typeof storedHint==="string"&&storedHint!==expectedDisplay.oneLineHint)||
+          (Array.isArray(storedActions)&&!same(storedActions,expectedDisplay.todayActions))||
+          completionCount!==currentLabels.length){
+          issues.push({category:"current_target_display_mismatch",severity:"active",reviewIds:[review.id],
+            detail:`Review ${review.id} display payload does not cover all ${currentLabels.length} current targets`,repairable:true});
+        }
+      }
     }
   }
 
@@ -318,6 +338,9 @@ export function runIntegrityAudit(args: {
 
   const reviewMap=new Map(reviews.map(row=>[row.id,row]));
   for(const problem of reconciliation.problems){
+    if(problem.stalePayloadCount>0)issues.push({category:"stale_target_payload",severity:"active",
+      reviewIds:problem.activeRepairReviewIds,attemptIds:problem.desiredSourceAttemptId?[problem.desiredSourceAttemptId]:undefined,
+      detail:`${problem.problemId} has ${problem.stalePayloadCount} target payloads older than latest eligible evidence`,repairable:true});
     if(problem.multiGenerationDuplicateCount>0&&!issues.some(issue=>issue.category==="duplicate_stable_target"&&
       issue.reviewIds?.some(id=>problem.activeRepairReviewIds.includes(id))))issues.push({category:"duplicate_stable_target",severity:"active",
       reviewIds:problem.activeRepairReviewIds,detail:`${problem.problemId} has ${problem.multiGenerationDuplicateCount} duplicate target generations`,repairable:true});
@@ -364,7 +387,7 @@ export function runIntegrityAudit(args: {
     "unstable_graded_part", "stale_review_after_success", "partially_stale_review",
     "stale_delayed_check", "graduated_but_pending", "obsolete_today_action",
     "duplicate_stable_target", "stale_stable_target", "current_review_target_mismatch", "orphan_active_target",
-    "invalid_stable_target_key", "duplicate_active_target_label",
+    "invalid_stable_target_key", "duplicate_active_target_label", "stale_target_payload", "current_target_display_mismatch",
   ];
   const counts = Object.fromEntries(categories.map((category) =>
     [category, issues.filter((issue) => issue.category === category).length])) as Record<IntegrityCategory, number>;

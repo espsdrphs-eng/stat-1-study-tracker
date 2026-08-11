@@ -13,6 +13,7 @@ import {
   safeReviewActions,
 } from "./reviewExperience.ts";
 import { addCalendarDays, differenceInCalendarDays, resolveReviewSchedule } from "./reviewSchedulePolicy.ts";
+import {currentTargetDisplay} from "./currentTargetPayload.ts";
 
 export type ReviewMode="check"|"skeleton"|"main_calc"|"full"|"scan5";
 export type SheetType="check_sheet"|"skeleton_sheet"|"main_calc_sheet"|"full_answer_sheet"|"scan5_sheet";
@@ -273,9 +274,11 @@ export function resolveReviewCard({
   const specific=(factory:()=>string)=>blocked?fallback:factory();
   const quality=metadataQuality(problem);
   const generic=safeGenericGuidance(problem,targetAttempt);
-  const actions=blocked?[fallback]:quality==="generic"
+  let actions=blocked?[fallback]:quality==="generic"
     ?scope.targetedParts.slice(0,3).map(part=>`指定箇所「${part}」を確認する`).concat(scope.targetedParts.length?[]:["前回指定された箇所を確認する"])
     :safeReviewActions(generatedItem);
+  const targetDisplay=contract.learningPurpose==="error_repair"?currentTargetDisplay(contract.gradedParts):undefined;
+  if(!blocked&&targetDisplay?.targetCount)actions=targetDisplay.todayActions;
   const completion=blocked?[fallback]:scope.completionConditions;
   const sourceIssue=sourceAttempt?.error_point||item.source_error_summary||"元問題の弱点を確認";
   const problemContext=buildProblemContextPack({problemId:canonicalId,problems:[master],aliases,attempts,
@@ -291,7 +294,8 @@ export function resolveReviewCard({
     reviewGoal:make(specific(()=>quality==="generic"?"前回指定された箇所を確認する":reviewAim(generatedItem))),
     correctionTheme:make(specific(()=>quality==="generic"?generic.correctionTheme:correctionTheme(generatedItem))),
     entryHint:make(specific(()=>quality==="generic"?generic.entryHint:referenceEntryPoint(generatedItem))),
-    oneLineHint:make(specific(()=>quality==="generic"?generic.oneLineHint:oneLineHint(generatedItem))),
+    oneLineHint:make(specific(()=>targetDisplay?.targetCount?targetDisplay.oneLineHint:
+      quality==="generic"?generic.oneLineHint:oneLineHint(generatedItem))),
     todayActions:make(actions),completionConditions:make(completion),dueDate,reviewAfterDays:interval,daysUntilDue:dueDate?differenceInCalendarDays(dueDate,today):null,
     targetAttempt,sourceAttempt,
     sourceProblem:sourceProblem?{problemId:sourceCanonical,displayLabel:sourceProblem.display_label||sourceProblem.title||sourceCanonical,sourceIssue}:undefined,

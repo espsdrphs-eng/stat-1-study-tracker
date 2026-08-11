@@ -182,3 +182,41 @@ test("exact duplicate active target labels are a sanity warning and never an ide
   assert.equal(audit.counts.duplicate_active_target_label,1);
   assert.equal(audit.counts.duplicate_stable_target,0);
 });
+
+test("stale current payload keeps System status non-normal even when stable key matches",()=>{
+  const stableTargetKey="target:WB-4-A-24:root:00000000-0000-4000-8000-000000000099";
+  const currentPart={...contract().gradedParts[0],id:"part:WB-4-A-24:1:1",label:"古い広範囲エラー",stableTargetKey};
+  const source=attempt(1,{error_type:"N",error_types:["N"],graded_part_ids:[currentPart.id],
+    graded_parts:[currentPart.label],graded_findings:[{graded_part_id:currentPart.id,error_type:"N",
+      evidence:"最新の局所エラー",resolved:false}],grading_contract:{...contract(),gradedParts:[currentPart]}});
+  const grading={...contract(),learningPurpose:"error_repair",learningStage:"repair",reviewScope:"targeted_patch",
+    targetedParts:[currentPart.label],requiredEvidence:[currentPart.label],gradedParts:[currentPart],
+    completionConditions:["指定された1点を再現できた"]};
+  const row=review(12,1,{learning_purpose:"error_repair",review_scope:"targeted_patch",
+    targeted_parts:[currentPart.label],graded_parts:[currentPart.label],required_evidence:[currentPart.label],
+    grading_contract:grading,contract_id:grading.contractId,contract_hash:grading.contractHash,
+    graded_part_ids:[currentPart.id]});
+  const audit=runIntegrityAudit({attempts:[source],reviews:[row],today:"2026-07-26"});
+  assert.equal(audit.counts.stale_target_payload,1);
+  assert.equal(audit.activeIssueCount>0,true);
+});
+
+test("stale one-line hint and truncated actions keep System status non-normal",()=>{
+  const stableTargetKey="target:WB-4-A-24:root:00000000-0000-4000-8000-000000000100";
+  const parts=[1,2,3,4].map(index=>({...contract().gradedParts[0],id:`slot-${index}`,label:`latest-${index}`,
+    stableTargetKey:`${stableTargetKey.slice(0,-3)}${String(100+index).padStart(3,"0")}`}));
+  const grading={...contract(),learningPurpose:"error_repair",learningStage:"repair",reviewScope:"targeted_patch",
+    targetedParts:parts.map(part=>part.label),requiredEvidence:parts.map(part=>part.label),gradedParts:parts,
+    completionConditions:["指定された4点を再現できた"]};
+  const source=attempt(1,{error_type:"N",error_types:["N"],graded_part_ids:parts.map(part=>part.id),
+    graded_parts:parts.map(part=>part.label),graded_findings:parts.map(part=>({graded_part_id:part.id,error_type:"N",
+      evidence:part.label,resolved:false})),grading_contract:grading});
+  const row=review(13,1,{learning_purpose:"error_repair",review_scope:"targeted_patch",
+    targeted_parts:grading.targetedParts,graded_parts:grading.targetedParts,required_evidence:grading.targetedParts,
+    grading_contract:grading,contract_id:grading.contractId,contract_hash:grading.contractHash,
+    graded_part_ids:parts.map(part=>part.id),derived_fields:{oneLineHint:{value:"PITだけを確認"},
+      todayActions:{value:["latest-1","latest-2","latest-3"]}}});
+  const audit=runIntegrityAudit({attempts:[source],reviews:[row],today:"2026-07-26"});
+  assert.equal(audit.counts.current_target_display_mismatch,1);
+  assert.equal(audit.activeIssueCount>0,true);
+});

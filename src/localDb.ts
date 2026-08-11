@@ -797,7 +797,9 @@ async function currentReconciliationAudit(todayPlanSnapshots:TodayPlanSnapshot[]
 async function staleEvidenceReason(review:Review){
   const audit=await currentReconciliationAudit();
   const problem=reconciliationForProblem(audit,review.problem_id,await db.problemAliases.toArray());
-  return problem?.reviewsToSupersede.find(row=>row.reviewId===review.id)?.reason;
+  return problem?.reviewsToSupersede.find(row=>row.reviewId===review.id)?.reason||
+    (problem?.stalePayloadCount&&problem.activeRepairReviewIds.includes(review.id)
+      ?`Review ${review.id} の表示内容が最新の採点証拠と一致しません`:undefined);
 }
 
 /**
@@ -814,7 +816,8 @@ async function reconcileProblemLearningState(problemId?:string,preview=false):Pr
   const details=plans.flatMap(plan=>plan?.reviewsToSupersede.length||plan?.replacementRequired||plan?.retentionCheckRequired?[{
     problemId:plan!.problemId,reviewIds:plan!.reviewsToSupersede.map(row=>row.reviewId),
     sourceAttemptId:plan!.desiredSourceAttemptId,
-    reason:[...new Set(plan!.reviewsToSupersede.map(row=>row.reason))].join(" / ")||"現在の未解決targetからReviewを生成",
+    reason:[...new Set(plan!.reviewsToSupersede.map(row=>row.reason))].join(" / ")||
+      (plan!.stalePayloadCount?`最新eligible evidenceへ更新するtarget payload ${plan!.stalePayloadCount}件`:"現在の未解決targetからReviewを生成"),
     beforeTargetCount:plan!.activeReviewTargetCount,distinctStableTargetCount:plan!.distinctStableTargetCount,
     duplicateGenerationCount:plan!.multiGenerationDuplicateCount,afterTargetCount:plan!.desiredRepairParts.length,
   }]:[]);
@@ -883,9 +886,15 @@ async function reconcileProblemLearningState(problemId?:string,preview=false):Pr
     if(survivingActive.length===1&&plan.reviewsToSupersede.length===0){
       const current=survivingActive[0],revision=Math.max(1,Number(current.contract_revision||1))+1;
       const bound=bindContractToReview(contract,current.id,revision);
+      const taskFields=taskFieldsFromContract(bound);
+      const card=resolveReviewCard({item:{...current,...taskFields},problems,attempts,aliases,
+        today:todayString(),now});
       await db.reviews.update(current.id,{...taskFieldsFromContract(bound),contract_revision:revision,
         targeted_parts:bound.targetedParts,graded_parts:bound.gradedParts.map(part=>part.label),
         graded_part_ids:bound.gradedParts.map(part=>part.id),graded_findings:plan.desiredRepairFindings,
+        derived_from_attempt_id:source.id,derived_generated_at:now,derived_stale:false,
+        derived_fields:{reviewGoal:card.reviewGoal,correctionTheme:card.correctionTheme,entryHint:card.entryHint,
+          oneLineHint:card.oneLineHint,todayActions:card.todayActions,completionConditions:card.completionConditions},
         logical_review_key:logicalReviewKey({review:{...current,grading_contract:bound},aliases,sourceAttempt:source})});
       continue;
     }
@@ -2458,7 +2467,10 @@ async function bootstrap():Promise<Bootstrap>{
   // Read paths also classify stale evidence so an old pending row cannot become current
   // before the user runs the safe, history-preserving repair.
   const liveReconciliation=analyzeReviewReconciliation({attempts,reviews:rawReviews,aliases:problemAliases,today});
-  const staleReviewIds=new Set(liveReconciliation.problems.flatMap(row=>row.reviewsToSupersede.map(item=>item.reviewId)));
+  const staleReviewIds=new Set(liveReconciliation.problems.flatMap(row=>[
+    ...row.reviewsToSupersede.map(item=>item.reviewId),
+    ...(row.stalePayloadCount?row.activeRepairReviewIds:[]),
+  ]));
   const reviews=resolvedReviews.map(review=>staleReviewIds.has(review.id)?{
     ...review,status:"superseded",exclude_from_planning:true,
     superseded_reason:review.superseded_reason||"最新の答案証拠と現在の採点対象が一致しないため（read-only判定）",

@@ -46,6 +46,11 @@ This document is the implementation-level source of truth for data integrity. Le
 - An active error repair contains at most one item per stable target identity. Attempt-specific graded-part IDs remain
   immutable history. Explicit lineage components without a valid root are backfilled into the current contract with one
   opaque root only after preview and explicit safe repair; ambiguous components are not merged.
+- Stable target identity is immutable, but its current payload is not. The current label, evidence, error type, correction,
+  source Attempt, and evidence timestamp come from the newest eligible finding that explicitly graded that root. A resolved
+  finding removes the root; an omitted root retains its previous payload. Ancestor Review prose is never reused as current text.
+- Current UI summaries are derived from the active contract payload. “Only” is valid for exactly one unresolved target;
+  capped action lists disclose the omitted count, and completion criteria state the same target cardinality.
 - A partially stale repair is kept as immutable history and replaced by one Review containing only still-unassessed or
   currently unresolved parts. Old action prose and derived fields are not copied into the replacement.
 - Reconciliation runs after Attempt save/import/edit/delete and Review completion. It is idempotent and keeps at most

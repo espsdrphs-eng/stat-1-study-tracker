@@ -3,6 +3,7 @@ import type {
 } from "./types.ts";
 import { resolveCanonicalProblemId } from "./examReadiness.ts";
 import {buildStableTargetIndex,type StableTargetIndex,withStableTargetKey} from "./stableTargetIdentity.ts";
+import {currentTargetPayloadMatches,withCurrentFindingPayload} from "./currentTargetPayload.ts";
 
 const ACTIVE_STATUSES=new Set(["pending","overdue"]);
 const STANDARD_PURPOSES=new Set(["error_repair","retrieval_check"]);
@@ -32,6 +33,7 @@ export type ProblemReconciliation={
   activeReviewTargetCount:number;
   distinctStableTargetCount:number;
   multiGenerationDuplicateCount:number;
+  stalePayloadCount:number;
 };
 
 export type ReconciliationAudit={
@@ -53,6 +55,7 @@ export type ReconciliationAudit={
   duplicateStableTargets:number;
   currentReviewMismatches:number;
   orphanActiveTargets:number;
+  staleTargetPayloads:number;
 };
 
 function reviewPurpose(review:Review){
@@ -129,7 +132,8 @@ function evidenceEvents(attempt:Attempt,catalog:Map<string,GradedPartContract>,s
       id:finding.graded_part_id,label:finding.graded_part_id,cueLabel:finding.graded_part_id,
       allowedErrorTypes:[finding.error_type,"none"],completionCriterionId:`preserve_${finding.graded_part_id}`,
     } satisfies GradedPartContract;
-    return [{problemId:attempt.problem_id,part:withStableTargetKey(part,resolution.key),
+    const current=withCurrentFindingPayload(withStableTargetKey(part,resolution.key),finding,attempt);
+    return [{problemId:attempt.problem_id,part:current,
       stableIdentityKey:resolution.identityKey,stableTargetKey:resolution.key,
       attemptId:attempt.id,attemptDate:attempt.date,
       errorType:finding.error_type,resolved:finding.resolved&&finding.error_type==="none",evidence:finding.evidence||""}];
@@ -276,8 +280,15 @@ export function analyzeReviewReconciliation(args:{
     const remainingStableIds=remainingRepairs.length===1?stableIdsForReview(remainingRepairs[0]):[];
     const stableKeysPersisted=remainingRepairs.length===1&&partsFromContract(remainingRepairs[0]).every(part=>
       !!part.stableTargetKey&&part.stableTargetKey===stableIndex.reviewPart(remainingRepairs[0].id,part.id)?.key);
+    const desiredByIdentity=new Map(desiredRows.map(row=>[row.stableIdentityKey,row.part]));
+    const currentPayloadRows=remainingRepairs.length===1?stableIndex.reviewParts(remainingRepairs[0].id):[];
+    const stalePayloadCount=currentPayloadRows.filter(row=>{
+      const desiredPart=row.identityKey?desiredByIdentity.get(row.identityKey):undefined;
+      return !!desiredPart&&!!row.part&&!currentTargetPayloadMatches(row.part,desiredPart);
+    }).length;
+    const payloadsCurrent=remainingRepairs.length===1&&currentPayloadRows.length===desiredRows.length&&stalePayloadCount===0;
     const replacementRequired=!ambiguous.length&&!graduated&&desiredIds.length>0&&(repairs.length>0||latestAttemptHasUnresolved)&&
-      !(remainingRepairs.length===1&&sameIds(remainingStableIds,desiredIds)&&stableKeysPersisted&&
+      !(remainingRepairs.length===1&&sameIds(remainingStableIds,desiredIds)&&stableKeysPersisted&&payloadsCurrent&&
         Number(remainingRepairs[0].source_attempt_id||remainingRepairs[0].generated_from_attempt_id)>=Number(desiredSource?.id||0));
     const oldestRepairSource=repairs.map(row=>attemptMap.get(Number(row.source_attempt_id||row.generated_from_attempt_id||0)))
       .filter((row):row is Attempt=>!!row).sort(attemptOrder)[0];
@@ -294,7 +305,7 @@ export function analyzeReviewReconciliation(args:{
       retentionCheckRequired,retentionSourceAttemptId:retentionCheckRequired?latestSuccessfulRepair?.id:undefined,
       ambiguousReasons:[...new Set(ambiguous)],activeReviewTargetCount:repairs.reduce((sum,row)=>sum+partsFromContract(row).length,0),
       distinctStableTargetCount:distinctActiveStableIds.size,
-      multiGenerationDuplicateCount:Math.max(0,activeRepairStableIds.length-distinctActiveStableIds.size)});
+      multiGenerationDuplicateCount:Math.max(0,activeRepairStableIds.length-distinctActiveStableIds.size),stalePayloadCount});
   }
 
   const allSupersedes=problems.flatMap(row=>row.reviewsToSupersede);
@@ -315,7 +326,10 @@ export function analyzeReviewReconciliation(args:{
     // is a history warning, not an obsolete action, when that overlay exists;
     // if no current row exists the slot is hidden and cannot affect today's UI.
     const displayReview=!stale&&review?review:current[0];
-    if(displayReview&&stableIndex.reviewParts(displayReview.id).some(part=>part.ambiguous))staleTodayActions++;
+    const currentPlan=problems.find(row=>row.problemId===problemId);
+    const payloadStale=!!displayReview&&!!currentPlan?.stalePayloadCount&&
+      currentPlan.activeRepairReviewIds.includes(displayReview.id);
+    if(displayReview&&(payloadStale||stableIndex.reviewParts(displayReview.id).some(part=>part.ambiguous)))staleTodayActions++;
   }
   const count=(category:ProblemReconciliation["reviewsToSupersede"][number]["category"])=>
     allSupersedes.filter(row=>row.category===category).length;
@@ -330,6 +344,7 @@ export function analyzeReviewReconciliation(args:{
     stableIdentityGenerationsUnified:stableIndex.unifiedGenerationCount,
     duplicateStableTargets:problems.reduce((sum,row)=>sum+row.multiGenerationDuplicateCount,0),
     currentReviewMismatches:problems.filter(row=>row.replacementRequired).length,
+    staleTargetPayloads:problems.reduce((sum,row)=>sum+row.stalePayloadCount,0),
     orphanActiveTargets:problems.reduce((sum,row)=>sum+row.ambiguousReasons.length,0)};
 }
 

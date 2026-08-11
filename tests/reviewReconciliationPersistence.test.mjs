@@ -19,7 +19,7 @@ const contract=(reviewId,ids)=>{
   requiresKEvidence:true,allowedReferenceLevel:0,estimatedMinutes:10,sheetType:"skeleton_sheet",
   });
 };
-const finding=(id,error="N",resolved=false)=>({graded_part_id:id,error_type:error,evidence:`${id}-evidence`,resolved});
+const finding=(id,error="N",resolved=false,evidence=`${id}-evidence`)=>({graded_part_id:id,error_type:error,evidence,resolved});
 
 test("safe integrity repair replaces a partially stale repair and hydrates Today action without rewriting snapshot",async()=>{
   const today=todayString();
@@ -139,7 +139,14 @@ test("production-style review-id roots reconcile WB-4-A-29 from ten rows to four
       contract_version:grading.contractVersion,contract_hash:grading.contractHash,policy_version:"STAT1-LEARNING-v1"};
   };
   const unresolved=parts=>parts.map(row=>finding(row.id));
-  const latestFindings=p150.map((row,index)=>finding(row.id,[1,2,3,5].includes(index)?"none":"N",[1,2,3,5].includes(index)));
+  const latestEvidence=new Map([
+    [p150[0].id,"(1)〜(4)は修正されているが、(5)の定義域・場合分けが一部残っている。"],
+    [p150[4].id,"0<w<1/2で上限1を使っており場合分けの対応が逆。"],
+    [p150[6].id,"0<w<1/2で上限w/(1-w)を使っていない。"],
+    [p150[7].id,"F_X(X)が一様分布になる理由が答案中にない。"],
+  ]);
+  const latestFindings=p150.map((row,index)=>finding(row.id,[1,2,3,5].includes(index)?"none":"N",
+    [1,2,3,5].includes(index),latestEvidence.get(row.id)||`${row.id}-resolved`));
   const bloated=[p93[0],p93[1],p119[0],p119[1],p119[4],p119[5],p150[0],p150[4],p150[6],p150[7]];
   await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.meta],async()=>{
     await db.attempts.clear();await db.reviews.clear();
@@ -180,6 +187,9 @@ test("production-style review-id roots reconcile WB-4-A-29 from ten rows to four
   assert.deepEqual(active[0].grading_contract.gradedParts.map(row=>row.id).sort(),[
     `part:${problemId}:150:1`,`part:${problemId}:150:5`,`part:${problemId}:150:8`,"probability_integral_transform_explanation",
   ].sort());
+  assert.deepEqual(new Set(active[0].grading_contract.gradedParts.map(row=>row.label)),new Set(latestEvidence.values()));
+  assert.equal(active[0].grading_contract.gradedParts.every(row=>row.evidenceSourceAttemptId===172),true);
+  assert.equal(active[0].grading_contract.gradedParts.some(row=>row.label.includes("古い")),false);
   for(const row of active[0].grading_contract.gradedParts){
     assert.match(row.stableTargetKey,/^target:WB-4-A-29:(?:root:[0-9a-f-]{36}|slot:[a-z0-9_]+)$/i);
     assert.doesNotMatch(row.stableTargetKey,/:review:|:attempt:|:submission:/);
@@ -189,6 +199,10 @@ test("production-style review-id roots reconcile WB-4-A-29 from ten rows to four
   const bootstrap=await localGet("/api/bootstrap");
   const displayed=bootstrap.today.tasks.find(row=>row.problem_id===problemId);
   assert.equal(displayed.grading_contract.gradedParts.length,4);
+  assert.doesNotMatch(displayed.derived_fields.oneLineHint.value,/だけ/);
+  assert.match(displayed.derived_fields.oneLineHint.value,/残り3点/);
+  assert.deepEqual(displayed.derived_fields.todayActions.value.slice(-1),["ほか1件も確認する"]);
+  assert.match(displayed.derived_fields.completionConditions.value.join(" "),/4点/);
   assert.equal(afterFirst,reviewsBefore+1);
   const second=await localPost("/api/integrity/repair",{});
   assert.equal(await db.reviews.count(),afterFirst);

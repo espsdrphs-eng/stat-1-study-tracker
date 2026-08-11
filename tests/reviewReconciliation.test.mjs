@@ -11,7 +11,7 @@ const contract=(ids,purpose="error_repair")=>({
   completionCriteria:[{id:"done",displayText:"再現"}],hiddenAnswerKey:[],completionConditions:["再現"],requiredEvidence:ids,
   allowedErrorTypes:["K","W","N","C"],requiresKEvidence:true,allowedReferenceLevel:0,estimatedMinutes:5,sheetType:"check_sheet",
 });
-const finding=(id,error="N",resolved=false)=>({graded_part_id:id,error_type:error,evidence:`${id}-evidence`,resolved});
+const finding=(id,error="N",resolved=false,evidence=`${id}-evidence`)=>({graded_part_id:id,error_type:error,evidence,resolved});
 const attempt=(id,date,findings,patch={})=>({
   id,problem_id:"WB-4-A-29",date,mode:"check",time_minutes:5,mark:"△",score_label:"B",
   error_type:findings.find(row=>!row.resolved)?.error_type||"none",error_point:"",next_action:"",memo:"",
@@ -46,6 +46,30 @@ test("a target omitted by the latest targeted patch is not guessed resolved",()=
   const newer=attempt(2,"2026-08-05",[finding("A","none",true)]);
   const audit=analyzeReviewReconciliation({attempts:[old,newer],reviews:[review(10,1,["A","C"])],today:"2026-08-10"});
   assert.deepEqual(audit.problems[0].desiredRepairParts.map(row=>row.id),["C"]);
+});
+
+test("the newest eligible finding replaces mutable payload without changing stable identity",()=>{
+  const stableTargetKey="target:WB-4-A-29:root:00000000-0000-4000-8000-000000000099";
+  const oldPart={...part("part:WB-4-A-29:1:1"),label:"A/B/C/Dの古い広範囲な失敗",stableTargetKey};
+  const newPart={...oldPart,id:"part:WB-4-A-29:2:1"};
+  const old=attempt(1,"2026-08-01",[finding(oldPart.id,"N",false,"A/B/C/Dが未解決")],{
+    grading_contract:{...contract([oldPart.id]),gradedParts:[oldPart]},
+  });
+  const newer=attempt(2,"2026-08-05",[finding(newPart.id,"N",false,"Dだけが未解決")],{
+    next_action:"Dだけを再現する",saved_at:"2026-08-05T12:00:00Z",
+    grading_contract:{...contract([newPart.id]),sourceAttemptId:2,gradedParts:[newPart]},
+  });
+  const stalePart={...newPart,label:"A/B/C/Dの古い広範囲な失敗"};
+  const current=review(10,2,[newPart.id],{
+    grading_contract:{...contract([newPart.id]),sourceAttemptId:2,gradedParts:[stalePart]},
+  });
+  const plan=analyzeReviewReconciliation({attempts:[old,newer],reviews:[current],today:"2026-08-10"}).problems[0];
+  assert.equal(plan.desiredRepairParts[0].stableTargetKey,stableTargetKey);
+  assert.equal(plan.desiredRepairParts[0].label,"Dだけが未解決");
+  assert.equal(plan.desiredRepairParts[0].currentEvidence,"Dだけが未解決");
+  assert.equal(plan.desiredRepairParts[0].evidenceSourceAttemptId,2);
+  assert.equal(plan.stalePayloadCount,1);
+  assert.equal(plan.replacementRequired,true);
 });
 
 test("a later full answer does not guess that differently-keyed targets were graded",()=>{
@@ -132,7 +156,11 @@ test("scan-only evidence never creates or resolves mathematical repair targets",
 test("a stale Today Plan copy is overlaid from current Review while the stored snapshot remains input-only",()=>{
   const old=attempt(1,"2026-08-01",[finding("A")]);
   const newer=attempt(2,"2026-08-05",[finding("A","none",true),finding("E")]);
-  const stale=review(10,1,["A"]),current=review(11,2,["E"]);
+  const currentPart={...part("E"),label:"E-evidence",currentLabel:"E-evidence",currentEvidence:"E-evidence",
+    currentErrorType:"N",evidenceSourceAttemptId:2,evidenceUpdatedAt:"2026-08-05"};
+  const stale=review(10,1,["A"]),current=review(11,2,["E"],{
+    grading_contract:{...contract(["E"]),sourceAttemptId:2,gradedParts:[currentPart]},
+  });
   const snapshot={date:"2026-08-10",task_ids:["review:10"],start_of_day_planned_minutes:5,
     initial_bucket:{"review:10":"must"},initial_estimated_minutes:{"review:10":5},created_at:"fixture",
     tasks:[{id:10,problem_id:"WB-4-A-29",title:"fixture",kind:"復習",reason:"old",mode:"check",minutes:5,load:.2,review_type:"targeted_patch"}]};

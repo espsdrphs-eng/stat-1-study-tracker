@@ -77,6 +77,9 @@ export type GradedPartContract={
   completionCriterionId:string;
   /** Attempt-independent identity. Legacy `id` remains immutable history. */
   stableTargetKey?:string;stable_target_key?:string;
+  /** Mutable current-state payload. Identity must never be derived from these fields. */
+  currentLabel?:string;currentEvidence?:string;currentErrorType?:GradingErrorType;
+  currentCorrection?:string;evidenceSourceAttemptId?:number;evidenceUpdatedAt?:string;
 };
 export type GradedFinding={
   graded_part_id:string;error_type:GradingErrorType;evidence:string;resolved:boolean;
