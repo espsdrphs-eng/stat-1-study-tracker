@@ -204,6 +204,28 @@ export function analyzeReviewReconciliation(args:{
       const source=attemptMap.get(Number(repair.source_attempt_id||repair.generated_from_attempt_id||0));
       const parts=partsFromContract(repair).map(part=>({part,resolution:stableIndex.reviewPart(repair.id,part.id)}));
       if(!source)continue;
+      // A legacy unstructured Attempt has one synthetic learning target in
+      // error_point. next_action is its correction, never another target.
+      if(!(source.graded_findings||[]).length&&source.error_point){
+        const legacy=parts.find(row=>{
+          const label=String(row.part.currentEvidence||row.part.currentLabel||row.part.label||"").trim();
+          return label===String(source.error_point||"").trim();
+        })||(parts.length===1?parts[0]:undefined);
+        if(legacy?.resolution?.identityKey&&!lastEvent.has(legacy.resolution.identityKey)){
+          const error=(errorsFor(source)[0]||"N") as GradingErrorType;
+          const current=withCurrentFindingPayload(withStableTargetKey(legacy.part,legacy.resolution.key),{
+            graded_part_id:legacy.part.id,error_type:error,evidence:source.error_point,resolved:false,
+          },source);
+          desired.set(legacy.resolution.identityKey,{problemId,part:current,
+            stableIdentityKey:legacy.resolution.identityKey,stableTargetKey:legacy.resolution.key,
+            attemptId:source.id,attemptDate:source.date,errorType:error,resolved:false,evidence:source.error_point});
+          continue;
+        }
+        if(legacy)continue;
+        // A multi-part historical contract that does not contain error_point
+        // verbatim is an explicit scoped contract, not raw error/next_action
+        // synthesis. Preserve its slots and let later graded evidence update it.
+      }
       if(!parts.length)ambiguous.push(`Review ${repair.id}: 安定したgraded part IDがない`);
       for(const {part,resolution} of parts){
         if(!resolution?.identityKey){ambiguous.push(`Review ${repair.id} / ${part.id}: ${resolution?.reason||"stable target identity is missing"}`);continue;}

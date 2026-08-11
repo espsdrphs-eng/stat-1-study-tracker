@@ -6,6 +6,7 @@ import { resolveCanonicalProblemId } from "./examReadiness.ts";
 import { classifyKPolicyValidity, planningErrorsForSource } from "./legacyKPolicy.ts";
 import type { LearningPrescription } from "./learningPolicyResolver.ts";
 import { gradedPartContracts, gradedPartIds, gradedPartLabels, sameGradedPartIds } from "./gradedParts.ts";
+import { withCurrentFindingPayload } from "./currentTargetPayload.ts";
 
 export const GRADING_CONTRACT_VERSION="STAT1-CONTRACT-v2";
 
@@ -57,10 +58,20 @@ function legacyPurpose(review:Partial<Review&Task>,attempt?:Attempt):LearningPur
 export function repairTargets(review:Partial<Review&Task>,attempt?:Attempt){
   if(!attempt)return unique([review.targeted_parts||[]]);
   const successEvidence=new Set(unique([attempt.required_work_shown||[],attempt.resolution_evidence]));
-  const explicit=unique([review.targeted_parts||[]]);
-  const candidates=explicit.length?explicit:!sourceErrors(attempt).length
-    ?[]
-    :unique([attempt.unresolved_carryover||[],attempt.error_point,attempt.next_action]).slice(0,8);
+  const structured=attempt.graded_findings||[];
+  const explicit=unique([review.targeted_parts||[]]).filter(value=>value!==String(attempt.next_action||"").trim());
+  const sourceParts=new Map((attempt.grading_contract?.gradedParts||[])
+    .flatMap(part=>typeof part!=="string"&&part?.id?[[part.id,part] as const]:[]));
+  // Structured findings are the target source of truth. Legacy prose must not
+  // add another target beside a finding that already represents the same work.
+  const candidates=structured.length
+    ?structured.filter(row=>!row.resolved&&row.error_type!=="none").map(row=>
+      String(row.evidence||sourceParts.get(row.graded_part_id)?.currentLabel||sourceParts.get(row.graded_part_id)?.label||row.graded_part_id))
+    :!sourceErrors(attempt).length?[]
+      // Explicit historical contracts remain authoritative after success
+      // evidence and next_action are removed. With no such contract, one
+      // unstructured Attempt has one synthetic target: error_point.
+      :explicit.length?explicit:unique([attempt.error_point]).slice(0,1);
   // 成功証拠は背景として保持しても、次回の修正・採点対象には再利用しない。
   const withoutSuccess=candidates.filter(value=>!successEvidence.has(value));
   return classifyKPolicyValidity(attempt)==="invalid_legacy_k"
@@ -166,8 +177,23 @@ export function buildGradingContractSnapshot(args:{
     }
   }
 
-  const gradedParts=gradedPartContracts({texts:targetedParts,problemId:String(review.problem_id||problem?.problem_id||""),
+  let gradedParts=gradedPartContracts({texts:targetedParts,problemId:String(review.problem_id||problem?.problem_id||""),
     sourceAttempt,purpose:learningPurpose});
+  if(learningPurpose==="error_repair"&&sourceAttempt&&gradedParts.length){
+    const unresolved=(sourceAttempt.graded_findings||[]).filter(row=>!row.resolved&&row.error_type!=="none");
+    if(unresolved.length){
+      const byId=new Map(unresolved.map(row=>[row.graded_part_id,row]));
+      gradedParts=gradedParts.map(part=>{
+        const finding=byId.get(part.id);
+        return finding?withCurrentFindingPayload(part,finding,sourceAttempt):part;
+      });
+    }else if(sourceAttempt.error_point&&gradedParts.length===1){
+      const error=(sourceErrors(sourceAttempt)[0]||"N") as "K"|"W"|"N"|"C";
+      gradedParts=[withCurrentFindingPayload(gradedParts[0],{
+        graded_part_id:gradedParts[0].id,error_type:error,evidence:sourceAttempt.error_point,resolved:false,
+      },sourceAttempt)];
+    }
+  }
   const completionCriteria=learningPurpose==="retrieval_check"
     ?[{id:"retrieval_short_recall",displayText:"型・初手・主役の量・重要条件を、参照なしで短く想起できた"}]
     :learningPurpose==="integration_check"

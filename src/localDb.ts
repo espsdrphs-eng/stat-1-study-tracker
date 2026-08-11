@@ -8,6 +8,7 @@ import { applyWeakNoteQuizResult } from "./weakNoteQuiz.ts";
 import { selectMixedPractice } from "./studyScheduler.ts";
 import { triageTodayTasks } from "./studyTriage.ts";
 import { summarizeTodayTime } from "./todayPlan.ts";
+import { projectTodayTaskChecked } from "./todayTaskProjection.ts";
 import { removeTimingExpressions, sanitizeStudyUpdateTiming } from "./reviewTiming.ts";
 import { buildProgressPlan, daysUntilExam } from "./studyProgress.ts";
 import { calculateExamReadinessMetrics } from "./examReadiness.ts";
@@ -2741,7 +2742,6 @@ async function bootstrap():Promise<Bootstrap>{
         right.due_date.localeCompare(left.due_date)||right.id-left.id;
     })[0];
   };
-  const todayAttemptProblems=new Set(activeAttempts.filter(attempt=>attempt.date===today).map(attempt=>attempt.problem_id));
   const tasks=snapshot.tasks.filter(saved=>{
     if(saved.id&&saved.review_type){
       const currentReview=currentReviewForSaved(saved);
@@ -2760,7 +2760,7 @@ async function bootstrap():Promise<Bootstrap>{
     const forcedMust=review?.triage_override==="must"||record?.triage_override==="must";
     const contract=review?.grading_contract||saved.grading_contract||current?.grading_contract;
     const contractFields=contract?taskFieldsFromContract(contract):{};
-    return {...current,...saved,...(review||{}),...contractFields,
+    const projected={...current,...saved,...(review||{}),...contractFields,
       kind:saved.kind,reason:review&&review.id!==saved.id?"最新の復習状態へ同期":saved.reason,
       title:pmap.get(saved.problem_id)?.display_label||pmap.get(saved.problem_id)?.title||saved.title,
       theme:pmap.get(saved.problem_id)?.theme||saved.theme,
@@ -2778,8 +2778,9 @@ async function bootstrap():Promise<Bootstrap>{
       // Snapshot selection/order/triage/minutes stay fixed. Current Review content is a read-only overlay.
       minutes:Number(snapshot!.initial_estimated_minutes[key]??saved.minutes),
       triage:forcedMust?"must":snapshot!.initial_bucket[key]||saved.triage||"tomorrow",
-      checked:checkedKeys.has(`today-check:${today}:${saved.problem_id}:${saved.kind}`)||todayAttemptProblems.has(saved.problem_id)
     } as Task;
+    return {...projected,checked:projectTodayTaskChecked({task:projected,attempts,snapshot:snapshot!,aliases:problemAliases,
+      manuallyChecked:checkedKeys.has(`today-check:${today}:${saved.problem_id}:${saved.kind}`)})} as Task;
   });
   const totalLoad=Math.round(tasks.filter(task=>!task.checked&&task.triage!=="tomorrow").reduce((sum,x)=>sum+x.load,0)*10)/10;
   const actualMinutes=activeAttempts.filter(attempt=>attempt.date===today&&!attempt.parent_past_session_id).reduce((sum,attempt)=>sum+Math.max(0,Number(attempt.time_minutes||0)),0)
@@ -3381,6 +3382,11 @@ export async function restoreBackup(data:any){
     if(Array.isArray(data.meta)) await db.meta.bulkPut(data.meta);
     await db.meta.put({key:"seeded",value:"1"});
   });
+  // Restore only writes source records. Rebuild the current projection through
+  // the same reconciler used by every normal Attempt path; history is retained.
+  await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.problemAliases,db.meta],
+    ()=>reconcileProblemLearningState());
+  notifyStudyDataChanged({operation:"restore-backup"});
 }
 
 export async function csvFor(table:"attempts"|"problems"){

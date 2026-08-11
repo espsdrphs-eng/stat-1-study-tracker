@@ -1,0 +1,86 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import "fake-indexeddb/auto";
+import {buildGradingContractSnapshot,repairTargets} from "../src/gradingContract.ts";
+import {analyzeReviewReconciliation} from "../src/reviewReconciliation.ts";
+import {attemptModeSatisfiesTask,projectTodayTaskChecked,qualifyingAttemptForTodayTask} from "../src/todayTaskProjection.ts";
+
+const problem=(problemId)=>({id:1,problem_id:problemId,source_type:"whitebook",category:"A",chapter:5,problem_number:28,
+  title:"fixture",display_label:"fixture",theme:"fixture",canonical_problem_type:"fixture",canonical_keywords:[],
+  priority:"repair",role:"training",recommended_mode:"full",linked_past_exams:"",linked_s_problems:"",linked_a_problems:"",
+  notes:"",completion_status:"active",master_version:"fixture",metadata_status:"ok"});
+const legacyAttempt=(id,problemId,errorPoint,nextAction)=>({id,problem_id:problemId,date:"2026-08-11",mode:"full",
+  time_minutes:35,mark:"△",score_label:"C",error_type:"N",error_types:["N"],error_point:errorPoint,next_action:nextAction,memo:""});
+
+test("legacy error_point is one target and next_action is correction payload",()=>{
+  const attempt=legacyAttempt(10,"WB-5-A-28","積分区間を誤った","境界を確認して場合分けする");
+  const review={id:364,problem_id:attempt.problem_id,learning_purpose:"error_repair",targeted_parts:[attempt.error_point,attempt.next_action]};
+  assert.deepEqual(repairTargets(review,attempt),[attempt.error_point]);
+  const built=buildGradingContractSnapshot({review,problem:problem(attempt.problem_id),sourceAttempt:attempt,createdAt:"2026-08-11"});
+  assert.equal(built.contract.gradedParts.length,1);
+  assert.equal(built.contract.gradedParts[0].currentEvidence,attempt.error_point);
+  assert.equal(built.contract.gradedParts[0].currentCorrection,attempt.next_action);
+});
+
+test("structured findings alone define targets and legacy prose adds none",()=>{
+  const attempt={...legacyAttempt(11,"WB-5-A-28","legacy error","legacy correction"),
+    graded_part_ids:["A","B"],graded_parts:["A","B"],graded_findings:[
+      {graded_part_id:"A",error_type:"N",evidence:"A evidence",resolved:false},
+      {graded_part_id:"B",error_type:"W",evidence:"B evidence",resolved:false},
+    ],grading_contract:{gradedParts:[
+      {id:"A",label:"A",cueLabel:"A",allowedErrorTypes:["N","none"],completionCriterionId:"A"},
+      {id:"B",label:"B",cueLabel:"B",allowedErrorTypes:["W","none"],completionCriterionId:"B"},
+    ]}};
+  assert.deepEqual(repairTargets({problem_id:attempt.problem_id,targeted_parts:[attempt.error_point,attempt.next_action]},attempt),
+    ["A evidence","B evidence"]);
+  const built=buildGradingContractSnapshot({review:{problem_id:attempt.problem_id,learning_purpose:"error_repair"},
+    problem:problem(attempt.problem_id),sourceAttempt:attempt,createdAt:"2026-08-11"});
+  assert.deepEqual(built.contract.gradedParts.map(row=>row.id),["A","B"]);
+});
+
+test("Reviews 345/347/359/364 legacy correction rows reconcile from two targets to one",()=>{
+  const ids=[345,347,359,364],problems=["WB-5-A-20","WB-5-A-21","WB-5-A-26","WB-5-A-28"];
+  const attempts=[],reviews=[];
+  ids.forEach((reviewId,index)=>{
+    const problemId=problems[index],attempt=legacyAttempt(100+index,problemId,`error-${index}`,`correction-${index}`);
+    attempts.push(attempt);
+    const parts=[
+      {id:`legacy_error_${index}`,label:attempt.error_point,cueLabel:"target",allowedErrorTypes:["N","none"],completionCriterionId:"target",
+        stableTargetKey:`target:${problemId}:slot:legacy_error_${index}`},
+      {id:`legacy_correction_${index}`,label:attempt.next_action,cueLabel:"correction",allowedErrorTypes:["N","none"],completionCriterionId:"correction",
+        stableTargetKey:`target:${problemId}:slot:legacy_correction_${index}`},
+    ];
+    reviews.push({id:reviewId,problem_id:problemId,due_date:"2026-08-11",review_type:"targeted_patch",status:"pending",
+      generated_from_attempt_id:attempt.id,source_attempt_id:attempt.id,learning_purpose:"error_repair",
+      grading_contract:{contractId:`review:${reviewId}:1`,contractVersion:"STAT1-CONTRACT-v2",contractHash:`h${reviewId}`,
+        createdAt:"2026-08-11",problemId,sourceAttemptId:attempt.id,learningPurpose:"error_repair",learningStage:"repair",
+        mode:"skeleton",reviewScope:"targeted_patch",targetKind:"mathematical_patch",targetedParts:parts.map(row=>row.label),
+        gradedParts:parts,explicitlyOutOfScopePartIds:[],explicitlyOutOfScopeParts:[],completionCriteria:[{id:"repair",displayText:"repair"}],
+        hiddenAnswerKey:[],completionConditions:["2 targets"],requiredEvidence:parts.map(row=>row.label),allowedErrorTypes:["N"],
+        requiresKEvidence:false,allowedReferenceLevel:0,estimatedMinutes:10,sheetType:"skeleton_sheet"}});
+  });
+  const audit=analyzeReviewReconciliation({attempts,reviews,today:"2026-08-11"});
+  for(const [index,reviewId] of ids.entries()){
+    const plan=audit.problems.find(row=>row.problemId===problems[index]);
+    assert.equal(plan.activeReviewTargetCount,2,`Review ${reviewId} before`);
+    assert.equal(plan.desiredRepairParts.length,1,`Review ${reviewId} after`);
+    assert.equal(plan.desiredRepairParts[0].currentCorrection,attempts[index].next_action);
+  }
+});
+
+test("Today projection requires task mode, creation time, and exact Review contract",()=>{
+  const snapshot={date:"2026-08-11",task_ids:[],start_of_day_planned_minutes:45,initial_bucket:{},
+    initial_estimated_minutes:{},tasks:[],created_at:"2026-08-11T00:00:00Z"};
+  const fullTask={problem_id:"WB-5-A-28",title:"A28",kind:"score",reason:"new",mode:"full",minutes:35,load:1};
+  const attempt={...legacyAttempt(200,"WB-5-A-28","remaining N","repair N"),saved_at:"2026-08-11T01:00:00Z"};
+  assert.equal(attemptModeSatisfiesTask("full","full"),true);
+  assert.equal(attemptModeSatisfiesTask("full","skeleton"),false);
+  assert.equal(projectTodayTaskChecked({task:fullTask,attempts:[attempt],snapshot}),true);
+  assert.equal(qualifyingAttemptForTodayTask({task:fullTask,attempts:[{...attempt,saved_at:"2026-08-10T23:00:00Z"}],snapshot}),undefined);
+
+  const reviewTask={...fullTask,id:364,review_type:"targeted_patch",mode:"check",graded_part_ids:["A"],contract_hash:"hash"};
+  assert.equal(projectTodayTaskChecked({task:reviewTask,attempts:[attempt],snapshot}),false);
+  const reviewAttempt={...attempt,mode:"check",source_review_id:364,generated_from_review_id:364,contract_hash:"hash",
+    graded_part_ids:["A"],graded_findings:[{graded_part_id:"A",error_type:"N",evidence:"N",resolved:false}]};
+  assert.equal(projectTodayTaskChecked({task:reviewTask,attempts:[reviewAttempt],snapshot}),true);
+});
