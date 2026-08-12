@@ -7,8 +7,7 @@ import { postponedDueDate } from "./reviewScheduling.ts";
 import { applyWeakNoteQuizResult } from "./weakNoteQuiz.ts";
 import { selectMixedPractice } from "./studyScheduler.ts";
 import { triageTodayTasks } from "./studyTriage.ts";
-import { summarizeTodayTime } from "./todayPlan.ts";
-import { projectTodayTaskChecked } from "./todayTaskProjection.ts";
+import { deriveCurrentTodayState } from "./todayTaskProjection.ts";
 import { removeTimingExpressions, sanitizeStudyUpdateTiming } from "./reviewTiming.ts";
 import { buildProgressPlan, daysUntilExam } from "./studyProgress.ts";
 import { calculateExamReadinessMetrics } from "./examReadiness.ts";
@@ -2706,7 +2705,7 @@ async function bootstrap():Promise<Bootstrap>{
         right.due_date.localeCompare(left.due_date)||right.id-left.id;
     })[0];
   };
-  const tasks=snapshot.tasks.filter(saved=>{
+  const taskRows=snapshot.tasks.filter(saved=>{
     if(saved.id&&saved.review_type){
       const currentReview=currentReviewForSaved(saved);
       if(!currentReview)return false;
@@ -2743,13 +2742,15 @@ async function bootstrap():Promise<Bootstrap>{
       minutes:Number(snapshot!.initial_estimated_minutes[key]??saved.minutes),
       triage:forcedMust?"must":snapshot!.initial_bucket[key]||saved.triage||"tomorrow",
     } as Task;
-    return {...projected,checked:projectTodayTaskChecked({task:projected,attempts,snapshot:snapshot!,aliases:problemAliases,
-      manuallyChecked:checkedKeys.has(`today-check:${today}:${saved.problem_id}:${saved.kind}`)})} as Task;
+    return projected;
   });
-  const totalLoad=Math.round(tasks.filter(task=>!task.checked&&task.triage!=="tomorrow").reduce((sum,x)=>sum+x.load,0)*10)/10;
   const actualMinutes=activeAttempts.filter(attempt=>attempt.date===today&&!attempt.parent_past_session_id).reduce((sum,attempt)=>sum+Math.max(0,Number(attempt.time_minutes||0)),0)
     +pastSessions.filter(session=>String(session.date)===today).reduce((sum,session)=>sum+sessionStudyMinutes(session,activeAttempts),0);
-  const timeSummary=summarizeTodayTime(tasks,actualMinutes,settings.daily_study_minutes,snapshot.start_of_day_planned_minutes);
+  const currentToday=deriveCurrentTodayState({tasks:taskRows,attempts,snapshot,aliases:problemAliases,
+    manuallyChecked:task=>checkedKeys.has(`today-check:${today}:${task.problem_id}:${task.kind}`),
+    completedMinutes:actualMinutes,targetMinutes:settings.daily_study_minutes});
+  const tasks=currentToday.tasks,timeSummary=currentToday.timeSummary;
+  const totalLoad=Math.round(tasks.filter(task=>!task.checked&&task.triage!=="tomorrow").reduce((sum,x)=>sum+x.load,0)*10)/10;
   const activeRemainingMinutes=timeSummary.activeRemainingMinutes;
   const postponeCandidateMinutes=timeSummary.postponeCandidateMinutes;
   const remainingMinutes=activeRemainingMinutes;
@@ -2783,7 +2784,7 @@ async function bootstrap():Promise<Bootstrap>{
   }).map(review=>review.id);
   const integrityHealth=runIntegrityAudit({
     attempts,reviews:rawReviews,aliases:problemAliases,today,todayPlanSnapshots:[snapshot],validCrossTargetReviewIds,
-    currentTodayTasks:tasks,
+    currentTodayTasks:tasks,currentNextTask:currentToday.currentTask,
   });
   const masterStatus={
     problem_count:problems.length,answer_count:answerIndex.length,
@@ -2815,7 +2816,7 @@ async function bootstrap():Promise<Bootstrap>{
   const adaptiveLearning={referencePack:buildReferencePackStatus(referenceRecord),pastExamCatalog,
     conceptWeaknesses,pastExamRepairCandidates,plannerShadow,plannerMode,weaknessModel:"concept_evidence_v1" as const};
   return {problems:problems.sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.category.localeCompare(b.category)||a.problem_number-b.problem_number),attempts,reviews,roadmap,weakNotes,pastSessions,answerIndex,problemAliases,dashboard,settings,masterStatus,databaseStatus,adaptiveLearning,
-    today:{tasks,totalLoad,plannedMinutes:plannedTotal,remainingMinutes,actualMinutes,targetMinutes:settings.daily_study_minutes,capacityPercent,warning,guidance,
+    today:{tasks,currentTask:currentToday.currentTask,totalLoad,plannedMinutes:plannedTotal,remainingMinutes,actualMinutes,targetMinutes:settings.daily_study_minutes,capacityPercent,warning,guidance,
       planned_minutes_total:plannedTotal,completed_minutes_today:actualMinutes,remaining_minutes_today:remainingMinutes,
       postponed_minutes_today:postponedMinutes,target_minutes_today:settings.daily_study_minutes,
       start_of_day_planned_minutes:snapshot.start_of_day_planned_minutes,active_remaining_minutes:activeRemainingMinutes,
@@ -2890,14 +2891,15 @@ async function replaceTodayWithAdaptivePlan(preview:boolean){
     day:current.adaptiveLearning.plannerShadow.plan14.plan.find(day=>day.date===today),
     problems:current.problems,reviews:current.reviews,today
   });
-  const retained=snapshot.tasks.filter(task=>task.checked||task.triage==="tomorrow"||
+  const retained=current.today.tasks.filter(task=>task.checked||task.triage==="tomorrow"||
     task.plan_origin==="adaptive_additional");
   const logical=(task:Task)=>task.id?`review:${task.id}`:
     `${task.problem_id}|${task.learning_purpose||task.purpose_label||task.kind}|${task.mode}`;
   const occupied=new Set(retained.map(logical));
   const added=proposed.filter(task=>!occupied.has(logical(task)));
   const nextTasks=[...retained,...added];
-  const removed=snapshot.tasks.filter(task=>!retained.includes(task)&&!added.some(row=>logical(row)===logical(task)));
+  const retainedKeys=new Set(retained.map(logical));
+  const removed=snapshot.tasks.filter(task=>!retainedKeys.has(logical(task))&&!added.some(row=>logical(row)===logical(task)));
   const summary={
     preview,retained:retained.length,added:added.length,removed:removed.length,
     beforeMinutes:snapshot.tasks.filter(task=>task.triage!=="tomorrow").reduce((sum,task)=>sum+task.minutes,0),
@@ -2930,7 +2932,11 @@ async function integrityAudit():Promise<IntegrityAudit>{
     return !!source&&resolveCanonicalProblemId(source.problem_id,aliases)!==resolveCanonicalProblemId(review.problem_id,aliases)&&
       resolveReviewOrigin({review,attempts,aliases,relations,problems}).valid;
   }).map(review=>review.id);
-  return runIntegrityAudit({attempts,reviews,aliases,today:todayString(),todayPlanSnapshots:snapshots,validCrossTargetReviewIds});
+  // Bootstrap owns the canonical current projection. The persisted snapshot remains
+  // immutable history and must not be audited as if its checked flags were current.
+  const current=await bootstrap();
+  return runIntegrityAudit({attempts,reviews,aliases,today:todayString(),todayPlanSnapshots:snapshots,validCrossTargetReviewIds,
+    currentTodayTasks:current.today.tasks,currentNextTask:current.today.currentTask});
 }
 
 async function repairIntegrity(preview=false){

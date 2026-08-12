@@ -408,7 +408,7 @@ export type Bootstrap = {
     buildVersion:string;migrationVersion:string;valid:boolean;lastMigration:string;migrationResult:string;migratedAt:string;
     counts:{attempts:number;evaluations:number;reviewPlans:number};
   };
-  today:{tasks:Task[];totalLoad:number;plannedMinutes:number;remainingMinutes:number;actualMinutes:number;
+  today:{tasks:Task[];currentTask?:Task;totalLoad:number;plannedMinutes:number;remainingMinutes:number;actualMinutes:number;
     targetMinutes:number;capacityPercent:number;warning:string;guidance:string;
     triageMinutes?:{must:number;if_time:number;tomorrow:number};
     planned_minutes_total:number;completed_minutes_today:number;remaining_minutes_today:number;

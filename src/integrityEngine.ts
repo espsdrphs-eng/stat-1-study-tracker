@@ -5,7 +5,7 @@ import { isActionableReview, validateGradingContract } from "./gradingContract.t
 import { analyzeReviewReconciliation, type ReconciliationAudit } from "./reviewReconciliation.ts";
 import {buildStableTargetIndex,isValidStableTargetKey} from "./stableTargetIdentity.ts";
 import {currentTargetDisplay,currentTargetLabels} from "./currentTargetPayload.ts";
-import {projectTodayTaskChecked} from "./todayTaskProjection.ts";
+import {projectTodayTaskChecked,selectNextCurrentTodayTask} from "./todayTaskProjection.ts";
 
 export const ACTIVE_REVIEW_STATUSES = new Set(["pending", "overdue"]);
 
@@ -168,7 +168,7 @@ export type IntegrityCategory =
   | "stale_stable_target" | "current_review_target_mismatch" | "orphan_active_target"
   | "invalid_stable_target_key" | "duplicate_active_target_label"
   | "stale_target_payload" | "current_target_display_mismatch"
-  | "today_task_completion_mismatch" | "inactive_review_current_task";
+  | "today_task_completion_mismatch" | "inactive_review_current_task" | "today_next_action_mismatch";
 
 export type IntegrityIssue = {
   category: IntegrityCategory;
@@ -197,8 +197,9 @@ export function runIntegrityAudit(args: {
   validCrossTargetReviewIds?: number[];
   /** Current UI projection. Saved snapshots remain immutable history. */
   currentTodayTasks?: Task[];
+  currentNextTask?:Task;
 }): IntegrityAudit {
-  const { attempts, reviews, aliases = [], today, todayPlanSnapshots = [], validCrossTargetReviewIds = [], currentTodayTasks } = args;
+  const { attempts, reviews, aliases = [], today, todayPlanSnapshots = [], validCrossTargetReviewIds = [], currentTodayTasks, currentNextTask } = args;
   const validCrossTarget=new Set(validCrossTargetReviewIds);
   const issues: IntegrityIssue[] = [];
   const attemptsById = new Map(attempts.map((row) => [row.id, row]));
@@ -360,6 +361,15 @@ export function runIntegrityAudit(args: {
         });
       }
     }
+    if(Object.prototype.hasOwnProperty.call(args,"currentNextTask")){
+      const expectedNext=selectNextCurrentTodayTask(currentTodayTasks);
+      const taskKey=(task:Task|undefined)=>task?`${task.id?`review:${task.id}`:`problem:${task.problem_id}`}|${task.kind}|${task.mode}`:"";
+      if(taskKey(expectedNext)!==taskKey(currentNextTask))issues.push({
+        category:"today_next_action_mismatch",severity:"active",
+        reviewIds:currentNextTask?.review_type&&currentNextTask.id?[currentNextTask.id]:undefined,
+        detail:`Dashboard NEXT ACTION does not match the canonical current Today projection`,repairable:false,
+      });
+    }
   }
 
   const reviewMap=new Map(reviews.map(row=>[row.id,row]));
@@ -414,7 +424,7 @@ export function runIntegrityAudit(args: {
     "stale_delayed_check", "graduated_but_pending", "obsolete_today_action",
     "duplicate_stable_target", "stale_stable_target", "current_review_target_mismatch", "orphan_active_target",
     "invalid_stable_target_key", "duplicate_active_target_label", "stale_target_payload", "current_target_display_mismatch",
-    "today_task_completion_mismatch", "inactive_review_current_task",
+    "today_task_completion_mismatch", "inactive_review_current_task", "today_next_action_mismatch",
   ];
   const counts = Object.fromEntries(categories.map((category) =>
     [category, issues.filter((issue) => issue.category === category).length])) as Record<IntegrityCategory, number>;

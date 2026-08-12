@@ -38,6 +38,7 @@ type PolicySource={
   learning_purpose?:LearningPurpose;learning_stage?:LearningStage;assessment_timing?:AssessmentTiming;
   mode?:string;generated_from_review_id?:number;generated_from_attempt_id?:number;
   targeted_parts?:string[];unresolved_carryover?:string[];required_work_shown?:string[];
+  graded_findings?:Attempt["graded_findings"];
   error_point?:string;next_action?:string;rubric_version?:string;k_evidence?:string[];
   effective_review_scope?:string;review_scope?:string;completion_conditions?:string[];
 };
@@ -83,8 +84,12 @@ function sheet(mode:PolicyMode):PolicySheetType{
 
 function parts(input:LearningPolicyInput){
   const source=input.source;
-  return clean([input.targetedParts||[],source?.targeted_parts||[],source?.unresolved_carryover||[],
-    source?.error_point,source?.next_action]);
+  const structured=source?.graded_findings||[];
+  if(structured.length)return clean(structured.filter(row=>!row.resolved&&row.error_type!=="none")
+    .map(row=>row.evidence||row.graded_part_id));
+  // A legacy unstructured Attempt has one target in error_point. next_action
+  // describes the correction and must never become another learning target.
+  return clean([input.targetedParts||[],source?.targeted_parts||[],source?.unresolved_carryover||[],source?.error_point]);
 }
 
 function explicitScope(source?:PolicySource):PolicyReviewScope|undefined{

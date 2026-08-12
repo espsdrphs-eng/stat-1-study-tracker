@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import "fake-indexeddb/auto";
 import {buildGradingContractSnapshot,repairTargets} from "../src/gradingContract.ts";
 import {analyzeReviewReconciliation} from "../src/reviewReconciliation.ts";
-import {attemptModeSatisfiesTask,projectTodayTaskChecked,qualifyingAttemptForTodayTask} from "../src/todayTaskProjection.ts";
+import {attemptModeSatisfiesTask,deriveCurrentTodayState,projectTodayTaskChecked,qualifyingAttemptForTodayTask} from "../src/todayTaskProjection.ts";
 import {runIntegrityAudit} from "../src/integrityEngine.ts";
 
 const problem=(problemId)=>({id:1,problem_id:problemId,source_type:"whitebook",category:"A",chapter:5,problem_number:28,
@@ -76,6 +76,8 @@ test("Today projection requires task mode, creation time, and exact Review contr
   const attempt={...legacyAttempt(200,"WB-5-A-28","remaining N","repair N"),saved_at:"2026-08-11T01:00:00Z"};
   assert.equal(attemptModeSatisfiesTask("full","full"),true);
   assert.equal(attemptModeSatisfiesTask("full","skeleton"),false);
+  assert.equal(attemptModeSatisfiesTask("skeleton","main_calc"),true,
+    "a main calculation submission executes a planned skeleton task");
   assert.equal(projectTodayTaskChecked({task:fullTask,attempts:[attempt],snapshot}),true);
   assert.equal(projectTodayTaskChecked({task:{...fullTask,checked:true},attempts:[],snapshot}),false,
     "snapshot checked state is not current Attempt evidence");
@@ -100,4 +102,32 @@ test("integrity audit rejects an unprojected completed Today task and accepts th
   const healthy=runIntegrityAudit({attempts:[attempt],reviews:[],today:"2026-08-11",todayPlanSnapshots:[snapshot],
     currentTodayTasks:[current]});
   assert.equal(healthy.counts.today_task_completion_mismatch,0);
+});
+
+test("canonical Today projection completes planned skeleton with main_calc and advances NEXT ACTION",()=>{
+  const first={problem_id:"WB-5-A-29",title:"A29",kind:"score",reason:"skeleton",mode:"skeleton",minutes:25,load:1,triage:"must",checked:false};
+  const second={problem_id:"WB-5-A-20",title:"A20",kind:"score",reason:"skeleton",mode:"skeleton",minutes:10,load:.5,triage:"must",checked:false};
+  const snapshot={date:"2026-08-13",task_ids:[],start_of_day_planned_minutes:35,initial_bucket:{},
+    initial_estimated_minutes:{},tasks:[first,second],created_at:"2026-08-13T00:00:00Z"};
+  const attempt={...legacyAttempt(180,"WB-5-A-29","remaining calculation error","repair calculation"),
+    date:"2026-08-13",mode:"main_calc",time_minutes:25,score_numeric:58,saved_at:"2026-08-13T01:00:00Z"};
+  const current=deriveCurrentTodayState({tasks:snapshot.tasks,attempts:[attempt],snapshot,completedMinutes:25,targetMinutes:150});
+  assert.equal(snapshot.tasks[0].checked,false,"the historical start-of-day snapshot remains unchanged");
+  assert.equal(current.tasks[0].checked,true);
+  assert.equal(current.currentTask?.problem_id,"WB-5-A-20");
+  assert.equal(current.timeSummary.activeRemainingMinutes,10);
+  assert.equal(current.timeSummary.completedMinutes,25);
+
+  // Independent sanity check: evidence and the raw slot are inspected without consulting audit output.
+  assert.equal(attempt.problem_id,first.problem_id);
+  assert.equal(attemptModeSatisfiesTask(first.mode,attempt.mode),true);
+  assert.notEqual(current.currentTask?.problem_id,attempt.problem_id);
+
+  const healthy=runIntegrityAudit({attempts:[attempt],reviews:[],today:"2026-08-13",todayPlanSnapshots:[snapshot],
+    currentTodayTasks:current.tasks,currentNextTask:current.currentTask});
+  assert.equal(healthy.counts.today_task_completion_mismatch,0);
+  assert.equal(healthy.counts.today_next_action_mismatch,0);
+  const staleDashboard=runIntegrityAudit({attempts:[attempt],reviews:[],today:"2026-08-13",todayPlanSnapshots:[snapshot],
+    currentTodayTasks:current.tasks,currentNextTask:current.tasks[0]});
+  assert.equal(staleDashboard.counts.today_next_action_mismatch,1);
 });

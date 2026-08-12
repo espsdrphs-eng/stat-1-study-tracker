@@ -1,5 +1,6 @@
 import type {Attempt,ProblemAlias,Task,TodayPlanSnapshot} from "./types.ts";
 import {resolveCanonicalProblemId} from "./examReadiness.ts";
+import {summarizeTodayTime} from "./todayPlan.ts";
 
 const scanModes=new Set(["scan","scan5","scan_only"]);
 
@@ -8,7 +9,7 @@ export function attemptModeSatisfiesTask(plannedMode:unknown,attemptMode:unknown
   const planned=String(plannedMode||"check"),actual=String(attemptMode||"");
   const allowed:Record<string,Set<string>>={
     check:new Set(["check","skeleton","main_calc","full","exam_90min","timed"]),
-    skeleton:new Set(["skeleton","full","exam_90min","timed"]),
+    skeleton:new Set(["skeleton","main_calc","full","exam_90min","timed"]),
     main_calc:new Set(["main_calc","full","exam_90min","timed"]),
     full:new Set(["full","exam_90min","timed"]),
     exam_90min:new Set(["exam_90min","timed"]),
@@ -55,4 +56,28 @@ export function projectTodayTaskChecked(args:{
   // not current execution evidence. Explicit completion metadata and a
   // qualifying Attempt are the only current sources of truth.
   return !!args.manuallyChecked||!!qualifyingAttemptForTodayTask(args);
+}
+
+export function selectNextCurrentTodayTask(tasks:Task[]){
+  const open=tasks.filter(task=>!task.checked&&task.triage!=="tomorrow");
+  return open.find(task=>task.triage==="must")||open.find(task=>task.triage==="if_time")||open[0];
+}
+
+/** Canonical current projection consumed by Today, Dashboard, time totals and audit. */
+export function deriveCurrentTodayState(args:{
+  tasks:Task[];attempts:Attempt[];snapshot:TodayPlanSnapshot;aliases?:ProblemAlias[];
+  manuallyChecked?:(task:Task)=>boolean;completedMinutes:number;targetMinutes:number;
+}){
+  const tasks=args.tasks.map(task=>({...task,checked:projectTodayTaskChecked({
+    task,attempts:args.attempts,snapshot:args.snapshot,aliases:args.aliases,
+    manuallyChecked:args.manuallyChecked?.(task),
+  })}));
+  const timeSummary=summarizeTodayTime(tasks,args.completedMinutes,args.targetMinutes,args.snapshot.start_of_day_planned_minutes);
+  return {
+    tasks,
+    completedTasks:tasks.filter(task=>task.checked),
+    remainingTasks:tasks.filter(task=>!task.checked),
+    currentTask:selectNextCurrentTodayTask(tasks),
+    timeSummary,
+  };
 }

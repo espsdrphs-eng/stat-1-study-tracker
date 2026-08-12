@@ -179,8 +179,26 @@ export function gradedPartContracts(args: {
     .filter((part):part is GradedPartContract=>typeof part!=="string"&&!!part?.id);
   const unresolvedIds=(args.sourceAttempt?.graded_findings||[])
     .filter(row=>!row.resolved&&row.error_type!=="none").map(row=>row.graded_part_id);
+  const unresolvedFindings=(args.sourceAttempt?.graded_findings||[])
+    .filter(row=>!row.resolved&&row.error_type!=="none");
   const unresolvedParts=unresolvedIds.map(id=>sourceContractParts.find(part=>part.id===id))
     .filter((part):part is GradedPartContract=>!!part);
+  // Structured findings carry explicit part identity. When there is no parent
+  // contract (for example a first full/main-calc submission), do not mint an
+  // Attempt-specific prose part beside that explicit ID.
+  if(unresolvedFindings.length&&unresolvedFindings.length===args.texts.length){
+    return unique(unresolvedFindings.map((finding,index)=>{
+      const inherited=sourceContractParts.find(part=>part.id===finding.graded_part_id);
+      const known=definitions.find(definition=>definition.id===finding.graded_part_id);
+      const label=String(finding.evidence||args.texts[index]||inherited?.label||known?.label||finding.graded_part_id);
+      if(inherited)return {...inherited,label,currentLabel:label,currentEvidence:label,
+        currentErrorType:finding.error_type,stableTargetKey:inherited.stableTargetKey||stableKey(inherited.id)};
+      return {id:finding.graded_part_id,label,cueLabel:known?.cueLabel||finding.graded_part_id,
+        allowedErrorTypes:unique([...(known?.errors||[]),finding.error_type,"none"],value=>value),
+        completionCriterionId:known?.criterion||`preserve_${finding.graded_part_id}`,
+        stableTargetKey:stableKey(finding.graded_part_id)} satisfies GradedPartContract;
+    }),row=>row.id);
+  }
   const inheritedParts=unresolvedParts.length===args.texts.length?unresolvedParts:
     sourceContractParts.length===args.texts.length?sourceContractParts:[];
   const rows:GradedPartContract[] = args.texts.flatMap<GradedPartContract>((text, index) => {

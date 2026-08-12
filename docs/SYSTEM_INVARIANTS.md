@@ -34,6 +34,9 @@ This document is the implementation-level source of truth for data integrity. Le
   `error_repair` execution into graduation; only the persisted Review phase can make retrieval graduation eligible.
 - A saved Today task's historical `checked` copy is not current execution evidence. Current completion comes from an
   explicit completion record or a qualifying Attempt after the snapshot; Dashboard NEXT ACTION consumes that projection.
+- Today, Dashboard NEXT ACTION, time totals, and integrity status consume one current projection. For normal tasks,
+  completion means execution rather than mastery: `skeleton` accepts `skeleton`/`main_calc`/`full`, `main_calc` accepts
+  `main_calc`/`full`, and `full` accepts `full`; a low score may create a separate Review without reopening the plan slot.
 - The active `GradingContractSnapshot` is the only source for purpose, mode, scope, sheet, minutes, and graded parts.
 - Diagnostic, preview, repair, and post-repair verification use the same `runIntegrityAudit` classifier.
 - Rebuild and repair operations are idempotent and do not create a new Review when an active logical key exists.

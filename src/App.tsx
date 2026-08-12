@@ -183,18 +183,9 @@ export default function App() {
 }
 
 function nextQueueTask(data:Bootstrap){
-  const open=data.today.tasks.filter(task=>!task.checked);
-  const must=open.find(task=>task.triage==="must");
-  if(must) return {task:must,source:"今日やること > 必ずやる > 1番目"};
-  const ifTime=open.find(task=>task.triage==="if_time");
-  if(!ifTime)return {task:null,source:"今日の確定課題は完了"};
-  if(ifTime) return {task:ifTime,source:"今日やること > 余裕があれば > 1番目"};
-  const review=data.reviews.find(review=>reviewExecutionState(review,data.dashboard.today)==="actionable");
-  if(review){
-    const card=resolveReviewCard({item:review,problems:data.problems,attempts:data.attempts,aliases:data.problemAliases,today:data.dashboard.today,examDate:data.settings.exam_date});
-    return {task:{problem_id:card.canonicalProblemId,title:card.displayLabel,theme:card.theme,kind:"復習",reason:review.status==="overdue"?"期限切れの復習待ち":"復習待ち",mode:card.effectiveMode,minutes:card.estimatedMinutes,load:0,status:review.status,review_method:card.reviewMethodLabel,effective_mode:card.effectiveMode,sheet_type:card.sheetType,review_needed:card.reviewNeeded} as Task,source:`復習予定 > ${review.status==="overdue"?"期限切れ":"未完了"} > 最優先`};
-  }
-  return {task:null,source:"今日は完了"};
+  const task=data.today.currentTask;
+  if(!task)return {task:null,source:"今日の確定課題は完了"};
+  return {task,source:task.triage==="must"?"今日やること > 必ずやる > 1番目":"今日やること > 余裕があれば > 1番目"};
 }
 function readinessValue(value:number|null,sample:number,unit="%"){
   if(value==null) return {value:"未計測",hint:"対象0件",unit:""};
