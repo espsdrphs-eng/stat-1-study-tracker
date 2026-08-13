@@ -155,7 +155,7 @@ export default function App() {
       <div className="brand"><div className="brand-mark">1</div><div><strong>統計一級</strong><span>STUDY TRACKER</span></div><button className="mobile-close" onClick={()=>setMenu(false)}><X/></button></div>
       <div className={`today-mini ${data.today.warning?"over":""}`}><span>今日の進捗</span><strong>確定課題の残り {data.today.confirmed_remaining_minutes}分</strong><div className="load-track"><i style={{width:`${Math.min(100,data.today.capacityPercent)}%`}}/></div><small>完了 {data.today.completed_minutes_today}分・目標まであと {data.today.target_remaining_minutes}分</small><small>追加可能 最大{data.today.additional_capacity_minutes}分</small><small>先送り候補 {data.today.postpone_candidate_minutes}分（計画外）</small></div>
       <nav>{navGroups.map(group=><div className="nav-group" key={group.label}><span className="nav-section-label">{group.label}</span>{group.items.map(([key,Icon])=><button key={key} className={page===key?"active":""} onClick={()=>go(key)}><Icon size={19}/><span>{pageTitles[key]}</span>{key==="reviews"&&data.dashboard.pending>0&&<b>{data.dashboard.pending}</b>}</button>)}</div>)}</nav>
-      <div className="sidebar-foot"><Gauge size={17}/><div><span>2週間ペース</span><strong className={`pace-${data.dashboard.pace.label}`}>{data.dashboard.pace.label}</strong></div></div>
+      <div className="sidebar-foot"><Gauge size={17}/><div><span>2週間ペース</span><strong className={`pace-${data.dashboard.pace.label}`}>{data.dashboard.pace.label}</strong></div><small className="app-version">v{__APP_VERSION__} · {__APP_COMMIT__.slice(0,7)}</small></div>
     </aside>
     {menu&&<div className="scrim" onClick={()=>setMenu(false)}/>}
     <main>

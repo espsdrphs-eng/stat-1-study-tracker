@@ -4,6 +4,7 @@ import { VitePWA } from "vite-plugin-pwa";
 import {existsSync,readFileSync} from "node:fs";
 
 const appCommit=process.env.GITHUB_SHA||process.env.VITE_APP_COMMIT||"local-build";
+const appVersion=JSON.parse(readFileSync("package.json","utf8")).version as string;
 type TestReport={commit:string;testCount:number;generatedAt:string;command:string};
 const testReport:TestReport=(()=>{
   const fallback={commit:"unverified",testCount:0,generatedAt:"unknown",command:"npm test"};
@@ -24,6 +25,7 @@ const testReportText=[
 export default defineConfig({
   base: "./",
   define: {
+    __APP_VERSION__: JSON.stringify(appVersion),
     __APP_COMMIT__: JSON.stringify(appCommit),
     __APP_DEPLOYED_AT__: JSON.stringify(process.env.VITE_DEPLOYED_AT || new Date().toISOString()),
     __APP_TEST_REPORT__: JSON.stringify(testReportText),
