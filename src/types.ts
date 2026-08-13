@@ -305,12 +305,19 @@ export type AdaptivePlanTask = {
   purpose?:string;purposeLabel?:string;basis?:string;exposure?:PastExamExposure;
   previousEventDate?:string;simulationProtected?:boolean;
   reviewId?:number;mode?:"check"|"skeleton"|"main_calc"|"full"|"scan5";
+  reviewEarliestDate?:string;reviewPreferredDate?:string;reviewLatestDate?:string;
+  reviewScheduleStatus?:"within_window"|"overdue_recovery";
 };
 export type AdaptivePlanDay = {date:string;tasks:AdaptivePlanTask[];totalMinutes:number};
+export type AdaptiveReviewScheduleConflict = {
+  reviewId:number;problemId:string;earliestDate:string;preferredDate:string;latestDate:string;
+  minutes:number;reason:"capacity"|"outside_horizon";
+};
 export type AdaptivePlanSummary = {
   days:number;plan:AdaptivePlanDay[];totalMinutes:number;
   counts:{scoreBuilding:number;repair:number;maintenance:number;scan5:number;full:number;timed:number;pastExam:number;chapter5:number;chapter7:number;chapter8:number};
   weeklyMinimumViolations:string[];dailyCapacityViolations:number;
+  reviewSchedule:{repairBudgetMinutes:number;placements:Array<{reviewId:number;problemId:string;date:string;latestDate:string;status:"within_window"|"overdue_recovery"}>;capacityConflicts:AdaptiveReviewScheduleConflict[]};
 };
 export type AdaptivePlannerShadow = {
   available:boolean;mode:"unavailable"|"shadow"|"active";generatedAt:string;phase:string;daysRemaining:number;

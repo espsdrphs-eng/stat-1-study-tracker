@@ -1,6 +1,7 @@
-import type { AdaptivePlanDay, Problem, Review, Task } from "./types.ts";
+import type { AdaptivePlanDay, Problem, ProblemAlias, Review, Task } from "./types.ts";
 import { taskFieldsFromContract } from "./gradingContract.ts";
 import { reviewExecutionState } from "./integrityEngine.ts";
+import { resolveCanonicalProblemId } from "./examReadiness.ts";
 
 export const ADAPTIVE_PLANNER_VERSION="adaptive-v1";
 
@@ -81,6 +82,72 @@ export function adaptivePlanDayToTasks(args:{
     const key=logicalKey(task);
     if(seen.has(key))return false;
     seen.add(key);
+    return true;
+  });
+}
+
+const projectionKey=(task:Task)=>task.id&&task.review_type?`review:${task.id}`:
+  `${task.plan_origin||""}|${task.problem_id}|${task.kind}|${task.mode}`;
+const projectionSlot=(task:Task)=>task.id&&task.review_type?"repair":task.triage==="if_time"?"maintenance":"score";
+
+/**
+ * Keeps the immutable morning snapshot as history while replacing only tasks
+ * whose current eligibility changed. Completed slots and explicit additional
+ * tasks are retained; current Review placements are always added exactly once.
+ */
+export function projectAdaptiveSnapshotTasks(args:{
+  snapshotTasks:Task[];generatedTasks:Task[];reviews:Review[];today:string;aliases?:ProblemAlias[];
+  isCompleted?:(task:Task)=>boolean;
+}){
+  const aliases=args.aliases||[];
+  const canonical=(id:string)=>resolveCanonicalProblemId(id,aliases);
+  const activeReviews=args.reviews.filter(review=>reviewExecutionState(review,args.today)==="actionable"&&
+    String(review.earliest_date||review.due_date)<=args.today);
+  const activeReviewProblems=new Set(activeReviews.map(review=>canonical(review.problem_id)));
+  const generated=[...args.generatedTasks],used=new Set<string>();
+  const take=(predicate:(task:Task)=>boolean)=>{
+    const row=generated.find(task=>!used.has(projectionKey(task))&&predicate(task));
+    if(row)used.add(projectionKey(row));
+    return row;
+  };
+  const projected:Task[]=[];
+  for(const saved of args.snapshotTasks){
+    if(args.isCompleted?.(saved)||saved.plan_origin==="adaptive_additional"){
+      projected.push(saved);continue;
+    }
+    if(saved.id&&saved.review_type){
+      const exact=take(task=>task.id===saved.id);
+      const replacement=exact||take(task=>!!task.id&&!!task.review_type&&canonical(task.problem_id)===canonical(saved.problem_id));
+      if(replacement)projected.push(replacement);
+      continue;
+    }
+    const conflictsWithReview=activeReviewProblems.has(canonical(saved.problem_id));
+    const exact=take(task=>projectionKey(task)===projectionKey(saved));
+    if(exact&&!conflictsWithReview){projected.push(exact);continue;}
+    const replacement=take(task=>projectionSlot(task)===projectionSlot(saved)&&
+      !activeReviewProblems.has(canonical(task.problem_id)));
+    if(replacement)projected.push(replacement);
+  }
+  // A newly urgent Review is current state, even if the morning snapshot had
+  // no Review slot. It precedes generic work without mutating snapshot history.
+  const missingGenerated=generated.filter(task=>!used.has(projectionKey(task)));
+  for(const generatedTask of missingGenerated){
+    used.add(projectionKey(generatedTask));
+    if(generatedTask.id&&generatedTask.review_type)projected.unshift(generatedTask);
+    else projected.push(generatedTask);
+  }
+  const openReviewProblems=new Set(projected.filter(task=>!args.isCompleted?.(task)&&task.id&&task.review_type)
+    .map(task=>canonical(task.problem_id)));
+  const seenGenericProblems=new Set<string>(),seenReviewIds=new Set<number>();
+  return projected.filter(task=>{
+    if(args.isCompleted?.(task))return true;
+    const problemId=canonical(task.problem_id);
+    if(task.id&&task.review_type){
+      if(seenReviewIds.has(task.id))return false;
+      seenReviewIds.add(task.id);return true;
+    }
+    if(openReviewProblems.has(problemId)||seenGenericProblems.has(problemId))return false;
+    seenGenericProblems.add(problemId);
     return true;
   });
 }

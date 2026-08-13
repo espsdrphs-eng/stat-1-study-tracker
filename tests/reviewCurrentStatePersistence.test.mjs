@@ -31,7 +31,7 @@ test("snapshot, dashboard and GPT save share the persisted Review execution stat
   await localPost("/api/attempts",update("current-review-state-1"));
   const active=(await db.reviews.toArray())[0];
   assert.ok(active?.grading_contract);
-  await db.reviews.update(active.id,{due_date:today(),schedule_origin:"manual"});
+  await db.reviews.update(active.id,{due_date:today(),earliest_date:today(),preferred_date:today(),latest_date:today(),schedule_origin:"manual"});
   const oldId=Number(await db.reviews.add({
     ...active,id:undefined,status:"superseded",policy_validity:"invalid_legacy_k",
     exclude_from_planning:true,contract_id:"review:old:1",
@@ -52,7 +52,9 @@ test("snapshot, dashboard and GPT save share the persisted Review execution stat
   const bootstrap=await localGet("/api/bootstrap");
   assert.deepEqual(bootstrap.today.tasks.filter(task=>task.id).map(task=>task.id),[active.id]);
   assert.equal(bootstrap.dashboard.pending,1);
-  assert.equal(bootstrap.today.active_remaining_minutes,5);
+  assert.equal(bootstrap.today.active_remaining_minutes,
+    bootstrap.today.tasks.filter(task=>!task.checked).reduce((sum,task)=>sum+Number(task.minutes||0),0));
+  assert.ok(bootstrap.today.active_remaining_minutes>=5);
   assert.equal((await db.meta.get(key)).value,snapshotBefore);
 
   const countsBefore={attempts:await db.attempts.count(),reviews:await db.reviews.count()};

@@ -42,3 +42,10 @@ test("既に今日の計画にある問題を追加候補へ重複表示しな�
     shadow});
   assert.equal(result.candidates.some(row=>row.task.problem_id==="PY-2021-Q1"),false);
 });
+
+test("placeable urgent Reviewが未配置ならoptional extraを先に提示しない",()=>{
+  const result=buildAdditionalStudyCandidates({today:"2026-08-01",targetMinutes:150,completedMinutes:30,
+    activeRemainingMinutes:40,currentTasks:[],shadow,urgentReviewBlocked:true});
+  assert.equal(result.capacity,80);
+  assert.deepEqual(result.candidates,[]);
+});

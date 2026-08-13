@@ -9,6 +9,7 @@ import { daysUntilExam } from "./studyProgress.ts";
 import { reviewExecutionState } from "./integrityEngine.ts";
 import { simulateThirtyDays } from "./learningSimulation.ts";
 import { isObjectiveDelayedRetrievalSuccess } from "./reviewTransition.ts";
+import { scheduleActiveReviews, type ScheduledReviewPlacement } from "./reviewScheduling.ts";
 
 type SlotTask=AdaptivePlanDay["tasks"][number];
 const unique=<T,>(values:T[])=>[...new Set(values)];
@@ -59,8 +60,7 @@ function chooseWhitebook(args:{
         String(attempted.get(a.problem_id)||"").localeCompare(String(attempted.get(b.problem_id)||""))||
         a.problem_id.localeCompare(b.problem_id);
     });
-  const preferred=rows.filter(problem=>!args.avoidProblemIds?.has(problem.problem_id));
-  const pool=preferred.length?preferred:rows;
+  const pool=rows.filter(problem=>!args.avoidProblemIds?.has(problem.problem_id));
   const selected=pool.find(problem=>!args.used.get(problem.problem_id)||args.used.get(problem.problem_id)!<=addCalendarDays(args.date,-7));
   if(selected)args.used.set(selected.problem_id,args.date);
   return selected;
@@ -72,9 +72,10 @@ function pastRank(exposure:string){
 }
 
 function choosePastExam(args:{
-  catalog:ExamReferenceCatalogItem[];daysRemaining:number;used:Map<string,string>;date:string;
+  catalog:ExamReferenceCatalogItem[];daysRemaining:number;used:Map<string,string>;date:string;avoidProblemIds?:Set<string>;
 }){
   const rows=args.catalog.filter(row=>row.schedulable&&row.availability==="verified_problem"&&
+    !args.avoidProblemIds?.has(row.canonicalProblemId)&&
     row.exposure!=="unknown"&&!(args.daysRemaining>=61&&row.simulationProtected&&["unseen","unknown","prompt_scanned"].includes(row.exposure)))
     .sort((a,b)=>pastRank(a.exposure)-pastRank(b.exposure)||a.year-b.year||a.questionNumber-b.questionNumber);
   // A simulation must not invent a second purpose after merely placing the
@@ -88,7 +89,7 @@ function task(args:Omit<SlotTask,"taskKey">):SlotTask{
   return {...args,taskKey:[args.date,args.slot,args.kind,args.problemId||args.referenceProblemId||args.conceptId||args.label].join("|")};
 }
 
-function planSummary(days:AdaptivePlanDay[]):AdaptivePlanSummary{
+function planSummary(days:AdaptivePlanDay[],reviewSchedule?:ReturnType<typeof scheduleActiveReviews>):AdaptivePlanSummary{
   const tasks=days.flatMap(day=>day.tasks),counts={scoreBuilding:0,repair:0,maintenance:0,scan5:0,full:0,timed:0,pastExam:0,chapter5:0,chapter7:0,chapter8:0};
   for(const row of tasks){
     if(row.slot==="score_building")counts.scoreBuilding++;
@@ -103,7 +104,11 @@ function planSummary(days:AdaptivePlanDay[]):AdaptivePlanSummary{
     if(row.reason.includes("第8章"))counts.chapter8++;
   }
   return {days:days.length,plan:days,totalMinutes:days.reduce((sum,day)=>sum+day.totalMinutes,0),counts,
-    weeklyMinimumViolations:[],dailyCapacityViolations:0};
+    weeklyMinimumViolations:[],dailyCapacityViolations:0,
+    reviewSchedule:{repairBudgetMinutes:reviewSchedule?.repairBudgetMinutes||0,
+      placements:(reviewSchedule?.placements||[]).map(row=>({reviewId:row.review.id,problemId:row.review.problem_id,
+        date:row.date,latestDate:row.latestDate,status:row.status})),
+      capacityConflicts:reviewSchedule?.capacityConflicts||[]}};
 }
 
 function validateMinimums(summary:AdaptivePlanSummary,daysRemaining:number,targetMinutes:number){
@@ -140,7 +145,14 @@ function planDays(args:{
   const result:AdaptivePlanDay[]=[],usedProblems=new Map<string,string>(),usedPast=new Map<string,string>();
   const activeReviews=args.reviews.filter(review=>reviewExecutionState(review,args.startDate)==="actionable")
     .sort((a,b)=>a.due_date.localeCompare(b.due_date)||a.id-b.id);
-  const usedReviews=new Set<number>();
+  const reviewSchedule=scheduleActiveReviews({reviews:activeReviews,startDate:args.startDate,days:args.days,
+    dailyCapacity:args.targetMinutes});
+  const reviewsByDate=new Map<string,ScheduledReviewPlacement[]>();
+  for(const placement of reviewSchedule.placements)
+    reviewsByDate.set(placement.date,[...(reviewsByDate.get(placement.date)||[]),placement]);
+  const horizonEnd=addCalendarDays(args.startDate,Math.max(0,args.days-1));
+  const activeReviewProblemIds=new Set(activeReviews.filter(review=>String(review.earliest_date||review.due_date)<=horizonEnd)
+    .map(review=>review.problem_id));
   const allowNew=args.daysRemaining>30;
   const recentEligibleSuccesses=args.attempts.filter(attempt=>attempt.date>=addCalendarDays(args.startDate,-14)&&
     attempt.exam_score_eligible&&Number(attempt.score_numeric||0)>=70).length;
@@ -158,8 +170,9 @@ function planDays(args:{
   let weekActual={...actualAtStart};
   const makeWhitebook=(date:string,chapters:number[],mode:"skeleton"|"full",reason:string,
     slot:SlotTask["slot"]="score_building")=>{
+    const avoided=new Set([...recentGraduatedProblems,...activeReviewProblemIds]);
     const problem=chooseWhitebook({problems:args.problems,attempts:args.attempts,chapters,used:usedProblems,date,allowNew,mode,
-      weaknesses:args.weaknesses,avoidProblemIds:recentGraduatedProblems});
+      weaknesses:args.weaknesses,avoidProblemIds:avoided});
     const concept=problem?(problem.fine_concept_ids||[]).map(id=>args.weaknesses.find(row=>row.conceptId===id))
       .filter(Boolean).sort((a,b)=>Number(b?.priorityScore||0)-Number(a?.priorityScore||0))[0]:undefined;
     const evidenceReason=concept?.state==="suspected"?`・${concept.displayName}の要診断`:
@@ -174,7 +187,8 @@ function planDays(args:{
       conceptId:concept?.conceptId,mode,requiresUserSelection:false}):null;
   };
   const makePast=(date:string,kind:"past_exam"|"scan5"|"timed",minutes:number,reason:string)=>{
-    const selected=choosePastExam({catalog:args.catalog,daysRemaining:args.daysRemaining,used:usedPast,date});
+    const selected=choosePastExam({catalog:args.catalog,daysRemaining:args.daysRemaining,used:usedPast,date,
+      avoidProblemIds:activeReviewProblemIds});
     if(!selected)return task({date,slot:"maintenance_selection",kind:"exposure_confirmation",label:"過去問素材の露出状態を確認",
       minutes:10,reason:"unknownまたは模試保護中の素材を50分答案へ直接配置しないため、先に素材を確認します。",
       purpose:"material_selection_confirmation",purposeLabel:"素材選択確認",
@@ -224,27 +238,24 @@ function planDays(args:{
       if(weekday===6)score=makeWhitebook(date,[2,4,5,6,7,8],"full","確認済み弱点の得点安定化");
       else score=makePast(date,weekday===0?"timed":weekday===3?"scan5":"past_exam",weekday===0?90:weekday===3?45:35,"本番形式と選題判断を固定");
     }
-    const tasks:SlotTask[]=[];
+    const tasks:SlotTask[]=(reviewsByDate.get(date)||[]).map(placement=>task({date,slot:"repair",kind:"review",
+      label:`${placement.review.problem_id} 局所補修`,problemId:placement.review.problem_id,reviewId:placement.review.id,
+      mode:placement.review.grading_contract?.mode||placement.review.effective_mode||placement.review.inferred_mode||"check",
+      minutes:placement.minutes,reason:placement.status==="overdue_recovery"?"期限超過Reviewを最優先で回収":"復習ウィンドウ内に配置",
+      requiresUserSelection:false,reviewEarliestDate:placement.earliestDate,reviewPreferredDate:placement.preferredDate,
+      reviewLatestDate:placement.latestDate,reviewScheduleStatus:placement.status}));
     if(score?.kind==="exposure_confirmation"){
       materialConfirmationPlanned=true;
       tasks.push(score);
       score=makeWhitebook(date,[2,4,5,6,7,8],"skeleton","露出確認待ちの間も得点形成を止めない");
     }
-    if(score&&score.minutes<=args.targetMinutes)tasks.push(score);
+    if(score&&tasks.reduce((sum,row)=>sum+row.minutes,0)+score.minutes<=args.targetMinutes)tasks.push(score);
     const coreFloor=Math.min(90,Math.max(60,Math.round(args.targetMinutes*.4)));
     if(["foundation_to_A","A_and_past_parallel"].includes(phase)&&score&&score.kind!=="scan5"&&
       tasks.reduce((sum,row)=>sum+row.minutes,0)<coreFloor){
       const secondScore=makeWhitebook(date,[2,4,6,5,7,8],"full","利用可能時間を別問題の得点形成・転移へ配分");
       if(secondScore&&tasks.reduce((sum,row)=>sum+row.minutes,0)+secondScore.minutes<=Math.min(args.targetMinutes,90))
         tasks.push(secondScore);
-    }
-    const review=activeReviews.find(row=>!usedReviews.has(row.id)&&row.due_date<=date);
-    if(review&&tasks.reduce((sum,row)=>sum+row.minutes,0)+Number(review.grading_contract?.estimatedMinutes||review.estimated_minutes||5)<=args.targetMinutes){
-      const minutes=Number(review.grading_contract?.estimatedMinutes||review.estimated_minutes||5);
-      tasks.push(task({date,slot:"repair",kind:"review",label:`${review.problem_id} 局所補修`,problemId:review.problem_id,
-        reviewId:review.id,mode:review.grading_contract?.mode||review.effective_mode||review.inferred_mode||"check",
-        minutes,reason:"期限到来Reviewから最大1件",requiresUserSelection:false}));
-      usedReviews.add(review.id);
     }
     if(phaseMaintenance&&tasks.reduce((sum,row)=>sum+row.minutes,0)+phaseMaintenance.minutes<=Math.min(args.targetMinutes,90))
       tasks.push(phaseMaintenance);
@@ -265,7 +276,7 @@ function planDays(args:{
     }
     result.push({date,tasks,totalMinutes:tasks.reduce((sum,row)=>sum+row.minutes,0)});
   }
-  return result;
+  return {days:result,reviewSchedule};
 }
 
 function weeklyActual(args:{startDate:string;attempts:Attempt[];pastSessions:PastSession[];problems:Problem[]}){
@@ -295,15 +306,18 @@ export function buildAdaptivePlannerShadow(args:{
     plan14:empty,plan30:empty,legacy30:{scan5:0,full:0,timed:0,totalTasks:0},
     comparisonReasons:["正規化済み参照パックを取り込むと計画を生成できます。"],
     activationEligible:false,activationBlockers:["参照パック未登録"],weeklyTarget:{},weeklyActual:{},phaseDiagnostics:[]};
-  const plan14=validateMinimums(planSummary(planDays({...args,startDate:args.today,days:14,daysRemaining})),daysRemaining,args.targetMinutes);
-  const plan30=validateMinimums(planSummary(planDays({...args,startDate:args.today,days:30,daysRemaining})),daysRemaining,args.targetMinutes);
+  const planned14=planDays({...args,startDate:args.today,days:14,daysRemaining});
+  const planned30=planDays({...args,startDate:args.today,days:30,daysRemaining});
+  const plan14=validateMinimums(planSummary(planned14.days,planned14.reviewSchedule),daysRemaining,args.targetMinutes);
+  const plan30=validateMinimums(planSummary(planned30.days,planned30.reviewSchedule),daysRemaining,args.targetMinutes);
   const legacy=simulateThirtyDays({startDate:args.today,tasks:args.currentTasks,problems:args.problems,targetMinutes:args.targetMinutes,
     pastSessions:args.pastSessions as unknown as Array<Record<string,unknown>>});
   const policy=phasePolicy(args.record,daysRemaining),weekly=weeklyActual({startDate:args.today,attempts:args.attempts,pastSessions:args.pastSessions,problems:args.problems});
   const blockers=[
     ...(!args.record.validation.valid?["参照パック検証エラー"]:[]),
     ...(args.record.reconciliation.pastExamConflicts?["過去問master差分の確認待ち"]:[]),
-    ...(plan14.weeklyMinimumViolations.length||plan14.dailyCapacityViolations?["14日シミュレーションに未達あり"]:[])
+    ...(plan14.weeklyMinimumViolations.length||plan14.dailyCapacityViolations?["14日シミュレーションに未達あり"]:[]),
+    ...(plan14.reviewSchedule.capacityConflicts.length?[`Review capacity conflict ${plan14.reviewSchedule.capacityConflicts.length}件`]:[])
   ];
   const phaseDiagnostics=([
     ["D90",90],["D60",60],["D30",30]
@@ -314,8 +328,8 @@ export function buildAdaptivePlannerShadow(args:{
     // never persists or reclassifies an unknown exposure in the real catalog.
     const diagnosticCatalog=args.catalog.map(row=>row.exposure==="unknown"
       ?{...row,exposure:"prompt_scanned" as const}:row);
-    const summary=validateMinimums(planSummary(planDays({...args,catalog:diagnosticCatalog,
-      startDate:diagnosticStart,days:14,daysRemaining:remaining})),remaining,args.targetMinutes);
+    const planned=planDays({...args,catalog:diagnosticCatalog,startDate:diagnosticStart,days:14,daysRemaining:remaining});
+    const summary=validateMinimums(planSummary(planned.days,planned.reviewSchedule),remaining,args.targetMinutes);
     const all=summary.plan.flatMap(day=>day.tasks);
     const total=all.reduce((sum,row)=>sum+row.minutes,0);
     const past=all.filter(row=>["past_exam","scan5","timed"].includes(row.kind)).reduce((sum,row)=>sum+row.minutes,0);
@@ -330,7 +344,7 @@ export function buildAdaptivePlannerShadow(args:{
     comparisonReasons:[
       legacy.purposeCounts.scan5===0&&plan30.counts.scan5>0?"現行30日では0件のscan5を週最低枠で補完":"scan5実績を比較",
       legacy.purposeCounts.timedFull===0&&plan30.counts.timed>0?"現行30日では0件のtimedを日付フェーズで補完":"timed実績を比較",
-      "期限到来Reviewをrepair枠最大1件に制限し、得点形成枠を保持",
+      "Reviewは日付窓と分単位repair budgetで配置し、期限超過とlatest超過リスクを優先",
       "unknown exposureは特定年度を未見扱いせず、素材選択確認として提示"
     ],activationEligible:blockers.length===0,activationBlockers:blockers,
     weeklyTarget:{phase,

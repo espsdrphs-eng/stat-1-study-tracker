@@ -1,4 +1,4 @@
-import type { Attempt, GradingContractSnapshot, ProblemAlias, Review, Task, TodayPlanSnapshot } from "./types.ts";
+import type { AdditionalStudyCandidate, AdaptivePlanSummary, Attempt, GradingContractSnapshot, ProblemAlias, Review, Task, TodayPlanSnapshot } from "./types.ts";
 import { resolveCanonicalProblemId } from "./examReadiness.ts";
 import { addCalendarDays, resolveReviewSchedule } from "./reviewSchedulePolicy.ts";
 import { isActionableReview, validateGradingContract } from "./gradingContract.ts";
@@ -6,6 +6,7 @@ import { analyzeReviewReconciliation, type ReconciliationAudit } from "./reviewR
 import {buildStableTargetIndex,isValidStableTargetKey} from "./stableTargetIdentity.ts";
 import {currentTargetDisplay,currentTargetLabels} from "./currentTargetPayload.ts";
 import {projectTodayTaskChecked,selectNextCurrentTodayTask} from "./todayTaskProjection.ts";
+import {buildReviewGradingPrompt} from "./gradingPrompt.ts";
 
 export const ACTIVE_REVIEW_STATUSES = new Set(["pending", "overdue"]);
 
@@ -168,7 +169,9 @@ export type IntegrityCategory =
   | "stale_stable_target" | "current_review_target_mismatch" | "orphan_active_target"
   | "invalid_stable_target_key" | "duplicate_active_target_label"
   | "stale_target_payload" | "current_target_display_mismatch"
-  | "today_task_completion_mismatch" | "inactive_review_current_task" | "today_next_action_mismatch";
+  | "today_task_completion_mismatch" | "inactive_review_current_task" | "today_next_action_mismatch"
+  | "duplicate_problem_task" | "current_planner_eligibility_mismatch" | "review_window_violation"
+  | "overdue_starvation" | "optional_extra_priority_violation" | "actionable_review_prompt_missing";
 
 export type IntegrityIssue = {
   category: IntegrityCategory;
@@ -198,8 +201,12 @@ export function runIntegrityAudit(args: {
   /** Current UI projection. Saved snapshots remain immutable history. */
   currentTodayTasks?: Task[];
   currentNextTask?:Task;
+  currentPlanSummary?:AdaptivePlanSummary;
+  additionalCandidates?:AdditionalStudyCandidate[];
+  eligibleTodayTasks?:Task[];
 }): IntegrityAudit {
-  const { attempts, reviews, aliases = [], today, todayPlanSnapshots = [], validCrossTargetReviewIds = [], currentTodayTasks, currentNextTask } = args;
+  const { attempts, reviews, aliases = [], today, todayPlanSnapshots = [], validCrossTargetReviewIds = [],
+    currentTodayTasks, currentNextTask, currentPlanSummary, additionalCandidates=[],eligibleTodayTasks } = args;
   const validCrossTarget=new Set(validCrossTargetReviewIds);
   const issues: IntegrityIssue[] = [];
   const attemptsById = new Map(attempts.map((row) => [row.id, row]));
@@ -242,6 +249,18 @@ export function runIntegrityAudit(args: {
       category: "inactive_pending", severity: "active", reviewIds: [review.id],
       detail: `Review ${review.id} is pending but invalid`, repairable: true,
     });
+    if(state==="actionable"){
+      try{
+        const prompt=buildReviewGradingPrompt({reviewId:review.id,problemId:review.problem_id,date:today,
+          mode:review.grading_contract?.mode||review.effective_mode||review.inferred_mode||"check",
+          timeMinutes:Number(review.grading_contract?.estimatedMinutes||review.estimated_minutes||5),
+          gradingContract:review.grading_contract});
+        if(!prompt.trim())throw new Error("empty prompt");
+      }catch(error){
+        issues.push({category:"actionable_review_prompt_missing",severity:"active",reviewIds:[review.id],
+          detail:`Review ${review.id} cannot produce its canonical grading prompt: ${error instanceof Error?error.message:String(error)}`,repairable:false});
+      }
+    }
 
     const schedule = resolveReviewSchedule(review, source);
     if (schedule.scheduleOrigin === "policy" && schedule.sourceDate && schedule.reviewAfterDays != null &&
@@ -346,6 +365,19 @@ export function runIntegrityAudit(args: {
   // without treating historical `checked` values as writable state.
   const currentSnapshot=todayPlanSnapshots.find(snapshot=>snapshot.date===today);
   if(currentSnapshot&&currentTodayTasks){
+    const openByProblem=new Map<string,Task[]>();
+    for(const task of currentTodayTasks.filter(row=>!row.checked&&row.triage!=="tomorrow")){
+      const key=resolveCanonicalProblemId(task.problem_id,aliases);
+      openByProblem.set(key,[...(openByProblem.get(key)||[]),task]);
+    }
+    for(const [problemId,tasks] of openByProblem){
+      const generic=tasks.filter(task=>!task.review_type),reviewTasks=tasks.filter(task=>!!task.review_type);
+      const duplicateReviewIds=reviewTasks.filter((task,index)=>reviewTasks.findIndex(row=>row.id===task.id)!==index);
+      if(generic.length&&reviewTasks.length||generic.length>1||duplicateReviewIds.length)issues.push({
+        category:"duplicate_problem_task",severity:"active",
+        reviewIds:reviewTasks.flatMap(task=>task.id?[task.id]:[]),
+        detail:`${problemId} has duplicate generic/Review tasks in the current plan`,repairable:false});
+    }
     for(const task of currentTodayTasks){
       const expectedChecked=projectTodayTaskChecked({task,attempts,snapshot:currentSnapshot,aliases});
       if(expectedChecked&&!task.checked)issues.push({
@@ -369,6 +401,44 @@ export function runIntegrityAudit(args: {
         reviewIds:currentNextTask?.review_type&&currentNextTask.id?[currentNextTask.id]:undefined,
         detail:`Dashboard NEXT ACTION does not match the canonical current Today projection`,repairable:false,
       });
+    }
+  }
+
+  if(currentPlanSummary&&currentTodayTasks){
+    const todayPlacements=currentPlanSummary.reviewSchedule.placements.filter(row=>row.date===today);
+    const currentReviewIds=new Set(currentTodayTasks.filter(task=>!task.checked&&task.review_type&&task.id).map(task=>task.id as number));
+    for(const placement of currentPlanSummary.reviewSchedule.placements){
+      if(placement.status==="within_window"&&placement.date>placement.latestDate)issues.push({
+        category:"review_window_violation",severity:"active",reviewIds:[placement.reviewId],
+        detail:`Review ${placement.reviewId} is placed ${placement.date} after latest ${placement.latestDate}`,repairable:false});
+    }
+    for(const placement of todayPlacements){
+      if(!currentReviewIds.has(placement.reviewId))issues.push({category:"current_planner_eligibility_mismatch",severity:"active",
+        reviewIds:[placement.reviewId],detail:`Review ${placement.reviewId} is scheduled today but missing from the current projection`,repairable:false});
+    }
+    const urgentConflicts=currentPlanSummary.reviewSchedule.capacityConflicts.filter(row=>row.preferredDate<=today||row.latestDate<=today);
+    for(const conflict of urgentConflicts)issues.push({category:"overdue_starvation",severity:"active",reviewIds:[conflict.reviewId],
+      detail:`Review ${conflict.reviewId} could not be placed before score-building/optional work (${conflict.reason})`,repairable:false});
+    if(urgentConflicts.length&&additionalCandidates.length)issues.push({category:"optional_extra_priority_violation",severity:"active",
+      reviewIds:urgentConflicts.map(row=>row.reviewId),detail:"Optional extra is visible while an urgent Review remains unplaced",repairable:false});
+    const activeReviewProblems=new Set(reviews.filter(review=>reviewExecutionState(review,today)==="actionable"&&
+      String(review.earliest_date||review.due_date)<=today)
+      .map(review=>resolveCanonicalProblemId(review.problem_id,aliases)));
+    for(const task of currentTodayTasks.filter(row=>!row.checked&&!row.review_type&&activeReviewProblems.has(resolveCanonicalProblemId(row.problem_id,aliases))))
+      issues.push({category:"current_planner_eligibility_mismatch",severity:"active",detail:
+        `${task.problem_id} is a generic current task while an active Review exists`,repairable:false});
+  }
+  if(currentTodayTasks&&eligibleTodayTasks){
+    const eligibilityKey=(task:Task)=>task.id&&task.review_type?`review:${task.id}`:
+      `problem:${resolveCanonicalProblemId(task.problem_id,aliases)}`;
+    const currentKeys=new Set(currentTodayTasks.filter(task=>task.plan_origin!=="adaptive_additional").map(eligibilityKey));
+    const eligibleKeys=new Set(eligibleTodayTasks.map(eligibilityKey));
+    for(const key of eligibleKeys)if(!currentKeys.has(key))issues.push({category:"current_planner_eligibility_mismatch",severity:"active",
+      detail:`Eligible task ${key} is missing from the current projection`,repairable:false});
+    for(const task of currentTodayTasks.filter(row=>!row.checked&&row.plan_origin!=="adaptive_additional")){
+      const key=eligibilityKey(task);
+      if(!eligibleKeys.has(key))issues.push({category:"current_planner_eligibility_mismatch",severity:"active",
+        reviewIds:task.review_type&&task.id?[task.id]:undefined,detail:`Current task ${key} is not eligible in the canonical planner`,repairable:false});
     }
   }
 
@@ -425,6 +495,8 @@ export function runIntegrityAudit(args: {
     "duplicate_stable_target", "stale_stable_target", "current_review_target_mismatch", "orphan_active_target",
     "invalid_stable_target_key", "duplicate_active_target_label", "stale_target_payload", "current_target_display_mismatch",
     "today_task_completion_mismatch", "inactive_review_current_task", "today_next_action_mismatch",
+    "duplicate_problem_task", "current_planner_eligibility_mismatch", "review_window_violation",
+    "overdue_starvation", "optional_extra_priority_violation", "actionable_review_prompt_missing",
   ];
   const counts = Object.fromEntries(categories.map((category) =>
     [category, issues.filter((issue) => issue.category === category).length])) as Record<IntegrityCategory, number>;

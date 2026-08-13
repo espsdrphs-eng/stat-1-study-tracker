@@ -316,6 +316,7 @@ header h1{font-size:28px;font-weight:700;letter-spacing:-.02em;color:var(--text-
 .reference-pack-import>.master-file-button{margin-top:10px}
 .additional-study-panel{margin:16px 0;border-color:#c9d7ff;background:#f8faff}
 .additional-study-panel>p{color:var(--text-secondary);line-height:1.65}
+.optional-extra-capacity-note{margin:8px 0;padding:8px 10px;border-radius:8px;background:#eef3ff;color:var(--text-secondary);font-size:.82rem}
 .additional-candidate-list{display:grid;gap:9px;margin:12px 0}
 .additional-candidate-list article{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 14px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface)}
 .additional-candidate-list article>div{display:grid;gap:3px;min-width:0}

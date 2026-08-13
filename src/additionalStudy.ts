@@ -30,10 +30,10 @@ function shadowTaskToTodayTask(item:AdaptivePlannerShadow["plan14"]["plan"][numb
  */
 export function buildAdditionalStudyCandidates(args:{
   today:string;targetMinutes:number;completedMinutes:number;activeRemainingMinutes:number;
-  currentTasks:Task[];shadow:AdaptivePlannerShadow;
+  currentTasks:Task[];shadow:AdaptivePlannerShadow;urgentReviewBlocked?:boolean;
 }):{capacity:number;candidates:AdditionalStudyCandidate[]}{
   const capacity=Math.max(0,args.targetMinutes-args.completedMinutes-args.activeRemainingMinutes);
-  if(!capacity||!args.shadow.available)return {capacity,candidates:[]};
+  if(!capacity||!args.shadow.available||args.urgentReviewBlocked)return {capacity,candidates:[]};
   const occupied=new Set(args.currentTasks.map(task=>task.problem_id));
   const sourceRows=args.shadow.plan14.plan.flatMap(day=>day.tasks)
     .filter(item=>item.date>=args.today)

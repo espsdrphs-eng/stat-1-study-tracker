@@ -71,11 +71,11 @@ test("safe integrity repair replaces a partially stale repair and hydrates Today
   assert.deepEqual(active[0].grading_contract.gradedParts.map(row=>row.id).sort(),["C","E"]);
   assert.equal((await db.meta.get(`today-plan-snapshot:${today}`)).value,snapshotBefore);
   const bootstrap=await localGet("/api/bootstrap");
-  assert.equal(bootstrap.today.tasks.length,1);
-  assert.equal(bootstrap.today.tasks[0].id,active[0].id);
-  assert.deepEqual(bootstrap.today.tasks[0].grading_contract.gradedParts.map(row=>row.id).sort(),["C","E"]);
-  assert.equal(bootstrap.today.tasks[0].minutes,10);
-  assert.equal(bootstrap.today.tasks[0].triage,"must");
+  const currentReview=bootstrap.today.tasks.find(task=>task.id===active[0].id);
+  assert.ok(currentReview);
+  assert.deepEqual(currentReview.grading_contract.gradedParts.map(row=>row.id).sort(),["C","E"]);
+  assert.equal(currentReview.minutes,10);
+  assert.equal(currentReview.triage,"must");
   const count=await db.reviews.count();
   await localPost("/api/integrity/repair",{});
   await localPost("/api/integrity/repair",{});

@@ -7,7 +7,7 @@ import { postponedDueDate } from "./reviewScheduling.ts";
 import { applyWeakNoteQuizResult } from "./weakNoteQuiz.ts";
 import { selectMixedPractice } from "./studyScheduler.ts";
 import { triageTodayTasks } from "./studyTriage.ts";
-import { deriveCurrentTodayState } from "./todayTaskProjection.ts";
+import { deriveCurrentTodayState, qualifyingAttemptForTodayTask } from "./todayTaskProjection.ts";
 import { removeTimingExpressions, sanitizeStudyUpdateTiming } from "./reviewTiming.ts";
 import { buildProgressPlan, daysUntilExam } from "./studyProgress.ts";
 import { calculateExamReadinessMetrics } from "./examReadiness.ts";
@@ -48,7 +48,7 @@ import {
 } from "./examReferencePack.ts";
 import { analyzeConceptWeaknesses, buildPastExamRepairCandidates } from "./conceptWeakness.ts";
 import { buildAdaptivePlannerShadow } from "./adaptivePlanner.ts";
-import { ADAPTIVE_PLANNER_VERSION, adaptivePlanDayToTasks } from "./adaptiveTodayPlan.ts";
+import { ADAPTIVE_PLANNER_VERSION, adaptivePlanDayToTasks, projectAdaptiveSnapshotTasks } from "./adaptiveTodayPlan.ts";
 import { buildAdditionalStudyCandidates } from "./additionalStudy.ts";
 import { summarizeReviewPortfolio } from "./reviewPortfolio.ts";
 import { BUILT_IN_EXAM_REFERENCE_PACK, builtInReferencePackValidation } from "./builtinExamReferencePack.ts";
@@ -2693,10 +2693,10 @@ async function bootstrap():Promise<Bootstrap>{
   const currentReviewForSaved=(saved:Task)=>{
     if(!saved.id||!saved.review_type)return undefined;
     const stored=reviewMap.get(saved.id);
-    if(stored&&reviewIsExecutable(stored)&&stored.due_date<=today)return stored;
+    if(stored&&reviewIsExecutable(stored)&&String(stored.earliest_date||stored.due_date)<=today)return stored;
     const canonical=resolveCanonicalProblemId(saved.problem_id,problemAliases);
     const savedPurpose=stored?.grading_contract?.learningPurpose||saved.grading_contract?.learningPurpose||saved.learning_purpose;
-    const candidates=reviews.filter(review=>reviewIsExecutable(review)&&review.due_date<=today&&
+    const candidates=reviews.filter(review=>reviewIsExecutable(review)&&String(review.earliest_date||review.due_date)<=today&&
       resolveCanonicalProblemId(review.problem_id,problemAliases)===canonical);
     return candidates.sort((left,right)=>{
       const leftPurpose=left.grading_contract?.learningPurpose||left.learning_purpose;
@@ -2705,12 +2705,17 @@ async function bootstrap():Promise<Bootstrap>{
         right.due_date.localeCompare(left.due_date)||right.id-left.id;
     })[0];
   };
-  const taskRows=snapshot.tasks.filter(saved=>{
+  const currentSnapshotTasks=plannerMode==="adaptive"?projectAdaptiveSnapshotTasks({
+    snapshotTasks:snapshot.tasks,generatedTasks:generatedTriage.tasks,reviews,today,aliases:problemAliases,
+    isCompleted:task=>checkedKeys.has(`today-check:${today}:${task.problem_id}:${task.kind}`)||
+      !!qualifyingAttemptForTodayTask({task,attempts,snapshot:snapshot!,aliases:problemAliases}),
+  }):snapshot.tasks;
+  const taskRows=currentSnapshotTasks.filter(saved=>{
     if(saved.id&&saved.review_type){
       const currentReview=currentReviewForSaved(saved);
       if(!currentReview)return false;
       // If the replacement already owns another saved slot, do not show/count it twice.
-      return currentReview.id===saved.id||!snapshot!.tasks.some(other=>other.id===currentReview.id);
+      return currentReview.id===saved.id||!currentSnapshotTasks.some(other=>other.id===currentReview.id);
     }
     const record=taskPostponements.get(`${saved.problem_id}:${saved.kind}`);
     if(!record) return true;
@@ -2782,9 +2787,16 @@ async function bootstrap():Promise<Bootstrap>{
     return !!source&&resolveCanonicalProblemId(source.problem_id,problemAliases)!==resolveCanonicalProblemId(review.problem_id,problemAliases)&&
       resolveReviewOrigin({review,attempts,aliases:problemAliases,relations:storedRelations,problems}).valid;
   }).map(review=>review.id);
+  const urgentReviewBlocked=plannerShadow.plan14.reviewSchedule.capacityConflicts.some(conflict=>
+    conflict.preferredDate<=today||conflict.latestDate<=today);
+  const additionalStudy=buildAdditionalStudyCandidates({
+    today,targetMinutes:settings.daily_study_minutes,completedMinutes:actualMinutes,
+    activeRemainingMinutes,currentTasks:tasks,shadow:plannerShadow,urgentReviewBlocked
+  });
   const integrityHealth=runIntegrityAudit({
     attempts,reviews:rawReviews,aliases:problemAliases,today,todayPlanSnapshots:[snapshot],validCrossTargetReviewIds,
-    currentTodayTasks:tasks,currentNextTask:currentToday.currentTask,
+    currentTodayTasks:tasks,currentNextTask:currentToday.currentTask,currentPlanSummary:plannerShadow.plan14,
+    additionalCandidates:additionalStudy.candidates,eligibleTodayTasks:generatedTriage.tasks,
   });
   const masterStatus={
     problem_count:problems.length,answer_count:answerIndex.length,
@@ -2809,10 +2821,6 @@ async function bootstrap():Promise<Bootstrap>{
   };
   const pastExamRepairCandidates=buildPastExamRepairCandidates({record:referenceRecord,sessions:pastSessions,
     attempts:activeAttempts,conceptWeaknesses});
-  const additionalStudy=buildAdditionalStudyCandidates({
-    today,targetMinutes:settings.daily_study_minutes,completedMinutes:actualMinutes,
-    activeRemainingMinutes,currentTasks:tasks,shadow:plannerShadow
-  });
   const adaptiveLearning={referencePack:buildReferencePackStatus(referenceRecord),pastExamCatalog,
     conceptWeaknesses,pastExamRepairCandidates,plannerShadow,plannerMode,weaknessModel:"concept_evidence_v1" as const};
   return {problems:problems.sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.category.localeCompare(b.category)||a.problem_number-b.problem_number),attempts,reviews,roadmap,weakNotes,pastSessions,answerIndex,problemAliases,dashboard,settings,masterStatus,databaseStatus,adaptiveLearning,
@@ -2936,7 +2944,11 @@ async function integrityAudit():Promise<IntegrityAudit>{
   // immutable history and must not be audited as if its checked flags were current.
   const current=await bootstrap();
   return runIntegrityAudit({attempts,reviews,aliases,today:todayString(),todayPlanSnapshots:snapshots,validCrossTargetReviewIds,
-    currentTodayTasks:current.today.tasks,currentNextTask:current.today.currentTask});
+    currentTodayTasks:current.today.tasks,currentNextTask:current.today.currentTask,
+    currentPlanSummary:current.adaptiveLearning.plannerShadow.plan14,
+    additionalCandidates:current.today.additionalCandidates,
+    eligibleTodayTasks:adaptivePlanDayToTasks({day:current.adaptiveLearning.plannerShadow.plan14.plan.find(day=>day.date===todayString()),
+      problems:current.problems,reviews:current.reviews,today:todayString()})});
 }
 
 async function repairIntegrity(preview=false){

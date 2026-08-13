@@ -37,11 +37,11 @@ test("WB-5-A-28 qualifying full Attempt completes Today slot and advances the da
 
   const data=await localGet("/api/bootstrap");
   const a28=data.today.tasks.find(row=>row.problem_id==="WB-5-A-28");
-  const a20=data.today.tasks.find(row=>row.problem_id==="WB-5-A-20");
+  assert.ok(a28,JSON.stringify(data.today.tasks));
   assert.equal(a28.checked,true);
-  assert.equal(a20.checked,false);
-  assert.equal(data.today.tasks.find(row=>!row.checked&&row.triage!=="tomorrow").problem_id,"WB-5-A-20");
-  assert.equal(data.today.active_remaining_minutes,10);
+  assert.notEqual(data.today.currentTask?.problem_id,"WB-5-A-28");
+  assert.equal(data.today.active_remaining_minutes,data.today.tasks.filter(row=>!row.checked&&row.triage!=="tomorrow")
+    .reduce((sum,row)=>sum+row.minutes,0));
   const saved=(await db.attempts.toArray()).filter(row=>row.submission_id===submission);
   assert.equal(saved.length,1);
   assert.notEqual(saved[0].exclude_from_planning,true);
@@ -87,8 +87,9 @@ test("WB-5-A-29 planned skeleton is completed by saved main_calc Attempt and rel
   const data=await localGet("/api/bootstrap");
   const a29=data.today.tasks.find(row=>row.problem_id==="WB-5-A-29");
   assert.equal(a29.checked,true);
-  assert.equal(data.today.currentTask.problem_id,"WB-5-A-20");
-  assert.equal(data.today.active_remaining_minutes,10);
+  assert.notEqual(data.today.currentTask.problem_id,"WB-5-A-29");
+  assert.equal(data.today.active_remaining_minutes,data.today.tasks.filter(row=>!row.checked&&row.triage!=="tomorrow")
+    .reduce((sum,row)=>sum+row.minutes,0));
   assert.equal(data.today.actualMinutes,25);
   assert.equal(data.masterStatus.integrity_summary.counts.today_task_completion_mismatch,0);
   assert.equal(data.masterStatus.integrity_summary.counts.today_next_action_mismatch,0);
@@ -105,7 +106,7 @@ test("WB-5-A-29 planned skeleton is completed by saved main_calc Attempt and rel
   assert.equal(data.masterStatus.integrity_summary.activeIssueCount,0,JSON.stringify(data.masterStatus.integrity_summary));
 
   const second=await localGet("/api/bootstrap");
-  assert.equal(second.today.currentTask.problem_id,"WB-5-A-20");
+  assert.notEqual(second.today.currentTask.problem_id,"WB-5-A-29");
   assert.equal((await db.attempts.toArray()).filter(row=>row.submission_id===submission).length,1);
   assert.equal((await db.reviews.toArray()).filter(row=>row.problem_id==="WB-5-A-29"&&["pending","overdue"].includes(row.status)).length,1);
 });

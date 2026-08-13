@@ -21,6 +21,20 @@ const expandedCatalog=buildPastExamCatalog({record:expandedRecord,sessions:[],
 const build=(today,examDate="2026-11-15",reviews=[])=>
   buildAdaptivePlannerShadow({record:baseRecord,catalog,weaknesses:[],problems:whitebook,attempts:[],reviews,pastSessions:[],
     currentTasks:[],today,examDate,targetMinutes:150});
+const reviewFixture=(id,problemId,{due="2026-08-14",earliest=due,latest=due,minutes=12}={})=>{
+  const contract={contractId:`review:${id}:1`,contractVersion:"STAT1-CONTRACT-v2",contractHash:`hash-${id}`,
+    createdAt:"2026-08-13T00:00:00Z",problemId,reviewId:id,sourceAttemptId:id,
+    learningPurpose:"error_repair",learningStage:"repair",mode:"main_calc",reviewScope:"main_calc_target",
+    targetKind:"mathematical_patch",targetedParts:["target"],gradedParts:[{id:`part-${id}`,label:"target",cueLabel:"target",
+      allowedErrorTypes:["W","none"],completionCriterionId:`criterion-${id}`,stableTargetKey:`target:${problemId}:root:${id}`}],
+    explicitlyOutOfScopePartIds:[],explicitlyOutOfScopeParts:[],completionCriteria:[{id:`criterion-${id}`,displayText:"repair target"}],
+    hiddenAnswerKey:[],completionConditions:["repair target"],requiredEvidence:["target"],allowedErrorTypes:["W"],
+    requiresKEvidence:false,allowedReferenceLevel:0,estimatedMinutes:minutes,sheetType:"main_calc_sheet"};
+  return {id,problem_id:problemId,due_date:due,earliest_date:earliest,preferred_date:due,latest_date:latest,
+    interval_days:2,review_type:"main_calc_retry",status:due<"2026-08-14"?"overdue":"pending",generated_from_attempt_id:id,
+    source_attempt_id:id,learning_purpose:"error_repair",effective_mode:"main_calc",review_scope:"main_calc_target",
+    sheet_type:"main_calc_sheet",contract_id:contract.contractId,contract_hash:contract.contractHash,grading_contract:contract};
+};
 
 test("残り91日以上の30日計画で第5・7章、scan5、fullが0件にならない",()=>{
   const shadow=build("2026-07-29");
@@ -31,17 +45,28 @@ test("残り91日以上の30日計画で第5・7章、scan5、fullが0件にな�
   assert.equal(shadow.plan30.dailyCapacityViolations,0);
 });
 
-test("期限Reviewが多くても得点形成枠を残し、repairは1日最大1件",()=>{
-  const reviews=Array.from({length:20},(_,index)=>({id:index+1,problem_id:whitebook[index%whitebook.length].problem_id,
-    due_date:"2026-07-01",interval_days:3,review_type:"main_calc_retry",status:"pending",generated_from_attempt_id:index+1,
-    learning_purpose:"error_repair",grading_contract:{estimatedMinutes:20}}));
+test("期限Reviewが多くても得点形成枠を残し、repairは分単位budget内で複数配置する",()=>{
+  const reviews=Array.from({length:3},(_,index)=>reviewFixture(index+1,whitebook[index].problem_id,
+    {due:"2026-07-20",earliest:"2026-07-19",latest:"2026-07-22",minutes:12}));
   const shadow=build("2026-07-29","2026-11-15",reviews);
-  assert.equal(shadow.plan14.plan.every(day=>{
-    const count=day.tasks.filter(task=>task.slot==="score_building").length;
-    return count>=1&&count<=2;
-  }),true);
-  assert.equal(shadow.plan14.plan.every(day=>day.tasks.filter(task=>task.slot==="repair").length<=1),true);
+  assert.equal(shadow.plan14.plan[0].tasks.filter(task=>task.slot==="repair").length,3);
+  assert.equal(shadow.plan14.plan[0].tasks.filter(task=>task.slot==="score_building").length>=1,true);
   assert.equal(shadow.plan14.dailyCapacityViolations,0);
+});
+
+test("active Review problem is not duplicated as generic score-building and is scheduled within latest",()=>{
+  const special=[problem("WB-7-A-07",7),problem("WB-7-A-08",7),...whitebook];
+  const review=reviewFixture(384,"WB-7-A-07",{due:"2026-08-15",earliest:"2026-08-14",latest:"2026-08-16",minutes:12});
+  const shadow=buildAdaptivePlannerShadow({record:baseRecord,catalog,weaknesses:[],problems:special,attempts:[],reviews:[review],
+    pastSessions:[],currentTasks:[],today:"2026-08-14",examDate:"2026-11-15",targetMinutes:150});
+  const rows=shadow.plan14.plan.flatMap(day=>day.tasks);
+  assert.equal(rows.some(task=>task.problemId==="WB-7-A-07"&&task.kind!=="review"),false);
+  const placed=rows.find(task=>task.reviewId===384);
+  assert.ok(placed);
+  assert.ok(placed.date>="2026-08-14"&&placed.date<="2026-08-16");
+  assert.equal(placed.mode,"main_calc");
+  assert.equal(placed.minutes,12);
+  assert.equal(shadow.plan14.reviewSchedule.capacityConflicts.length,0);
 });
 
 test("unknown exposureを特定の未見年度として推薦せず、2024・2025を61日以上で保護する",()=>{

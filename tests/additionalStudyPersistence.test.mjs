@@ -21,8 +21,11 @@ test("追加候補は明示操作だけでsnapshotへ入り、同じ操作を2�
     initial_estimated_minutes:{fixture:61},tasks:[originalTask],created_at:new Date().toISOString()
   })});
   const before=await localGet("/api/bootstrap");
-  assert.equal(before.today.active_remaining_minutes,0);
-  assert.equal(before.today.remaining_learning_capacity_minutes,89);
+  assert.equal(before.today.active_remaining_minutes,
+    before.today.tasks.filter(task=>!task.checked).reduce((sum,task)=>sum+Number(task.minutes||0),0));
+  assert.ok(before.today.active_remaining_minutes>0,"current projection should include the formal adaptive tasks");
+  assert.equal(before.today.remaining_learning_capacity_minutes,
+    Math.max(0,150-61-before.today.active_remaining_minutes));
   assert.ok(before.today.additionalCandidates.length);
   const candidate=before.today.additionalCandidates[0];
   const rawBefore=(await db.meta.get(`today-plan-snapshot:${date}`)).value;

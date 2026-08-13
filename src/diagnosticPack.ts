@@ -18,6 +18,9 @@ import {
 } from "./examReferencePack.ts";
 import {analyzeConceptWeaknesses,buildPastExamRepairCandidates} from "./conceptWeakness.ts";
 import {buildAdaptivePlannerShadow} from "./adaptivePlanner.ts";
+import {adaptivePlanDayToTasks,projectAdaptiveSnapshotTasks} from "./adaptiveTodayPlan.ts";
+import {deriveCurrentTodayState,qualifyingAttemptForTodayTask} from "./todayTaskProjection.ts";
+import {buildAdditionalStudyCandidates} from "./additionalStudy.ts";
 import type { Attempt, Problem, ProblemAlias, ProblemRelation, Review, TodayPlanSnapshot } from "./types.ts";
 
 type JsonRecord=Record<string,unknown>;
@@ -379,6 +382,23 @@ export async function createDiagnosticPack():Promise<DiagnosticPackResult>{
   const adaptiveShadow=buildAdaptivePlannerShadow({record:referenceRecord,catalog:referenceCatalog,
     weaknesses:conceptWeaknesses,problems,attempts,reviews,pastSessions,currentTasks:currentSnapshot?.tasks||[],
     today,examDate,targetMinutes:Math.max(30,Number(settings.daily_study_minutes||150))});
+  const formalTodayTasks=adaptivePlanDayToTasks({day:adaptiveShadow.plan14.plan.find(day=>day.date===today),
+    problems,reviews,today});
+  const currentProjectionTasks=currentSnapshot?projectAdaptiveSnapshotTasks({snapshotTasks:currentSnapshot.tasks,
+    generatedTasks:formalTodayTasks,reviews,today,aliases,isCompleted:task=>
+      !!qualifyingAttemptForTodayTask({task,attempts,snapshot:currentSnapshot,aliases})}):formalTodayTasks;
+  const completedMinutes=attempts.filter(attempt=>attempt.date===today&&!attempt.parent_past_session_id)
+    .reduce((sum,attempt)=>sum+Math.max(0,Number(attempt.time_minutes||0)),0)+
+    pastSessions.filter(session=>String(session.date)===today).reduce((sum,session)=>sum+sessionStudyMinutes(session,attempts),0);
+  const projectedToday=currentSnapshot?deriveCurrentTodayState({tasks:currentProjectionTasks,attempts,snapshot:currentSnapshot,
+    aliases,completedMinutes,targetMinutes:Math.max(30,Number(settings.daily_study_minutes||150))}):undefined;
+  const additional=buildAdditionalStudyCandidates({today,targetMinutes:Math.max(30,Number(settings.daily_study_minutes||150)),
+    completedMinutes,activeRemainingMinutes:projectedToday?.timeSummary.activeRemainingMinutes||0,
+    currentTasks:projectedToday?.tasks||formalTodayTasks,shadow:adaptiveShadow,
+    urgentReviewBlocked:adaptiveShadow.plan14.reviewSchedule.capacityConflicts.some(row=>row.preferredDate<=today||row.latestDate<=today)});
+  consistency.systemIntegrity=runIntegrityAudit({attempts,reviews,aliases,today,todayPlanSnapshots,validCrossTargetReviewIds,
+    currentTodayTasks:projectedToday?.tasks||formalTodayTasks,currentNextTask:projectedToday?.currentTask,
+    currentPlanSummary:adaptiveShadow.plan14,additionalCandidates:additional.candidates,eligibleTodayTasks:formalTodayTasks});
   const {legacy30:_legacy30,comparisonReasons:_legacyComparison,...formalAdaptiveAudit}=adaptiveShadow;
   const adaptiveReferenceAudit={plannerSource:"adaptive",referencePack:buildReferencePackStatus(referenceRecord),
     exposureCounts:Object.fromEntries([...new Set(referenceCatalog.map(row=>row.exposure))]

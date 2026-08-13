@@ -14,6 +14,7 @@ import { problemDisplayLabel } from "./importParser";
 import { createAttemptReviewPlan } from "./reviewRules";
 import { analyzeWeakTrends, buildQuizPrompt } from "./weakTrend";
 import { buildFirstAttemptGradingPrompt, buildRepairPrompt, buildReviewGradingPrompt } from "./gradingPrompt";
+import {shouldShowReviewPrompt} from "./reviewUiPolicy.ts";
 import { reviewMode, reviewTemplate } from "./reviewPresentation";
 import {
   allowedReferenceLevel, completionChecklist, correctionRuleExample, correctionTheme, emptyReferenceState,
@@ -358,7 +359,11 @@ function ReviewPlanDetails({item:rawItem,compact=false,resolved}:{item:Partial<R
   const lockContract=async()=>{if(item.id&&!item.contract_locked_at)await post(`/api/reviews/${item.id}/contract-lock`,{})};
   if(!item.review_method&&!item.review_reason&&!resolved) return null;
   const executionState=item.id?reviewExecutionState(rawItem as Review,todayString()):"actionable";
-  const actionable=!item.id||executionState==="actionable"&&!!resolved&&!resolved.reviewNeeded;
+  // The result-recording control and grading-prompt control share one lifecycle
+  // gate. A display warning must not silently hide a prompt for an otherwise
+  // actionable Review.
+  const actionable=!item.id||shouldShowReviewPrompt({reviewId:item.id,problemId:item.problem_id,
+    executionState,hasResolvedCard:!!resolved});
   const actions=resolved?.todayActions.value||safeReviewActions(item);
   const template=reviewTemplate(item);
   const allowed=allowedReferenceLevel(item);
@@ -450,7 +455,7 @@ function ReviewPlanDetails({item:rawItem,compact=false,resolved}:{item:Partial<R
       {usedReference&&!openReferencePanel&&<div className="reference-hidden-status"><EyeOff size={14}/><span>{referenceLabels[reference.actual_reference_level]}を確認済み。参照内容は隠れています。</span></div>}
       <p className="reference-note">参照内容は何度でも開閉できます。一度見た参照段階は記録に残りますが、表示を隠してから白紙で再現してください。「前回ミス」はN・W・Cなどの補修では許可される場合があります。</p>
     </div>
-    {reviewPrompt&&<div className="review-prompt-prep">
+    {actionable&&<div className="review-prompt-prep">
       <div className="review-prompt-prep-head"><div><span>GPT採点前に入力</span><strong>時間と参照状況をプロンプトへ反映</strong></div></div>
       <div className="review-prompt-inputs">
         <Field label="今回かかった時間（分）"><input type="number" min="0" value={reviewMinutes} onChange={event=>{lockContract();setReviewMinutes(event.target.value)}}/></Field>
@@ -458,7 +463,8 @@ function ReviewPlanDetails({item:rawItem,compact=false,resolved}:{item:Partial<R
         <Field label="実際に見た参照"><input value={`${reference.actual_reference_level}. ${referenceLabels[reference.actual_reference_level]}`} readOnly/></Field>
       </div>
       {usedReference&&<label className="after-hint-check"><input type="checkbox" checked={referenceClosedReproduction} onChange={event=>{setReferenceClosedReproduction(event.target.checked);rememberReferenceClosed(item.id,event.target.checked)}}/><span>表示を隠してから、該当部分を白紙で再現した</span></label>}
-      <button className="ghost small review-prompt-copy" onClick={async()=>{try{await lockContract();await navigator.clipboard.writeText(reviewPrompt);setPromptCopied(true);setTimeout(()=>setPromptCopied(false),1800)}catch(error){window.alert(error instanceof Error?error.message:"この復習課題は現在実行できません")}}}>{promptCopied?<Check size={14}/>:<Copy size={14}/>} {promptCopied?"復習採点プロンプトをコピーしました":"入力内容を含むGPT採点プロンプトをコピー"}</button>
+      {reviewPrompt?<button className="ghost small review-prompt-copy" onClick={async()=>{try{await lockContract();await navigator.clipboard.writeText(reviewPrompt);setPromptCopied(true);setTimeout(()=>setPromptCopied(false),1800)}catch(error){window.alert(error instanceof Error?error.message:"この復習課題は現在実行できません")}}}>{promptCopied?<Check size={14}/>:<Copy size={14}/>} {promptCopied?"復習採点プロンプトをコピーしました":"GPT採点プロンプトをコピー"}</button>:
+        <div className="review-consistency-warning" role="alert"><AlertTriangle size={16}/><span>GPT採点プロンプトを生成できません。採点契約を確認してください。</span></div>}
     </div>}
     {item.status==="done"&&<div className="post-review-summary"><span>復習後の確認</span>
       <p><b>前回ミス：</b>{item.previous_error_point||"記録なし"}</p>
@@ -595,6 +601,7 @@ function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a
       <section className="panel additional-study-panel">
         <div className="panel-title"><div><span className="eyebrow">OPTIONAL EXTRA</span><h3>追加学習候補</h3></div>
           <Badge tone="blue">残り最大 {data.today.remaining_learning_capacity_minutes}分</Badge></div>
+        <div className="optional-extra-capacity-note">今日の確定課題：{data.today.confirmed_plan_minutes}分 ・ 確定課題と今日処理可能な復習後の追加候補：最大{data.today.remaining_learning_capacity_minutes}分</div>
         <p>{data.today.active_remaining_minutes===0?"今日の必須・任意課題は完了しています。": "確定計画を変えず、残り時間で追加できます。"}候補は合格逆算プランナーと同じ優先順位から選び、追加するまで今日の予定には入りません。</p>
         <div className="additional-candidate-list">{data.today.additionalCandidates.map(candidate=><article key={candidate.candidateKey}>
           <div><strong>{candidate.task.title}</strong><span>{candidate.purposeLabel}・{candidate.minutes}分</span><small>{candidate.reason}</small></div>

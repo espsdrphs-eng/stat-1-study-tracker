@@ -220,3 +220,24 @@ test("stale one-line hint and truncated actions keep System status non-normal",(
   assert.equal(audit.counts.current_target_display_mismatch,1);
   assert.equal(audit.activeIssueCount>0,true);
 });
+
+test("planner audit detects duplicate problem tasks, window violations, and optional-before-urgent",()=>{
+  const generic={problem_id:"WB-7-A-07",title:"generic",kind:"score",reason:"score",mode:"skeleton",minutes:25,load:1,
+    triage:"must",checked:false};
+  const reviewTask={id:384,problem_id:"WB-7-A-07",title:"review",kind:"review",reason:"review",mode:"main_calc",
+    minutes:12,load:.4,triage:"must",checked:false,review_type:"main_calc_retry"};
+  const snapshot={date:"2026-08-14",task_ids:[],start_of_day_planned_minutes:37,initial_bucket:{},
+    initial_estimated_minutes:{},tasks:[generic],created_at:"2026-08-14T00:00:00Z"};
+  const summary={days:1,plan:[],totalMinutes:0,counts:{scoreBuilding:0,repair:0,maintenance:0,scan5:0,full:0,timed:0,
+    pastExam:0,chapter5:0,chapter7:0,chapter8:0},weeklyMinimumViolations:[],dailyCapacityViolations:0,
+    reviewSchedule:{repairBudgetMinutes:45,placements:[{reviewId:384,problemId:"WB-7-A-07",date:"2026-08-17",
+      latestDate:"2026-08-16",status:"within_window"}],capacityConflicts:[{reviewId:385,problemId:"WB-7-A-08",
+      earliestDate:"2026-08-13",preferredDate:"2026-08-14",latestDate:"2026-08-14",minutes:12,reason:"capacity"}]}};
+  const audit=runIntegrityAudit({attempts:[],reviews:[],today:"2026-08-14",todayPlanSnapshots:[snapshot],
+    currentTodayTasks:[generic,reviewTask],currentPlanSummary:summary,
+    additionalCandidates:[{candidateKey:"extra",source:"adaptive",priority:1,purposeLabel:"extra",reason:"extra",minutes:20,task:generic}]});
+  assert.equal(audit.counts.duplicate_problem_task,1);
+  assert.equal(audit.counts.review_window_violation,1);
+  assert.equal(audit.counts.overdue_starvation,1);
+  assert.equal(audit.counts.optional_extra_priority_violation,1);
+});

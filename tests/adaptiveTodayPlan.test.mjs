@@ -1,13 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {adaptivePlanDayToTasks} from "../src/adaptiveTodayPlan.ts";
+import {adaptivePlanDayToTasks,projectAdaptiveSnapshotTasks} from "../src/adaptiveTodayPlan.ts";
 
 const problem=(id)=>({
   id:1,problem_id:id,title:id,display_label:id,category:"A",chapter:4,problem_number:1,
   theme:"theme",canonical_problem_type:"type",canonical_keywords:[],strategy_rank:"A+"
 });
 
-test("正式日次計画は得点形成1件・補修最大1件・維持0～1件へ変換する",()=>{
+test("正式日次計画は得点形成・補修・維持を同じToday Task表現へ変換する",()=>{
   const contract={contractId:"review:9:1",contractVersion:"STAT1-CONTRACT-v2",contractHash:"hash",
     createdAt:"2026-08-01T00:00:00Z",problemId:"WB-4-A-02",sourceAttemptId:2,
     learningPurpose:"retrieval_check",learningStage:"maintenance",mode:"check",reviewScope:"check_only",
@@ -47,4 +47,27 @@ test("選択確認と同一論理課題は確定計画へ重複投入しない",
   const tasks=adaptivePlanDayToTasks({day,problems:[problem("WB-4-A-01")],reviews:[],today:"2026-08-04"});
   assert.equal(tasks.length,1);
   assert.equal(tasks[0].problem_id,"WB-4-A-01");
+});
+
+test("stale morning generic task is replaced by current eligible plan without mutating snapshot",()=>{
+  const saved={problem_id:"WB-7-A-07",title:"old",kind:"score",reason:"old",mode:"skeleton",minutes:25,load:1,
+    triage:"must",plan_origin:"adaptive_planner"};
+  const current={problem_id:"WB-7-A-08",title:"new",kind:"score",reason:"current",mode:"skeleton",minutes:25,load:1,
+    triage:"must",plan_origin:"adaptive_planner"};
+  const contract={contractId:"review:384:1",contractVersion:"STAT1-CONTRACT-v2",contractHash:"hash384",
+    createdAt:"2026-08-13",problemId:"WB-7-A-07",reviewId:384,sourceAttemptId:1,learningPurpose:"error_repair",
+    learningStage:"repair",mode:"main_calc",reviewScope:"main_calc_target",targetKind:"mathematical_patch",
+    targetedParts:["x"],gradedParts:[{id:"x",label:"x",cueLabel:"x",allowedErrorTypes:["W","none"],completionCriterionId:"x",
+      stableTargetKey:"target:WB-7-A-07:root:x"}],explicitlyOutOfScopePartIds:[],explicitlyOutOfScopeParts:[],
+    completionCriteria:[{id:"x",displayText:"x"}],hiddenAnswerKey:[],completionConditions:["x"],requiredEvidence:["x"],
+    allowedErrorTypes:["W"],requiresKEvidence:false,allowedReferenceLevel:0,estimatedMinutes:12,sheetType:"main_calc_sheet"};
+  const review={id:384,problem_id:"WB-7-A-07",due_date:"2026-08-15",earliest_date:"2026-08-14",latest_date:"2026-08-16",
+    interval_days:2,review_type:"main_calc_retry",status:"pending",generated_from_attempt_id:1,source_attempt_id:1,
+    learning_purpose:"error_repair",effective_mode:"main_calc",review_scope:"main_calc_target",sheet_type:"main_calc_sheet",
+    contract_id:contract.contractId,contract_hash:contract.contractHash,grading_contract:contract};
+  const snapshot=[structuredClone(saved)];
+  const result=projectAdaptiveSnapshotTasks({snapshotTasks:snapshot,generatedTasks:[current],reviews:[review],today:"2026-08-14"});
+  assert.equal(result.length,1);
+  assert.equal(result[0].problem_id,"WB-7-A-08");
+  assert.equal(snapshot[0].problem_id,"WB-7-A-07");
 });
