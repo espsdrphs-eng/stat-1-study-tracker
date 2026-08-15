@@ -1,4 +1,4 @@
-import type { AssessmentTiming, LearningPurpose } from "./types.ts";
+import type { AssessmentTiming, Attempt, LearningPurpose } from "./types.ts";
 import type { LearningPrescription } from "./learningPolicyResolver.ts";
 
 type ObjectiveRetentionEvidence={
@@ -18,6 +18,8 @@ export type CanonicalLearningLifecycleDecision=LearningEvaluationDecision&{
   lifecyclePhase:LearningPurpose;
   graduationEligible:boolean;
   nextTransition:LearningPurpose|"graduated"|"none";
+  nextReviewRequired:boolean;
+  plannerEligible:boolean;
   transition?:ReviewTransitionResult;
 };
 
@@ -101,7 +103,45 @@ export function resolveCanonicalLearningLifecycle(input:LearningEvaluationEviden
       input.learningPurpose==="error_repair"?"retrieval_check":
         input.learningPurpose==="retrieval_check"?"retrieval_check":"none"
   );
-  return {...evaluation,lifecyclePhase:input.learningPurpose,graduationEligible,nextTransition,transition};
+  return {...evaluation,lifecyclePhase:input.learningPurpose,graduationEligible,nextTransition,
+    nextReviewRequired:nextTransition!=="none"&&nextTransition!=="graduated",
+    plannerEligible:!evaluation.graduated,transition};
+}
+
+/**
+ * Rebuild the canonical lifecycle result from immutable Attempt evidence.
+ * This is intentionally independent of the stored mark so old rows with a
+ * provisional mark can converge to the same decision as preview/save.
+ */
+export function resolvePersistedAttemptLifecycle(attempt:Attempt):CanonicalLearningLifecycleDecision{
+  const rawErrors=(attempt.effective_error_types?.length?attempt.effective_error_types:
+    attempt.error_types?.length?attempt.error_types:[attempt.error_type||"none"])
+    .map(String).filter(error=>["K","W","N","C"].includes(error));
+  const learningPurpose=attempt.learning_purpose||
+    (attempt.generated_from_review_id?"error_repair":attempt.exam_score_eligible?"exam_performance":"integration_check");
+  const assessmentTiming=attempt.assessment_timing||
+    (attempt.generated_from_review_id?"delayed_retrieval":"independent_performance");
+  const decision=resolveCanonicalLearningLifecycle({
+    learningPurpose,assessmentTiming,result:attempt.review_outcome,
+    reviewOutcome:attempt.review_outcome,
+    actualReferenceLevel:Number(attempt.actual_reference_level??attempt.reference_level??0),
+    allowedReferenceLevel:Number(attempt.allowed_reference_level??0),hintUsed:!!attempt.hint_used,
+    referenceClosedReproduction:!!attempt.reference_closed_reproduction||!!attempt.after_hint_reproduced,
+    targetIssueResolved:attempt.target_issue_resolved,
+    minimumPassConditionMet:attempt.minimum_pass_condition_met,
+    errorTypes:rawErrors.length?rawErrors:["none"],unresolvedCarryover:attempt.unresolved_carryover,
+    gradedPartIds:attempt.graded_part_ids,gradedFindings:attempt.graded_findings,
+    requireGradedEvidence:!!attempt.generated_from_review_id||!!attempt.graded_part_ids?.length,
+    crossProblemEvidence:!!attempt.transfer_evidence,verifiedTransferTargetAvailable:false,
+  });
+  // Pre-contract history did not store lifecycle evidence. Preserve an explicit
+  // historical graduation mark only for those rows; modern rows never graduate
+  // from mark or score alone.
+  const legacyGraduation=attempt.mark==="◎"&&!attempt.learning_purpose&&!attempt.assessment_timing&&
+    !attempt.generated_from_review_id&&!attempt.graded_part_ids?.length;
+  return legacyGraduation?{...decision,reviewOutcome:"success",mark:"◎",graduated:true,
+    graduationEligible:true,nextTransition:"graduated",nextReviewRequired:false,plannerEligible:false,
+    reason:"legacy explicit graduation mark"}:decision;
 }
 
 export type ReviewTransitionInput={

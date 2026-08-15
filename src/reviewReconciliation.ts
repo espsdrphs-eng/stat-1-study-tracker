@@ -4,6 +4,7 @@ import type {
 import { resolveCanonicalProblemId } from "./examReadiness.ts";
 import {buildStableTargetIndex,type StableTargetIndex,withStableTargetKey} from "./stableTargetIdentity.ts";
 import {currentTargetPayloadMatches,withCurrentFindingPayload} from "./currentTargetPayload.ts";
+import {resolvePersistedAttemptLifecycle} from "./reviewTransition.ts";
 
 const ACTIVE_STATUSES=new Set(["pending","overdue"]);
 const STANDARD_PURPOSES=new Set(["error_repair","retrieval_check"]);
@@ -29,6 +30,7 @@ export type ProblemReconciliation={
   retentionCheckRequired:boolean;
   retentionSourceAttemptId?:number;
   graduated:boolean;
+  graduationAttemptId?:number;
   ambiguousReasons:string[];
   activeReviewTargetCount:number;
   distinctStableTargetCount:number;
@@ -157,14 +159,7 @@ function evidenceEvents(attempt:Attempt,catalog:Map<string,GradedPartContract>,s
 }
 
 function objectiveGraduation(attempt:Attempt){
-  const findings=attempt.graded_findings||[];
-  const noErrors=errorsFor(attempt).length===0;
-  return attempt.mark==="◎"||(
-    attempt.learning_purpose==="retrieval_check"&&attempt.assessment_timing==="delayed_retrieval"&&
-    Number(attempt.actual_reference_level??attempt.reference_level??0)===0&&!attempt.hint_used&&
-    attempt.minimum_pass_condition_met===true&&attempt.target_issue_resolved===true&&noErrors&&
-    findings.length>0&&findings.every(row=>row.resolved&&row.error_type==="none")
-  );
+  return resolvePersistedAttemptLifecycle(attempt).graduated;
 }
 
 function sameIds(left:Iterable<string>,right:Iterable<string>){
@@ -318,12 +313,13 @@ export function analyzeReviewReconciliation(args:{
       !!latestSuccessfulRepair&&(!oldestRepairSource||attemptAfter(latestSuccessfulRepair,oldestRepairSource));
     const activeRepairStableIds=repairs.flatMap(stableIdsForReview);
     const distinctActiveStableIds=new Set(activeRepairStableIds);
-    if(active.length||desiredIds.length||ambiguous.length)problems.push({problemId,
+    if(active.length||desiredIds.length||ambiguous.length||graduated)problems.push({problemId,
       activeRepairReviewIds:repairs.map(row=>row.id),activeDelayedReviewIds:delayed.map(row=>row.id),
       desiredRepairParts:desiredRows.map(row=>row.part),desiredRepairIdentityKeys:desiredIds,
       desiredRepairFindings:desiredRows.map(row=>({
         graded_part_id:row.part.id,error_type:row.errorType,evidence:row.evidence,resolved:false,
       })),desiredSourceAttemptId:desiredSource?.id,reviewsToSupersede:normalized,replacementRequired,graduated,
+      graduationAttemptId:graduated?latestGraduation?.id:undefined,
       retentionCheckRequired,retentionSourceAttemptId:retentionCheckRequired?latestSuccessfulRepair?.id:undefined,
       ambiguousReasons:[...new Set(ambiguous)],activeReviewTargetCount:repairs.reduce((sum,row)=>sum+partsFromContract(row).length,0),
       distinctStableTargetCount:distinctActiveStableIds.size,

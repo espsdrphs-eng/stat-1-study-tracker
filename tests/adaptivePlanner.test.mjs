@@ -184,6 +184,7 @@ test("150分設定で候補が十分ならfoundationのcore planを60〜90分に
   const firstWeek=plan.plan14.plan.slice(0,7);
   assert.equal(firstWeek.every(day=>day.totalMinutes>=60&&day.totalMinutes<=90),true);
   assert.equal(firstWeek.flatMap(day=>day.tasks).some(task=>task.problemId==="WB-2-A-01"),false);
+  assert.equal(plan.plan30.plan.flatMap(day=>day.tasks).some(task=>task.problemId==="WB-2-A-01"),false);
 });
 
 test("直近7日の実績不足を翌日の正式候補へ優先し、実績があれば重ねて強制しない",()=>{

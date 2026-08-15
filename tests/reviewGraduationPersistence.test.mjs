@@ -71,6 +71,7 @@ test("WB-2-A-24相当の客観成功はscoreに依存せず◎となり同一ret
   assert.equal((await db.reviews.get(reviewId)).status,"done");
   const saved=(await db.attempts.toArray()).find(row=>row.generated_from_review_id===reviewId);
   assert.equal(saved.mark,"◎");
+  assert.equal(saved.review_outcome,"success");
   assert.equal((await db.problems.get("WB-2-A-24")).completion_status,"completed");
   const active=(await db.reviews.where("problem_id").equals("WB-2-A-24").toArray()).filter(row=>
     ["pending","overdue"].includes(row.status)&&(row.grading_contract?.learningPurpose||row.learning_purpose)==="retrieval_check");

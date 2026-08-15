@@ -8,10 +8,11 @@ import { addCalendarDays } from "./reviewSchedulePolicy.ts";
 import { daysUntilExam } from "./studyProgress.ts";
 import { reviewExecutionState } from "./integrityEngine.ts";
 import { simulateThirtyDays } from "./learningSimulation.ts";
-import { isObjectiveDelayedRetrievalSuccess } from "./reviewTransition.ts";
+import { resolvePersistedAttemptLifecycle } from "./reviewTransition.ts";
 import { scheduleActiveReviews, type ScheduledReviewPlacement } from "./reviewScheduling.ts";
 
 type SlotTask=AdaptivePlanDay["tasks"][number];
+export const GRADUATED_SAME_PROBLEM_COOLDOWN_DAYS=45;
 const unique=<T,>(values:T[])=>[...new Set(values)];
 const attemptedDateMap=(attempts:Attempt[])=>{
   const map=new Map<string,string>();
@@ -157,13 +158,9 @@ function planDays(args:{
   const recentEligibleSuccesses=args.attempts.filter(attempt=>attempt.date>=addCalendarDays(args.startDate,-14)&&
     attempt.exam_score_eligible&&Number(attempt.score_numeric||0)>=70).length;
   const acceleratePast=recentEligibleSuccesses>=2;
-  const recentGraduatedProblems=new Set(args.attempts.filter(attempt=>attempt.date>=addCalendarDays(args.startDate,-14)&&
-    isObjectiveDelayedRetrievalSuccess({assessmentTiming:attempt.assessment_timing,result:
-      (attempt.error_types||[]).some(error=>["K","W","N","C"].includes(String(error)))?"partial":"success",
-      actualReferenceLevel:attempt.actual_reference_level,hintUsed:attempt.hint_used,
-      targetIssueResolved:attempt.target_issue_resolved,minimumPassConditionMet:attempt.minimum_pass_condition_met,
-      errorTypes:attempt.error_types,unresolvedCarryover:attempt.unresolved_carryover,
-      gradedPartIds:attempt.graded_part_ids,gradedFindings:attempt.graded_findings})
+  const recentGraduatedProblems=new Set(args.attempts.filter(attempt=>
+    attempt.date>=addCalendarDays(args.startDate,-GRADUATED_SAME_PROBLEM_COOLDOWN_DAYS)&&
+    resolvePersistedAttemptLifecycle(attempt).graduated
   ).map(attempt=>attempt.problem_id));
   const actualAtStart=weeklyActual({startDate:args.startDate,attempts:args.attempts,
     pastSessions:args.pastSessions,problems:args.problems});

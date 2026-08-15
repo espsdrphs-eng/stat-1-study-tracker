@@ -336,7 +336,7 @@ export async function createDiagnosticPack():Promise<DiagnosticPackResult>{
   const snapshotRows=metaRows.filter(row=>row.key.startsWith("today-plan-snapshot:"));
   const todayPlanSnapshots=snapshotRows.map(parseSnapshot)
     .filter((snapshot):snapshot is TodayPlanSnapshot=>Boolean(snapshot&&Array.isArray((snapshot as TodayPlanSnapshot).tasks)));
-  const systemIntegrity=runIntegrityAudit({attempts,reviews,aliases,today,todayPlanSnapshots,validCrossTargetReviewIds});
+  const systemIntegrity=runIntegrityAudit({attempts,reviews,problems,aliases,today,todayPlanSnapshots,validCrossTargetReviewIds});
   const consistency={...baseConsistency,systemIntegrity,legacyKPolicy:{invalid_legacy_k_count:legacyK.invalidLegacyKCount,
     needs_review_count:legacyK.needsReviewCount,superseded_task_count:legacyK.supersededTaskCount,
     resolved_task_count:legacyK.resolvedTaskCount,classifications:legacyK.classifications,taskActions:legacyK.taskActions},
@@ -396,7 +396,7 @@ export async function createDiagnosticPack():Promise<DiagnosticPackResult>{
     completedMinutes,activeRemainingMinutes:projectedToday?.timeSummary.activeRemainingMinutes||0,
     currentTasks:projectedToday?.tasks||formalTodayTasks,shadow:adaptiveShadow,
     urgentReviewBlocked:adaptiveShadow.plan14.reviewSchedule.capacityConflicts.some(row=>row.preferredDate<=today||row.latestDate<=today)});
-  consistency.systemIntegrity=runIntegrityAudit({attempts,reviews,aliases,today,todayPlanSnapshots,validCrossTargetReviewIds,
+  consistency.systemIntegrity=runIntegrityAudit({attempts,reviews,problems,aliases,today,todayPlanSnapshots,validCrossTargetReviewIds,
     currentTodayTasks:projectedToday?.tasks||formalTodayTasks,currentNextTask:projectedToday?.currentTask,
     currentPlanSummary:adaptiveShadow.plan14,additionalCandidates:additional.candidates,eligibleTodayTasks:formalTodayTasks});
   const {legacy30:_legacy30,comparisonReasons:_legacyComparison,...formalAdaptiveAudit}=adaptiveShadow;

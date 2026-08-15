@@ -1,4 +1,4 @@
-import type { AdditionalStudyCandidate, AdaptivePlanSummary, Attempt, GradingContractSnapshot, ProblemAlias, Review, Task, TodayPlanSnapshot } from "./types.ts";
+import type { AdditionalStudyCandidate, AdaptivePlanSummary, Attempt, GradingContractSnapshot, Problem, ProblemAlias, Review, Task, TodayPlanSnapshot } from "./types.ts";
 import { resolveCanonicalProblemId } from "./examReadiness.ts";
 import { addCalendarDays, resolveReviewSchedule } from "./reviewSchedulePolicy.ts";
 import { isActionableReview, validateGradingContract } from "./gradingContract.ts";
@@ -7,6 +7,7 @@ import {buildStableTargetIndex,isValidStableTargetKey} from "./stableTargetIdent
 import {currentTargetDisplay,currentTargetLabels} from "./currentTargetPayload.ts";
 import {projectTodayTaskChecked,selectNextCurrentTodayTask} from "./todayTaskProjection.ts";
 import {buildReviewGradingPrompt} from "./gradingPrompt.ts";
+import {resolvePersistedAttemptLifecycle} from "./reviewTransition.ts";
 
 export const ACTIVE_REVIEW_STATUSES = new Set(["pending", "overdue"]);
 
@@ -171,7 +172,8 @@ export type IntegrityCategory =
   | "stale_target_payload" | "current_target_display_mismatch"
   | "today_task_completion_mismatch" | "inactive_review_current_task" | "today_next_action_mismatch"
   | "duplicate_problem_task" | "current_planner_eligibility_mismatch" | "review_window_violation"
-  | "overdue_starvation" | "optional_extra_priority_violation" | "actionable_review_prompt_missing";
+  | "overdue_starvation" | "optional_extra_priority_violation" | "actionable_review_prompt_missing"
+  | "graduated_mark_mismatch" | "graduated_but_rescheduled" | "lifecycle_status_mismatch";
 
 export type IntegrityIssue = {
   category: IntegrityCategory;
@@ -194,6 +196,7 @@ export type IntegrityAudit = {
 export function runIntegrityAudit(args: {
   attempts: Attempt[];
   reviews: Review[];
+  problems?: Problem[];
   aliases?: ProblemAlias[];
   today: string;
   todayPlanSnapshots?: TodayPlanSnapshot[];
@@ -205,7 +208,7 @@ export function runIntegrityAudit(args: {
   additionalCandidates?:AdditionalStudyCandidate[];
   eligibleTodayTasks?:Task[];
 }): IntegrityAudit {
-  const { attempts, reviews, aliases = [], today, todayPlanSnapshots = [], validCrossTargetReviewIds = [],
+  const { attempts, reviews, problems = [], aliases = [], today, todayPlanSnapshots = [], validCrossTargetReviewIds = [],
     currentTodayTasks, currentNextTask, currentPlanSummary, additionalCandidates=[],eligibleTodayTasks } = args;
   const validCrossTarget=new Set(validCrossTargetReviewIds);
   const issues: IntegrityIssue[] = [];
@@ -214,6 +217,37 @@ export function runIntegrityAudit(args: {
   const active = reviews.filter((row) => ACTIVE_REVIEW_STATUSES.has(row.status));
   const reconciliation=analyzeReviewReconciliation({attempts,reviews,aliases,today,todayPlanSnapshots});
   const stableTargets=buildStableTargetIndex({attempts,reviews,aliases});
+  const problemById=new Map(problems.map(problem=>[resolveCanonicalProblemId(problem.problem_id,aliases),problem]));
+
+  for(const state of reconciliation.problems.filter(row=>row.graduated&&row.graduationAttemptId)){
+    const attempt=attemptsById.get(state.graduationAttemptId!);
+    if(!attempt)continue;
+    const lifecycle=resolvePersistedAttemptLifecycle(attempt);
+    if(lifecycle.graduated&&attempt.mark!==lifecycle.mark)issues.push({
+      category:"graduated_mark_mismatch",severity:"active",attemptIds:[attempt.id],
+      detail:`${state.problemId} graduated at Attempt ${attempt.id} but mark is ${attempt.mark}`,
+      repairable:true,
+    });
+    const problem=problemById.get(state.problemId);
+    if(problem&&problem.completion_status!=="completed")issues.push({
+      category:"lifecycle_status_mismatch",severity:"active",attemptIds:[attempt.id],
+      detail:`${state.problemId} is graduated but completion_status is ${problem.completion_status}`,
+      repairable:true,
+    });
+    const cooldownEnd=addCalendarDays(attempt.date,45);
+    const pending=active.filter(review=>resolveCanonicalProblemId(review.problem_id,aliases)===state.problemId&&
+      ["error_repair","retrieval_check"].includes(String(review.grading_contract?.learningPurpose||review.learning_purpose||"")));
+    const currentGeneric=(currentTodayTasks||[]).filter(task=>!task.checked&&!task.review_type&&
+      resolveCanonicalProblemId(task.problem_id,aliases)===state.problemId&&today<=cooldownEnd);
+    const plannedGeneric=(currentPlanSummary?.plan||[]).flatMap(day=>day.date<=cooldownEnd?day.tasks:[])
+      .filter(task=>task.problemId===state.problemId&&task.slot==="score_building"&&task.purpose!=="transfer_check");
+    if(pending.length||currentGeneric.length||plannedGeneric.length)issues.push({
+      category:"graduated_but_rescheduled",severity:"active",attemptIds:[attempt.id],
+      reviewIds:pending.map(review=>review.id),
+      detail:`${state.problemId} graduated but has ${pending.length} normal Reviews and ${currentGeneric.length+plannedGeneric.length} same-problem tasks inside cooldown`,
+      repairable:pending.length>0,
+    });
+  }
 
   for (const duplicate of classifyExactDuplicateAttempts(attempts)) {
     const classified = attemptsById.get(duplicate.duplicateAttemptId)?.duplicate_of_attempt_id === duplicate.canonicalAttemptId;
@@ -497,6 +531,7 @@ export function runIntegrityAudit(args: {
     "today_task_completion_mismatch", "inactive_review_current_task", "today_next_action_mismatch",
     "duplicate_problem_task", "current_planner_eligibility_mismatch", "review_window_violation",
     "overdue_starvation", "optional_extra_priority_violation", "actionable_review_prompt_missing",
+    "graduated_mark_mismatch", "graduated_but_rescheduled", "lifecycle_status_mismatch",
   ];
   const counts = Object.fromEntries(categories.map((category) =>
     [category, issues.filter((issue) => issue.category === category).length])) as Record<IntegrityCategory, number>;

@@ -19,7 +19,7 @@ import { finalizeStudyUpdateForSave } from "./studyCycle.ts";
 import { LEARNING_POLICY_VERSION, resolveLearningPolicy } from "./learningPolicyResolver.ts";
 import { quotaCandidatesWithinCapacity, taskDraftFromPrescription, weeklySoftQuota } from "./taskScheduler.ts";
 import { examScoreEligibility, taskScoreForAttempt } from "./scoreEligibility.ts";
-import { resolveCanonicalLearningLifecycle } from "./reviewTransition.ts";
+import { resolveCanonicalLearningLifecycle, resolvePersistedAttemptLifecycle } from "./reviewTransition.ts";
 import { projectStudyUpdateLifecycle } from "./studyUpdateLifecycle.ts";
 import { analyzeLegacyKReorganization } from "./legacyKRepair.ts";
 import { classifyKPolicyValidity, excludeLegacyKFromPlanning, planningErrorsForSource } from "./legacyKPolicy.ts";
@@ -734,6 +734,7 @@ async function addOrReplaceReview(review:ReviewInsert){
 type ReconcileApplySummary={
   audit:ReconciliationAudit;reviewsSuperseded:number;reviewsReplaced:number;todayActionsUpdated:number;
   ambiguousProblems:number;stableTargetsResolved:number;stableGenerationsUnified:number;duplicateStableTargets:number;
+  lifecycleAttemptsCorrected:number;problemStatusesCorrected:number;
   details:Array<{problemId:string;reviewIds:number[];sourceAttemptId?:number;reason:string;
     beforeTargetCount:number;distinctStableTargetCount:number;duplicateGenerationCount:number;afterTargetCount:number}>;
 };
@@ -826,7 +827,21 @@ async function reconcileProblemLearningState(problemId?:string,preview=false):Pr
     todayActionsUpdated:audit.staleTodayActions,ambiguousProblems:audit.ambiguousProblems,
     stableTargetsResolved:audit.stableIdentityTargetCount,
     stableGenerationsUnified:audit.stableIdentityGenerationsUnified,
-    duplicateStableTargets:audit.duplicateStableTargets,details};
+    duplicateStableTargets:audit.duplicateStableTargets,
+    lifecycleAttemptsCorrected:plans.reduce((sum,plan)=>{
+      const attempt=plan?.graduationAttemptId?attempts.find(row=>row.id===plan.graduationAttemptId):undefined;
+      if(!attempt)return sum;
+      const lifecycle=resolvePersistedAttemptLifecycle(attempt);
+      return sum+(lifecycle.graduated&&(attempt.mark!==lifecycle.mark||attempt.review_outcome!==lifecycle.reviewOutcome)?1:0);
+    },0),
+    problemStatusesCorrected:plans.reduce((sum,plan)=>{
+      if(!plan)return sum;
+      const problem=problems.find(row=>resolveCanonicalProblemId(row.problem_id,aliases)===plan.problemId);
+      const expected=plan.graduated?"completed":
+        (plan.activeRepairReviewIds.length||plan.activeDelayedReviewIds.length||plan.replacementRequired||plan.retentionCheckRequired)
+          ?"review_pending":undefined;
+      return sum+(expected&&problem?.completion_status!==expected?1:0);
+    },0),details};
   if(preview)return summary;
   const reviewMap=new Map(reviews.map(row=>[row.id,row]));
   const problemMap=new Map(problems.map(row=>[resolveCanonicalProblemId(row.problem_id,aliases),row]));
@@ -834,6 +849,27 @@ async function reconcileProblemLearningState(problemId?:string,preview=false):Pr
   const now=new Date().toISOString();
   for(const plan of plans){
     if(!plan||plan.ambiguousReasons.length)continue;
+    if(plan.graduationAttemptId){
+      const graduationAttempt=attemptMap.get(plan.graduationAttemptId);
+      if(graduationAttempt){
+        const lifecycle=resolvePersistedAttemptLifecycle(graduationAttempt);
+        if(lifecycle.graduated&&(graduationAttempt.mark!==lifecycle.mark||
+          graduationAttempt.review_outcome!==lifecycle.reviewOutcome)){
+          await db.attempts.update(graduationAttempt.id,{mark:lifecycle.mark,
+            review_outcome:lifecycle.reviewOutcome,retention_eligible:true,
+            auto_corrected:true,
+            correction_fields:[...new Set([...(graduationAttempt.correction_fields||[]),"mark","review_outcome"])],
+            correction_reason:[graduationAttempt.correction_reason,
+              "canonical lifecycle reconciliation: delayed retrieval graduation"].filter(Boolean).join(" / ")});
+        }
+      }
+    }
+    const problemForStatus=problemMap.get(plan.problemId);
+    const expectedStatus=plan.graduated?"completed":
+      (plan.activeRepairReviewIds.length||plan.activeDelayedReviewIds.length||plan.replacementRequired||plan.retentionCheckRequired)
+        ?"review_pending":undefined;
+    if(problemForStatus&&expectedStatus&&problemForStatus.completion_status!==expectedStatus)
+      await db.problems.update(problemForStatus.problem_id,{completion_status:expectedStatus});
     for(const action of plan.reviewsToSupersede){
       const old=reviewMap.get(action.reviewId);
       if(!old||!ACTIVE_REVIEW_STATUSES.has(old.status))continue;
@@ -1037,6 +1073,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     auto_imported:!!input.auto_imported,import_confidence:input.import_confidence??(input.auto_imported?.8:1),
     grading_confidence:input.grading_confidence??null,rubric_version:input.rubric_version||"",
     uncertain_points:input.uncertain_points||[],generated_from_review_id:input.generated_from_review_id,
+    review_outcome:completionResult,
     is_review_attempt:!!input.generated_from_review_id,evaluation_scope:input.evaluation_scope||"",
     graded_parts:input.graded_parts||[],graded_part_ids:input.graded_part_ids||[],
     graded_findings:input.graded_findings||[],assumed_correct_parts:input.assumed_correct_parts||[],
@@ -1387,6 +1424,7 @@ async function completeReview(id:number,body:Record<string,unknown>){
     graded_part_ids:review.grading_contract?.gradedParts.map(part=>part.id)||[],graded_findings:objectiveFindings,
     assumed_correct_parts:[],unresolved_carryover:successful?[]:source.unresolved_carryover||[],
     auto_imported:false,import_confidence:1,grading_confidence:1,rubric_version:"REVIEW-SELF-v1",
+    review_outcome:evaluation.reviewOutcome,
     uncertain_points:[],generated_from_review_id:id,is_review_attempt:true,hint_used:outcome.hint_used,
     hint_level:String(body.hint_level|| (outcome.hint_used?"unspecified":"none")),
     after_hint_reproduced:referenceClosed,reference_closed_reproduction:referenceClosed,
@@ -2794,7 +2832,7 @@ async function bootstrap():Promise<Bootstrap>{
     activeRemainingMinutes,currentTasks:tasks,shadow:plannerShadow,urgentReviewBlocked
   });
   const integrityHealth=runIntegrityAudit({
-    attempts,reviews:rawReviews,aliases:problemAliases,today,todayPlanSnapshots:[snapshot],validCrossTargetReviewIds,
+    attempts,reviews:rawReviews,problems,aliases:problemAliases,today,todayPlanSnapshots:[snapshot],validCrossTargetReviewIds,
     currentTodayTasks:tasks,currentNextTask:currentToday.currentTask,currentPlanSummary:plannerShadow.plan14,
     additionalCandidates:additionalStudy.candidates,eligibleTodayTasks:generatedTriage.tasks,
   });
@@ -2943,7 +2981,7 @@ async function integrityAudit():Promise<IntegrityAudit>{
   // Bootstrap owns the canonical current projection. The persisted snapshot remains
   // immutable history and must not be audited as if its checked flags were current.
   const current=await bootstrap();
-  return runIntegrityAudit({attempts,reviews,aliases,today:todayString(),todayPlanSnapshots:snapshots,validCrossTargetReviewIds,
+  return runIntegrityAudit({attempts,reviews,problems,aliases,today:todayString(),todayPlanSnapshots:snapshots,validCrossTargetReviewIds,
     currentTodayTasks:current.today.tasks,currentNextTask:current.today.currentTask,
     currentPlanSummary:current.adaptiveLearning.plannerShadow.plan14,
     additionalCandidates:current.today.additionalCandidates,
@@ -2964,12 +3002,15 @@ async function repairIntegrity(preview=false){
     reviewsReplaced:reconciliationPreview.reviewsReplaced,
     todayActionsUpdated:reconciliationPreview.todayActionsUpdated,
     ambiguousProblems:reconciliationPreview.ambiguousProblems,
+    lifecycleAttemptsCorrected:reconciliationPreview.lifecycleAttemptsCorrected,
+    problemStatusesCorrected:reconciliationPreview.problemStatusesCorrected,
   },stableIdentity:{stableTargetsResolved:reconciliationPreview.stableTargetsResolved,
     stableGenerationsUnified:reconciliationPreview.stableGenerationsUnified,
     duplicateStableTargets:reconciliationPreview.duplicateStableTargets}};
   const now=new Date().toISOString(),today=todayString();
   const changes={duplicateAttempts:0,reviewsSuperseded:0,contractsRebound:0,datesCorrected:0,
-    staleReviewsSuperseded:0,reviewsReplaced:0,todayActionsUpdated:0,ambiguousProblems:0};
+    staleReviewsSuperseded:0,reviewsReplaced:0,todayActionsUpdated:0,ambiguousProblems:0,
+    lifecycleAttemptsCorrected:0,problemStatusesCorrected:0};
   await db.transaction("rw",[db.attempts,db.reviews,db.problemAliases,db.problems,db.meta],async()=>{
     const [attempts,reviews,aliases,problems,relations]=await Promise.all([
       db.attempts.toArray(),db.reviews.toArray(),db.problemAliases.toArray(),db.problems.toArray(),storedProblemRelations()
@@ -3103,6 +3144,8 @@ async function repairIntegrity(preview=false){
     changes.reviewsReplaced=reconciled.reviewsReplaced;
     changes.todayActionsUpdated=reconciled.todayActionsUpdated;
     changes.ambiguousProblems=reconciled.ambiguousProblems;
+    changes.lifecycleAttemptsCorrected=reconciled.lifecycleAttemptsCorrected;
+    changes.problemStatusesCorrected=reconciled.problemStatusesCorrected;
   });
   const after=await integrityAudit();
   const summary={...after,repairedAt:now};

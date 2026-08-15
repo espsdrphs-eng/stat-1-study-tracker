@@ -122,6 +122,7 @@ export type Attempt = {
   secondary_error_type?:string; ignored_parts?:string[]; auto_imported?:boolean;
   import_confidence?:number; grading_confidence?:number|null; rubric_version?:string;
   uncertain_points?:string[]; generated_from_review_id?:number; is_review_attempt?:boolean;
+  review_outcome?:"success"|"partial"|"failed";
   evaluation_scope?:string; graded_parts?:string[]; graded_part_ids?:string[];
   graded_findings?:GradedFinding[]; assumed_correct_parts?:string[];
   unresolved_carryover?:string[];

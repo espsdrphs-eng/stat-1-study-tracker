@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {buildGradingContractSnapshot} from "../src/gradingContract.ts";
 import {projectStudyUpdateLifecycle} from "../src/studyUpdateLifecycle.ts";
+import {resolvePersistedAttemptLifecycle} from "../src/reviewTransition.ts";
 
 const problem={id:619,problem_id:"WB-6-A-19",source_type:"whitebook",category:"A",chapter:6,problem_number:19,
   title:"fixture",display_label:"fixture",theme:"fixture",canonical_problem_type:"fixture",canonical_keywords:[],
@@ -60,4 +61,24 @@ test("Review 378相当のretrieval成功だけが◎で卒業する",()=>{
   assert.equal(result.lifecycle.graduationEligible,true);
   assert.equal(result.lifecycle.graduated,true);
   assert.equal(result.lifecycle.nextTransition,"graduated");
+});
+
+test("persisted Attempt 186/167 evidence derives one canonical graduation result",()=>{
+  for(const id of [186,167]){
+    const row={...sourceAttempt,id,problem_id:id===186?"WB-6-A-20":"WB-6-A-29",
+      generated_from_review_id:id===186?308:343,learning_purpose:"retrieval_check",
+      learning_stage:"maintenance",assessment_timing:"delayed_retrieval",retention_eligible:true,
+      mark:"\u25cb",error_type:"none",error_types:["none"],effective_error_types:["none"],
+      target_issue_resolved:true,minimum_pass_condition_met:true,actual_reference_level:0,
+      allowed_reference_level:0,hint_used:false,reference_closed_reproduction:true,
+      unresolved_carryover:[],graded_part_ids:["a","b","c","d"],
+      graded_findings:["a","b","c","d"].map(graded_part_id=>({graded_part_id,error_type:"none",evidence:"ok",resolved:true}))};
+    const lifecycle=resolvePersistedAttemptLifecycle(row);
+    assert.equal(lifecycle.reviewOutcome,"success");
+    assert.equal(lifecycle.graduationEligible,true);
+    assert.equal(lifecycle.graduated,true);
+    assert.equal(lifecycle.mark,"\u25ce");
+    assert.equal(lifecycle.nextReviewRequired,false);
+    assert.equal(lifecycle.plannerEligible,false);
+  }
 });
