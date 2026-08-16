@@ -86,6 +86,9 @@ This document is the implementation-level source of truth for data integrity. Le
   and postponed time are calculated by the shared Today time summary.
 - Formal planner diagnostics declare `adaptive` as their source; legacy comparisons never contribute to formal
   plan counts, phase quotas, or diagnostic-pack planner totals.
+- Coach diagnoses are an append-only interpretation layer stored separately from Attempt, Review, problem master,
+  and concept evidence facts. A diagnosis records its Attempt cutoff; newer eligible Attempts make it visibly stale
+  until an explicit GPT review is previewed and confirmed. Coach output never schedules or rewrites a Today Plan.
 
 Any code path that writes Attempts or Reviews must preserve these invariants. A new one-off repair must not be added
 when the condition belongs in `runIntegrityAudit` and the unified repair transaction.

@@ -40,7 +40,7 @@ import {
   orderCorePastExamYears, parseExamReferencePack, reconcileExamReferencePack,
   type ExamReferencePackData, type ReferencePackReconciliation, type ReferencePackValidation
 } from "./examReferencePack";
-import type { AnswerIndexEntry, Attempt, Bootstrap, PastExamExposure, PastExamSessionKind, PastSession, Problem, ProblemAlias, Review, ScanQuestion, StudyUpdate, Task } from "./types";
+import type { AnswerIndexEntry, Attempt, Bootstrap, CoachDiagnosis, PastExamExposure, PastExamSessionKind, PastSession, Problem, ProblemAlias, Review, ScanQuestion, StudyUpdate, Task } from "./types";
 
 type Page = "dashboard"|"today"|"problems"|"attempt"|"import"|"reviews"|"weak"|"past"|"sheets"|"settings";
 const pageTitles:Record<Page,string> = {
@@ -210,6 +210,13 @@ function DashboardView({data,go,select}:{data:Bootstrap;go:(p:Page)=>void;select
         <p>{nextTask?.reason||(gradingPending?"解答済みの問題をGPTで採点し、結果を貼り付けてください。":"記録を振り返り、次のロードマップを確認しましょう。")}</p></div>
       <div className="hero-actions"><button className="primary" onClick={()=>go(!nextTask&&gradingPending?"import":"today")}>{!nextTask&&gradingPending?<ClipboardPaste size={18}/>:<Play size={18}/>} {!nextTask&&gradingPending?"GPT採点を取り込む":"今日の課題を見る"}</button>
         {nextProblem&&<button className="ghost" onClick={()=>select(nextProblem)}><BookOpen size={18}/>この問題を開く</button>}</div>
+    </section>
+    <section className="panel dashboard-coach-card">
+      <div><span className="eyebrow">LEARNING COACH</span><h3>本番レベル {data.coach.display.level.value} / 5</h3>
+        <p>{data.coach.display.level.passOutlook}・信頼度 {data.coach.display.level.confidence==="high"?"高":data.coach.display.level.confidence==="medium"?"中":"低"}{data.coach.source==="local_provisional"?"（自動暫定）":""}</p></div>
+      <div><span>最大ボトルネック</span><strong>{data.coach.display.primaryBottleneck.title}</strong>
+        {data.coach.stale&&<small>前回診断後に新しい採点 {data.coach.newAttemptCount}件</small>}</div>
+      <button className="ghost" onClick={()=>go("weak")}>学習コーチを開く<ChevronRight size={15}/></button>
     </section>
     {data.today.warning&&<div className="warning"><AlertTriangle/><div><strong>予定時間を調整してください</strong><p>{data.today.warning}</p></div></div>}
     <section className="panel readiness-panel">
@@ -1019,6 +1026,48 @@ function ConceptWeaknessPanel({data}:{data:Bootstrap}){
       </article>)}</div>:<Empty>独立した失敗証拠はまだありません。証拠不足は「苦手」ではなく未確認として扱います</Empty>}
   </section>;
 }
+const coachConfidenceText=(value:string)=>value==="high"?"高":value==="medium"?"中":"低";
+function CoachPanel({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean}){
+  const coach=data.coach,diagnosis=coach.display;
+  const [copied,setCopied]=useState(false),[text,setText]=useState(""),[error,setError]=useState("");
+  const [preview,setPreview]=useState<{next:CoachDiagnosis;diff:{level:string;bottleneck:{before:string;after:string};nextActions:{before:string[];after:string[]}}}|null>(null);
+  const copy=async()=>{await navigator.clipboard.writeText(coach.prompt);setCopied(true);setTimeout(()=>setCopied(false),1800)};
+  const parse=async()=>{setError("");try{setPreview(await post("/api/coach/preview",{text}))}catch(reason){setError(reason instanceof Error?reason.message:String(reason))}};
+  const save=()=>{if(!preview)return;setPreview(null);run(()=>post("/api/coach/save",{text}),"学習コーチ診断を履歴へ保存しました")};
+  return <>
+    <section className="coach-hero">
+      <div className="coach-level"><span>本番レベル</span><strong>{diagnosis.level.value}<small>/ 5</small></strong><b>{diagnosis.level.passOutlook}</b></div>
+      <div className="coach-current"><div className="coach-meta"><Badge tone={diagnosis.level.confidence==="high"?"green":diagnosis.level.confidence==="medium"?"orange":""}>信頼度 {coachConfidenceText(diagnosis.level.confidence)}</Badge>
+        <span>最終レビュー：{coach.lastReviewedAt?coach.lastReviewedAt.slice(0,10):"GPTレビュー未実施"}</span>
+        {coach.source==="local_provisional"&&<Badge>自動暫定診断</Badge>}</div>
+        <h2>{diagnosis.level.label}</h2><p>{diagnosis.level.rationale}</p>
+        {coach.stale&&<div className="coach-stale"><AlertTriangle size={17}/><strong>前回診断後に新しい採点 {coach.newAttemptCount}件・再レビュー推奨</strong></div>}
+      </div>
+    </section>
+    <section className="coach-summary-grid">
+      <article className="panel coach-bottleneck"><span className="eyebrow">PRIMARY BOTTLENECK</span><h3>最大ボトルネック</h3><strong>{diagnosis.primaryBottleneck.title}</strong>
+        <p>{diagnosis.primaryBottleneck.explanation}</p><small>{diagnosis.primaryBottleneck.effectOnExam}</small>
+        {!!diagnosis.primaryBottleneck.evidenceProblemIds.length&&<div className="coach-evidence-ids">根拠：{diagnosis.primaryBottleneck.evidenceProblemIds.join(" / ")}</div>}</article>
+      <article className="panel"><span className="eyebrow">NEXT ACTIONS</span><h3>次に鍛えること</h3><div className="coach-list">{diagnosis.nextActions.length?diagnosis.nextActions.map((row,index)=><div key={`${row.title}-${index}`}><b>{index+1}</b><span><strong>{row.title}</strong><small>{row.practiceMethod}</small><em>成功条件：{row.successCondition}</em></span></div>):<p>GPTレビューで具体化してください。</p>}</div></article>
+      <article className="panel"><span className="eyebrow">IMPROVEMENTS</span><h3>最近改善したこと</h3><CoachFactList rows={diagnosis.improvements}/></article>
+      <article className="panel"><span className="eyebrow">STRENGTHS</span><h3>現在の強み</h3><CoachFactList rows={diagnosis.strengths}/></article>
+      <article className="panel"><span className="eyebrow">UNKNOWNS</span><h3>まだ判断できないこと</h3><div className="coach-fact-list">{diagnosis.unknowns.length?diagnosis.unknowns.map((row,index)=><div key={`${row.title}-${index}`}><strong>{row.title}</strong><span>必要な証拠：{row.evidenceNeeded}</span></div>):<p>大きな未確認項目はありません。</p>}</div></article>
+    </section>
+    <section className="panel coach-review-panel">
+      <div className="panel-title"><div><span className="eyebrow">GPT COACH REVIEW</span><h3>GPTで現在地をレビュー</h3></div><Badge>API不使用</Badge></div>
+      <p>代表Attempt・concept evidence・本番系指標だけをまとめた入力済みプロンプトです。raw履歴や計画は変更せず、保存されるのはコーチ診断だけです。</p>
+      <div className="button-row"><button className="primary" onClick={copy}><Copy size={16}/>{copied?"コピーしました":"入力済みGPTプロンプトをコピー"}</button></div>
+      <details><summary>GPTのcoach_updateを取り込む</summary><textarea className="paste-area coach-paste" value={text} onChange={event=>setText(event.target.value)} placeholder="GPTが返したcoach_update YAMLを貼り付け"/>
+        <button className="secondary" disabled={busy||!text.trim()} onClick={parse}>差分をプレビュー</button>{error&&<p className="field-error">{error}</p>}</details>
+      {!!coach.history.length&&<details><summary>過去のコーチ診断（{coach.history.length}件）</summary><div className="coach-history">{coach.history.map((row,index)=><div key={`${row.reviewedAt}-${index}`}><strong>{row.reviewedAt.slice(0,10)}・LEVEL {row.level.value}</strong><span>{row.primaryBottleneck.title}</span></div>)}</div></details>}
+    </section>
+    {preview&&<Modal title="コーチ診断の差分確認" close={()=>setPreview(null)}><div className="coach-preview"><dl><dt>LEVEL</dt><dd>{preview.diff.level}</dd><dt>最大ボトルネック（旧）</dt><dd>{preview.diff.bottleneck.before}</dd><dt>最大ボトルネック（新）</dt><dd>{preview.diff.bottleneck.after}</dd><dt>次の課題（新）</dt><dd>{preview.diff.nextActions.after.join("／")||"なし"}</dd></dl>
+      <p>Attempt・Review・problem masterは変更しません。この診断を履歴へ追加します。</p><div className="form-actions"><button className="ghost" onClick={()=>setPreview(null)}>キャンセル</button><button className="primary" disabled={busy} onClick={save}>確認して保存</button></div></div></Modal>}
+  </>;
+}
+function CoachFactList({rows}:{rows:Array<{title:string;evidence:string}>}){
+  return <div className="coach-fact-list">{rows.length?rows.slice(0,3).map((row,index)=><div key={`${row.title}-${index}`}><strong>{row.title}</strong><span>{row.evidence}</span></div>):<p>確認できる証拠がまだありません。</p>}</div>;
+}
 function WeakView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean}) {
   const [selected,setSelected]=useState<string[]>([]);
   const [copied,setCopied]=useState(false);
@@ -1054,8 +1103,9 @@ function WeakView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:
     if(!window.confirm(`${attempt.problem_id}（${attempt.date}）の採点データを削除します。関連する復習予定と弱点傾向データも削除されます。`))return;
     run(()=>post(`/api/attempts/${attempt.id}/delete`,{}),"採点データと関連する分析・復習予定を削除しました");
   };
-  if(!trend.attemptCount) return <><ConceptWeaknessPanel data={data}/><section className="weak-trend-hero"><div><span className="eyebrow">WEAKNESS TRENDS</span><h2>GPT採点が集まると、苦手の傾向が見えてきます</h2><p>この画面はK/W/N/Cが付いた採点だけから、繰り返すミスを探します。ミスなしの採点は学習履歴には残りますが、弱点グラフには加算しません。</p></div></section><section className="panel weak-empty-explanation">{trend.totalAttemptCount?<><Check size={28}/><h3>採点は{trend.totalAttemptCount}件ありますが、弱点として数えるミスは0件です</h3><p>現在の採点はすべて「none（ミスなし）」です。K/W/N/Cが付いた結果を保存すると、テーマ別・分類別・週別のグラフが表示されます。</p></>:<Empty>まだ採点記録がありません。GPT採点結果を取り込むと自動で蓄積されます</Empty>}</section></>;
+  if(!trend.attemptCount) return <><CoachPanel data={data} run={run} busy={busy}/><ConceptWeaknessPanel data={data}/><section className="weak-trend-hero"><div><span className="eyebrow">WEAKNESS TRENDS</span><h2>GPT採点が集まると、苦手の傾向が見えてきます</h2><p>この画面はK/W/N/Cが付いた採点だけから、繰り返すミスを探します。ミスなしの採点は学習履歴には残りますが、弱点グラフには加算しません。</p></div></section><section className="panel weak-empty-explanation">{trend.totalAttemptCount?<><Check size={28}/><h3>採点は{trend.totalAttemptCount}件ありますが、弱点として数えるミスは0件です</h3><p>現在の採点はすべて「none（ミスなし）」です。K/W/N/Cが付いた結果を保存すると、テーマ別・分類別・週別のグラフが表示されます。</p></>:<Empty>まだ採点記録がありません。GPT採点結果を取り込むと自動で蓄積されます</Empty>}</section></>;
   return <>
+    <CoachPanel data={data} run={run} busy={busy}/>
     <ConceptWeaknessPanel data={data}/>
     <section className="weak-trend-hero"><div><span className="eyebrow">LEGACY WEAKNESS TRENDS</span><h2>旧指標：採点結果から見える苦手傾向</h2><p>旧K/W/N/C集計は履歴比較専用です。正式計画の優先順位には、上のconcept evidenceを使用します。</p></div><div className="trend-summary"><strong>{trend.themes.length}</strong><span>旧方式の検出テーマ</span><small>最多 {trend.topTheme}</small></div></section>
     <div className="trend-metrics"><Metric label="保存済みの全採点" value={trend.totalAttemptCount} unit="件" hint={`ミスなし ${trend.noErrorCount}件`}/><Metric label="ミスあり採点" value={trend.attemptCount} unit="件" hint="K/W/N/Cが1つ以上"/><Metric label="主なミス型" value={dominantError} hint={`${errorCounts[dominantError]||0}件`}/><Metric label="K発生率" value={trend.kRate} unit="%" hint="ミスあり採点に占める割合"/></div>

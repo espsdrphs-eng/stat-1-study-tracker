@@ -280,6 +280,22 @@ export type ConceptWeaknessInsight = {
   evidenceConfidence:"low"|"medium"|"high";nextRecommendedAction:string;
   latestEvidenceDate:string|null;evidenceSummary:string[];
 };
+export type CoachConfidence="low"|"medium"|"high";
+export type CoachDiagnosis = {
+  schemaVersion:"stat1-coach-v1";reviewedAt:string;evidenceCutoffAttemptId:number;
+  level:{value:number;label:string;passOutlook:string;confidence:CoachConfidence;rationale:string};
+  primaryBottleneck:{title:string;explanation:string;evidenceProblemIds:string[];effectOnExam:string};
+  nextActions:Array<{title:string;purpose:string;practiceMethod:string;successCondition:string}>;
+  strengths:Array<{title:string;evidence:string}>;
+  improvements:Array<{title:string;evidence:string}>;
+  unknowns:Array<{title:string;evidenceNeeded:string}>;
+  optionalPassProbability?:{range:string;confidence:CoachConfidence;rationale:string}|null;
+};
+export type CoachDiagnosisState = {
+  current:CoachDiagnosis|null;display:CoachDiagnosis;history:CoachDiagnosis[];
+  source:"gpt"|"local_provisional";stale:boolean;newAttemptCount:number;
+  prompt:string;lastReviewedAt:string|null;
+};
 export type ExamReferenceCatalogItem = {
   referenceProblemId:string;canonicalProblemId:string;year:number;questionNumber:number;
   title:string;availability:"verified_problem"|"metadata_only";schedulable:boolean;gradable:boolean;
@@ -382,6 +398,7 @@ export type Bootstrap = {
   problems:Problem[]; attempts:Attempt[]; reviews:Review[]; roadmap:Roadmap[];
   weakNotes:WeakNote[]; pastSessions:PastSession[]; answerIndex:AnswerIndexEntry[]; problemAliases:ProblemAlias[]; dashboard:Dashboard;
   adaptiveLearning:AdaptiveLearning;
+  coach:CoachDiagnosisState;
   settings:{exam_date:string;daily_study_minutes:number};
   masterStatus:{problem_count:number;answer_count:number;problem_version:string;answer_version:string;
     problem_updated_at:string;answer_updated_at:string;alias_updated_at:string;alias_version:string;alias_count:number;

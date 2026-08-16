@@ -1,5 +1,5 @@
 import Dexie, { type EntityTable } from "dexie";
-import type { AnswerIndexEntry, Attempt, Bootstrap, CorrectionLog, DataDiagnostic, GradingContractSnapshot, MasterImportLog, PastExamExposure, PastSession, Problem, ProblemAlias, ProblemRelation, Review, Roadmap, StudyUpdate, Task, TodayPlanSnapshot, WeakNote } from "./types";
+import type { AnswerIndexEntry, Attempt, Bootstrap, CoachDiagnosis, CorrectionLog, DataDiagnostic, GradingContractSnapshot, MasterImportLog, PastExamExposure, PastSession, Problem, ProblemAlias, ProblemRelation, Review, Roadmap, StudyUpdate, Task, TodayPlanSnapshot, WeakNote } from "./types";
 import { japaneseizeMathText } from "./mathJapanese.ts";
 import { analyzeWeaknesses } from "./weaknessAnalytics.ts";
 import { createAdaptiveReviewPlan, createAttemptReviewPlan, createSReviewPlan, type ReviewOutcome, type ReviewPlan, type SState } from "./reviewRules.ts";
@@ -54,6 +54,7 @@ import { summarizeReviewPortfolio } from "./reviewPortfolio.ts";
 import { BUILT_IN_EXAM_REFERENCE_PACK, builtInReferencePackValidation } from "./builtinExamReferencePack.ts";
 import { analyzeReviewReconciliation, reconciliationForProblem, type ReconciliationAudit } from "./reviewReconciliation.ts";
 import {isValidStableTargetKey,issueStableTargetKey,stableTargetKeyForPart,withStableTargetKey} from "./stableTargetIdentity.ts";
+import {buildCoachDiagnosisState, coachPreview, COACH_HISTORY_META_KEY, parseCoachUpdate} from "./coachDiagnosis.ts";
 
 const PLANNER_RUNTIME_MODE_META_KEY="planner-runtime-mode";
 
@@ -2861,7 +2862,12 @@ async function bootstrap():Promise<Bootstrap>{
     attempts:activeAttempts,conceptWeaknesses});
   const adaptiveLearning={referencePack:buildReferencePackStatus(referenceRecord),pastExamCatalog,
     conceptWeaknesses,pastExamRepairCandidates,plannerShadow,plannerMode,weaknessModel:"concept_evidence_v1" as const};
+  let coachHistory:CoachDiagnosis[]=[];
+  try{coachHistory=JSON.parse(metaEntries.find(entry=>entry.key===COACH_HISTORY_META_KEY)?.value||"[]")}catch{coachHistory=[]}
+  const coach=buildCoachDiagnosisState({history:coachHistory,attempts:activeAttempts,concepts:conceptWeaknesses,
+    dashboard,reviews,problems,planner:plannerShadow,today});
   return {problems:problems.sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.category.localeCompare(b.category)||a.problem_number-b.problem_number),attempts,reviews,roadmap,weakNotes,pastSessions,answerIndex,problemAliases,dashboard,settings,masterStatus,databaseStatus,adaptiveLearning,
+    coach,
     today:{tasks,currentTask:currentToday.currentTask,totalLoad,plannedMinutes:plannedTotal,remainingMinutes,actualMinutes,targetMinutes:settings.daily_study_minutes,capacityPercent,warning,guidance,
       planned_minutes_total:plannedTotal,completed_minutes_today:actualMinutes,remaining_minutes_today:remainingMinutes,
       postponed_minutes_today:postponedMinutes,target_minutes_today:settings.daily_study_minutes,
@@ -3169,6 +3175,32 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     return await repairIntegrity(true) as T;
   } else if(path==="/api/integrity/repair"){
     return await repairIntegrity(false) as T;
+  } else if(path==="/api/coach/preview"){
+    const diagnosis=parseCoachUpdate(String(body.text||body.yaml||""));
+    const [attempts,problems,row]=await Promise.all([db.attempts.toArray(),db.problems.toArray(),db.meta.get(COACH_HISTORY_META_KEY)]);
+    const cutoff=Math.max(0,...attempts.filter(item=>!item.exclude_from_planning&&!item.exclude_from_metrics&&!item.duplicate_of_attempt_id).map(item=>item.id));
+    if(diagnosis.evidenceCutoffAttemptId!==cutoff)
+      throw new Error(`診断対象の採点が更新されています（GPT ${diagnosis.evidenceCutoffAttemptId}／現在 ${cutoff}）。新しいプロンプトで再レビューしてください。`);
+    const known=new Set(problems.map(item=>item.problem_id));
+    const unknown=diagnosis.primaryBottleneck.evidenceProblemIds.filter(id=>!known.has(id));
+    if(unknown.length)throw new Error(`根拠problem_idが問題マスターにありません: ${unknown.join("、")}`);
+    let history:CoachDiagnosis[]=[];try{history=JSON.parse(row?.value||"[]")}catch{history=[]}
+    return coachPreview(history.sort((a,b)=>b.reviewedAt.localeCompare(a.reviewedAt)||
+      b.evidenceCutoffAttemptId-a.evidenceCutoffAttemptId)[0]||null,diagnosis) as T;
+  } else if(path==="/api/coach/save"){
+    const diagnosis=parseCoachUpdate(String(body.text||body.yaml||""));
+    const [attempts,problems,row]=await Promise.all([db.attempts.toArray(),db.problems.toArray(),db.meta.get(COACH_HISTORY_META_KEY)]);
+    const cutoff=Math.max(0,...attempts.filter(item=>!item.exclude_from_planning&&!item.exclude_from_metrics&&!item.duplicate_of_attempt_id).map(item=>item.id));
+    if(diagnosis.evidenceCutoffAttemptId!==cutoff)
+      throw new Error(`診断対象の採点が更新されています（GPT ${diagnosis.evidenceCutoffAttemptId}／現在 ${cutoff}）。保存せず再レビューしてください。`);
+    const known=new Set(problems.map(item=>item.problem_id));
+    const unknown=diagnosis.primaryBottleneck.evidenceProblemIds.filter(id=>!known.has(id));
+    if(unknown.length)throw new Error(`根拠problem_idが問題マスターにありません: ${unknown.join("、")}`);
+    let history:CoachDiagnosis[]=[];try{history=JSON.parse(row?.value||"[]")}catch{history=[]}
+    const duplicate=history.some(item=>item.reviewedAt===diagnosis.reviewedAt&&item.evidenceCutoffAttemptId===diagnosis.evidenceCutoffAttemptId);
+    if(!duplicate)await db.meta.put({key:COACH_HISTORY_META_KEY,value:JSON.stringify([...history,diagnosis])});
+    notifyStudyDataChanged({operation:"save-coach-diagnosis"});
+    return {ok:true,diagnosis,duplicate} as T;
   } else if(path==="/api/exam-reference-pack/import"){
     return await importExamReferencePack(body as Record<string,unknown>) as T;
   } else if(path==="/api/exam-reference-pack/exposure"){
