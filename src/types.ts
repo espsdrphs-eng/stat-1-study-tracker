@@ -80,9 +80,25 @@ export type GradedPartContract={
   /** Mutable current-state payload. Identity must never be derived from these fields. */
   currentLabel?:string;currentEvidence?:string;currentErrorType?:GradingErrorType;
   currentCorrection?:string;evidenceSourceAttemptId?:number;evidenceUpdatedAt?:string;
+  masteryLevel?:1|2|3;
 };
 export type GradedFinding={
   graded_part_id:string;error_type:GradingErrorType;evidence:string;resolved:boolean;
+};
+export type ObservedOutOfScopeFinding={
+  mastery_level:1|2|3;finding:string;evidence:string;materiality:"minor"|"major";
+  confidence:"low"|"medium"|"high";create_target_candidate:boolean;
+  /** Issued only by the app after validation. GPT must not invent this identity. */
+  stable_target_key?:string;
+};
+export type MasteryLevelStatus="unconfirmed"|"repairing"|"retention_pending"|"retained"|"needs_recheck";
+export type MasteryLevelState={
+  level:1|2|3;title:string;status:MasteryLevelStatus;label:string;
+  activeTargetCount:number;retainedTargetCount:number;
+};
+export type ProblemMasteryState={
+  problemId:string;currentLevel:1|2|3;currentTitle:string;levels:[MasteryLevelState,MasteryLevelState,MasteryLevelState];
+  activeTargetCount:number;normalReviewComplete:boolean;
 };
 export type FullSkeletonBlueprint={
   problemId:string;blueprintVersion:string;
@@ -125,6 +141,7 @@ export type Attempt = {
   review_outcome?:"success"|"partial"|"failed";
   evaluation_scope?:string; graded_parts?:string[]; graded_part_ids?:string[];
   graded_findings?:GradedFinding[]; assumed_correct_parts?:string[];
+  observed_out_of_scope_findings?:ObservedOutOfScopeFinding[];
   unresolved_carryover?:string[];
   review_scope?:"targeted_patch"|"full_skeleton"|"main_calc_target"|"check_only"|"full_answer"|"scan5";
   targeted_parts?:string[]; k_evidence?:string[]; k_evidence_valid?:boolean;
@@ -399,6 +416,7 @@ export type Bootstrap = {
   weakNotes:WeakNote[]; pastSessions:PastSession[]; answerIndex:AnswerIndexEntry[]; problemAliases:ProblemAlias[]; dashboard:Dashboard;
   adaptiveLearning:AdaptiveLearning;
   coach:CoachDiagnosisState;
+  masteryByProblem:Record<string,ProblemMasteryState>;
   settings:{exam_date:string;daily_study_minutes:number};
   masterStatus:{problem_count:number;answer_count:number;problem_version:string;answer_version:string;
     problem_updated_at:string;answer_updated_at:string;alias_updated_at:string;alias_version:string;alias_count:number;
@@ -496,6 +514,7 @@ export type StudyUpdate = {
   contract_id?:string;contract_version?:string;contract_hash?:string;
   explicitly_out_of_scope_parts?:string[];
   graded_part_ids?:string[];graded_findings?:GradedFinding[];
+  observed_out_of_scope_findings?:ObservedOutOfScopeFinding[];
   submission_id?:string;source_review_id?:number;
   /** Import provenance only. The persisted mark is recalculated by the app. */
   raw_gpt_mark_present?:boolean;

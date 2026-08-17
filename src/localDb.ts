@@ -55,6 +55,8 @@ import { BUILT_IN_EXAM_REFERENCE_PACK, builtInReferencePackValidation } from "./
 import { analyzeReviewReconciliation, reconciliationForProblem, type ReconciliationAudit } from "./reviewReconciliation.ts";
 import {isValidStableTargetKey,issueStableTargetKey,stableTargetKeyForPart,withStableTargetKey} from "./stableTargetIdentity.ts";
 import {buildCoachDiagnosisState, coachPreview, COACH_HISTORY_META_KEY, parseCoachUpdate} from "./coachDiagnosis.ts";
+import {deriveMasteryByProblem} from "./masteryProjection.ts";
+import {materializeObservedOutOfScopeFindings} from "./outOfScopeObservations.ts";
 
 const PLANNER_RUNTIME_MODE_META_KEY="planner-runtime-mode";
 
@@ -780,6 +782,17 @@ function materializeStableRoots(problemId:string,parts:GradingContractSnapshot["
     stableTargetKeyForPart(problemId,part)||issueStableTargetKey(problemId)));
 }
 
+async function validateOutOfScopeObservations(input:StudyUpdate&Record<string,unknown>){
+  const rows=input.observed_out_of_scope_findings||[];
+  if(!rows.length)return rows;
+  const reviews=(await db.reviews.where("problem_id").equals(input.problem_id).toArray())
+    .filter(review=>ACTIVE_REVIEW_STATUSES.has(review.status)&&!review.exclude_from_planning);
+  const currentText=new Set(reviews.flatMap(review=>(review.grading_contract?.gradedParts||[]).flatMap(part=>
+    [part.currentLabel,part.currentEvidence,part.label].map(value=>String(value||"").trim()).filter(Boolean))));
+  return materializeObservedOutOfScopeFindings({rows,mode:String(input.mode),currentPayloads:currentText,
+    issueKey:()=>issueStableTargetKey(input.problem_id)});
+}
+
 function materializeContractStableRoots(problemId:string,contract:GradingContractSnapshot){
   const gradedParts=materializeStableRoots(problemId,contract.gradedParts);
   if(gradedParts.every((part,index)=>part.stableTargetKey===contract.gradedParts[index]?.stableTargetKey))return contract;
@@ -1043,6 +1056,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
   const projected=projectStudyUpdateLifecycle({update:input,sourceReview,sourceAttempt:sourceAttemptForTransition,problem,
     defaultLearningPurpose:examEligibility.eligible?"exam_performance":input.generated_from_review_id?"error_repair":"integration_check"});
   input=projected.update as StudyUpdate&Record<string,unknown>;
+  input.observed_out_of_scope_findings=await validateOutOfScopeObservations(input);
   const evaluation=projected.lifecycle,sourcePrescription=projected.prescription,transition=evaluation.transition;
   const learningPurpose=evaluation.lifecyclePhase,assessmentTiming=input.assessment_timing||requestedAssessmentTiming;
   scoreCandidate.assessment_timing=assessmentTiming;
@@ -1078,6 +1092,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     is_review_attempt:!!input.generated_from_review_id,evaluation_scope:input.evaluation_scope||"",
     graded_parts:input.graded_parts||[],graded_part_ids:input.graded_part_ids||[],
     graded_findings:input.graded_findings||[],assumed_correct_parts:input.assumed_correct_parts||[],
+    observed_out_of_scope_findings:input.observed_out_of_scope_findings||[],
     unresolved_carryover:input.unresolved_carryover||[],review_scope:input.review_scope,
     targeted_parts:input.targeted_parts||[],k_evidence:input.k_evidence||[],
     k_evidence_valid:input.k_evidence_valid==null?undefined:!!input.k_evidence_valid,effective_error_types:input.effective_error_types||[],hint_used:!!input.hint_used,
@@ -2866,8 +2881,9 @@ async function bootstrap():Promise<Bootstrap>{
   try{coachHistory=JSON.parse(metaEntries.find(entry=>entry.key===COACH_HISTORY_META_KEY)?.value||"[]")}catch{coachHistory=[]}
   const coach=buildCoachDiagnosisState({history:coachHistory,attempts:activeAttempts,concepts:conceptWeaknesses,
     dashboard,reviews,problems,planner:plannerShadow,today});
+  const masteryByProblem=deriveMasteryByProblem({problemIds:problems.map(problem=>problem.problem_id),attempts:activeAttempts,reviews});
   return {problems:problems.sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.category.localeCompare(b.category)||a.problem_number-b.problem_number),attempts,reviews,roadmap,weakNotes,pastSessions,answerIndex,problemAliases,dashboard,settings,masterStatus,databaseStatus,adaptiveLearning,
-    coach,
+    coach,masteryByProblem,
     today:{tasks,currentTask:currentToday.currentTask,totalLoad,plannedMinutes:plannedTotal,remainingMinutes,actualMinutes,targetMinutes:settings.daily_study_minutes,capacityPercent,warning,guidance,
       planned_minutes_total:plannedTotal,completed_minutes_today:actualMinutes,remaining_minutes_today:remainingMinutes,
       postponed_minutes_today:postponedMinutes,target_minutes_today:settings.daily_study_minutes,

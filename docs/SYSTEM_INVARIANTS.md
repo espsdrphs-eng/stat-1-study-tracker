@@ -3,6 +3,17 @@
 This document is the implementation-level source of truth for data integrity. Learning policy remains defined by
 `STABLE_LEARNING_SPEC.md`; these invariants describe how that policy is persisted and executed.
 
+## Problem mastery projection
+
+- `skeleton` / `check` / `main_calc` / `full` are exercise modes, Review purpose/stage is lifecycle, and Level 1/2/3 is the user-facing mastery projection. They are not interchangeable.
+- Level 1 is skeleton retention, Level 2 is main-calculation completion, and Level 3 is transfer on another problem or condition.
+- Score and mark grade only the immutable GradingContract scope. A major error observed in an actually written out-of-scope portion never lowers that in-scope score.
+- Out-of-scope observations are evidence candidates. Only app-validated `major` + `high` confidence candidates may receive a new stable target root. Minor, self-corrected, stylistic, speculative, or duplicate observations never become active targets.
+- A retained lower level is not rolled back when a higher-level target is discovered. A Level 1 collapse may make higher levels `needs_recheck`, but historical evidence is never deleted.
+- A delayed check updates only targets present in its contract. Successful targets remain retained; failed targets alone return to repair.
+- Same-problem normal Review ends when every current target has passed delayed retention and no normal pending Review remains. Level 3 being unconfirmed never keeps the source problem in a same-problem Review loop.
+- Problem, Review, and coach views consume the same pure mastery projection derived from Attempt evidence, stable targets, Review lifecycle, retention, and transfer evidence.
+
 - Verified core past-exam records are hydrated idempotently into both new and existing local databases.
 - The active past-exam catalog contains only schedulable `verified_problem` records; metadata-only and no-exam years never enter study selection.
 - Reference-pack hydration never deletes or rewrites Attempt, Review, pastSession, exposure, or todayPlanSnapshot history.

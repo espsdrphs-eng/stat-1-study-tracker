@@ -125,8 +125,19 @@ function partCatalog(attempts:Attempt[],reviews:Review[]){
 
 function evidenceEvents(attempt:Attempt,catalog:Map<string,GradedPartContract>,stableIndex:StableTargetIndex):LearningEvidenceEvent[]{
   if(!validAttempt(attempt))return [];
+  const observed:LearningEvidenceEvent[]=(attempt.observed_out_of_scope_findings||[]).flatMap(finding=>{
+    const key=finding.stable_target_key;
+    if(!key||finding.materiality!=="major"||finding.confidence!=="high"||!finding.create_target_candidate)return [];
+    const id=`observation:${key.slice(key.lastIndexOf(":")+1)}`;
+    const resolution=stableIndex.attemptPart(attempt.id,id);
+    if(!resolution?.identityKey)return [];
+    const part=resolution.part;
+    const errorType:GradingErrorType=finding.mastery_level===1?"K":finding.mastery_level===2?"W":"N";
+    return [{problemId:attempt.problem_id,part,stableIdentityKey:resolution.identityKey,stableTargetKey:key,
+      attemptId:attempt.id,attemptDate:attempt.date,errorType,resolved:false,evidence:finding.evidence}];
+  });
   const explicit=attempt.graded_findings||[];
-  if(explicit.length)return explicit.flatMap(finding=>{
+  if(explicit.length)return [...explicit.flatMap(finding=>{
     if(!finding.graded_part_id||finding.error_type==="K"&&!kIsUsable(attempt))return [];
     const resolution=stableIndex.attemptPart(attempt.id,finding.graded_part_id);
     if(!resolution?.identityKey)return [];
@@ -139,23 +150,23 @@ function evidenceEvents(attempt:Attempt,catalog:Map<string,GradedPartContract>,s
       stableIdentityKey:resolution.identityKey,stableTargetKey:resolution.key,
       attemptId:attempt.id,attemptDate:attempt.date,
       errorType:finding.error_type,resolved:finding.resolved&&finding.error_type==="none",evidence:finding.evidence||""}];
-  });
+  }),...observed];
   const ids=attempt.graded_part_ids||[];
-  if(!ids.length)return [];
+  if(!ids.length)return observed;
   const errors=errorsFor(attempt);
   const success=(attempt.minimum_pass_condition_met===true||attempt.target_issue_resolved===true)&&errors.length===0;
-  if(success)return ids.flatMap(id=>{
+  if(success)return [...ids.flatMap(id=>{
     const resolution=stableIndex.attemptPart(attempt.id,id),part=resolution?.part||catalog.get(id);return part&&resolution?.identityKey?[{problemId:attempt.problem_id,
       part:withStableTargetKey(part,resolution.key),stableIdentityKey:resolution.identityKey,stableTargetKey:resolution.key,attemptId:attempt.id,
       attemptDate:attempt.date,errorType:"none" as const,resolved:true,evidence:attempt.resolution_evidence||""}]:[];
-  });
+  }),...observed];
   if(ids.length===1&&errors.length===1){
     if(errors[0]==="K"&&!kIsUsable(attempt))return [];
     const resolution=stableIndex.attemptPart(attempt.id,ids[0]),part=resolution?.part||catalog.get(ids[0]);return part&&resolution?.identityKey?[{problemId:attempt.problem_id,
       part:withStableTargetKey(part,resolution.key),stableIdentityKey:resolution.identityKey,stableTargetKey:resolution.key,attemptId:attempt.id,
-      attemptDate:attempt.date,errorType:errors[0],resolved:false,evidence:attempt.error_point||""}]:[];
+      attemptDate:attempt.date,errorType:errors[0],resolved:false,evidence:attempt.error_point||""},...observed]:observed;
   }
-  return [];
+  return observed;
 }
 
 function objectiveGraduation(attempt:Attempt){

@@ -99,6 +99,8 @@ Kは、今回答案中に型・方針・出発式・主役の量・道具・大�
 アプリ取り込み用なので、YAML内ではLaTeXを使わず、自然な日本語またはプレーンテキストで書いてください。
 next_action には日付や「何日後」を書かないでください。
 mark、次回状態、卒業可否、review_after_daysはアプリが答案証拠と学習履歴から決めるため出力しないでください。
+指定modeの採点範囲外でも、答案に実際に書かれたmajorな誤りはobserved_out_of_scope_findingsへ分離してください。
+その観察で今回のscoreを下げず、minor・自己訂正済み・単なる改善案はtarget候補にしないでください。
 
 \`\`\`yaml
 study_update:
@@ -133,6 +135,7 @@ study_update:
     - "答案から実際に採点した部分"
   assumed_correct_parts: []
   unresolved_carryover: []
+  observed_out_of_scope_findings: []
   uncertain_points: []
 \`\`\``;
 }
@@ -196,7 +199,8 @@ rubric_version: ${GRADING_RUBRIC_VERSION}
    【省略してはいけない途中計算】
    【次回の直し方】
 16. evaluation_scopeはfull答案ならfull、それ以外はconditional_fullとする。
-17. 出力末尾に必ず次のYAMLを付ける。YAML内ではLaTeXを避け、できるだけ日本語で書く。
+17. modeの採点対象外でも答案に実際に書かれたmajorな誤りはobserved_out_of_scope_findingsへ分離し、今回のscoreへ混ぜない。minor・自己訂正済み・改善案はtarget候補にしない。
+18. 出力末尾に必ず次のYAMLを付ける。YAML内ではLaTeXを避け、できるだけ日本語で書く。
 
 study_update:
   problem_id: "入力された問題ID"
@@ -230,6 +234,7 @@ study_update:
     - "答案から実際に採点した部分"
   assumed_correct_parts: []
   unresolved_carryover: []
+  observed_out_of_scope_findings: [] # mastery_level, finding, evidence, materiality, confidence, create_target_candidate
   uncertain_points: []
   weak_notes: []
 
@@ -339,7 +344,11 @@ ${allowed}
    今回のgraduation gate候補：${graduationGate?"eligible（全対象resolved・最低条件達成も必要）":"not_eligible"}
 7. next_actionに日付を書かない。review_after_days、次のlearning state、卒業可否はアプリが決定するため出力しない。
 8. result_summary、error_point、next_actionは各1〜2文。解消済みの履歴や長い一般論を繰り返さない。
-9. 最後に次のYAMLをコードブロックで出力する。空欄・null・[]は答案から判定した値で置き換える。
+9. 答案全体を読み、採点対象外でも実際に書かれた部分に本番得点を失う明確な誤りがあれば observed_out_of_scope_findings へ分離する。
+   これは今回のscore・mark・successへ影響させない。majorは数学的結果・主要解法・再現性を明確に壊す場合だけ。
+   表記改善、補足、軽微な省略、自己訂正済み、一般的な改善案はminorとしcreate_target_candidate=falseにする。
+   答案に書かれていない採点対象外部分を推測して指摘しない。
+10. 最後に次のYAMLをコードブロックで出力する。空欄・null・[]は答案から判定した値で置き換える。
 
 study_update:
   contract_id: "${contract?.contractId||""}"
@@ -385,6 +394,7 @@ ${gradedIds.length?gradedIds.map(id=>`    - graded_part_id: "${id}"
       resolved: null`).join("\n"):"    []"}
   graded_parts: ${gradedLabels.length?`\n${gradedLabels.map(part=>`    - "${part.replaceAll('"','\\"')}"`).join("\n")}`:"[]"}
   explicitly_out_of_scope_parts: ${outOfScope.length?`\n${outOfScope.map(part=>`    - "${part.replaceAll('"','\\"')}"`).join("\n")}`:"[]"}
+  observed_out_of_scope_findings: [] # 必要時のみ mastery_level(1/2/3), finding, evidence, materiality(minor/major), confidence(low/medium/high), create_target_candidate を持つ項目を追加
 ${fullScope?"  assumed_correct_parts: []":"  assumed_correct_parts:\n    - \"提出対象外として正しいと仮定した部分\""}
   unresolved_carryover: []
   uncertain_points: []

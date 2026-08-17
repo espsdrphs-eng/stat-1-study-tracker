@@ -84,6 +84,17 @@ function partsFromAttempt(attempt:Attempt):GradedPartContract[]{
     byId.set(id,{id,label:id,cueLabel:id,allowedErrorTypes:[finding.error_type,"none"],
       completionCriterionId:`preserve_${id}`});
   }
+  for(const finding of attempt.observed_out_of_scope_findings||[]){
+    const key=finding.stable_target_key;
+    if(!key||!isValidStableTargetKey(attempt.problem_id,key))continue;
+    const id=`observation:${key.slice(key.lastIndexOf(":")+1)}`;
+    if(!byId.has(id))byId.set(id,{id,label:finding.finding,cueLabel:finding.finding,
+      allowedErrorTypes:["K","W","N","C","none"],completionCriterionId:`retain_${id}`,
+      stableTargetKey:key,currentLabel:finding.finding,currentEvidence:finding.evidence,
+      currentCorrection:finding.finding,currentErrorType:finding.mastery_level===1?"K":finding.mastery_level===2?"W":"N",
+      masteryLevel:finding.mastery_level,
+      evidenceSourceAttemptId:attempt.id,evidenceUpdatedAt:attempt.saved_at||attempt.date});
+  }
   return [...byId.values()];
 }
 

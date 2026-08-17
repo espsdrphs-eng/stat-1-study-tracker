@@ -35,12 +35,13 @@ import {
   type ReviewExecutionState
 } from "./integrityEngine";
 import { gradedPartLabels } from "./gradedParts";
+import {masteryLevelForPart} from "./masteryProjection.ts";
 import { subscribeStudyDataChanged } from "./appEvents";
 import {
   orderCorePastExamYears, parseExamReferencePack, reconcileExamReferencePack,
   type ExamReferencePackData, type ReferencePackReconciliation, type ReferencePackValidation
 } from "./examReferencePack";
-import type { AnswerIndexEntry, Attempt, Bootstrap, CoachDiagnosis, PastExamExposure, PastExamSessionKind, PastSession, Problem, ProblemAlias, Review, ScanQuestion, StudyUpdate, Task } from "./types";
+import type { AnswerIndexEntry, Attempt, Bootstrap, CoachDiagnosis, MasteryLevelState, PastExamExposure, PastExamSessionKind, PastSession, Problem, ProblemAlias, Review, ScanQuestion, StudyUpdate, Task } from "./types";
 
 type Page = "dashboard"|"today"|"problems"|"attempt"|"import"|"reviews"|"weak"|"past"|"sheets"|"settings";
 const pageTitles:Record<Page,string> = {
@@ -413,36 +414,30 @@ function ReviewPlanDetails({item:rawItem,compact=false,resolved}:{item:Partial<R
   }):"";
   if(item.id&&executionState!=="actionable")
     return <InactiveReviewNotice review={rawItem as Review} state={executionState}/>;
+  const contractParts=resolved?.gradingContract.gradedParts||[];
+  const reviewLevel=(contractParts.map(part=>masteryLevelForPart(part,rawItem as Review)).sort().at(-1)||
+    (resolved?.effectiveMode==="main_calc"||resolved?.effectiveMode==="full"?2:1)) as 1|2|3;
+  const levelTitle=reviewLevel===1?"骨格保持":reviewLevel===2?"主要計算完遂":"転移";
+  const purpose=resolved?.gradingContract.learningPurpose||item.learning_purpose;
+  const lifecycleLabel=purpose==="retrieval_check"?"保持確認":purpose==="error_repair"?"修復":purpose==="transfer_check"?"転移確認":"演習";
+  const successNext=purpose==="error_repair"
+    ?"○ 修復完了 → 後日、このtargetだけを参照なしで保持確認 → 成功すれば◎"
+    :purpose==="retrieval_check"
+      ?"◎ 保持済み → active targetが0件なら、この問題の通常復習は終了"
+      :"今回の採点範囲を完了し、次の習得段階へ進む";
   return <div className={`review-plan ${compact?"compact":""}`}>
     {resolved?.reviewNeeded&&<div className="review-consistency-warning"><AlertTriangle size={18}/><div><strong>要確認</strong><span>問題情報または復習履歴に不整合があります。誤った具体的な指示は表示していません。</span></div></div>}
     {!!resolved?.consistencyWarnings.length&&!resolved.reviewNeeded&&<details className="review-consistency-details"><summary>自動整合済み {resolved.consistencyWarnings.length}件</summary><ul>{resolved.consistencyWarnings.map(warning=><li key={warning.code}>{warning.message}</li>)}</ul></details>}
-    <div className="today-move"><span>今日の一手</span><strong>{resolved?.todayActions.value.join(" → ")||todayMove(item)}</strong></div>
-    {resolved&&<div className="task-policy-meta"><span>学習段階：{resolved.prescription.learningStage}</span><span>目的：{resolved.prescription.learningPurpose}</span><span>{resolved.prescription.assessmentTiming==="same_session_correction"?"答案直後の5分修正":"時間を空けた再現"}</span></div>}
-    <div className="review-plan-summary">
-      {item.due_date&&<div><span>次回復習</span><strong>{resolved?`${resolved.dueDate}${resolved.daysUntilDue==null?"":resolved.daysUntilDue===0?"（今日）":resolved.daysUntilDue>0?`（あと${resolved.daysUntilDue}日）`:`（${Math.abs(resolved.daysUntilDue)}日超過）`}`:item.due_date}</strong></div>}
-      <div><span>復習方法</span><strong>{resolved?.reviewMethodLabel||item.review_method||"—"}</strong></div>
-      <div><span>必要時間</span><strong>{resolved?.estimatedMinutes||item.estimated_minutes||item.minutes||"—"}分</strong></div>
-      <div><span>使用シート</span><strong>{resolved?.sheetLabel||template.sheetLabel}</strong></div>
-    </div>
-    {resolved&&<div className="grading-contract-summary">
-      <div><span>今回の目的</span><strong>{resolved.gradingContract.learningPurpose}</strong></div>
-      <div><span>モード／採点範囲</span><strong>{resolved.gradingContract.mode}／{resolved.gradingContract.reviewScope}</strong></div>
-      <div><span>採点対象</span><strong>{gradedPartLabels(resolved.gradingContract.gradedParts).join("・")||"なし"}</strong></div>
-      <div><span>採点対象外</span><strong>{resolved.gradingContract.explicitlyOutOfScopeParts.join("・")||"なし"}</strong></div>
-      <div><span>許可された参照</span><strong>レベル {resolved.gradingContract.allowedReferenceLevel}</strong></div>
-      <div><span>契約</span><strong>{resolved.gradingContract.contractId.slice(-8)}</strong></div>
-    </div>}
-    <div className="review-aim"><span>今回の狙い</span><strong>{resolved?.reviewGoal.value||reviewAim(item)}</strong></div>
+    <div className="mastery-current"><span>現在地</span><strong>Level {reviewLevel} / 3　{levelTitle}の{lifecycleLabel}</strong></div>
     {(resolved?.taskOrigin||item.task_origin)==="linked_s_check"&&<div className="task-origin-note"><Badge tone="blue">関連S確認</Badge><div><strong>この問題自体は{hasPreviousAttempt?"既習":"初回"}確認です</strong><span>元問題：{resolved?.sourceProblem?.displayLabel||item.source_problem_id||"記録なし"}／{resolved?.sourceProblem?.sourceIssue||"元問題で崩れた基礎型を確認します。"}</span></div></div>}
-    <div className="correction-theme"><span>今回の採点対象</span><strong>{resolved?resolved.gradingContract.gradedParts.map(part=>part.cueLabel).join("・"):correctionTheme(item)}</strong></div>
-    <div className="review-entry-point"><span>想起の入口</span><strong>{resolved?"採点対象IDに対応する内容を、答えを見ずに短く再現してください。":referenceEntryPoint(item)}</strong></div>
-    <div className="review-format"><strong>{reviewFormat(item)}</strong></div>
     <div className="next-actions"><span>今回やること</span><ol>{actions.map((action,index)=><li key={`${index}-${action}`}>{action}</li>)}</ol></div>
-    <div className="review-template">
-      <div className="review-template-head"><div><span>復習内容の型</span><strong>{resolved?.reviewMethodLabel||template.title}</strong></div><SheetLink href={sheetHref(resolved?.effectiveMode||template.sheetMode)} label={resolved?.sheetLabel||template.sheetLabel}/></div>
-      <div className="review-template-fields">{template.fields.map(field=><div key={field.label}><strong>{field.label}</strong><span>{field.hint}</span></div>)}</div>
-    </div>
-    <div className="completion-checklist"><span>完了条件</span>{(resolved?.completionConditions.value||completionChecklist(item)).map(condition=><label key={condition}><input type="checkbox" onChange={lockContract}/><b>{condition}</b></label>)}</div>
+    <div className="completion-checklist"><span>合格条件</span>{(resolved?.completionConditions.value||completionChecklist(item)).map(condition=><label key={condition}><input type="checkbox" onChange={lockContract}/><b>{condition}</b></label>)}</div>
+    <div className="review-success-next"><span>成功すると</span><strong>{successNext}</strong></div>
+    <details className="review-technical-details"><summary>課題の詳細</summary>
+      <div className="review-plan-summary">{item.due_date&&<div><span>実施日</span><strong>{item.due_date}</strong></div>}<div><span>演習モード</span><strong>{resolved?.reviewMethodLabel||item.review_method||"—"}</strong></div><div><span>必要時間</span><strong>{resolved?.estimatedMinutes||item.estimated_minutes||item.minutes||"—"}分</strong></div><div><span>使用シート</span><strong>{resolved?.sheetLabel||template.sheetLabel}</strong></div></div>
+      {resolved&&<div className="grading-contract-summary"><div><span>lifecycle</span><strong>{resolved.gradingContract.learningPurpose}</strong></div><div><span>mode / scope</span><strong>{resolved.gradingContract.mode} / {resolved.gradingContract.reviewScope}</strong></div><div><span>採点対象</span><strong>{gradedPartLabels(resolved.gradingContract.gradedParts).join("・")||"なし"}</strong></div><div><span>採点対象外</span><strong>{resolved.gradingContract.explicitlyOutOfScopeParts.join("・")||"なし"}</strong></div></div>}
+      <div className="review-template-head"><SheetLink href={sheetHref(resolved?.effectiveMode||template.sheetMode)} label={resolved?.sheetLabel||template.sheetLabel}/></div>
+    </details>
     <div className="reference-gate">
       <div className="reference-gate-head"><div><span>今回見たもの</span><strong>{referenceLabels[reference.actual_reference_level]}</strong></div><small>許可：{referenceLabels[allowed]}まで</small></div>
       <div className="hint-policy"><strong>参照ルール</strong><span>{referencePolicy(item)}</span></div>
@@ -806,6 +801,12 @@ function ProblemsView({data,select,run,busy}:{data:Bootstrap;select:(p:Problem)=
   </>
 }
 
+function MasteryLevels({levels}:{levels:MasteryLevelState[]}){
+  return <div className="mastery-levels">{levels.map(level=><div key={level.level} className={`mastery-level ${level.status}`}>
+    <span>Level {level.level}</span><strong>{level.title}</strong><em>{level.label}</em>
+  </div>)}</div>;
+}
+
 function ProblemDetail({problem,data,run,busy,onBack,onImport}:{problem:Problem;data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean;onBack:()=>void;onImport:()=>void}) {
   const [editing,setEditing]=useState<Attempt|null>(null);
   const [form,setForm]=useState<Record<string,string>>({});
@@ -820,6 +821,7 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport}:{problem:Problem;
       aliases:data.problemAliases,today:data.dashboard.today,examDate:data.settings.exam_date})
   }));
   const latest=validAttempts[0],nextReview=currentReviewCards[0]?.review;
+  const mastery=data.masteryByProblem[canonicalId]||data.masteryByProblem[problem.problem_id];
   const related=problem.related_s_problem_ids?.length?problem.related_s_problem_ids:String(problem.linked_s_problems||"").split(";").filter(Boolean);
   const editAttempt=(attempt:Attempt)=>{
     setEditing(attempt);
@@ -840,13 +842,14 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport}:{problem:Problem;
     run(()=>post(`/api/attempts/${attempt.id}/delete`,{}),"解答履歴と関連する復習予定・苦手分析データを削除しました");
   };
   return <><button className="back" onClick={onBack}>← 問題一覧へ</button><div className="detail-hero"><div><div className="detail-badges"><Badge tone={problem.category==="S"?"blue":""}>原典 {problem.category}</Badge>{problem.strategy_rank&&<Badge tone={problem.strategy_rank==="SS"?"red":problem.strategy_rank==="A+"?"orange":""}>実戦 {problem.strategy_rank}</Badge>}</div><h2>{problemDisplayLabel(problem)}</h2><p>{problem.problem_id} ・ {problem.theme}</p></div><button className="primary" onClick={onImport}><ClipboardPaste size={17}/>GPT採点結果を取り込む</button></div>
+    {mastery&&<section className="panel problem-mastery"><div className="panel-title"><div><span className="eyebrow">CURRENT MASTERY</span><h3>現在地　Level {mastery.currentLevel} / 3　{mastery.currentTitle}</h3></div><Badge tone={mastery.normalReviewComplete?"blue":"orange"}>{mastery.normalReviewComplete?"通常復習なし":`現在の復習 ${mastery.activeTargetCount} target`}</Badge></div><MasteryLevels levels={mastery.levels}/></section>}
     {latest&&<section className="panel latest-result"><div><span>最新評価</span><strong>{latest.score_text||latest.score_label} {latest.score_numeric!=null?`/ ${latest.score_numeric}点`:""} / {latest.mark}</strong></div><div><span>K/W/N/C</span><strong>{latest.error_types?.join(" + ")||latest.error_type}</strong></div><div><span>次回復習</span><strong>{nextReview?.due_date||"—"}</strong></div></section>}
     {(latest?.corrected_answer||latest?.required_derivation||latest?.improvement_guidance)&&<details className="panel answer-feedback compact-feedback"><summary>GPTの修正版答案・途中計算を確認</summary><div className="feedback-body">
       {latest.corrected_answer&&<div><span>修正版答案</span><p>{latest.corrected_answer}</p></div>}
       {latest.required_derivation&&<div><span>省略してはいけない途中計算</span><p>{latest.required_derivation}</p></div>}
       {latest.improvement_guidance&&<div><span>次回の直し方</span><p>{latest.improvement_guidance}</p></div>}
     </div></details>}
-    <div className="detail-grid"><section className="panel"><h3>問題情報</h3><dl><dt>役割</dt><dd>{problem.role}</dd><dt>出題型</dt><dd>{problem.canonical_problem_type||"—"}</dd><dt>難易度</dt><dd>{problem.difficulty!=null?`難${problem.difficulty}`:"—"}</dd><dt>推奨モード</dt><dd>{modes[problem.recommended_mode]}</dd><dt>関連S問題</dt><dd>{related.join(" / ")||"—"}</dd><dt>関連A問題</dt><dd>{problem.linked_a_problems||"—"}</dd><dt>関連過去問</dt><dd>{problem.linked_past_exams||"—"}</dd><dt>次回課題</dt><dd>{removeTimingExpressions(latest?.next_action)||"—"}</dd><dt>メモ</dt><dd>{problem.notes||"—"}</dd></dl>
+    <div className="detail-grid"><section className="panel"><h3>問題情報</h3><dl><dt>役割</dt><dd>{problem.role}</dd><dt>出題型</dt><dd>{problem.canonical_problem_type||"—"}</dd><dt>難易度</dt><dd>{problem.difficulty!=null?`難${problem.difficulty}`:"—"}</dd><dt>標準演習モード</dt><dd>{modes[problem.recommended_mode]}</dd><dt>関連S問題</dt><dd>{related.join(" / ")||"—"}</dd><dt>関連A問題</dt><dd>{problem.linked_a_problems||"—"}</dd><dt>関連過去問</dt><dd>{problem.linked_past_exams||"—"}</dd><dt>次回課題</dt><dd>{removeTimingExpressions(latest?.next_action)||"—"}</dd><dt>メモ</dt><dd>{problem.notes||"—"}</dd></dl>
     </section>
     <section className="panel current-review-panel"><h3>現在の復習予定</h3>{currentReviewCards.length?
       <div className="current-review-list">{currentReviewCards.map(({review,card})=>
@@ -1029,6 +1032,8 @@ function ConceptWeaknessPanel({data}:{data:Bootstrap}){
 const coachConfidenceText=(value:string)=>value==="high"?"高":value==="medium"?"中":"低";
 function CoachPanel({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean}){
   const coach=data.coach,diagnosis=coach.display;
+  const masteryRows=Object.values(data.masteryByProblem);
+  const masteryCounts=[1,2,3].map(level=>masteryRows.filter(row=>row.currentLevel===level).length);
   const [copied,setCopied]=useState(false),[text,setText]=useState(""),[error,setError]=useState("");
   const [preview,setPreview]=useState<{next:CoachDiagnosis;diff:{level:string;bottleneck:{before:string;after:string};nextActions:{before:string[];after:string[]}}}|null>(null);
   const copy=async()=>{await navigator.clipboard.writeText(coach.prompt);setCopied(true);setTimeout(()=>setCopied(false),1800)};
@@ -1041,6 +1046,7 @@ function CoachPanel({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,
         <span>最終レビュー：{coach.lastReviewedAt?coach.lastReviewedAt.slice(0,10):"GPTレビュー未実施"}</span>
         {coach.source==="local_provisional"&&<Badge>自動暫定診断</Badge>}</div>
         <h2>{diagnosis.level.label}</h2><p>{diagnosis.level.rationale}</p>
+        <small>問題別の現在地：Level 1 {masteryCounts[0]}件 / Level 2 {masteryCounts[1]}件 / Level 3 {masteryCounts[2]}件</small>
         {coach.stale&&<div className="coach-stale"><AlertTriangle size={17}/><strong>前回診断後に新しい採点 {coach.newAttemptCount}件・再レビュー推奨</strong></div>}
       </div>
     </section>

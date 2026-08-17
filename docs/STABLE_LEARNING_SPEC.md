@@ -107,3 +107,8 @@ Persistence, idempotency, execution gating, and repair invariants are defined in
 
 正規化済み過去問参照パック、concept証拠評価、過去問露出、合格逆算プランナーの正本は
 [`ADAPTIVE_PLANNER_SPEC.md`](./ADAPTIVE_PLANNER_SPEC.md) とし、この文書へ重複実装しません。
+
+## 習得段階
+
+現在の問題別習得状態は `SYSTEM_INVARIANTS.md` の共通projectionを正本とする。
+Level 1（骨格保持）、Level 2（主要計算完遂）、Level 3（別問題での転移）を、演習modeおよびReview lifecycleと分離して表示する。
