@@ -29,6 +29,8 @@ export function deriveProblemMasteryState(args:{problemId:string;attempts:Attemp
     !row.exclude_from_planning&&!row.duplicate_of_attempt_id);
   const reviews=args.reviews.filter(row=>row.problem_id===args.problemId);
   const current=reviews.filter(active).filter(row=>["error_repair","retrieval_check"].includes(String(row.grading_contract?.learningPurpose||row.learning_purpose||"")));
+  const level1Collapse=current.some(review=>(review.grading_contract?.gradedParts||[]).some(part=>
+    masteryLevelForPart(part,review)===1&&part.currentErrorType==="K"));
   const repairing=[0,0,0,0],waiting=[0,0,0,0],retained=[0,0,0,0];
   for(const review of current){
     const purpose=review.grading_contract?.learningPurpose||review.learning_purpose;
@@ -55,15 +57,15 @@ export function deriveProblemMasteryState(args:{problemId:string;attempts:Attemp
   const levels=[1,2,3].map(value=>{
     const level=value as 1|2|3;
     if(repairing[level])return state(level,"repairing",repairing[level],retained[level]);
-    if(waiting[level])return state(level,"retention_pending",waiting[level],retained[level]);
+    if(waiting[level])return state(level,level===1&&level1Collapse?"needs_recheck":"retention_pending",waiting[level],retained[level]);
     if(retained[level])return state(level,"retained",0,retained[level]);
     return state(level,"unconfirmed");
   }) as [MasteryLevelState,MasteryLevelState,MasteryLevelState];
-  if(levels[0].status==="repairing"){
+  if(levels[0].status==="repairing"||levels[0].status==="needs_recheck"){
     if(levels[1].status!=="unconfirmed")levels[1]=state(2,"needs_recheck",repairing[2],retained[2]);
     if(levels[2].status!=="unconfirmed")levels[2]=state(3,"needs_recheck",repairing[3],retained[3]);
   }
-  const activeLevel=levels.find(row=>row.status==="repairing"||row.status==="retention_pending");
+  const activeLevel=levels.find(row=>row.status==="repairing"||row.status==="retention_pending"||row.status==="needs_recheck");
   const evidenced=levels.filter(row=>row.status!=="unconfirmed"&&row.status!=="needs_recheck");
   const currentLevel=(activeLevel?.level||evidenced.at(-1)?.level||1) as 1|2|3;
   return {problemId:args.problemId,currentLevel,currentTitle:LEVEL_TITLES[currentLevel],levels,

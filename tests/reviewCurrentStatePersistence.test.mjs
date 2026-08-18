@@ -29,7 +29,7 @@ test("snapshot, dashboard and GPT save share the persisted Review execution stat
     });
   });
   await localPost("/api/attempts",update("current-review-state-1"));
-  const active=(await db.reviews.toArray())[0];
+  const active=(await db.reviews.toArray()).find(row=>["pending","overdue"].includes(row.status));
   assert.ok(active?.grading_contract);
   await db.reviews.update(active.id,{due_date:today(),earliest_date:today(),preferred_date:today(),latest_date:today(),schedule_origin:"manual"});
   const oldId=Number(await db.reviews.add({

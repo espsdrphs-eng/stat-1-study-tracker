@@ -7,6 +7,8 @@ import {buildStableTargetIndex,isValidStableTargetKey} from "./stableTargetIdent
 import {currentTargetDisplay,currentTargetLabels} from "./currentTargetPayload.ts";
 import {projectTodayTaskChecked,selectNextCurrentTodayTask} from "./todayTaskProjection.ts";
 import {buildReviewGradingPrompt} from "./gradingPrompt.ts";
+import {currentActionFingerprint,examHorizonPolicy,isSuccessfulTransferForProblem} from "./examOptimizationPolicy.ts";
+import {daysUntilExam} from "./studyProgress.ts";
 import {resolvePersistedAttemptLifecycle} from "./reviewTransition.ts";
 import {canonicalAttemptId,logicalReviewKey,reviewExecutionMessage,reviewExecutionState,type ReviewExecutionState} from "./reviewCurrentState.ts";
 import {resolveSemanticReviewGeneration} from "./reviewGeneration.ts";
@@ -126,7 +128,9 @@ export type IntegrityCategory =
   | "graduated_mark_mismatch" | "graduated_but_rescheduled" | "lifecycle_status_mismatch"
   | "current_today_missing_active_review" | "current_today_stale_review"
   | "formal_plan_current_projection_mismatch" | "deleted_attempt_active_descendant"
-  | "stale_contract_equivalent_replacement";
+  | "stale_contract_equivalent_replacement" | "current_action_identity_mismatch"
+  | "past_exam_share_below_phase_target" | "whitebook_backlog_suppressing_past_exam"
+  | "same_session_review_from_successful_out_of_scope_only" | "unnecessary_same_problem_review_after_transfer";
 
 export type IntegrityIssue = {
   category: IntegrityCategory;
@@ -161,6 +165,7 @@ export function runIntegrityAudit(args: {
   additionalCandidates?:AdditionalStudyCandidate[];
   eligibleTodayTasks?:Task[];
   pendingImportUpdates?:StudyUpdate[];
+  examDate?:string;
 }): IntegrityAudit {
   const { attempts, reviews, problems = [], aliases = [], today, todayPlanSnapshots = [], validCrossTargetReviewIds = [],
     currentTodayTasks, currentNextTask, currentPlanSummary, additionalCandidates=[],eligibleTodayTasks,pendingImportUpdates=[] } = args;
@@ -172,6 +177,42 @@ export function runIntegrityAudit(args: {
   const reconciliation=analyzeReviewReconciliation({attempts,reviews,aliases,today,todayPlanSnapshots});
   const stableTargets=buildStableTargetIndex({attempts,reviews,aliases});
   const problemById=new Map(problems.map(problem=>[resolveCanonicalProblemId(problem.problem_id,aliases),problem]));
+
+  for(const review of active){
+    const source=attemptsById.get(Number(review.source_attempt_id||review.generated_from_attempt_id||0));
+    if(review.assessment_timing==="same_session_correction"&&source&&
+      resolvePersistedAttemptLifecycle(source).reviewOutcome==="success"&&
+      !!source.observed_out_of_scope_findings?.some(row=>row.stable_target_key))issues.push({
+      category:"same_session_review_from_successful_out_of_scope_only",severity:"active",reviewIds:[review.id],
+      attemptIds:[source.id],detail:`Review ${review.id} repeats a successful assessment in the same session instead of scheduling retention`,repairable:true,
+    });
+    if(source&&attempts.some(attempt=>isSuccessfulTransferForProblem(attempt,review.problem_id)&&
+      (attempt.id>source.id||attempt.date>source.date)))issues.push({
+      category:"unnecessary_same_problem_review_after_transfer",severity:"active",reviewIds:[review.id],
+      attemptIds:[source.id],detail:`Review ${review.id} remains after explicit cross-problem transfer success`,repairable:true,
+    });
+  }
+
+  if(currentTodayTasks&&currentNextTask){
+    const first=currentTodayTasks.find(task=>!task.checked);
+    if(first&&currentActionFingerprint(first,first.id&&first.review_type?reviewsById.get(first.id):undefined)!==
+      currentActionFingerprint(currentNextTask,currentNextTask.id&&currentNextTask.review_type?reviewsById.get(currentNextTask.id):undefined))issues.push({
+      category:"current_action_identity_mismatch",severity:"active",
+      detail:"Dashboard current action fingerprint differs from the canonical Current Today action",repairable:false,
+    });
+  }
+
+  if(currentPlanSummary&&currentPlanSummary.plan.length>=7){
+    const week=currentPlanSummary.plan.slice(0,7),tasks=week.flatMap(day=>day.tasks);
+    const total=tasks.reduce((sum,row)=>sum+row.minutes,0);
+    const past=tasks.filter(row=>["past_exam","scan5","timed"].includes(row.kind)).reduce((sum,row)=>sum+row.minutes,0);
+    const horizon=examHorizonPolicy(daysUntilExam(today,args.examDate||"2026-11-15")),share=total?past/total:0;
+    if(currentPlanSummary.counts.pastExam>0&&share+1e-9<horizon.pastExamShareMin)issues.push({category:"past_exam_share_below_phase_target",severity:"active",
+      detail:`rolling 7-day past-exam share ${Math.round(share*100)}% is below phase target ${Math.round(horizon.pastExamShareMin*100)}%`,repairable:false});
+    const whitebookReviews=active.filter(review=>problems.find(problem=>problem.problem_id===review.problem_id)?.source_type!=="past_exam");
+    if(currentPlanSummary.counts.pastExam>0&&share<horizon.pastExamShareMin&&whitebookReviews.length)issues.push({category:"whitebook_backlog_suppressing_past_exam",severity:"active",
+      reviewIds:whitebookReviews.map(review=>review.id),detail:"whitebook Review backlog is suppressing the exam-horizon past-exam floor",repairable:false});
+  }
 
   for(const state of reconciliation.problems.filter(row=>row.graduated&&row.graduationAttemptId)){
     const attempt=attemptsById.get(state.graduationAttemptId!);
@@ -512,6 +553,8 @@ export function runIntegrityAudit(args: {
     "graduated_mark_mismatch", "graduated_but_rescheduled", "lifecycle_status_mismatch",
     "current_today_missing_active_review", "current_today_stale_review", "formal_plan_current_projection_mismatch",
     "deleted_attempt_active_descendant", "stale_contract_equivalent_replacement",
+    "current_action_identity_mismatch", "past_exam_share_below_phase_target", "whitebook_backlog_suppressing_past_exam",
+    "same_session_review_from_successful_out_of_scope_only", "unnecessary_same_problem_review_after_transfer",
   ];
   const counts = Object.fromEntries(categories.map((category) =>
     [category, issues.filter((issue) => issue.category === category).length])) as Record<IntegrityCategory, number>;

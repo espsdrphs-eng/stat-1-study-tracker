@@ -36,7 +36,7 @@ This document is the implementation-level source of truth for data integrity. Le
   review counts, and remaining-time calculations must use it; array order or due date alone never selects a current Review.
 - Problem-level current selection returns every actionable Review with a distinct learning purpose. Terminal Reviews
   remain immutable history and never expose sheets, completion controls, reference controls, prompts, or save actions.
-- Same-session corrections are actionable only on their local calendar date.
+- Ordinary error feedback does not create an automatic graded same-session Review. It records correction-provided / retention-pending state and schedules a delayed test. A same-session correction is actionable only as an explicit exception and only on its local calendar date.
 - Policy schedules persist `sourceDate`, `reviewAfterDays`, `reviewDate`, `scheduleOrigin`, and `policyVersion` together.
 - A manual schedule is preserved and is not diagnosed as a policy date mismatch.
 - Today Plan snapshots are immutable history. The UI rechecks the current Review before enabling an action.

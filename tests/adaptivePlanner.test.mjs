@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {buildAdaptivePlannerShadow} from "../src/adaptivePlanner.ts";
+import {buildAdaptivePlannerShadow,rollingPastExamShare} from "../src/adaptivePlanner.ts";
 import {buildPastExamCatalog} from "../src/examReferencePack.ts";
 import {problem,record} from "./adaptiveFixture.mjs";
 
@@ -89,6 +89,20 @@ test("残り60日以下で90分演習と過去問比率50%以上を満たす",()
   assert.ok(shadow.plan14.counts.timed>0);
   assert.equal(shadow.plan14.dailyCapacityViolations,0);
   assert.equal(shadow.plan14.weeklyMinimumViolations.filter(value=>value.includes("50%未満")).length,0);
+});
+
+test("exam horizon policy shifts rolling 7-day minutes at D89, D79, D45 and D20",()=>{
+  const buildHorizon=today=>buildAdaptivePlannerShadow({record:expandedRecord,catalog:expandedCatalog,weaknesses:[],
+    problems:whitebook,attempts:[],reviews:[],pastSessions:[],currentTasks:[],today,examDate:"2026-11-15",targetMinutes:150});
+  const d89=rollingPastExamShare(buildHorizon("2026-08-18").plan14.plan.slice(0,7));
+  const d79=rollingPastExamShare(buildHorizon("2026-08-28").plan14.plan.slice(0,7));
+  const d45=rollingPastExamShare(buildHorizon("2026-10-01").plan14.plan.slice(0,7));
+  const d20=rollingPastExamShare(buildHorizon("2026-10-26").plan14.plan.slice(0,7));
+  assert.ok(d89>=.3&&d89<=.4,`D89 share=${d89}`);
+  assert.ok(d79>=.5&&d79<=.6,`D79 share=${d79}`);
+  assert.ok(d45>=.5&&d45<=.6,`D45 share=${d45}`);
+  assert.ok(d20>=.6,`D20 share=${d20}`);
+  assert.equal(buildHorizon("2026-10-26").plan14.plan.flatMap(day=>day.tasks).some(task=>task.kind==="whitebook"),false);
 });
 
 test("参照なし本番得点が良好なら過去問を前倒しし、不十分でも週scanを延期しない",()=>{

@@ -5,6 +5,7 @@ import { resolveCanonicalProblemId } from "./examReadiness.ts";
 import {buildStableTargetIndex,type StableTargetIndex,withStableTargetKey} from "./stableTargetIdentity.ts";
 import {currentTargetPayloadMatches,withCurrentFindingPayload} from "./currentTargetPayload.ts";
 import {resolvePersistedAttemptLifecycle} from "./reviewTransition.ts";
+import {correctiveFeedbackAvailable,isSuccessfulTransferForProblem} from "./examOptimizationPolicy.ts";
 
 const ACTIVE_STATUSES=new Set(["pending","overdue"]);
 const STANDARD_PURPOSES=new Set(["error_repair","retrieval_check"]);
@@ -12,6 +13,7 @@ const STANDARD_PURPOSES=new Set(["error_repair","retrieval_check"]);
 export type LearningEvidenceEvent={
   problemId:string;part:GradedPartContract;attemptId:number;attemptDate:string;
   stableIdentityKey:string;stableTargetKey?:string;errorType:GradingErrorType;resolved:boolean;evidence:string;
+  observedOutOfScope:boolean;
 };
 
 export type ProblemReconciliation={
@@ -36,6 +38,7 @@ export type ProblemReconciliation={
   distinctStableTargetCount:number;
   multiGenerationDuplicateCount:number;
   stalePayloadCount:number;
+  desiredReviewPurpose:"error_repair"|"retrieval_check";
 };
 
 export type ReconciliationAudit={
@@ -134,7 +137,7 @@ function evidenceEvents(attempt:Attempt,catalog:Map<string,GradedPartContract>,s
     const part=resolution.part;
     const errorType:GradingErrorType=finding.mastery_level===1?"K":finding.mastery_level===2?"W":"N";
     return [{problemId:attempt.problem_id,part,stableIdentityKey:resolution.identityKey,stableTargetKey:key,
-      attemptId:attempt.id,attemptDate:attempt.date,errorType,resolved:false,evidence:finding.evidence}];
+      attemptId:attempt.id,attemptDate:attempt.date,errorType,resolved:false,evidence:finding.evidence,observedOutOfScope:true}];
   });
   const explicit=attempt.graded_findings||[];
   if(explicit.length)return [...explicit.flatMap(finding=>{
@@ -149,7 +152,8 @@ function evidenceEvents(attempt:Attempt,catalog:Map<string,GradedPartContract>,s
     return [{problemId:attempt.problem_id,part:current,
       stableIdentityKey:resolution.identityKey,stableTargetKey:resolution.key,
       attemptId:attempt.id,attemptDate:attempt.date,
-      errorType:finding.error_type,resolved:finding.resolved&&finding.error_type==="none",evidence:finding.evidence||""}];
+      errorType:finding.error_type,resolved:finding.resolved&&finding.error_type==="none",evidence:finding.evidence||"",
+      observedOutOfScope:false}];
   }),...observed];
   const ids=attempt.graded_part_ids||[];
   if(!ids.length)return observed;
@@ -158,13 +162,13 @@ function evidenceEvents(attempt:Attempt,catalog:Map<string,GradedPartContract>,s
   if(success)return [...ids.flatMap(id=>{
     const resolution=stableIndex.attemptPart(attempt.id,id),part=resolution?.part||catalog.get(id);return part&&resolution?.identityKey?[{problemId:attempt.problem_id,
       part:withStableTargetKey(part,resolution.key),stableIdentityKey:resolution.identityKey,stableTargetKey:resolution.key,attemptId:attempt.id,
-      attemptDate:attempt.date,errorType:"none" as const,resolved:true,evidence:attempt.resolution_evidence||""}]:[];
+      attemptDate:attempt.date,errorType:"none" as const,resolved:true,evidence:attempt.resolution_evidence||"",observedOutOfScope:false}]:[];
   }),...observed];
   if(ids.length===1&&errors.length===1){
     if(errors[0]==="K"&&!kIsUsable(attempt))return [];
     const resolution=stableIndex.attemptPart(attempt.id,ids[0]),part=resolution?.part||catalog.get(ids[0]);return part&&resolution?.identityKey?[{problemId:attempt.problem_id,
       part:withStableTargetKey(part,resolution.key),stableIdentityKey:resolution.identityKey,stableTargetKey:resolution.key,attemptId:attempt.id,
-      attemptDate:attempt.date,errorType:errors[0],resolved:false,evidence:attempt.error_point||""},...observed]:observed;
+      attemptDate:attempt.date,errorType:errors[0],resolved:false,evidence:attempt.error_point||"",observedOutOfScope:false},...observed]:observed;
   }
   return observed;
 }
@@ -224,7 +228,8 @@ export function analyzeReviewReconciliation(args:{
           },source);
           desired.set(legacy.resolution.identityKey,{problemId,part:current,
             stableIdentityKey:legacy.resolution.identityKey,stableTargetKey:legacy.resolution.key,
-            attemptId:source.id,attemptDate:source.date,errorType:error,resolved:false,evidence:source.error_point});
+            attemptId:source.id,attemptDate:source.date,errorType:error,resolved:false,evidence:source.error_point,
+            observedOutOfScope:false});
           continue;
         }
         if(legacy)continue;
@@ -240,12 +245,20 @@ export function analyzeReviewReconciliation(args:{
         if(!later&&!lastEvent.has(key))desired.set(key,{problemId,part:withStableTargetKey(part,resolution.key),
           stableIdentityKey:key,stableTargetKey:resolution.key,
           attemptId:source.id,attemptDate:source.date,errorType:(errorsFor(source)[0]||"N"),resolved:false,
-          evidence:source.error_point||""});
+          evidence:source.error_point||"",observedOutOfScope:false});
       }
+    }
+    const transferSuccesses=args.attempts.filter(attempt=>isSuccessfulTransferForProblem(attempt,problemId));
+    for(const [key,event] of desired){
+      if(transferSuccesses.some(attempt=>attempt.id>event.attemptId||attempt.date>event.attemptDate))desired.delete(key);
     }
     const desiredRows=[...desired.values()].sort((a,b)=>a.stableIdentityKey.localeCompare(b.stableIdentityKey));
     const desiredIds=desiredRows.map(row=>row.stableIdentityKey);
     const desiredSource=desiredRows.map(row=>attemptMap.get(row.attemptId)).filter((row):row is Attempt=>!!row).sort(attemptOrder).at(-1);
+    const desiredReviewPurpose:"error_repair"|"retrieval_check"=desiredRows.length&&desiredRows.every(event=>{
+      const source=attemptMap.get(event.attemptId);
+      return event.observedOutOfScope||!!source&&source.learning_event_kind==="assessment"&&correctiveFeedbackAvailable(source);
+    })?"retrieval_check":"error_repair";
     const latestGraduation=[...problemAttempts].filter(objectiveGraduation).sort(attemptOrder).at(-1);
     const latestAttempt=problemAttempts.at(-1);
     const latestAttemptHasUnresolved=!!latestAttempt&&events.some(event=>event.attemptId===latestAttempt.id&&!event.resolved);
@@ -269,18 +282,30 @@ export function analyzeReviewReconciliation(args:{
       }
       const purpose=reviewPurpose(review);
       if(!STANDARD_PURPOSES.has(purpose))continue;
+      const laterTransfer=transferSuccesses.find(attempt=>attempt.id>source.id||attempt.date>source.date);
+      if(laterTransfer){
+        supersedes.push({reviewId:review.id,category:"graduated_but_pending",
+          reason:`別問題Attempt ${laterTransfer.id}のtransfer成功でsame-problem確認を代替`});
+        continue;
+      }
       if(graduated&&latestGraduation&&attemptAtOrAfter(latestGraduation,source)){
         supersedes.push({reviewId:review.id,category:"graduated_but_pending",reason:`Attempt ${latestGraduation.id}で保持確認を通過済み`});
         continue;
       }
       if(purpose==="retrieval_check"){
-        const laterUnresolved=desiredRows.find(row=>attemptAtOrAfter(attemptMap.get(row.attemptId)!,source));
+        const laterUnresolved=desiredRows.find(row=>attemptAfter(attemptMap.get(row.attemptId)!,source));
         if(laterUnresolved)supersedes.push({reviewId:review.id,category:"stale_delayed_check",
           reason:`Attempt ${laterUnresolved.attemptId}で状態が変化したため保持確認を終了`});
       }
     }
 
-    const viableRepairs=repairs.filter(row=>!supersedes.some(item=>item.reviewId===row.id));
+    const purposeRows=desiredReviewPurpose==="retrieval_check"?delayed:repairs;
+    const obsoletePurposeRows=desiredRows.length?(desiredReviewPurpose==="retrieval_check"?repairs:delayed):[];
+    for(const review of obsoletePurposeRows)if(!supersedes.some(item=>item.reviewId===review.id))supersedes.push({
+      reviewId:review.id,category:reviewPurpose(review)==="retrieval_check"?"stale_delayed_check":"stale_repair",
+      reason:`corrective feedback後のcurrent lifecycleは${desiredReviewPurpose}`,
+    });
+    const viableRepairs=purposeRows.filter(row=>!supersedes.some(item=>item.reviewId===row.id));
     // Ambiguous legacy lineage is never auto-resolved. A missing replay event
     // is not evidence that the target succeeded, so keep the Review executable
     // until a real graded Attempt establishes its persistent root.
@@ -304,7 +329,7 @@ export function analyzeReviewReconciliation(args:{
       }
     }
     const normalized=uniqueSupersedes(supersedes);
-    const remainingRepairs=repairs.filter(row=>!normalized.some(item=>item.reviewId===row.id));
+    const remainingRepairs=purposeRows.filter(row=>!normalized.some(item=>item.reviewId===row.id));
     const remainingStableIds=remainingRepairs.length===1?stableIdsForReview(remainingRepairs[0]):[];
     const stableKeysPersisted=remainingRepairs.length===1&&partsFromContract(remainingRepairs[0]).every(part=>
       !!part.stableTargetKey&&part.stableTargetKey===stableIndex.reviewPart(remainingRepairs[0].id,part.id)?.key);
@@ -315,14 +340,14 @@ export function analyzeReviewReconciliation(args:{
       return !!desiredPart&&!!row.part&&!currentTargetPayloadMatches(row.part,desiredPart);
     }).length;
     const payloadsCurrent=remainingRepairs.length===1&&currentPayloadRows.length===desiredRows.length&&stalePayloadCount===0;
-    const replacementRequired=!ambiguous.length&&!graduated&&desiredIds.length>0&&(repairs.length>0||latestAttemptHasUnresolved)&&
+    const replacementRequired=!ambiguous.length&&!graduated&&desiredIds.length>0&&(active.length>0||latestAttemptHasUnresolved)&&
       !(remainingRepairs.length===1&&sameIds(remainingStableIds,desiredIds)&&stableKeysPersisted&&payloadsCurrent&&
         Number(remainingRepairs[0].source_attempt_id||remainingRepairs[0].generated_from_attempt_id)>=Number(desiredSource?.id||0));
     const oldestRepairSource=repairs.map(row=>attemptMap.get(Number(row.source_attempt_id||row.generated_from_attempt_id||0)))
       .filter((row):row is Attempt=>!!row).sort(attemptOrder)[0];
     const retentionCheckRequired=!ambiguous.length&&!graduated&&desiredIds.length===0&&repairs.length>0&&delayed.length===0&&
       !!latestSuccessfulRepair&&(!oldestRepairSource||attemptAfter(latestSuccessfulRepair,oldestRepairSource));
-    const activeRepairStableIds=repairs.flatMap(stableIdsForReview);
+    const activeRepairStableIds=purposeRows.flatMap(stableIdsForReview);
     const distinctActiveStableIds=new Set(activeRepairStableIds);
     if(active.length||desiredIds.length||ambiguous.length||graduated)problems.push({problemId,
       activeRepairReviewIds:repairs.map(row=>row.id),activeDelayedReviewIds:delayed.map(row=>row.id),
@@ -332,9 +357,10 @@ export function analyzeReviewReconciliation(args:{
       })),desiredSourceAttemptId:desiredSource?.id,reviewsToSupersede:normalized,replacementRequired,graduated,
       graduationAttemptId:graduated?latestGraduation?.id:undefined,
       retentionCheckRequired,retentionSourceAttemptId:retentionCheckRequired?latestSuccessfulRepair?.id:undefined,
-      ambiguousReasons:[...new Set(ambiguous)],activeReviewTargetCount:repairs.reduce((sum,row)=>sum+partsFromContract(row).length,0),
+      ambiguousReasons:[...new Set(ambiguous)],activeReviewTargetCount:purposeRows.reduce((sum,row)=>sum+partsFromContract(row).length,0),
       distinctStableTargetCount:distinctActiveStableIds.size,
-      multiGenerationDuplicateCount:Math.max(0,activeRepairStableIds.length-distinctActiveStableIds.size),stalePayloadCount});
+      multiGenerationDuplicateCount:Math.max(0,activeRepairStableIds.length-distinctActiveStableIds.size),stalePayloadCount,
+      desiredReviewPurpose});
   }
 
   const allSupersedes=problems.flatMap(row=>row.reviewsToSupersede);

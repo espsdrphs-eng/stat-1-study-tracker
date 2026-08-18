@@ -10,6 +10,7 @@ import { reviewExecutionState } from "./integrityEngine.ts";
 import { simulateThirtyDays } from "./learningSimulation.ts";
 import { resolvePersistedAttemptLifecycle } from "./reviewTransition.ts";
 import { scheduleActiveReviews, type ScheduledReviewPlacement } from "./reviewScheduling.ts";
+import {examHorizonPolicy} from "./examOptimizationPolicy.ts";
 
 type SlotTask=AdaptivePlanDay["tasks"][number];
 export const GRADUATED_SAME_PROBLEM_COOLDOWN_DAYS=45;
@@ -22,11 +23,12 @@ const attemptedDateMap=(attempts:Attempt[])=>{
 const isNewWhitebook=(problem:Problem,attempted:Map<string,string>)=>!attempted.has(problem.problem_id);
 const modeMinutes=(mode:string)=>mode==="full"?35:mode==="main_calc"?20:mode==="skeleton"?25:5;
 
-function phaseName(daysRemaining:number){
-  if(daysRemaining>=91)return "foundation_to_A";
-  if(daysRemaining>=61)return "A_and_past_parallel";
-  if(daysRemaining>=31)return "past_exam_main";
-  return "final_stabilization";
+function phaseName(daysRemaining:number){return examHorizonPolicy(daysRemaining).phase;}
+
+export function rollingPastExamShare(days:AdaptivePlanDay[]){
+  const tasks=days.flatMap(day=>day.tasks),total=tasks.reduce((sum,row)=>sum+row.minutes,0);
+  const past=tasks.filter(row=>["past_exam","scan5","timed"].includes(row.kind)).reduce((sum,row)=>sum+row.minutes,0);
+  return total?past/total:0;
 }
 
 function phasePolicy(record:StoredExamReferencePack|undefined|null,daysRemaining:number){
@@ -118,19 +120,23 @@ function validateMinimums(summary:AdaptivePlanSummary,daysRemaining:number,targe
     const weekRows=summary.plan.slice(start,Math.min(start+7,summary.plan.length));
     if(weekRows.length<7)continue;
     const week=planSummary(weekRows),weekDaysRemaining=Math.max(0,daysRemaining-start);
+    const horizon=examHorizonPolicy(weekDaysRemaining),share=rollingPastExamShare(weekRows);
     if(weekDaysRemaining>=91){
       if(!week.counts.chapter5)violations.push(`${start/7+1}週目: 第5章なし`);
       if(!week.counts.chapter7)violations.push(`${start/7+1}週目: 第7章なし`);
       if(!week.counts.scan5)violations.push(`${start/7+1}週目: scan5なし`);
       if(!week.counts.full&&!week.counts.timed)violations.push(`${start/7+1}週目: full/timedなし`);
-    }else if(weekDaysRemaining>=61){
+    }else if(weekDaysRemaining>=81){
       if(!week.counts.scan5)violations.push(`${start/7+1}週目: scan5なし`);
       if(!week.counts.pastExam)violations.push(`${start/7+1}週目: 過去問なし`);
+      if(share<horizon.pastExamShareMin||share>horizon.pastExamShareMax)
+        violations.push(`${start/7+1}週目: 過去問比率${Math.round(share*100)}%（目標30〜40%）`);
     }else if(weekDaysRemaining>=31){
       if(!week.counts.timed)violations.push(`${start/7+1}週目: 90分演習なし`);
-      const minutes=week.plan.flatMap(day=>day.tasks).reduce((sum,row)=>sum+row.minutes,0);
-      const pastMinutes=week.plan.flatMap(day=>day.tasks).filter(row=>["past_exam","scan5","timed"].includes(row.kind)).reduce((sum,row)=>sum+row.minutes,0);
-      if(minutes&&pastMinutes/minutes<.5)violations.push(`${start/7+1}週目: 過去問・90分比率50%未満`);
+      if(share<horizon.pastExamShareMin||share>horizon.pastExamShareMax)
+        violations.push(`${start/7+1}週目: 過去問・90分比率${Math.round(share*100)}%（目標50〜60%）`);
+    }else if(share<horizon.pastExamShareMin){
+      violations.push(`${start/7+1}週目: 本番形式比率${Math.round(share*100)}%（目標60%以上）`);
     }
   }
   summary.weeklyMinimumViolations=violations;
@@ -154,7 +160,7 @@ function planDays(args:{
   const horizonEnd=addCalendarDays(args.startDate,Math.max(0,args.days-1));
   const activeReviewProblemIds=new Set(activeReviews.filter(review=>String(review.earliest_date||review.due_date)<=horizonEnd)
     .map(review=>review.problem_id));
-  const allowNew=args.daysRemaining>30;
+  const allowNew=examHorizonPolicy(args.daysRemaining).allowNewWhitebook;
   const recentEligibleSuccesses=args.attempts.filter(attempt=>attempt.date>=addCalendarDays(args.startDate,-14)&&
     attempt.exam_score_eligible&&Number(attempt.score_numeric||0)>=70).length;
   const acceleratePast=recentEligibleSuccesses>=2;
@@ -221,19 +227,20 @@ function planDays(args:{
       if(weekActual.chapter5<1)phaseMaintenance=makeWhitebook(date,[5],"skeleton","直近7日の第5章実績不足を優先補完","maintenance_selection");
       else if(weekActual.chapter7<1)phaseMaintenance=makeWhitebook(date,[7],"skeleton","直近7日の第7章実績不足を優先補完","maintenance_selection");
     }else if(phase==="A_and_past_parallel"){
-      if(weekActual.scan5<1&&!materialConfirmationPlanned)score=makePast(date,"scan5",50,"直近7日のscan5実績不足を優先補完");
-      else if(weekday===3)score=makePast(date,"past_exam",35,"過去問答案で得点較正");
-      else score=makeWhitebook(date,[2,4,6],"full","A問題と過去問を並行");
+      if(weekActual.scan5<1&&!materialConfirmationPlanned)score=makePast(date,"scan5",50,"過去問導入期のrolling 7日枠を優先補完");
+      else if([2,4,6].includes(weekday))score=makePast(date,"past_exam",35,"過去問30〜40%枠で得点較正");
+      else score=makeWhitebook(date,[2,4,6],"full","重要白本と過去問を並行");
       if(weekActual.chapter5<1)phaseMaintenance=makeWhitebook(date,[5],"skeleton","直近7日の第5章実績不足を優先補完","maintenance_selection");
       else if(weekActual.chapter7<1)phaseMaintenance=makeWhitebook(date,[7],"skeleton","直近7日の第7章実績不足を優先補完","maintenance_selection");
       else if(weekActual.chapter8<1)phaseMaintenance=makeWhitebook(date,[8],"skeleton","第8章を20〜25%維持","maintenance_selection");
     }else if(phase==="past_exam_main"){
       if(weekday===0)score=makePast(date,"timed",90,"週1回の3問90分演習");
-      else if([2,4,6].includes(weekday))score=makePast(date,weekday===4?"scan5":"past_exam",weekday===4?45:35,"過去問主軸");
-      else score=makeWhitebook(date,[2,4,5,6,7,8],"full","過去問で判明した型の答案化");
+      else if(weekday===3)score=makePast(date,"scan5",45,"選題と初手の本番較正");
+      else if(weekday===5)score=makePast(date,"past_exam",35,"過去問50〜60%枠");
+      else score=makeWhitebook(date,[2,4,5,6,7,8],"full","過去問で判明した高価値targetだけを補修");
     }else{
-      if(weekday===6)score=makeWhitebook(date,[2,4,5,6,7,8],"full","確認済み弱点の得点安定化");
-      else score=makePast(date,weekday===0?"timed":weekday===3?"scan5":"past_exam",weekday===0?90:weekday===3?45:35,"本番形式と選題判断を固定");
+      score=makePast(date,weekday===0||weekday===4?"timed":weekday===2?"scan5":"past_exam",
+        weekday===0||weekday===4?90:weekday===2?45:35,"本番形式・3題選択・確認済み弱点を主軸に固定");
     }
     const tasks:SlotTask[]=(reviewsByDate.get(date)||[]).map(placement=>task({date,slot:"repair",kind:"review",
       label:`${placement.review.problem_id} 局所補修`,problemId:placement.review.problem_id,reviewId:placement.review.id,
@@ -250,7 +257,8 @@ function planDays(args:{
     const coreFloor=Math.min(90,Math.max(60,Math.round(args.targetMinutes*.4)));
     if(["foundation_to_A","A_and_past_parallel"].includes(phase)&&score&&score.kind!=="scan5"&&
       tasks.reduce((sum,row)=>sum+row.minutes,0)<coreFloor){
-      const secondScore=makeWhitebook(date,[2,4,6,5,7,8],"full","利用可能時間を別問題の得点形成・転移へ配分");
+      const secondScore=makeWhitebook(date,[2,4,6,5,7,8],"full",
+        score.kind==="past_exam"?"過去問と並行する高価値白本補修":"利用可能時間を別問題の得点形成・転移へ配分");
       if(secondScore&&tasks.reduce((sum,row)=>sum+row.minutes,0)+secondScore.minutes<=Math.min(args.targetMinutes,90))
         tasks.push(secondScore);
     }

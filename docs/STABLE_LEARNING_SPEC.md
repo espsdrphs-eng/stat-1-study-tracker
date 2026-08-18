@@ -1,6 +1,6 @@
 # Study Tracker 学習運用安定仕様
 
-最上位目標は「今日やる1問を迷わず決め、答案を書き、GPT採点を壊れず保存し、必要部分だけを復習する」です。問題情報は `problem_master`、当日の構成は `today_plan_snapshot`、実績は Attempt、次回課題は Review を正本とします。PDFは通常導線で管理しません。
+最上位目標は、2026-11-15の統計検定1級・統計数理で、5題から得点可能な3題を選び、必要な操作を自力で再現して合格得点を取る確率と期待得点を最大化することです。白本全問の完了、全problemのLevel 3化、Review backlogの解消は目的ではありません。問題情報は `problem_master`、朝の構成履歴は `today_plan_snapshot`、実績は Attempt、次回課題は Review を正本とします。PDFは通常導線で管理しません。
 
 ## 責務分離
 
@@ -31,7 +31,9 @@ Kは今回答案に「型、方針・入口、出発式、主役量、道具、�
 
 ## 即時修正と遅延復習
 
-`same_session_correction` は答案直後に対象部分だけを5分以内で直します。同日にfull/full skeletonを追加せず、成功しても定着成功にしません。K/N/W/Cは別に `delayed_retrieval` を1/2/3/7日後に作り、その結果だけをerror repairの定着判定へ使います。
+学習イベントは `assessment`、`corrective_feedback`、`delayed_retrieval`、`transfer` に分離します。通常の誤りはGPT feedbackでその場で訂正し、採点済みsame-session Reviewを自動生成せず、後日の `delayed_retrieval` だけで保持を測ります。訂正を見ただけでは `○` や保持成功にしません。`same_session_correction` を使えるのは、型そのものの未理解、feedback後も修正不能、大規模再構築、またはユーザー明示の再確認だけです。
+
+Level 2の新規局所弱点は残り81〜90日では原則3〜7日、強い失敗または明確なLevel 1崩壊は1〜3日のwindowで確認します。固定日数をpromptへ埋め込まず、残日数、mastery level、失敗強度、再発、保持証拠、試験関連性、代替transfer機会を共通interval policyへ渡します。
 
 markは点数記号ではなく今回の学習状態です。`×` は最低条件未達または重大な未解決、`△` は採点対象に未解決あり、`○` は今回の課題に成功したが保持確認前、`◎` は参照なしの遅延保持確認に成功して同一問題系列を卒業できる状態を表します。scoreだけでは決めず、GPT値を正本にせず、保存時に契約・答案証拠・履歴からアプリが再計算します。
 
@@ -45,7 +47,7 @@ check、targeted patch、main calculation、skeleton、conditional fullの点数
 
 ## 遷移と安定判定
 
-基本遷移は error repair → retrieval check → 同一問題卒業です。integration checkは問題全体の構成確認が必要な場合の独立purpose、transfer checkは別問題での転移確認です。同一問題の成功だけで問題型をstableにしません。型のstableには、別のcanonical problem IDまたは過去問でのeligibleなtransfer/performance成功が必要です。
+明示的な採点repairを行う場合の遷移は error repair → retrieval check → 同一問題卒業です。通常の即時feedbackでは `correction_provided / retention_pending` から直接retrieval checkへ進み、擬似的な `○` を作りません。integration checkは問題全体の構成確認が必要な場合の独立purpose、transfer checkは別問題での転移確認です。同一問題の成功だけで問題型をstableにしません。別のcanonical problemまたは過去問で同じ能力を十分に成功した場合は、元問題のsame-problem Reviewを不要化できます。
 
 generic metadataでは転移先を推測しません。verified/confirmedな候補がなければ自動タスク化せず、ユーザー選択候補にします。GPTの関連提案はcandidate止まりで、1 Attemptから自動補修は最大1件です。
 

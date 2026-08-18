@@ -69,6 +69,7 @@ export type ScanQuestion = {
 export type LearningPurpose="error_repair"|"retrieval_check"|"integration_check"|"transfer_check"|"exam_performance";
 export type LearningStage="acquisition"|"repair"|"maintenance"|"integration"|"discrimination"|"transfer"|"performance"|"stable";
 export type AssessmentTiming="same_session_correction"|"delayed_retrieval"|"independent_performance";
+export type LearningEventKind="assessment"|"corrective_feedback"|"delayed_retrieval"|"transfer";
 export type TargetKind="mathematical_patch"|"skeleton_expression_patch";
 export type KPolicyValidity="valid"|"invalid_legacy_k"|"needs_review";
 export type GradingErrorType="K"|"W"|"N"|"C"|"none";
@@ -167,6 +168,7 @@ export type Attempt = {
   explicitly_out_of_scope_parts?:string[];
   submission_id?:string;source_review_id?:number;saved_at?:string;
   semantic_rebind_from_review_id?:number;semantic_rebind_message?:string;
+  learning_event_kind?:LearningEventKind;
   canonical_attempt_id?:number;duplicate_of_attempt_id?:number;
   exclude_from_metrics?:boolean;duplicate_reason?:string;
 };
@@ -213,6 +215,9 @@ export type Review = {
   contract_locked_at?:string;explicitly_out_of_scope_parts?:string[];graded_parts?:string[];
   graded_part_ids?:string[];graded_findings?:GradedFinding[];
   logical_review_key?:string;contract_revision?:number;replaced_by_review_id?:number;
+  /** Feedback was supplied at assessment time; this Review is the later test, not another correction session. */
+  correction_provided?:boolean;retention_pending?:boolean;mastery_level?:1|2|3;
+  review_strategy?:"same_problem_retention"|"transfer_preferred"|"deferred_low_roi";
 };
 export type TodayPlanSnapshot = {
   date:string;task_ids:string[];start_of_day_planned_minutes:number;
@@ -277,6 +282,7 @@ export type Task = {
   contract_locked_at?:string;explicitly_out_of_scope_parts?:string[];graded_parts?:string[];
   graded_part_ids?:string[];graded_findings?:GradedFinding[];
   plan_origin?:"adaptive_planner"|"adaptive_additional"|"legacy_planner";additional_candidate_key?:string;purpose_label?:string;
+  logical_review_key?:string;mastery_level?:1|2|3;
 };
 export type WeaknessInsight = {
   theme:string; score:number; level:"重点"|"注意"|"観察"; confidence:"参考"|"暫定"|"分析可能";

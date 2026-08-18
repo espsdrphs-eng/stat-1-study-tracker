@@ -6,7 +6,7 @@
 
 ## 正式運用の整合性
 
-- 当日の正本は引き続き `todayPlanSnapshot` とする。
+- `todayPlanSnapshot` は朝の計画履歴とslot定義であり、current eligibilityの正本ではない。Current Today、Dashboard、残り時間はsnapshotへ最新Attempt、active Review、masteryを重ねる共通live projectionを正本とする。
 - 新しいsnapshotは合格逆算プランナーだけから生成する。既存の当日snapshotは公開更新で置換せず、次の日次生成から適用する。
 - 未使用容量は `targetMinutes - completedMinutes - confirmedRemainingMinutes` とし、得点形成、試験得点課題、第5・7章維持、有効な先送り候補の順で最大3件を追加候補として提示する。
 - 追加候補は表示だけではsnapshotへ入らない。「今日に追加」の明示操作でのみ `if_time` として追加し、同じcandidate keyを冪等に扱う。
@@ -65,15 +65,17 @@
 - 期限到来Reviewが多くても得点形成枠を確保します。
 - 残り91日以上は第2・4・6章を主軸に、第5章・第7章、scan_plus_one、full/timedを各週1回以上。
   将来予定の件数ではなく直近7日のAttempt/pastSession実績から不足を判定し、翌日以降の候補で先に補います。
-- 90〜61日は過去問30〜40%、第5・7・8章20〜25%を目安にします。
-- 60〜31日は過去問・90分演習50%以上、90分演習週1回以上。
-- 30日以下は新規白本Aを原則追加せず、simulation・選題・確認済み弱点の安定化を優先します。
+- 81〜90日はrolling 7日で過去問30〜40%を確保し、重要白本score-building/repairも並行します。
+- 31〜80日はrolling 7日でpast exam + timedを50〜60%とし、白本は主に過去問由来の高価値repairへ寄せます。Review backlogだけで過去問枠を押し出しません。
+- 30日以下は新規白本Aを原則追加せず、simulation・90分運用・選題・確認済み弱点を主役にします。
 - soft quotaは容量内で候補化し、未実施scanを期限超過Reviewとして蓄積しません。
 - 同日切替は差分プレビューと明示確定を必須とし、完了済み・追加済み・先送り済み課題を保持する。
 - ロールバックは次に作るsnapshotから旧plannerを使用するだけで、既存snapshotや履歴を巻き戻さない。
 - 取込・更新・日中の学習結果で当日snapshotを自動再生成しません。
 - 直近14日に客観的な遅延想起成功で卒業した問題は、同じpurpose/modeの得点形成候補より
   別問題を優先します。候補不足時だけ再候補化でき、無意味な埋め草は生成しません。
+- 優先順位は、本番直結のoverdue/confirmed weakness、過去問・timed・simulation、過去問由来repair、retrieval/transfer、必要なscore-building、optional whitebookの順です。低関連性、高コスト、代替transferあり、または既に別問題で成功済みのsame-problem Reviewは省略できます。
+- current action identityはproblem IDだけでなくlogical Review、mastery level、purpose、effective mode、stable target集合から導出し、同一problem内の段階遷移をDashboardへ即時反映します。
 
 ## 同一問題Reviewからの卒業
 

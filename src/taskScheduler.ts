@@ -1,6 +1,7 @@
 import type { AssessmentTiming, LearningPurpose, PastExamSessionKind, PastExamStage, Review, Task } from "./types.ts";
 import type { LearningPrescription } from "./learningPolicyResolver.ts";
 import { addCalendarDays } from "./reviewSchedulePolicy.ts";
+import {retentionWindow,type FailureStrength} from "./examOptimizationPolicy.ts";
 
 export type ScheduleWindow={earliestDate:string;preferredDate:string;latestDate:string};
 
@@ -10,8 +11,18 @@ const intervals:Record<string,{preferred:number;early:number;late:number}>={
   K:{preferred:1,early:1,late:2},N:{preferred:2,early:1,late:3},W:{preferred:3,early:2,late:5},C:{preferred:7,early:5,late:10},none:{preferred:14,early:10,late:21},
 };
 
-export function scheduleWindow(args:{sourceDate:string;errors:string[];assessmentTiming:AssessmentTiming;purpose:LearningPurpose}):ScheduleWindow{
+export function scheduleWindow(args:{sourceDate:string;errors:string[];assessmentTiming:AssessmentTiming;purpose:LearningPurpose;
+  daysRemaining?:number;masteryLevel?:1|2|3;failureStrength?:FailureStrength;repeatedFailureCount?:number;
+  examRelevance?:"low"|"medium"|"high";strategyRank?:string;alternativeTransferOpportunity?:boolean}):ScheduleWindow{
   if(args.assessmentTiming==="same_session_correction")return {earliestDate:args.sourceDate,preferredDate:args.sourceDate,latestDate:args.sourceDate};
+  if(args.purpose==="retrieval_check"&&args.masteryLevel){
+    const decision=retentionWindow({sourceDate:args.sourceDate,daysRemaining:args.daysRemaining??999,
+      masteryLevel:args.masteryLevel,failureStrength:args.failureStrength||"standard",
+      repeatedFailureCount:args.repeatedFailureCount,examRelevance:args.examRelevance,
+      strategyRank:args.strategyRank,alternativeTransferOpportunity:args.alternativeTransferOpportunity});
+    if(decision.scheduleSameProblem)return {earliestDate:decision.earliestDate,
+      preferredDate:decision.preferredDate,latestDate:decision.latestDate};
+  }
   const key=args.errors.includes("K")?"K":args.errors.includes("N")?"N":args.errors.includes("W")?"W":args.errors.includes("C")?"C":"none";
   const rule=args.purpose==="integration_check"?{preferred:10,early:7,late:14}:intervals[key];
   return {earliestDate:addCalendarDays(args.sourceDate,rule.early),preferredDate:addCalendarDays(args.sourceDate,rule.preferred),latestDate:addCalendarDays(args.sourceDate,rule.late)};
@@ -31,9 +42,15 @@ export function pendingDuplicate<T extends Partial<Review&Task>>(tasks:T[],key:s
   return tasks.find(task=>task.deduplication_key===key&&!['done','completed','cancelled'].includes(String(task.status||'')));
 }
 
-export function taskDraftFromPrescription(args:{prescription:LearningPrescription;sourceAttemptId:number;sourceDate:string;errors:string[];scheduledMinutes?:Record<string,number>;dailyCapacity?:number}){
+export function taskDraftFromPrescription(args:{prescription:LearningPrescription;sourceAttemptId:number;sourceDate:string;errors:string[];scheduledMinutes?:Record<string,number>;dailyCapacity?:number;
+  daysRemaining?:number;masteryLevel?:1|2|3;failureStrength?:FailureStrength;repeatedFailureCount?:number;
+  examRelevance?:"low"|"medium"|"high";strategyRank?:string;alternativeTransferOpportunity?:boolean}){
   const {prescription}=args;
-  const window=scheduleWindow({sourceDate:args.sourceDate,errors:args.errors,assessmentTiming:prescription.assessmentTiming,purpose:prescription.learningPurpose});
+  const window=scheduleWindow({sourceDate:args.sourceDate,errors:args.errors,assessmentTiming:prescription.assessmentTiming,
+    purpose:prescription.learningPurpose,daysRemaining:args.daysRemaining,masteryLevel:args.masteryLevel,
+    failureStrength:args.failureStrength,repeatedFailureCount:args.repeatedFailureCount,
+    examRelevance:args.examRelevance,strategyRank:args.strategyRank,
+    alternativeTransferOpportunity:args.alternativeTransferOpportunity});
   const preferred=chooseDateWithinWindow({window,minutes:prescription.estimatedMinutes,dailyCapacity:args.dailyCapacity||150,scheduledMinutes:args.scheduledMinutes||{}});
   const deduplicationKey=taskDeduplicationKey({problemId:prescription.problemId,learningPurpose:prescription.learningPurpose,
     sourceAttemptId:args.sourceAttemptId,policyVersion:prescription.policyVersion,assessmentTiming:prescription.assessmentTiming});

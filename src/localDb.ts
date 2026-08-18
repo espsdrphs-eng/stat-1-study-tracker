@@ -58,6 +58,7 @@ import {deriveMasteryByProblem} from "./masteryProjection.ts";
 import {materializeObservedOutOfScopeFindings} from "./outOfScopeObservations.ts";
 import {deriveCurrentTodayProjection} from "./currentTodayProjection.ts";
 import {resolveSemanticReviewGeneration} from "./reviewGeneration.ts";
+import {classifyFailureStrength,learningEventKind,masteryLevelForTargets} from "./examOptimizationPolicy.ts";
 
 const PLANNER_RUNTIME_MODE_META_KEY="planner-runtime-mode";
 
@@ -745,17 +746,18 @@ type ReconcileApplySummary={
 
 function contractWithReconciledParts(args:{
   problem:Problem;source:Attempt;parts:NonNullable<GradingContractSnapshot["gradedParts"]>;
-  findings:NonNullable<Attempt["graded_findings"]>;createdAt:string;
+  findings:NonNullable<Attempt["graded_findings"]>;createdAt:string;purpose:"error_repair"|"retrieval_check";
 }){
   const errors=[...new Set(args.findings.map(row=>row.error_type).filter(value=>value!=="none"))];
   const source={...args.source,error_types:errors.length?errors:["N"],effective_error_types:errors.length?errors:["N"],
     error_type:errors[0]||"N",primary_error_type:errors[0]||"N",targeted_parts:args.parts.map(row=>row.label)};
   const prescription=resolveLearningPolicy({problemId:args.problem.problem_id,problem:args.problem,source,
-    learningPurpose:"error_repair",learningStage:"repair",
-    assessmentTiming:source.date===todayString()?"same_session_correction":"delayed_retrieval",
+    learningPurpose:args.purpose,learningStage:args.purpose==="retrieval_check"?"maintenance":"repair",
+    assessmentTiming:"delayed_retrieval",
     targetedParts:args.parts.map(row=>row.label)});
   const draft:Partial<Review>={problem_id:args.problem.problem_id,source_attempt_id:source.id,
-    generated_from_attempt_id:source.id,learning_purpose:"error_repair",learning_stage:"repair",
+    generated_from_attempt_id:source.id,learning_purpose:args.purpose,
+    learning_stage:args.purpose==="retrieval_check"?"maintenance":"repair",
     assessment_timing:prescription.assessmentTiming,review_scope:prescription.reviewScope,
     effective_mode:prescription.mode==="exam_90min"?"full":prescription.mode,
     sheet_type:prescription.sheetType,target_kind:prescription.targetKind,
@@ -766,8 +768,12 @@ function contractWithReconciledParts(args:{
     displayText:`指定された${args.parts.length}点を、参照なしで、対象・記号・式の向きを整合させて再現できた`}];
   const allowedErrorTypes=[...new Set(args.parts.flatMap(part=>part.allowedErrorTypes).filter(value=>value!=="none"))];
   const withoutIdentity={...base,sourceAttemptId:source.id,sourceReviewId:undefined,reviewId:undefined,
-    learningPurpose:"error_repair" as const,learningStage:"repair" as const,
+    learningPurpose:args.purpose,learningStage:args.purpose==="retrieval_check"?"maintenance" as const:"repair" as const,
     targetedParts:args.parts.map(row=>row.label),gradedParts:args.parts,
+    mode:args.purpose==="retrieval_check"?"check":base.mode,
+    reviewScope:args.purpose==="retrieval_check"?"check_only":base.reviewScope,
+    sheetType:args.purpose==="retrieval_check"?"check_sheet":base.sheetType,
+    estimatedMinutes:args.purpose==="retrieval_check"?Math.min(5,base.estimatedMinutes):base.estimatedMinutes,
     completionCriteria,completionConditions:completionCriteria.map(row=>row.displayText),
     requiredEvidence:args.parts.map(row=>row.label),allowedErrorTypes,
     requiresKEvidence:allowedErrorTypes.includes("K"),createdAt:args.createdAt};
@@ -824,8 +830,8 @@ async function staleEvidenceReason(review:Review){
  */
 async function reconcileProblemLearningState(problemId?:string,preview=false):Promise<ReconcileApplySummary>{
   const snapshots=await currentTodaySnapshots();
-  const [attempts,reviews,aliases,problems]=await Promise.all([
-    db.attempts.toArray(),db.reviews.toArray(),db.problemAliases.toArray(),db.problems.toArray()
+  const [attempts,reviews,aliases,problems,examMeta]=await Promise.all([
+    db.attempts.toArray(),db.reviews.toArray(),db.problemAliases.toArray(),db.problems.toArray(),db.meta.get("exam_date")
   ]);
   const audit=analyzeReviewReconciliation({attempts,reviews,aliases,today:todayString(),todayPlanSnapshots:snapshots});
   const plans=problemId?[reconciliationForProblem(audit,problemId,aliases)].filter(Boolean):audit.problems;
@@ -929,10 +935,18 @@ async function reconcileProblemLearningState(problemId?:string,preview=false):Pr
     const source=survivingSource&&survivingSource.id>=desiredSource.id?survivingSource:desiredSource;
     const materializedParts=materializeStableRoots(plan.problemId,plan.desiredRepairParts);
     const {contract,prescription}=contractWithReconciledParts({problem,source,parts:materializedParts,
-      findings:plan.desiredRepairFindings,createdAt:now});
+      findings:plan.desiredRepairFindings,createdAt:now,purpose:plan.desiredReviewPurpose});
     const oldRows=plan.activeRepairReviewIds.map(id=>reviewMap.get(id)).filter(Boolean) as Review[];
     const oldDue=oldRows.map(row=>row.due_date).filter(Boolean).sort()[0];
-    const dueDate=oldDue&&oldDue>todayString()?oldDue:todayString();
+    const targetLevel=masteryLevelForTargets(materializedParts,plan.desiredRepairFindings.map(row=>row.error_type));
+    const failureStrength=classifyFailureStrength({masteryLevel:targetLevel,
+      unresolvedTargetCount:materializedParts.length,errorTypes:plan.desiredRepairFindings.map(row=>row.error_type)});
+    const schedule=taskDraftFromPrescription({prescription,sourceAttemptId:source.id,sourceDate:source.date,
+      errors:plan.desiredRepairFindings.map(row=>row.error_type),daysRemaining:daysUntilExam(todayString(),examMeta?.value||"2026-11-15"),
+      masteryLevel:targetLevel,failureStrength,examRelevance:['S','SS','A+'].includes(String(problem.strategy_rank||problem.roadmap_rank||''))?'high':'medium',
+      strategyRank:problem.strategy_rank||problem.roadmap_rank});
+    const dueDate=plan.desiredReviewPurpose==="retrieval_check"?schedule.dueDate:
+      oldDue&&oldDue>todayString()?oldDue:schedule.dueDate;
     const interval=Math.max(0,differenceInCalendarDays(dueDate,source.date)||0);
     if(survivingActive.length===1&&plan.reviewsToSupersede.length===0){
       const current=survivingActive[0],revision=Math.max(1,Number(current.contract_revision||1))+1;
@@ -950,23 +964,30 @@ async function reconcileProblemLearningState(problemId?:string,preview=false):Pr
       continue;
     }
     const inserted=await addOrReplaceReview({problem_id:problem.problem_id,due_date:dueDate,
-      review_type:prescription.reviewScope,status:"pending",generated_from_attempt_id:source.id,
+      review_type:plan.desiredReviewPurpose==="retrieval_check"?"light_check":prescription.reviewScope,
+      status:"pending",generated_from_attempt_id:source.id,
       source_attempt_id:source.id,source_date:source.date,review_after_days:interval,interval_days:interval,
       schedule_origin:"policy",duration_minutes:contract.estimatedMinutes,estimated_minutes:contract.estimatedMinutes,
       reason:"最新の有効な答案証拠から、現在未解決の採点対象だけを再構成",
       review_reason:"最新の有効な答案証拠から、現在未解決の採点対象だけを再構成",
       task_origin:"review_attempt",attempt_exists:true,origin:source.parent_past_session_id?"past_exam_attempt":"direct_attempt",
       target_problem_id:problem.problem_id,parent_past_session_id:source.parent_past_session_id,
-      generated_at:now,learning_purpose:"error_repair",learning_stage:"repair",
-      assessment_timing:source.date===todayString()?"same_session_correction":"delayed_retrieval",
+      generated_at:now,learning_purpose:plan.desiredReviewPurpose,
+      learning_stage:plan.desiredReviewPurpose==="retrieval_check"?"maintenance":"repair",
+      assessment_timing:"delayed_retrieval",
       review_scope:contract.reviewScope,effective_review_scope:contract.reviewScope,
       effective_mode:contract.mode,sheet_type:contract.sheetType,target_kind:contract.targetKind,
       targeted_parts:contract.targetedParts,graded_parts:contract.gradedParts.map(part=>part.label),
       graded_part_ids:contract.gradedParts.map(part=>part.id),graded_findings:plan.desiredRepairFindings,
       scope_completion_conditions:contract.completionConditions,required_evidence:contract.requiredEvidence,
       allowed_reference_level:contract.allowedReferenceLevel,policy_version:LEARNING_POLICY_VERSION,
-      retention_eligible:false,success_transition:"retrieval_check",failure_transition:"error_repair",
+      retention_eligible:true,success_transition:plan.desiredReviewPurpose==="retrieval_check"?"stable":"retrieval_check",
+      failure_transition:"error_repair",correction_provided:plan.desiredReviewPurpose==="retrieval_check",
+      retention_pending:plan.desiredReviewPurpose==="retrieval_check",mastery_level:targetLevel,
+      review_strategy:"same_problem_retention",
       deduplication_key:`reconcile:${problem.problem_id}:${source.id}:${contract.gradedParts.map(part=>part.id).sort().join(",")}:${LEARNING_POLICY_VERSION}`,
+      earliest_date:schedule.window.earliestDate,preferred_date:schedule.window.preferredDate,
+      latest_date:schedule.window.latestDate,
       grading_contract:contract,contract_id:contract.contractId,contract_version:contract.contractVersion,
       contract_hash:contract.contractHash});
     for(const id of plan.reviewsToSupersede.map(row=>row.reviewId))await db.reviews.update(id,{replaced_by_review_id:inserted});
@@ -1131,6 +1152,8 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     ,parent_past_session_id:Number(input.parent_past_session_id||0)||undefined
      ,contract_id:input.contract_id,contract_version:input.contract_version,contract_hash:input.contract_hash
      ,semantic_rebind_from_review_id:input.semantic_rebind_from_review_id,semantic_rebind_message:input.semantic_rebind_message
+     ,learning_event_kind:learningEventKind({purpose:learningPurpose,timing:assessmentTiming,
+       transferEvidence:!!input.transfer_evidence,isAssessment:!input.generated_from_review_id})
      ,grading_contract:sourceReview?.grading_contract,explicitly_out_of_scope_parts:input.explicitly_out_of_scope_parts||[]
      ,submission_id:submissionId,source_review_id:input.generated_from_review_id,saved_at:new Date().toISOString()
      ,exclude_from_metrics:false
@@ -1187,8 +1210,11 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     :input.generated_from_review_id&&exceedsAllowed
       ?{...basePlan,interval_days:Math.min(7,basePlan.interval_days||7),review_reason:"許可参照段階を超えたため、次回間隔を軽く短縮する。"}
       :basePlan;
-  const nextPurpose=sourceReview?transition?.nextPurpose:(effectiveErrors.length?"error_repair":
-    problem.source_type==="past_exam"?undefined:"retrieval_check");
+  const hasNewStableObservation=(input.observed_out_of_scope_findings||[]).some(row=>row.stable_target_key);
+  const hasStructuredUnresolved=(input.graded_findings||[]).some(row=>!row.resolved&&row.error_type!=="none");
+  const nextPurpose=sourceReview?transition?.nextPurpose:
+    (hasStructuredUnresolved||hasNewStableObservation)?undefined:effectiveErrors.length?"error_repair":
+      problem.source_type==="past_exam"?undefined:"retrieval_check";
   const delayedPrescription=nextPurpose?resolveLearningPolicy({problemId:input.problem_id,problem,source:{...input,
     error_types:effectiveErrors.length?effectiveErrors:["none"],learning_purpose:nextPurpose,
     assessment_timing:"delayed_retrieval"},learningPurpose:nextPurpose,
@@ -1211,22 +1237,9 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     retention_eligible:true,success_transition:delayedPrescription.successTransition,failure_transition:delayedPrescription.failureTransition,
     ...planFields(plan),interval_days:delayedInterval
   });
-  if(effectiveErrors.length&&!input.generated_from_review_id){
-    const immediate=resolveLearningPolicy({problemId:input.problem_id,problem,source:{...input,error_types:effectiveErrors,
-      learning_purpose:"error_repair",assessment_timing:"same_session_correction"},targetedParts:input.targeted_parts});
-    const immediateDraft=taskDraftFromPrescription({prescription:immediate,sourceAttemptId:id,sourceDate:date,errors:effectiveErrors});
-    await addOrReplaceReview({problem_id:input.problem_id,due_date:date,review_type:"same_session_correction",status:"pending",
-      generated_from_attempt_id:id,duration_minutes:immediate.estimatedMinutes,reason:immediate.schedulingReason,task_origin:"review_attempt",attempt_exists:true,
-      origin:input.parent_past_session_id?"past_exam_attempt":"direct_attempt",target_problem_id:input.problem_id,
-      parent_past_session_id:Number(input.parent_past_session_id||0)||undefined,generated_at:new Date().toISOString(),
-      review_scope:immediate.reviewScope,targeted_parts:immediate.targetedParts,scope_completion_conditions:immediate.completionConditions,
-      effective_mode:immediate.mode==="exam_90min"?"full":immediate.mode,sheet_type:immediate.sheetType,
-      learning_purpose:"error_repair",learning_stage:"repair",assessment_timing:"same_session_correction",target_kind:immediate.targetKind,
-      required_evidence:immediate.requiredEvidence,policy_version:immediate.policyVersion,source_attempt_id:id,
-      deduplication_key:immediateDraft.deduplicationKey,earliest_date:date,preferred_date:date,latest_date:date,
-      retention_eligible:false,success_transition:"delayed_retrieval",failure_transition:"delayed_retrieval",
-      ...planFields(plan),interval_days:0});
-  }
+  // GPT feedback supplies the immediate correction. Do not automatically ask
+  // for a second graded submission in the same session; reconciliation creates
+  // one evidence-based delayed test for the unresolved stable target set.
   if(plan.completion_candidate) await db.problems.update(input.problem_id,{completion_status:"completion_candidate"});
   const weakCandidates=primary==="none"?[]:input.weak_notes?.length?input.weak_notes:input.weak_note?[input.weak_note]:
     primary!=="none"&&localizedErrorPoint?[{theme:input.theme||problem.theme,error_type:primary,mistake:localizedErrorPoint,correction_rule:japaneseizeMathText(input.correction_rule||localizedNextAction)}]:[];

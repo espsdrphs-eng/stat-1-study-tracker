@@ -5,7 +5,7 @@ import {buildGradingContractSnapshot,taskFieldsFromContract} from "../src/gradin
 
 const {db,localGet,localPost}=await import("../src/localDb.ts");
 
-test("in-scope retrieval graduation and a major out-of-scope Level 2 repair coexist",async()=>{
+test("in-scope retrieval graduation and a major out-of-scope Level 2 future retention coexist",async()=>{
   const problemId="WB-2-S-07";
   await localGet("/api/bootstrap");
   await db.attempts.where("problem_id").equals(problemId).delete();
@@ -41,9 +41,14 @@ test("in-scope retrieval graduation and a major out-of-scope Level 2 repair coex
   assert.equal(active.length,1);
   assert.equal(active[0].grading_contract.gradedParts.length,1);
   assert.equal(active[0].grading_contract.gradedParts[0].masteryLevel,2);
+  assert.equal(active[0].learning_purpose,"retrieval_check");
+  assert.equal(active[0].assessment_timing,"delayed_retrieval");
+  assert.equal(active[0].correction_provided,true);
+  assert.equal(active[0].earliest_date,"2026-08-21");
+  assert.equal(active[0].latest_date,"2026-08-25");
   const bootstrap=await localGet("/api/bootstrap");
   assert.equal(bootstrap.masteryByProblem[problemId].levels[0].status,"retained");
-  assert.equal(bootstrap.masteryByProblem[problemId].levels[1].status,"repairing");
+  assert.equal(bootstrap.masteryByProblem[problemId].levels[1].status,"retention_pending");
   const preview=await localPost("/api/integrity/preview",{});
   assert.equal(preview.changes.reviewsReplaced,0);
 });

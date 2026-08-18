@@ -2,6 +2,7 @@ import type { AdaptivePlanDay, Problem, ProblemAlias, Review, Task } from "./typ
 import { taskFieldsFromContract } from "./gradingContract.ts";
 import { reviewExecutionState } from "./integrityEngine.ts";
 import { resolveCanonicalProblemId } from "./examReadiness.ts";
+import {currentActionFingerprint} from "./examOptimizationPolicy.ts";
 
 export const ADAPTIVE_PLANNER_VERSION="adaptive-v1";
 
@@ -13,8 +14,7 @@ function taskMode(kind:AdaptivePlanDay["tasks"][number]["kind"]){
 }
 
 function logicalKey(task:Task){
-  return task.id?`review:${task.id}`:
-    `${task.problem_id}|${task.learning_purpose||task.purpose_label||task.kind}|${task.mode}|${task.triage}`;
+  return currentActionFingerprint(task,task.id&&task.review_type?task:undefined);
 }
 
 /**
@@ -86,8 +86,7 @@ export function adaptivePlanDayToTasks(args:{
   });
 }
 
-const projectionKey=(task:Task)=>task.id&&task.review_type?`review:${task.id}`:
-  `${task.plan_origin||""}|${task.problem_id}|${task.kind}|${task.mode}`;
+const projectionKey=(task:Task)=>`${task.plan_origin||""}|${currentActionFingerprint(task,task.id&&task.review_type?task:undefined)}`;
 const projectionSlot=(task:Task)=>task.id&&task.review_type?"repair":task.triage==="if_time"?"maintenance":"score";
 
 /**

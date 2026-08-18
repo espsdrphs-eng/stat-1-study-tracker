@@ -116,6 +116,34 @@ test("a delayed check sourced from an unresolved Attempt is stale",()=>{
   assert.equal(plan.replacementRequired,true);
 });
 
+test("feedback-backed unresolved evidence goes directly to one delayed retrieval Review",()=>{
+  const stableTargetKey="target:WB-4-A-29:root:00000000-0000-4000-8000-000000000055";
+  const stablePart={...part("A"),stableTargetKey,currentLabel:"A-evidence",currentEvidence:"A-evidence",
+    currentErrorType:"N",currentCorrection:"Aをその場で訂正済み",evidenceSourceAttemptId:2,evidenceUpdatedAt:"2026-08-05"};
+  const failed=attempt(2,"2026-08-05",[finding("A","N",false)],{next_action:"Aをその場で訂正済み",saved_gpt_feedback:true,
+    learning_event_kind:"assessment",grading_contract:{...contract(["A"]),sourceAttemptId:2,gradedParts:[stablePart]}});
+  const delayed=review(12,2,["A"],{review_type:"light_check",learning_purpose:"retrieval_check",
+    assessment_timing:"delayed_retrieval",correction_provided:true,retention_pending:true,
+    grading_contract:{...contract(["A"],"retrieval_check"),sourceAttemptId:2,gradedParts:[stablePart]}});
+  const plan=analyzeReviewReconciliation({attempts:[failed],reviews:[delayed],today:"2026-08-10"}).problems[0];
+  assert.equal(plan.desiredReviewPurpose,"retrieval_check");
+  assert.equal(plan.reviewsToSupersede.length,0);
+  assert.equal(plan.replacementRequired,false);
+});
+
+test("explicit success on another problem substitutes the same-problem delayed Review",()=>{
+  const failed=attempt(2,"2026-08-05",[finding("A","N",false)],{next_action:"Aを訂正",saved_gpt_feedback:true});
+  const transfer={...attempt(3,"2026-08-08",[],{problem_id:"PY-2021-Q1",source_problem_id:"WB-4-A-29",
+    transfer_evidence:true,learning_purpose:"transfer_check",assessment_timing:"independent_performance",
+    review_outcome:"success",error_type:"none",error_types:["none"],actual_reference_level:0}),graded_part_ids:[],graded_findings:[]};
+  const delayed=review(12,2,["A"],{review_type:"light_check",learning_purpose:"retrieval_check",
+    assessment_timing:"delayed_retrieval",grading_contract:contract(["A"],"retrieval_check")});
+  const plan=analyzeReviewReconciliation({attempts:[failed,transfer],reviews:[delayed],today:"2026-08-10"})
+    .problems.find(row=>row.problemId==="WB-4-A-29");
+  assert.deepEqual(plan.desiredRepairParts,[]);
+  assert.match(plan.reviewsToSupersede[0].reason,/transfer成功/);
+});
+
 test("duplicate active repairs reconcile to one current target set",()=>{
   const old=attempt(1,"2026-08-01",[finding("A")]);
   const rows=[review(10,1,["A"]),review(11,1,["A"])];
