@@ -81,7 +81,7 @@ export type GradedPartContract={
   /** Mutable current-state payload. Identity must never be derived from these fields. */
   currentLabel?:string;currentEvidence?:string;currentErrorType?:GradingErrorType;
   currentCorrection?:string;evidenceSourceAttemptId?:number;evidenceUpdatedAt?:string;
-  masteryLevel?:1|2|3;
+  masteryLevel?:1|2|3;rootCauseKey?:string;
 };
 export type GradedFinding={
   graded_part_id:string;error_type:GradingErrorType;evidence:string;resolved:boolean;
@@ -89,15 +89,39 @@ export type GradedFinding={
 export type ObservedOutOfScopeFinding={
   mastery_level:1|2|3;finding:string;evidence:string;materiality:"minor"|"major";
   confidence:"low"|"medium"|"high";create_target_candidate:boolean;
-  correction?:string;
+  correction?:string;finding_id?:string;root_cause_key?:string;
   /** Original GPT-facing category. `mastery_level` remains the canonical numeric level. */
   mastery_area?:"skeleton"|"main_calc"|"transfer"|"other";
   /** Issued only by the app after validation. GPT must not invent this identity. */
   stable_target_key?:string;
 };
+export type AttachmentEvidenceKind="problem_statement"|"official_reference_answer"|"supplemental_reference"|"current_answer"|"unrelated_or_unknown";
+export type WholeAnswerAttachment={
+  attachment_id:string;kind:AttachmentEvidenceKind;description:string;
+  coverage:"full"|"partial"|"insufficient";page_count?:number;
+};
+export type WholeAnswerRegionStatus="checked_correct"|"checked_error"|"uncertain"|"not_checkable";
+export type WholeAnswerRegion={
+  region_id:string;description:string;answer_present:boolean;readable:true|"partial"|false;
+  reference_available:boolean;status:WholeAnswerRegionStatus;finding_ids:string[];
+};
+export type DiagnosticUncertainty={
+  region_id:string;description:string;reason:"handwriting"|"missing_reference"|"ambiguous_formula"|"other";
+  potential_materiality:"minor"|"major";confidence:"low"|"medium";
+  candidate_interpretations:string[];user_action_required:boolean;
+};
 export type WholeAnswerScan={
-  performed:boolean;reference_coverage:"full"|"partial"|"insufficient";
+  performed:boolean;
+  /** Backward-compatible alias of effective_reference_coverage. */
+  reference_coverage:"full"|"partial"|"insufficient";
+  app_reference_coverage:"full"|"partial"|"insufficient";
+  effective_reference_coverage:"full"|"partial"|"insufficient";
+  written_answer_coverage:"full"|"partial"|"insufficient";
   confidence:"low"|"medium"|"high";reason:string;
+  attachments:WholeAnswerAttachment[];regions:WholeAnswerRegion[];
+};
+export type WholeAnswerDiagnosticBaseline={
+  scoreNumeric:number|null;scoreLabel:string;mark:string;gradedFindingsFingerprint:string;
 };
 export type MasteryLevelStatus="unconfirmed"|"repairing"|"retention_pending"|"retained"|"needs_recheck";
 export type MasteryLevelState={
@@ -151,6 +175,9 @@ export type Attempt = {
   graded_findings?:GradedFinding[]; assumed_correct_parts?:string[];
   observed_out_of_scope_findings?:ObservedOutOfScopeFinding[];
   whole_answer_scan?:WholeAnswerScan;
+  diagnostic_uncertainties?:DiagnosticUncertainty[];
+  whole_answer_diagnostic_version?:string;whole_answer_diagnostic_updated_at?:string;
+  whole_answer_diagnostic_source_hash?:string;whole_answer_diagnostic_baseline?:WholeAnswerDiagnosticBaseline;
   unresolved_carryover?:string[];
   review_scope?:"targeted_patch"|"full_skeleton"|"main_calc_target"|"check_only"|"full_answer"|"scan5";
   targeted_parts?:string[]; k_evidence?:string[]; k_evidence_valid?:boolean;
@@ -531,6 +558,7 @@ export type StudyUpdate = {
   graded_part_ids?:string[];graded_findings?:GradedFinding[];
   observed_out_of_scope_findings?:ObservedOutOfScopeFinding[];
   whole_answer_scan?:WholeAnswerScan;
+  diagnostic_uncertainties?:DiagnosticUncertainty[];
   submission_id?:string;source_review_id?:number;
   semantic_rebind_from_review_id?:number;semantic_rebind_message?:string;
   /** Import provenance only. The persisted mark is recalculated by the app. */

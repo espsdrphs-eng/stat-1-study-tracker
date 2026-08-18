@@ -24,7 +24,7 @@ import { analyzeLegacyKReorganization } from "./legacyKRepair.ts";
 import { classifyKPolicyValidity, excludeLegacyKFromPlanning, planningErrorsForSource } from "./legacyKPolicy.ts";
 import { analyzeSourceMismatchRepair, resolveReviewOrigin, REVIEW_ORIGIN_POLICY_VERSION } from "./reviewOrigin.ts";
 import { normalizePastExamSession, parseScan5Update, sessionStudyMinutes, validatePastExamSession } from "./pastExamWorkflow.ts";
-import { auditLegacyReviewContracts, buildGradingContractSnapshot, computeContractHash, contractDifferences, prescriptionFromContract, repairTargets, taskFieldsFromContract } from "./gradingContract.ts";
+import { auditLegacyReviewContracts, buildGradingContractSnapshot, buildProblemContextPack, computeContractHash, contractDifferences, prescriptionFromContract, repairTargets, taskFieldsFromContract } from "./gradingContract.ts";
 import { primaryErrorFromFindings, validateGradedFindings } from "./gradedParts.ts";
 import {
   addCalendarDays, auditReviewSchedules, differenceInCalendarDays, pendingReviewIdentityKey, resolveReviewSchedule,
@@ -59,6 +59,7 @@ import {materializeObservedOutOfScopeFindings} from "./outOfScopeObservations.ts
 import {deriveCurrentTodayProjection} from "./currentTodayProjection.ts";
 import {resolveSemanticReviewGeneration} from "./reviewGeneration.ts";
 import {classifyFailureStrength,learningEventKind,masteryLevelForTargets} from "./examOptimizationPolicy.ts";
+import {parseWholeAnswerRediagnosis,WHOLE_ANSWER_DIAGNOSTIC_VERSION,wholeAnswerDiagnosticFingerprint} from "./wholeAnswerDiagnostic.ts";
 
 const PLANNER_RUNTIME_MODE_META_KEY="planner-runtime-mode";
 
@@ -796,8 +797,10 @@ async function validateOutOfScopeObservations(input:StudyUpdate&Record<string,un
     .filter(review=>ACTIVE_REVIEW_STATUSES.has(review.status)&&!review.exclude_from_planning);
   const currentText=new Set(reviews.flatMap(review=>(review.grading_contract?.gradedParts||[]).flatMap(part=>
     [part.currentLabel,part.currentEvidence,part.label].map(value=>String(value||"").trim()).filter(Boolean))));
+  const currentRootTargets=new Map(reviews.flatMap(review=>(review.grading_contract?.gradedParts||[])
+    .flatMap(part=>part.rootCauseKey&&part.stableTargetKey?[[part.rootCauseKey,part.stableTargetKey] as const]:[])));
   return materializeObservedOutOfScopeFindings({rows,scan:input.whole_answer_scan,mode:String(input.mode),currentPayloads:currentText,
-    issueKey:()=>issueStableTargetKey(input.problem_id)});
+    currentRootTargets,issueKey:()=>issueStableTargetKey(input.problem_id)});
 }
 
 function materializeContractStableRoots(problemId:string,contract:GradingContractSnapshot){
@@ -1125,6 +1128,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     graded_findings:input.graded_findings||[],assumed_correct_parts:input.assumed_correct_parts||[],
     observed_out_of_scope_findings:input.observed_out_of_scope_findings||[],
     whole_answer_scan:input.whole_answer_scan,
+    diagnostic_uncertainties:input.diagnostic_uncertainties||[],
     unresolved_carryover:input.unresolved_carryover||[],review_scope:input.review_scope,
     targeted_parts:input.targeted_parts||[],k_evidence:input.k_evidence||[],
     k_evidence_valid:input.k_evidence_valid==null?undefined:!!input.k_evidence_valid,effective_error_types:input.effective_error_types||[],hint_used:!!input.hint_used,
@@ -3196,6 +3200,56 @@ async function repairIntegrity(preview=false){
       duplicateStableTargets:reconciliationPreview.duplicateStableTargets}};
 }
 
+async function wholeAnswerDiagnosticContext(attempt:Attempt){
+  const [problems,aliases,answers,attempts,reviews]=await Promise.all([
+    db.problems.toArray(),db.problemAliases.toArray(),db.answerIndex.toArray(),db.attempts.toArray(),db.reviews.toArray(),
+  ]);
+  return buildProblemContextPack({problemId:attempt.problem_id,problems,aliases,answers,attempts,reviews,currentSourceAttemptId:attempt.id});
+}
+
+async function prepareWholeAnswerRediagnosis(attemptId:number,text:string){
+  const attempt=await db.attempts.get(attemptId);if(!attempt)throw new Error("解答履歴が見つかりません");
+  const context=await wholeAnswerDiagnosticContext(attempt),parsed=parseWholeAnswerRediagnosis(text,context);
+  if(parsed.attemptId&&parsed.attemptId!==attempt.id)throw new Error("GPT回答のAttempt IDが現在の履歴と一致しません");
+  if(parsed.problemId&&resolveCanonicalProblemId(parsed.problemId,await db.problemAliases.toArray())!==context.canonicalProblemId)
+    throw new Error("GPT回答のproblem_idが現在の履歴と一致しません");
+  const activeReviews=(await db.reviews.where("problem_id").equals(attempt.problem_id).toArray())
+    .filter(review=>ACTIVE_REVIEW_STATUSES.has(review.status)&&!review.exclude_from_planning);
+  const currentRootTargets=new Map<string,string>();
+  for(const row of (await db.attempts.where("problem_id").equals(attempt.problem_id).toArray())
+    .flatMap(item=>item.observed_out_of_scope_findings||[]))
+    if(row.root_cause_key&&row.stable_target_key)currentRootTargets.set(row.root_cause_key,row.stable_target_key);
+  for(const part of activeReviews.flatMap(review=>review.grading_contract?.gradedParts||[]))
+    if(part.rootCauseKey&&part.stableTargetKey)currentRootTargets.set(part.rootCauseKey,part.stableTargetKey);
+  const currentPayloads=[...(attempt.observed_out_of_scope_findings||[]).flatMap(row=>[row.finding,row.evidence]),
+    ...activeReviews.flatMap(review=>(review.grading_contract?.gradedParts||[]).flatMap(part=>[part.currentLabel||part.label,part.currentEvidence||""]))];
+  const findings=materializeObservedOutOfScopeFindings({rows:parsed.findings,scan:parsed.wholeAnswerScan,mode:attempt.mode,
+    currentPayloads,currentRootTargets,issueKey:()=>issueStableTargetKey(attempt.problem_id)});
+  const fingerprint=wholeAnswerDiagnosticFingerprint({scan:parsed.wholeAnswerScan,findings,uncertainties:parsed.uncertainties});
+  return {attempt,context,scan:parsed.wholeAnswerScan,findings,uncertainties:parsed.uncertainties,fingerprint};
+}
+
+async function previewWholeAnswerRediagnosis(attemptId:number,text:string){
+  const prepared=await prepareWholeAnswerRediagnosis(attemptId,text);
+  return {ok:true,attemptId,problemId:prepared.attempt.problem_id,changes:prepared.attempt.whole_answer_diagnostic_source_hash===prepared.fingerprint?0:1,
+    original:{scoreLabel:prepared.attempt.score_label,scoreNumeric:prepared.attempt.score_numeric??null,mark:prepared.attempt.mark},
+    wholeAnswerScan:prepared.scan,findings:prepared.findings,uncertainties:prepared.uncertainties,fingerprint:prepared.fingerprint};
+}
+
+async function saveWholeAnswerRediagnosis(attemptId:number,text:string){
+  const prepared=await prepareWholeAnswerRediagnosis(attemptId,text),attempt=prepared.attempt;
+  if(attempt.whole_answer_diagnostic_source_hash===prepared.fingerprint)return {ok:true,attemptId,changes:0,reconciled:0};
+  const baseline=attempt.whole_answer_diagnostic_baseline||{scoreNumeric:attempt.score_numeric??null,scoreLabel:attempt.score_label,mark:attempt.mark,
+    gradedFindingsFingerprint:JSON.stringify(attempt.graded_findings||[])};
+  await db.attempts.update(attempt.id,{whole_answer_scan:prepared.scan,observed_out_of_scope_findings:prepared.findings,
+    diagnostic_uncertainties:prepared.uncertainties,whole_answer_diagnostic_version:WHOLE_ANSWER_DIAGNOSTIC_VERSION,
+    whole_answer_diagnostic_updated_at:new Date().toISOString(),whole_answer_diagnostic_source_hash:prepared.fingerprint,
+    whole_answer_diagnostic_baseline:baseline});
+  const reconciled=await reconcileProblemLearningState(attempt.problem_id);
+  return {ok:true,attemptId,changes:1,reconciled:reconciled.reviewsSuperseded+reconciled.reviewsReplaced,
+    original:{scoreLabel:attempt.score_label,scoreNumeric:attempt.score_numeric??null,mark:attempt.mark}};
+}
+
 export async function localPost<T>(path:string,body:any):Promise<T>{
   await initialize();
   if(path==="/api/database/repair"){
@@ -3343,6 +3397,13 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
       if(logs.length)await db.correctionLogs.bulkAdd(logs as CorrectionLog[]);
     });
     notifyStudyDataChanged({operation:"save-gpt-import"});
+  } else if(/^\/api\/attempts\/\d+\/whole-diagnostic\/preview$/.test(path)) {
+    return await previewWholeAnswerRediagnosis(Number(path.split("/")[3]),String(body.text||"")) as T;
+  } else if(/^\/api\/attempts\/\d+\/whole-diagnostic\/save$/.test(path)) {
+    const result=await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.meta,db.answerIndex,db.problemAliases],
+      ()=>saveWholeAnswerRediagnosis(Number(path.split("/")[3]),String(body.text||"")));
+    notifyStudyDataChanged({operation:"rediagnose-whole-answer"});
+    return result as T;
   } else if(/^\/api\/attempts\/\d+\/update$/.test(path)) {
     await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.problemAliases],
       ()=>updateAttemptAnalysis(Number(path.split("/")[3]),body));

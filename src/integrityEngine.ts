@@ -12,6 +12,7 @@ import {daysUntilExam} from "./studyProgress.ts";
 import {resolvePersistedAttemptLifecycle} from "./reviewTransition.ts";
 import {canonicalAttemptId,logicalReviewKey,reviewExecutionMessage,reviewExecutionState,type ReviewExecutionState} from "./reviewCurrentState.ts";
 import {resolveSemanticReviewGeneration} from "./reviewGeneration.ts";
+import {WHOLE_ANSWER_DIAGNOSTIC_VERSION,wholeAnswerDiagnosticIssues} from "./wholeAnswerDiagnostic.ts";
 
 export const ACTIVE_REVIEW_STATUSES = new Set(["pending", "overdue"]);
 
@@ -130,7 +131,13 @@ export type IntegrityCategory =
   | "formal_plan_current_projection_mismatch" | "deleted_attempt_active_descendant"
   | "stale_contract_equivalent_replacement" | "current_action_identity_mismatch"
   | "past_exam_share_below_phase_target" | "whitebook_backlog_suppressing_past_exam"
-  | "same_session_review_from_successful_out_of_scope_only" | "unnecessary_same_problem_review_after_transfer";
+  | "same_session_review_from_successful_out_of_scope_only" | "unnecessary_same_problem_review_after_transfer"
+  | "attached_full_reference_downgraded_by_app_metadata" | "written_answer_region_unaccounted"
+  | "readable_region_not_evaluated" | "material_uncertainty_not_surfaced"
+  | "whole_scan_empty_with_material_uncertainty" | "same_root_duplicate_target"
+  | "independent_major_finding_not_promoted" | "contract_confidence_used_as_whole_scan_confidence"
+  | "rediagnosis_changed_original_score" | "rediagnosis_changed_original_mark"
+  | "rediagnosis_duplicate_target" | "rediagnosis_duplicate_review" | "problem_specific_whole_scan_branch";
 
 export type IntegrityIssue = {
   category: IntegrityCategory;
@@ -177,6 +184,28 @@ export function runIntegrityAudit(args: {
   const reconciliation=analyzeReviewReconciliation({attempts,reviews,aliases,today,todayPlanSnapshots});
   const stableTargets=buildStableTargetIndex({attempts,reviews,aliases});
   const problemById=new Map(problems.map(problem=>[resolveCanonicalProblemId(problem.problem_id,aliases),problem]));
+
+  for(const attempt of attempts.filter(row=>row.whole_answer_diagnostic_version===WHOLE_ANSWER_DIAGNOSTIC_VERSION)){
+    const scan=attempt.whole_answer_scan,findings=attempt.observed_out_of_scope_findings||[],uncertainties=attempt.diagnostic_uncertainties||[];
+    const hasFullProblem=scan?.attachments.some(row=>row.kind==="problem_statement"&&row.coverage==="full");
+    const hasFullOfficial=scan?.attachments.some(row=>row.kind==="official_reference_answer"&&row.coverage==="full");
+    if(hasFullProblem&&hasFullOfficial&&scan?.effective_reference_coverage!=="full")issues.push({
+      category:"attached_full_reference_downgraded_by_app_metadata",severity:"active",attemptIds:[attempt.id],
+      detail:`Attempt ${attempt.id} has complete attached reference but effective coverage is not full`,repairable:true});
+    for(const diagnostic of wholeAnswerDiagnosticIssues(scan,findings,uncertainties))issues.push({
+      category:diagnostic.category,severity:"active",attemptIds:[attempt.id],detail:`Attempt ${attempt.id}: ${diagnostic.detail}`,repairable:true});
+    const rootsWithTarget=new Set(attempts.flatMap(row=>row.observed_out_of_scope_findings||[])
+      .filter(row=>!!row.stable_target_key).map(row=>row.root_cause_key).filter(Boolean));
+    for(const row of findings)if(row.materiality==="major"&&row.confidence==="high"&&row.create_target_candidate&&
+      !row.stable_target_key&&(!row.root_cause_key||!rootsWithTarget.has(row.root_cause_key)))issues.push({
+        category:"independent_major_finding_not_promoted",severity:"active",attemptIds:[attempt.id],
+        detail:`Attempt ${attempt.id} major finding ${row.finding_id||row.finding} was not promoted`,repairable:true});
+    const baseline=attempt.whole_answer_diagnostic_baseline;
+    if(baseline&&baseline.scoreNumeric!==(attempt.score_numeric??null)||baseline&&baseline.scoreLabel!==attempt.score_label)issues.push({
+      category:"rediagnosis_changed_original_score",severity:"active",attemptIds:[attempt.id],detail:`Attempt ${attempt.id} original score changed after rediagnosis`,repairable:false});
+    if(baseline&&baseline.mark!==attempt.mark)issues.push({category:"rediagnosis_changed_original_mark",severity:"active",attemptIds:[attempt.id],
+      detail:`Attempt ${attempt.id} original mark changed after rediagnosis`,repairable:false});
+  }
 
   for(const review of active){
     const source=attemptsById.get(Number(review.source_attempt_id||review.generated_from_attempt_id||0));
@@ -555,6 +584,11 @@ export function runIntegrityAudit(args: {
     "deleted_attempt_active_descendant", "stale_contract_equivalent_replacement",
     "current_action_identity_mismatch", "past_exam_share_below_phase_target", "whitebook_backlog_suppressing_past_exam",
     "same_session_review_from_successful_out_of_scope_only", "unnecessary_same_problem_review_after_transfer",
+    "attached_full_reference_downgraded_by_app_metadata", "written_answer_region_unaccounted",
+    "readable_region_not_evaluated", "material_uncertainty_not_surfaced", "whole_scan_empty_with_material_uncertainty",
+    "same_root_duplicate_target", "independent_major_finding_not_promoted", "contract_confidence_used_as_whole_scan_confidence",
+    "rediagnosis_changed_original_score", "rediagnosis_changed_original_mark", "rediagnosis_duplicate_target",
+    "rediagnosis_duplicate_review", "problem_specific_whole_scan_branch",
   ];
   const counts = Object.fromEntries(categories.map((category) =>
     [category, issues.filter((issue) => issue.category === category).length])) as Record<IntegrityCategory, number>;

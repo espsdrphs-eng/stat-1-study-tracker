@@ -13,7 +13,8 @@ import AdvancedImportView from "./AdvancedImportView";
 import { problemDisplayLabel } from "./importParser";
 import { createAttemptReviewPlan } from "./reviewRules";
 import { analyzeWeakTrends, buildQuizPrompt } from "./weakTrend";
-import { buildFirstAttemptGradingPrompt, buildRepairPrompt, buildReviewGradingPrompt } from "./gradingPrompt";
+import { buildFirstAttemptGradingPrompt, buildRepairPrompt, buildReviewGradingPrompt, buildWholeAnswerRediagnosisPrompt } from "./gradingPrompt";
+import { buildProblemContextPack } from "./gradingContract.ts";
 import {shouldShowReviewPrompt} from "./reviewUiPolicy.ts";
 import { reviewMode, reviewTemplate } from "./reviewPresentation";
 import {
@@ -810,6 +811,9 @@ function MasteryLevels({levels}:{levels:MasteryLevelState[]}){
 function ProblemDetail({problem,data,run,busy,onBack,onImport}:{problem:Problem;data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean;onBack:()=>void;onImport:()=>void}) {
   const [editing,setEditing]=useState<Attempt|null>(null);
   const [form,setForm]=useState<Record<string,string>>({});
+  const [rediagnosing,setRediagnosing]=useState<Attempt|null>(null);
+  const [rediagnosisText,setRediagnosisText]=useState("");
+  const [rediagnosisPreview,setRediagnosisPreview]=useState<any>(null);
   const canonicalId=resolveCanonicalProblemId(problem.problem_id,data.problemAliases);
   const attempts=data.attempts.filter(a=>resolveCanonicalProblemId(a.problem_id,data.problemAliases)===canonicalId);
   const validAttempts=attempts.filter(attempt=>attemptConsistentForDisplay(attempt,problem));
@@ -841,6 +845,19 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport}:{problem:Problem;
     if(!window.confirm(`${attempt.problem_id}（${attempt.date}）の解答履歴を削除します。関連する復習予定と苦手分析データも削除されます。`))return;
     run(()=>post(`/api/attempts/${attempt.id}/delete`,{}),"解答履歴と関連する復習予定・苦手分析データを削除しました");
   };
+  const rediagnosisPrompt=(attempt:Attempt)=>buildWholeAnswerRediagnosisPrompt(attempt,buildProblemContextPack({
+    problemId:attempt.problem_id,problems:data.problems,aliases:data.problemAliases,answers:data.answerIndex,
+    attempts:data.attempts,reviews:data.reviews,currentSourceAttemptId:attempt.id,
+  }));
+  const openRediagnosis=(attempt:Attempt)=>{setRediagnosing(attempt);setRediagnosisText("");setRediagnosisPreview(null);};
+  const previewRediagnosis=()=>{if(!rediagnosing)return;run(async()=>{
+    const preview=await post<any>(`/api/attempts/${rediagnosing.id}/whole-diagnostic/preview`,{text:rediagnosisText});
+    setRediagnosisPreview(preview);return preview;
+  },"答案全体の再診断内容をプレビューしました");};
+  const saveRediagnosis=()=>{if(!rediagnosing||!rediagnosisPreview)return;const target=rediagnosing;run(async()=>{
+    const result=await post(`/api/attempts/${target.id}/whole-diagnostic/save`,{text:rediagnosisText});
+    setRediagnosing(null);setRediagnosisPreview(null);setRediagnosisText("");return result;
+  },"元の採点を保持して、答案全体の追加診断だけを更新しました");};
   return <><button className="back" onClick={onBack}>← 問題一覧へ</button><div className="detail-hero"><div><div className="detail-badges"><Badge tone={problem.category==="S"?"blue":""}>原典 {problem.category}</Badge>{problem.strategy_rank&&<Badge tone={problem.strategy_rank==="SS"?"red":problem.strategy_rank==="A+"?"orange":""}>実戦 {problem.strategy_rank}</Badge>}</div><h2>{problemDisplayLabel(problem)}</h2><p>{problem.problem_id} ・ {problem.theme}</p></div><button className="primary" onClick={onImport}><ClipboardPaste size={17}/>GPT採点結果を取り込む</button></div>
     {mastery&&<section className="panel problem-mastery"><div className="panel-title"><div><span className="eyebrow">CURRENT MASTERY</span><h3>現在地　Level {mastery.currentLevel} / 3　{mastery.currentTitle}</h3></div><Badge tone={mastery.normalReviewComplete?"blue":"orange"}>{mastery.normalReviewComplete?"通常復習なし":`現在の復習 ${mastery.activeTargetCount} target`}</Badge></div><MasteryLevels levels={mastery.levels}/></section>}
     {latest&&<section className="panel latest-result"><div><span>最新評価</span><strong>{latest.score_text||latest.score_label} {latest.score_numeric!=null?`/ ${latest.score_numeric}点`:""} / {latest.mark}</strong></div><div><span>K/W/N/C</span><strong>{latest.error_types?.join(" + ")||latest.error_type}</strong></div><div><span>次回復習</span><strong>{nextReview?.due_date||"—"}</strong></div></section>}
@@ -863,7 +880,7 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport}:{problem:Problem;
           <InactiveReviewNotice key={review.id} review={review} state={state} successors={reviewSelection.current}/>)}</div>
       </details>}
     </section></div>
-    <section className="panel"><div className="panel-title"><h3>解答履歴</h3><span className="muted">{attempts.length}回</span></div>{attempts.some(a=>a.policy_validity==="invalid_legacy_k")&&<p className="legacy-k-note">旧ルーブリックによるKは履歴として保持していますが、現在の計画・K再発率には使用しません。</p>}{attempts.length?<div className="table-wrap"><table><thead><tr><th>日付</th><th>モード</th><th>評価</th><th>K/W/N/C</th><th>ミス</th><th>次の行動</th><th>操作</th></tr></thead><tbody>{attempts.map(a=>{const consistent=attemptConsistentForDisplay(a,problem);return <tr key={a.id} className={!consistent?"inconsistent-record":""}><td>{a.date}{!consistent&&<small> ID要確認</small>}</td><td>{modes[a.mode]||a.mode}</td><td>{a.mark} / {a.score_label}{a.score_numeric!=null?` ${a.score_numeric}点`:""}</td><td>{(a.error_types||[a.error_type]).filter(error=>error!=="none").map(error=><ErrorBadge key={error} value={error}/>)}{!(a.error_types||[a.error_type]).some(error=>error!=="none")&&<ErrorBadge value="none"/>}{a.policy_validity==="invalid_legacy_k"&&<small className="legacy-k-note">計画対象外</small>}{a.policy_validity==="needs_review"&&<small className="legacy-k-note">根拠要確認</small>}</td><td>{a.error_point||"—"}</td><td>{removeTimingExpressions(a.next_action)||"—"}</td><td><div className="history-actions"><button className="small ghost" onClick={()=>editAttempt(a)}><Pencil size={13}/>編集</button><button className="small danger-button" disabled={busy} onClick={()=>removeAttempt(a)}><Trash2 size={13}/>削除</button></div></td></tr>})}</tbody></table></div>:<Empty>まだ学習記録がありません</Empty>}</section>
+    <section className="panel"><div className="panel-title"><h3>解答履歴</h3><span className="muted">{attempts.length}回</span></div>{attempts.some(a=>a.policy_validity==="invalid_legacy_k")&&<p className="legacy-k-note">旧ルーブリックによるKは履歴として保持していますが、現在の計画・K再発率には使用しません。</p>}{attempts.length?<div className="table-wrap"><table><thead><tr><th>日付</th><th>モード</th><th>評価</th><th>K/W/N/C</th><th>ミス</th><th>次の行動</th><th>操作</th></tr></thead><tbody>{attempts.map(a=>{const consistent=attemptConsistentForDisplay(a,problem);return <tr key={a.id} className={!consistent?"inconsistent-record":""}><td>{a.date}{!consistent&&<small> ID要確認</small>}</td><td>{modes[a.mode]||a.mode}</td><td>{a.mark} / {a.score_label}{a.score_numeric!=null?` ${a.score_numeric}点`:""}</td><td>{(a.error_types||[a.error_type]).filter(error=>error!=="none").map(error=><ErrorBadge key={error} value={error}/>)}{!(a.error_types||[a.error_type]).some(error=>error!=="none")&&<ErrorBadge value="none"/>}{a.policy_validity==="invalid_legacy_k"&&<small className="legacy-k-note">計画対象外</small>}{a.policy_validity==="needs_review"&&<small className="legacy-k-note">根拠要確認</small>}</td><td>{a.error_point||"—"}</td><td>{removeTimingExpressions(a.next_action)||"—"}</td><td><div className="history-actions"><button className="small ghost" onClick={()=>openRediagnosis(a)}><Sparkles size={13}/>答案全体を再診断</button><button className="small ghost" onClick={()=>editAttempt(a)}><Pencil size={13}/>編集</button><button className="small danger-button" disabled={busy} onClick={()=>removeAttempt(a)}><Trash2 size={13}/>削除</button></div></td></tr>})}</tbody></table></div>:<Empty>まだ学習記録がありません</Empty>}</section>
     {editing&&<Modal title="解答履歴を編集" close={()=>setEditing(null)}><form className="form-grid analysis-edit-form" onSubmit={saveEdit}>
       <Field label="問題"><input value={editing.problem_id} readOnly/></Field>
       <Field label="学習日"><input type="date" value={form.date} onChange={event=>setForm({...form,date:event.target.value})}/></Field>
@@ -878,6 +895,13 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport}:{problem:Problem;
       <div className="analysis-edit-note wide"><AlertTriangle size={16}/><span>更新すると、この履歴から作られた復習予定と苦手分析が新しい内容で再計算されます。</span></div>
       <div className="form-actions wide"><button type="button" className="ghost" onClick={()=>setEditing(null)}>キャンセル</button><button className="primary" disabled={busy}>更新する</button></div>
     </form></Modal>}
+    {rediagnosing&&<Modal title="答案全体を再診断" close={()=>setRediagnosing(null)}><div className="analysis-edit-form">
+      <p>元の点数・mark・採点対象・Review履歴は変更せず、追加の重大ミスと判定不能箇所だけを最新版で確認します。</p>
+      <div className="button-row"><button className="ghost" onClick={()=>navigator.clipboard.writeText(rediagnosisPrompt(rediagnosing))}><Copy size={15}/>入力済みGPTプロンプトをコピー</button></div>
+      <Field label="GPTのYAML回答" wide><textarea rows={12} value={rediagnosisText} onChange={event=>{setRediagnosisText(event.target.value);setRediagnosisPreview(null)}} placeholder="whole_answer_diagnostic_update: から始まるYAMLを貼り付け"/></Field>
+      {rediagnosisPreview&&<div className="diagnostic-result wide"><strong>変更プレビュー</strong><p>元の採点：{rediagnosisPreview.original.scoreLabel} / {rediagnosisPreview.original.scoreNumeric??"—"}点・{rediagnosisPreview.original.mark}（変更なし）</p><p>確認領域 {rediagnosisPreview.wholeAnswerScan.regions.length}件・追加finding {rediagnosisPreview.findings.length}件・判定不能 {rediagnosisPreview.uncertainties.length}件</p><small>effective reference: {rediagnosisPreview.wholeAnswerScan.effective_reference_coverage} / written answer: {rediagnosisPreview.wholeAnswerScan.written_answer_coverage}</small></div>}
+      <div className="form-actions wide"><button className="ghost" disabled={!rediagnosisText||busy} onClick={previewRediagnosis}>修復内容をプレビュー</button><button className="primary" disabled={!rediagnosisPreview||busy} onClick={saveRediagnosis}>追加診断だけ保存</button></div>
+    </div></Modal>}
   </>
 }
 

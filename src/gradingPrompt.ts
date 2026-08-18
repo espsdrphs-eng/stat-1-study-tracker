@@ -3,7 +3,7 @@ export const REVIEW_RUBRIC_VERSION="STAT1-REVIEW-v9";
 
 import { removeTimingExpressions } from "./reviewTiming.ts";
 import type { EffectiveReviewScope } from "./reviewScopeResolver.ts";
-import type { GradingContractSnapshot, ProblemContextPack } from "./types.ts";
+import type { Attempt, GradingContractSnapshot, ProblemContextPack } from "./types.ts";
 import { gradedPartIds, gradedPartLabels } from "./gradedParts.ts";
 import { suppliedReferenceCoverage } from "./wholeAnswerDiagnostic.ts";
 
@@ -33,6 +33,25 @@ export type FirstAttemptPromptContext={
   mode?:string;
   estimatedMinutes?:number;
 };
+
+const wholeAnswerRules=`STEP 0で、今回実際に渡された全添付を problem_statement / official_reference_answer / supplemental_reference / current_answer / unrelated_or_unknown に分類する。
+app_reference_coverageはアプリ内資料だけ、effective_reference_coverageはアプリ内資料と今回添付された正式資料の合計、written_answer_coverageは答案全ページの判読範囲とする。完全な問題・公式解答が添付されていれば、appがpartialでもeffectiveはfullになり得る。
+答案の全ページ・continuationを先頭から末尾まで意味のあるregionへ分け、実際に書かれた各regionを checked_correct / checked_error / uncertain / not_checkable のどれかに必ず分類する。読めるregionを未評価で残さない。current targetが失敗しても後続regionの監査を止めない。
+答案に実際に書かれていない内容、特に採点対象外の未記入は誤りにしない。判読不能・参照不足は誤答と断定せずdiagnostic_uncertaintiesへ構造化し、重大になり得る場合はuser_action_required=trueにする。
+同じ上流能力を直せば消える複数誤式は同じroot_cause_keyにまとめる。上流を直しても残る独立majorだけ別rootにする。係数・添字等をmicro-targetへ分解しない。
+whole-answer側の発見でcurrent contractのscore・success・graded_findingsを変更しない。`;
+
+const wholeAnswerYaml=`whole_answer_scan:
+    performed: null
+    app_reference_coverage: "" # full/partial/insufficient
+    effective_reference_coverage: "" # full/partial/insufficient
+    written_answer_coverage: "" # full/partial/insufficient
+    confidence: "" # high/medium/low。contract grading confidenceとは別
+    reason: ""
+    attachments: [] # attachment_id, kind, description, coverage, page_count
+    regions: [] # region_id, description, answer_present, readable, reference_available, status, finding_ids
+  observed_out_of_scope_findings: [] # finding_id, mastery_level, finding, evidence, correction, materiality, confidence, create_target_candidate, root_cause_key
+  diagnostic_uncertainties: [] # region_id, description, reason, potential_materiality, confidence, candidate_interpretations, user_action_required`;
 
 export function buildFirstAttemptGradingPrompt(context:FirstAttemptPromptContext){
   const mode=context.mode||"full";
@@ -102,7 +121,7 @@ next_action には日付や「何日後」を書かないでください。
 mark、次回状態、卒業可否、review_after_daysはアプリが答案証拠と学習履歴から決めるため出力しないでください。
 指定modeの採点範囲外でも、答案に実際に書かれたmajorな誤りはobserved_out_of_scope_findingsへ分離してください。
 その観察で今回のscoreを下げず、minor・自己訂正済み・単なる改善案はtarget候補にしないでください。
-答案全体の照合に必要な問題文・参照解答が不足する場合は、追加誤りなしとは断定せずwhole_answer_scanをinsufficientにしてください。
+${wholeAnswerRules}
 
 \`\`\`yaml
 study_update:
@@ -137,12 +156,7 @@ study_update:
     - "答案から実際に採点した部分"
   assumed_correct_parts: []
   unresolved_carryover: []
-  whole_answer_scan:
-    performed: null
-    reference_coverage: "" # full/partial/insufficient
-    confidence: "" # high/medium/low
-    reason: ""
-  observed_out_of_scope_findings: []
+  ${wholeAnswerYaml}
   uncertain_points: []
 \`\`\``;
 }
@@ -206,8 +220,8 @@ rubric_version: ${GRADING_RUBRIC_VERSION}
    【省略してはいけない途中計算】
    【次回の直し方】
 16. evaluation_scopeはfull答案ならfull、それ以外はconditional_fullとする。
-17. まず現在modeの採点範囲だけでscore・successを確定する。その後、scoreを変更せず答案の残りを別監査する。mode外でも答案に実際に書かれたmajorな誤りはobserved_out_of_scope_findingsへ分離する。minor・自己訂正済み・改善案はtarget候補にしない。
-    問題文・参照解答が不足する場合はwhole_answer_scanをinsufficientとし、「追加誤りなし」と断定しない。答案に書かれていない内容は誤りにしない。
+17. まず現在modeの採点範囲だけでscore・successを確定する。その後、scoreを変更せず答案の残りを別監査する。
+${wholeAnswerRules}
 18. 出力末尾に必ず次のYAMLを付ける。YAML内ではLaTeXを避け、できるだけ日本語で書く。
 
 study_update:
@@ -242,12 +256,7 @@ study_update:
     - "答案から実際に採点した部分"
   assumed_correct_parts: []
   unresolved_carryover: []
-  whole_answer_scan:
-    performed: null
-    reference_coverage: "" # full/partial/insufficient
-    confidence: "" # high/medium/low
-    reason: ""
-  observed_out_of_scope_findings: [] # mastery_level, finding, evidence, correction, materiality, confidence, create_target_candidate
+  ${wholeAnswerYaml}
   uncertain_points: []
   weak_notes: []
 
@@ -376,12 +385,8 @@ ${allowed}
 
 【STEP 2 — whole-answer diagnostic / score locked】
 9. STEP 1で確定したscore・score_label・success・graded_findingsは、STEP 2の発見を理由に絶対に変更しない。今回のscore・mark・successへ影響させない。
-10. 問題文、正規参照解答、今回の答案が十分に揃う場合だけ、答案に実際に書かれた採点対象外の数式・変数変換・密度・支持領域・積分範囲・結論・推論を照合する。
-11. 本番で明確な失点になる誤りを observed_out_of_scope_findings へ分離する。majorは最終結果、主要工程、解法成立、再現性を明確に壊す場合だけ。
-12. 表記改善、任意の補足、軽微な省略、自己訂正済み、一般的改善案、採点対象外の未記入はminorまたはcreate_target_candidate=falseにする。
-13. 答案に実際に書かれていない内容を誤りとして生成しない。既に解消済みのtargetを古い文言から復活させない。
-14. 問題全文または正規参照解答が不足する場合、performed=falseまたはreference_coverage=insufficientとする。observed_out_of_scope_findings=[]を「追加誤りなし」と解釈させない。
-15. reference_coverage=fullは、問題全文と答案全体を照合できる正規参照解答の両方が実際に入力済みの場合だけ。アプリ表示のapp_reference_coverageを上限とし、ユーザーが後から完全資料を貼った場合だけ実入力に合わせて上げてよい。
+${wholeAnswerRules}
+10. 本番で明確な失点になる誤りだけをobserved_out_of_scope_findingsへ分離し、minor・自己訂正済み・改善案はtarget候補にしない。既に解消済みtargetを古い文言から復活させない。
 16. 最後に次のYAMLをコードブロックで出力する。空欄・null・[]は答案から判定した値で置き換える。
 
 study_update:
@@ -428,12 +433,7 @@ ${gradedIds.length?gradedIds.map(id=>`    - graded_part_id: "${id}"
       resolved: null`).join("\n"):"    []"}
   graded_parts: ${gradedLabels.length?`\n${gradedLabels.map(part=>`    - "${part.replaceAll('"','\\"')}"`).join("\n")}`:"[]"}
   explicitly_out_of_scope_parts: ${outOfScope.length?`\n${outOfScope.map(part=>`    - "${part.replaceAll('"','\\"')}"`).join("\n")}`:"[]"}
-  whole_answer_scan:
-    performed: null # true/false
-    reference_coverage: "" # full/partial/insufficient
-    confidence: "" # high/medium/low
-    reason: ""
-  observed_out_of_scope_findings: [] # 必要時のみ mastery_level(skeleton/main_calc/transfer/other), finding, evidence, correction, materiality(minor/major), confidence(low/medium/high), create_target_candidate を持つ項目を追加
+  ${wholeAnswerYaml}
 ${fullScope?"  assumed_correct_parts: []":"  assumed_correct_parts:\n    - \"提出対象外として正しいと仮定した部分\""}
   unresolved_carryover: []
   uncertain_points: []
@@ -462,4 +462,39 @@ ${fullScope?"  assumed_correct_parts: []":"  assumed_correct_parts:\n    - \"提
   weak_notes: []
 
 STEP 1の今回採点と、STEP 2の答案全体の追加確認を分けて短く説明してからYAMLを出力してください。`;
+}
+
+export function buildWholeAnswerRediagnosisPrompt(attempt:Attempt,problemContext?:ProblemContextPack){
+  const appCoverage=suppliedReferenceCoverage(problemContext);
+  return `あなたは統計検定1級・統計数理の答案全体診断者です。
+これは既存Attemptの追加診断です。元の点数・mark・graded_findings・Review完了結果は変更しません。
+
+attempt_id: ${attempt.id}
+problem_id: ${attempt.problem_id}
+original_score: ${attempt.score_label} / ${attempt.score_numeric??"未記録"}
+original_mark: ${attempt.mark}
+app_reference_coverage: ${appCoverage}
+
+【アプリ内problem context】
+問題文：${problemContext?.problemStatement||"（全文なし。完全な問題画像を添付してください）"}
+公式解答：${problemContext?.officialAnswerText||problemContext?.answerExcerpt||"（全文なし。公式解答の全ページを添付してください）"}
+既存の採点対象：${attempt.graded_parts?.join(" / ")||"記録なし"}
+既存stable targets：${attempt.observed_out_of_scope_findings?.map(row=>`${row.root_cause_key||"root未設定"}: ${row.finding}`).join(" / ")||"なし"}
+
+【添付してください】
+- 問題文の全ページ
+- 公式・正規参照解答の全ページ
+- このAttemptの答案全ページ（continuationを含む）
+
+${wholeAnswerRules}
+現在の採点範囲を再採点せず、答案へ実際に書かれた追加major errorと判定不能領域だけを返してください。
+答案へ書かれていない部分は誤りにしません。同じroot原因の下流誤りはevidenceへまとめます。
+
+次のYAMLだけを最後に出力してください。
+\`\`\`yaml
+whole_answer_diagnostic_update:
+  attempt_id: ${attempt.id}
+  problem_id: "${attempt.problem_id}"
+  ${wholeAnswerYaml}
+\`\`\``;
 }

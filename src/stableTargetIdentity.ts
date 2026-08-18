@@ -91,8 +91,8 @@ function partsFromAttempt(attempt:Attempt):GradedPartContract[]{
     if(!byId.has(id))byId.set(id,{id,label:finding.finding,cueLabel:finding.finding,
       allowedErrorTypes:["K","W","N","C","none"],completionCriterionId:`retain_${id}`,
       stableTargetKey:key,currentLabel:finding.finding,currentEvidence:finding.evidence,
-      currentCorrection:finding.finding,currentErrorType:finding.mastery_level===1?"K":finding.mastery_level===2?"W":"N",
-      masteryLevel:finding.mastery_level,
+      currentCorrection:finding.correction||finding.finding,currentErrorType:finding.mastery_level===1?"K":finding.mastery_level===2?"W":"N",
+      masteryLevel:finding.mastery_level,rootCauseKey:finding.root_cause_key,
       evidenceSourceAttemptId:attempt.id,evidenceUpdatedAt:attempt.saved_at||attempt.date});
   }
   return [...byId.values()];
