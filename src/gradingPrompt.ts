@@ -3,7 +3,7 @@ export const REVIEW_RUBRIC_VERSION="STAT1-REVIEW-v9";
 
 import { removeTimingExpressions } from "./reviewTiming.ts";
 import type { EffectiveReviewScope } from "./reviewScopeResolver.ts";
-import type { Attempt, GradingContractSnapshot, ProblemContextPack } from "./types.ts";
+import type { Attempt, GradingContractSnapshot, ProblemContextPack, Review } from "./types.ts";
 import { gradedPartIds, gradedPartLabels } from "./gradedParts.ts";
 import { suppliedReferenceCoverage } from "./wholeAnswerDiagnostic.ts";
 
@@ -19,7 +19,7 @@ export type ReviewPromptContext={
   referenceLevel?:number;noHint?:boolean;oneLineHint?:boolean;previousMistake?:boolean;
   officialAnswer?:boolean;gptExplanation?:boolean;externalReference?:boolean;
   allowedReferenceLevel?:number;actualReferenceLevel?:number;referenceClosedReproduction?:boolean;
-  reviewScope?:EffectiveReviewScope;targetedParts?:string[];completionConditions?:string[];
+  reviewScope?:EffectiveReviewScope|"scan5";targetedParts?:string[];completionConditions?:string[];
   allowedErrorTypes?:string[];requiresKEvidence?:boolean;
   learningPurpose?:string;learningStage?:string;assessmentTiming?:string;targetKind?:string;
   gradingContract?:GradingContractSnapshot;problemContext?:ProblemContextPack;
@@ -462,6 +462,55 @@ ${fullScope?"  assumed_correct_parts: []":"  assumed_correct_parts:\n    - \"提
   weak_notes: []
 
 STEP 1の今回採点と、STEP 2の答案全体の追加確認を分けて短く説明してからYAMLを出力してください。`;
+}
+
+/**
+ * Build the canonical prompt for a persisted Review without re-running learning
+ * policy. Both stale-contract recovery and answer replacement use this helper.
+ */
+export function buildStoredReviewGradingPrompt(args:{
+  review:Review;problemContext:ProblemContextPack;sourceAttempt?:Attempt;date:string;
+}){
+  const contract=args.review.grading_contract;
+  if(!contract)throw new Error("現在Reviewの採点契約が見つかりません");
+  const source=args.sourceAttempt;
+  return buildReviewGradingPrompt({
+    reviewId:args.review.id,problemId:args.review.problem_id,title:args.problemContext.displayLabel,
+    theme:args.problemContext.theme,date:args.date,mode:contract.mode,
+    previousDate:source?.date,previousScore:source?.score_label,
+    previousErrors:source?.error_types||[source?.error_type||"none"],
+    previousErrorPoint:source?.error_point,previousNextAction:source?.next_action,
+    previousImprovementGuidance:source?.improvement_guidance,previousRequiredDerivation:source?.required_derivation,
+    timeMinutes:contract.estimatedMinutes,allowedReferenceLevel:contract.allowedReferenceLevel,
+    reviewScope:contract.reviewScope,targetedParts:contract.targetedParts,
+    completionConditions:contract.completionConditions,allowedErrorTypes:contract.allowedErrorTypes,
+    requiresKEvidence:contract.requiresKEvidence,learningPurpose:contract.learningPurpose,
+    learningStage:contract.learningStage,assessmentTiming:args.review.assessment_timing,
+    targetKind:contract.targetKind,gradingContract:contract,problemContext:args.problemContext,
+  });
+}
+
+const addReplacementDirective=(prompt:string,attemptId:number)=>prompt.replace(
+  /study_update:\s*\n/,
+  `study_update:\n  replacement_for_attempt_id: ${attemptId}\n  replacement_reason: "答案差し替えによる正式再採点"\n`,
+);
+
+/**
+ * A replacement prompt keeps the original immutable grading contract. The
+ * persistence transaction creates a new current Review generation and binds
+ * the answer to it atomically; the old Attempt remains immutable history.
+ */
+export function buildAttemptReplacementGradingPrompt(args:{
+  attempt:Attempt;problemContext:ProblemContextPack;sourceReview?:Review;sourceAttempt?:Attempt;date:string;
+}){
+  const {attempt,problemContext}=args;
+  const base=attempt.grading_contract&&args.sourceReview
+    ?buildStoredReviewGradingPrompt({review:{...args.sourceReview,grading_contract:attempt.grading_contract},
+      problemContext,sourceAttempt:args.sourceAttempt,date:args.date})
+    :buildFirstAttemptGradingPrompt({problemId:attempt.problem_id,displayLabel:problemContext.displayLabel,
+      theme:problemContext.theme,canonicalProblemType:problemContext.canonicalProblemType,mode:attempt.mode,
+      estimatedMinutes:attempt.time_minutes});
+  return `【解答差し替えによる正式再採点】\nAttempt #${attempt.id} の元履歴は削除せず、新しく添付する答案を同じ採点範囲で採点してください。\n以下の replacement_for_attempt_id は変更しないでください。\n\n${addReplacementDirective(base,attempt.id)}`;
 }
 
 export function buildWholeAnswerRediagnosisPrompt(attempt:Attempt,problemContext?:ProblemContextPack){

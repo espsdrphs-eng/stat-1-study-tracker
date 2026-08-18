@@ -1157,6 +1157,8 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     ,parent_past_session_id:Number(input.parent_past_session_id||0)||undefined
      ,contract_id:input.contract_id,contract_version:input.contract_version,contract_hash:input.contract_hash
      ,semantic_rebind_from_review_id:input.semantic_rebind_from_review_id,semantic_rebind_message:input.semantic_rebind_message
+     ,replaces_attempt_id:input.replacement_for_attempt_id
+     ,replacement_reason:input.replacement_reason
      ,learning_event_kind:learningEventKind({purpose:learningPurpose,timing:assessmentTiming,
        transferEvidence:!!input.transfer_evidence,isAssessment:!input.generated_from_review_id})
      ,grading_contract:sourceReview?.grading_contract,explicitly_out_of_scope_parts:input.explicitly_out_of_scope_parts||[]
@@ -1201,7 +1203,8 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
       superseded_reason:`Attempt ${id} で同一採点対象の最低合格条件を満たしたため`,
     });
   }
-  const attempts=(await db.attempts.where("problem_id").equals(input.problem_id).sortBy("date")).filter(x=>x.id!==id);
+  const attempts=(await db.attempts.where("problem_id").equals(input.problem_id).sortBy("date")).filter(x=>
+    x.id!==id&&!x.exclude_from_planning&&!x.exclude_from_metrics&&!x.duplicate_of_attempt_id);
   const previous=attempts.at(-1);
   let consecutivePerfect=0;
   for(const attempt of [...attempts].reverse()){if(attempt.mark==="◎") consecutivePerfect++;else break}
@@ -1290,6 +1293,7 @@ async function refreshLinkedSMemory(linkedIds:string[]){
   const pmap=new Map(problems.map(problem=>[problem.problem_id,problem]));
   for(const sid of [...new Set(linkedIds)]){
     const linkedAttempts=attempts.filter(attempt=>{
+      if(attempt.exclude_from_planning||attempt.exclude_from_metrics||attempt.duplicate_of_attempt_id)return false;
       const problem=pmap.get(attempt.problem_id);
       const links=[...(problem?.related_s_problem_ids||[]),...list(problem?.linked_s_problems||"")];
       return links.includes(sid);
@@ -1366,17 +1370,19 @@ async function updateAttemptAnalysis(id:number,body:Record<string,unknown>){
 async function deleteAttemptAnalysis(id:number){
   const attempt=await db.attempts.get(id);
   if(!attempt) throw new Error("削除する採点結果が見つかりません");
+  if(attempt.invalidated_at)return {changes:0,attemptId:id};
   const generatedReviews=(await db.reviews.toArray()).filter(review=>review.generated_from_attempt_id===id&&ACTIVE_REVIEW_STATUSES.has(review.status));
-  const noteIds=(await db.weakNotes.toArray()).filter(note=>note.generated_from_attempt_id===id||
-    (!note.generated_from_attempt_id&&note.problem_id===attempt.problem_id&&note.date===attempt.date)).map(note=>note.id);
-  await db.attempts.delete(id);
+  const invalidatedAt=new Date().toISOString();
+  await db.attempts.update(id,{exclude_from_planning:true,exclude_from_metrics:true,
+    exclude_from_recurrence_metrics:true,invalidated_at:invalidatedAt,
+    invalidation_reason:"誤登録としてユーザーが明示的に無効化"});
   for(const review of generatedReviews)await db.reviews.update(review.id,{status:"superseded",exclude_from_planning:true,
     exclude_from_recurrence_metrics:true,superseded_reason:`参照元Attempt ${id}が削除されたため`});
-  if(noteIds.length) await db.weakNotes.bulkDelete(noteIds);
   const problem=await db.problems.get(attempt.problem_id);
   const related=[...(problem?.related_s_problem_ids||[]),...list(problem?.linked_s_problems||"")];
   await refreshLinkedSMemory(related);
-  const remaining=await db.attempts.where("problem_id").equals(attempt.problem_id).toArray();
+  const remaining=(await db.attempts.where("problem_id").equals(attempt.problem_id).toArray()).filter(row=>
+    !row.exclude_from_planning&&!row.exclude_from_metrics&&!row.duplicate_of_attempt_id);
   const stillWeak=remaining.some(item=>(item.error_types||[item.error_type]).some(error=>error!=="none"));
   const latest=[...remaining].sort((a,b)=>b.date.localeCompare(a.date)||b.id-a.id)[0];
   if(latest&&problem){
@@ -1389,6 +1395,95 @@ async function deleteAttemptAnalysis(id:number){
   }
   await db.problems.update(attempt.problem_id,{completion_status:stillWeak?"review_pending":"active"});
   await reconcileProblemLearningState(attempt.problem_id);
+  return {changes:1,attemptId:id};
+}
+
+function replacementReviewDraft(review:Review,contract:GradingContractSnapshot):ReviewInsert{
+  const draft={...review,id:undefined as unknown as number,status:"pending",due_date:todayString(),
+    earliest_date:todayString(),preferred_date:todayString(),latest_date:todayString(),schedule_origin:"manual" as const,
+    completion_result:undefined,completed_at:undefined,completion_time_minutes:undefined,
+    exclude_from_planning:false,exclude_from_recurrence_metrics:false,superseded_reason:undefined,
+    replaced_by_review_id:undefined,contract_locked_at:new Date().toISOString(),
+    grading_contract:contract,contract_id:contract.contractId,contract_version:contract.contractVersion,
+    contract_hash:contract.contractHash,generated_at:new Date().toISOString(),
+    reason:"答案差し替えによる同一採点契約の正式再採点",
+    review_reason:"答案差し替えによる同一採点契約の正式再採点"};
+  return draft;
+}
+
+/**
+ * Replace an answer and regrade it in one transaction. The previous Attempt
+ * remains immutable history; a new Review generation is created for the same
+ * frozen contract so no terminal Review is ever reopened.
+ */
+async function replaceAttemptAndRegrade(id:number,input:StudyUpdate&Record<string,unknown>,pendingCorrectionLogs:PendingCorrectionLog[]=[]){
+  const oldAttempt=await db.attempts.get(id);
+  if(!oldAttempt)throw new Error("差し替える解答履歴が見つかりません");
+  const submissionId=String(input.submission_id||"").trim();
+  if(submissionId){
+    const already=(await db.attempts.toArray()).find(row=>row.submission_id===submissionId);
+    if(already){
+      if(already.replaces_attempt_id===id)return {changes:0,attemptId:already.id,replacedAttemptId:id};
+      throw new Error("同じsubmission_idが別の採点結果で使用されています");
+    }
+  }
+  if(oldAttempt.invalidated_at||oldAttempt.superseded_by_attempt_id||oldAttempt.exclude_from_metrics)
+    throw new Error("この解答は既に無効化または差し替え済みです。現在の解答履歴から操作してください");
+  if(Number(input.replacement_for_attempt_id||0)!==id)throw new Error("差し替え対象Attemptが一致しません");
+  if(input.problem_id!==oldAttempt.problem_id)throw new Error("差し替え前後でproblem_idを変更できません");
+
+  const sourceReviewId=Number(oldAttempt.source_review_id||oldAttempt.generated_from_review_id||0);
+  const sourceReview=sourceReviewId?await db.reviews.get(sourceReviewId):undefined;
+  const originalContract=oldAttempt.grading_contract||sourceReview?.grading_contract;
+  if(sourceReviewId&&!sourceReview)throw new Error("元のReview履歴が見つかりません");
+  if(originalContract){
+    const differences=contractDifferences(originalContract,{
+      contractId:String(input.contract_id||""),contractVersion:String(input.contract_version||""),
+      contractHash:String(input.contract_hash||""),problemId:String(input.problem_id||""),
+      learningPurpose:input.learning_purpose,mode:input.mode as GradingContractSnapshot["mode"],
+      reviewScope:input.review_scope,targetKind:input.target_kind,
+      gradedParts:input.graded_part_ids||input.graded_parts||[],
+    });
+    if(differences.length)throw new Error("差し替え元とGPT回答の採点契約が一致しません。差し替え用プロンプトを再生成してください");
+  }
+
+  const descendants=(await db.reviews.toArray()).filter(review=>review.generated_from_attempt_id===id&&ACTIVE_REVIEW_STATUSES.has(review.status));
+  for(const review of descendants)await db.reviews.update(review.id,{status:"superseded",exclude_from_planning:true,
+    exclude_from_recurrence_metrics:true,superseded_reason:`Attempt ${id}を新答案へ差し替えるため`});
+
+  let replacementReview:Review|undefined;
+  if(sourceReview&&originalContract){
+    const reviewId=await addOrReplaceReview(replacementReviewDraft(sourceReview,originalContract));
+    replacementReview=await db.reviews.get(reviewId);
+    if(!replacementReview?.grading_contract)throw new Error("差し替え用の現在Reviewを生成できませんでした");
+    const contract=replacementReview.grading_contract;
+    input={...input,generated_from_review_id:replacementReview.id,source_review_id:replacementReview.id,
+      contract_id:contract.contractId,contract_version:contract.contractVersion,contract_hash:contract.contractHash,
+      learning_purpose:contract.learningPurpose,learning_stage:contract.learningStage,mode:contract.mode,
+      review_scope:contract.reviewScope,target_kind:contract.targetKind,
+      graded_part_ids:contract.gradedParts.map(part=>part.id),allowed_reference_level:contract.allowedReferenceLevel,
+      semantic_rebind_from_review_id:sourceReview.id,
+      semantic_rebind_message:`答案差し替え Review #${sourceReview.id} → #${replacementReview.id}`};
+  }else{
+    input={...input,generated_from_review_id:undefined,source_review_id:undefined,contract_id:undefined,
+      contract_version:undefined,contract_hash:undefined,learning_purpose:undefined,learning_stage:undefined,
+      review_scope:undefined,target_kind:undefined,graded_part_ids:undefined};
+  }
+
+  // Exclude the replaced evidence before validating the new Review generation.
+  // The surrounding transaction makes this invisible unless the replacement
+  // save succeeds; on failure Dexie rolls the exclusion back as well.
+  const replacedAt=new Date().toISOString();
+  await db.attempts.update(id,{exclude_from_planning:true,exclude_from_metrics:true,
+    exclude_from_recurrence_metrics:true,
+    replacement_reason:String(input.replacement_reason||"答案差し替えによる正式再採点"),replaced_at:replacedAt});
+  const newId=await saveAttempt({...input,replacement_for_attempt_id:id,
+    replacement_reason:input.replacement_reason||"答案差し替えによる正式再採点"},pendingCorrectionLogs);
+  await db.attempts.update(id,{superseded_by_attempt_id:newId});
+  await db.attempts.update(newId,{replaces_attempt_id:id,
+    replacement_reason:String(input.replacement_reason||"答案差し替えによる正式再採点")});
+  await reconcileProblemLearningState(oldAttempt.problem_id);
+  return {changes:1,attemptId:newId,replacedAttemptId:id,replacementReviewId:replacementReview?.id};
 }
 
 async function completeReview(id:number,body:Record<string,unknown>){
@@ -3385,7 +3480,9 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     await assertDatabaseSchema("saveGptEvaluation",GPT_SAVE_REQUIRED_STORES);
     const logs:PendingCorrectionLog[]=[];
     await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.answerIndex,db.problemAliases,db.correctionLogs],async()=>{
-      await saveAttempt(body,logs);
+      const replacementId=Number(body.replacement_for_attempt_id||0);
+      if(replacementId)await replaceAttemptAndRegrade(replacementId,body as StudyUpdate&Record<string,unknown>,logs);
+      else await saveAttempt(body,logs);
       if(logs.length)await db.correctionLogs.bulkAdd(logs as CorrectionLog[]);
     });
     notifyStudyDataChanged({operation:"save-attempt",reviewId:Number(body.generated_from_review_id||0)||undefined});
@@ -3393,10 +3490,23 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     await assertDatabaseSchema("saveGptEvaluationBatch",GPT_SAVE_REQUIRED_STORES);
     const logs:PendingCorrectionLog[]=[];
     await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.answerIndex,db.problemAliases,db.correctionLogs],async()=>{
-      for(const update of body.updates)await saveAttempt(update,logs);
+      for(const update of body.updates){
+        const replacementId=Number(update.replacement_for_attempt_id||0);
+        if(replacementId)await replaceAttemptAndRegrade(replacementId,update,logs);
+        else await saveAttempt(update,logs);
+      }
       if(logs.length)await db.correctionLogs.bulkAdd(logs as CorrectionLog[]);
     });
     notifyStudyDataChanged({operation:"save-gpt-import"});
+  } else if(/^\/api\/attempts\/\d+\/replace$/.test(path)) {
+    const id=Number(path.split("/")[3]),logs:PendingCorrectionLog[]=[];
+    const result=await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.answerIndex,db.problemAliases,db.correctionLogs],async()=>{
+      const value=await replaceAttemptAndRegrade(id,{...body,replacement_for_attempt_id:id} as StudyUpdate&Record<string,unknown>,logs);
+      if(logs.length)await db.correctionLogs.bulkAdd(logs as CorrectionLog[]);
+      return value;
+    });
+    notifyStudyDataChanged({operation:"replace-attempt"});
+    return result as T;
   } else if(/^\/api\/attempts\/\d+\/whole-diagnostic\/preview$/.test(path)) {
     return await previewWholeAnswerRediagnosis(Number(path.split("/")[3]),String(body.text||"")) as T;
   } else if(/^\/api\/attempts\/\d+\/whole-diagnostic\/save$/.test(path)) {

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import {readFile} from "node:fs/promises";
 import {resolveSemanticReviewGeneration} from "../src/reviewGeneration.ts";
 import {deriveCurrentTodayProjection} from "../src/currentTodayProjection.ts";
 import {runIntegrityAudit} from "../src/integrityEngine.ts";
@@ -97,4 +98,10 @@ test("audit distinguishes missing-source descendants and safe stale-contract rep
     pendingImportUpdates:[update]});
   assert.equal(audit.counts.deleted_attempt_active_descendant,1);
   assert.equal(audit.counts.stale_contract_equivalent_replacement,1);
+});
+
+test("materially stale import exposes the canonical current-prompt CTA",async()=>{
+  const source=await readFile("src/AdvancedImportView.tsx","utf8");
+  assert.match(source,/現在の採点プロンプトを生成/);
+  assert.match(source,/buildStoredReviewGradingPrompt/);
 });

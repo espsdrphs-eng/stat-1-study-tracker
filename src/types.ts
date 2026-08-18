@@ -203,6 +203,12 @@ export type Attempt = {
   explicitly_out_of_scope_parts?:string[];
   submission_id?:string;source_review_id?:number;saved_at?:string;
   semantic_rebind_from_review_id?:number;semantic_rebind_message?:string;
+  /** The previous Attempt whose submitted answer this Attempt formally replaces. */
+  replaces_attempt_id?:number;
+  /** Set on historical Attempts that have been replaced without deleting their evidence. */
+  superseded_by_attempt_id?:number;
+  replacement_reason?:string;replaced_at?:string;
+  invalidated_at?:string;invalidation_reason?:string;
   learning_event_kind?:LearningEventKind;
   canonical_attempt_id?:number;duplicate_of_attempt_id?:number;
   exclude_from_metrics?:boolean;duplicate_reason?:string;
@@ -561,6 +567,8 @@ export type StudyUpdate = {
   diagnostic_uncertainties?:DiagnosticUncertainty[];
   submission_id?:string;source_review_id?:number;
   semantic_rebind_from_review_id?:number;semantic_rebind_message?:string;
+  /** Explicit regrade workflow. This is never inferred from answer text. */
+  replacement_for_attempt_id?:number;replacement_reason?:string;
   /** Import provenance only. The persisted mark is recalculated by the app. */
   raw_gpt_mark_present?:boolean;
 };

@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, BookOpen, CalendarCheck, Check, ClipboardPaste, Copy, Database, NotebookPen, Pencil, X } from "lucide-react";
+import { AlertTriangle, BookOpen, CalendarCheck, Check, ClipboardPaste, Copy, Database, NotebookPen, Pencil, RefreshCw, X } from "lucide-react";
 import { post } from "./api";
 import { applyProblemMaster, parseStudyText, problemDisplayLabel, todayString } from "./importParser";
 import { createAttemptReviewPlan } from "./reviewRules";
-import { buildGradingPrompt, GRADING_RUBRIC_VERSION, REVIEW_RUBRIC_VERSION } from "./gradingPrompt";
+import { buildGradingPrompt, buildStoredReviewGradingPrompt, GRADING_RUBRIC_VERSION, REVIEW_RUBRIC_VERSION } from "./gradingPrompt";
+import {buildProblemContextPack} from "./gradingContract.ts";
 import { reviewDaysForErrors, sanitizeStudyUpdateTiming, timingWarningMessage, timingWarnings } from "./reviewTiming";
 import { finalizeStudyUpdateForSave, prepareImportedStudyUpdate } from "./studyCycle";
 import { projectStudyUpdateLifecycle } from "./studyUpdateLifecycle";
@@ -105,9 +106,9 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
     const problem=problems.find(row=>row.problem_id===update.problem_id);
     return projectStudyUpdateLifecycle({update:finalizeStudyUpdateForSave(update),sourceReview,sourceAttempt,problem}).update;
   };
-  const reviewGenerations=updates.map(update=>resolveSemanticReviewGeneration({
-    update,reviews,attempts,aliases:problemAliases,today:todayString(),
-  }));
+  const reviewGenerations=updates.map(update=>update.replacement_for_attempt_id
+    ?{kind:"current" as const,update}
+    :resolveSemanticReviewGeneration({update,reviews,attempts,aliases:problemAliases,today:todayString()}));
   const projectedUpdates=reviewGenerations.map(result=>projectForPreview(result.update));
 
   useEffect(()=>{
@@ -166,11 +167,14 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
   const invalidSourceUpdates=(()=>{
     const result:Array<{index:number;row:StudyUpdate;review?:Review;state:ReviewExecutionState;message:string;successors:Review[]}>=[];
     projectedUpdates.forEach((row,index)=>{
+      if(row.replacement_for_attempt_id)return;
       if(!row.generated_from_review_id)return;
       const generation=reviewGenerations[index];
       if(generation.kind==="mismatch"||generation.kind==="unavailable"){
+        const successors=selectCurrentReviewsForProblem({reviews,problemId:generation.oldReview?.problem_id||row.problem_id,
+          aliases:problemAliases,today:todayString()}).current;
         result.push({index,row,review:generation.oldReview,state:reviewExecutionState(generation.oldReview,todayString()),
-          message:generation.message||"現在のReviewへ安全に適用できません",successors:[]});return;
+          message:generation.message||"現在のReviewへ安全に適用できません",successors});return;
       }
       const review=reviews.find(item=>item.id===row.generated_from_review_id),state=reviewExecutionState(review,todayString());
       if(state==="actionable")return;
@@ -207,6 +211,13 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
     setEditing(false);
     setError("");
     setSaved({count:snapshot.length,ids:[...new Set(snapshot.map(row=>row.problem_id))],at:new Intl.DateTimeFormat("ja-JP",{hour:"2-digit",minute:"2-digit"}).format(new Date())});
+  };
+  const currentReviewPrompt=(review:Review)=>{
+    const sourceAttempt=attempts.find(row=>row.id===Number(review.source_attempt_id||review.generated_from_attempt_id||0));
+    return buildStoredReviewGradingPrompt({review,sourceAttempt,date:todayString(),problemContext:buildProblemContextPack({
+      problemId:review.problem_id,problems,aliases:problemAliases,answers:answerIndex,attempts,reviews,
+      currentSourceAttemptId:sourceAttempt?.id,
+    })});
   };
 
   return <div className="import-layout advanced-import">
@@ -258,6 +269,7 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
             {!update.master_matched&&<div className="match-warning"><AlertTriangle size={17}/><div><strong>問題マスターに未照合です</strong><span>保存前に登録済み問題を選択してください。</span></div></div>}
             {update.auto_corrected&&<div className="master-correction"><Check size={17}/><div><strong>自動補正しました</strong><span>{update.correction_fields?.join(" / ")}</span><small>{update.correction_reason}</small></div></div>}
             {reviewGenerations[index]?.kind==="rebound"&&<div className="master-correction"><Check size={17}/><div><strong>現在のReviewへ安全に適用します</strong><span>{reviewGenerations[index].message}</span><small>採点契約・source lineage・stable target・scope・参照条件が同一です。</small></div></div>}
+            {update.replacement_for_attempt_id&&<div className="master-correction"><RefreshCw size={17}/><div><strong>解答を差し替えて正式再採点します</strong><span>Attempt #{update.replacement_for_attempt_id} は履歴として保持し、新しいAttemptをcurrentにします。</span><small>旧Attempt無効化・新Attempt保存・Review/Today更新は同じtransactionで確定します。</small></div></div>}
             {update.requires_problem_confirmation&&update.suggested_problem_id&&<div className="candidate-confirm"><AlertTriangle size={17}/><div><strong>問題IDの確認が必要です</strong><span>取り込み内容は {update.problem_id} ではなく {update.suggested_problem_id}（{update.suggested_problem_label}）の可能性があります。</span><div>
               <button type="button" className="primary small" onClick={()=>selectProblem(index,update.suggested_problem_id!)}>{update.suggested_problem_id}として保存</button>
               <button type="button" className="ghost small" onClick={()=>setUpdates(rows=>rows.map((row,i)=>i===index?{...row,requires_problem_confirmation:false,problem_id_confirmed:true}:row))}>{update.problem_id}として保存</button>
@@ -349,6 +361,7 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
           {invalidSourceUpdates.length?<><span>保存対象の復習課題は現在実行できません。</span><ul>{invalidSourceUpdates.map(item=>
             <li key={`${item.index}-${item.row.generated_from_review_id}`}>Review #{item.row.generated_from_review_id}：{item.message}
               {!!item.successors.length&&<small> 現在のReview：{item.successors.map(review=>`#${review.id}`).join("、")}</small>}
+              {!!item.successors[0]?.grading_contract&&<button type="button" className="ghost tiny" onClick={()=>navigator.clipboard.writeText(currentReviewPrompt(item.successors[0]))}><Copy size={13}/>現在の採点プロンプトを生成</button>}
             </li>)}</ul></>:
           allMissing.length?<><span>不足項目：</span><ul>{allMissing.slice(0,8).map(item=><li key={`${item.index}-${item.key}`}><code>{item.key}</code>：{item.message}</li>)}</ul></>:
           <span>問題ID候補の確認が必要です。</span>}

@@ -28,6 +28,9 @@ This document is the implementation-level source of truth for data integrity. Le
 - Phase diagnostics and planner simulations are pure reads: they do not change
   Review dates, exposure state, or any todayPlanSnapshot.
 - One answer submission creates at most one Attempt. `submission_id` is the idempotency key.
+- Answer mutation has three distinct operations. Whole-answer rediagnosis updates only the diagnostic layer; answer replacement creates one new Attempt while retaining and excluding the previous Attempt; delete is a soft invalidation. Replacement and delete never physically remove Attempt history.
+- Answer replacement validates the frozen original grading contract, creates a new Review generation rather than reopening terminal history, and commits old-Attempt exclusion, new-Attempt persistence, Review reconciliation, and current projection refresh in one transaction.
+- A materially stale GPT result remains unsavable. Semantic rebind requires the existing content-equivalence checks; otherwise the UI must offer the canonical current Review prompt instead of weakening the save guard.
 - One logical review task has at most one active Review.
 - `contractId` identifies one persisted Review execution and is unique among active Reviews.
 - `contractHash` identifies contract content. Equal content may legitimately have different `contractId` values.

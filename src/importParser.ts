@@ -335,6 +335,8 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
     grading_confidence:Number.isFinite(gradingConfidence)?gradingConfidence:null,
     rubric_version:scalar(raw.rubric_version),uncertain_points:stringArray(raw.uncertain_points),
     generated_from_review_id:raw.generated_from_review_id==null?undefined:Number(raw.generated_from_review_id),
+    replacement_for_attempt_id:raw.replacement_for_attempt_id==null?undefined:Number(raw.replacement_for_attempt_id),
+    replacement_reason:scalar(raw.replacement_reason)||undefined,
     task_origin:["first_attempt","review_attempt","linked_s_check","related_drill","past_exam_followup"].includes(scalar(raw.task_origin))
       ?scalar(raw.task_origin) as StudyUpdate["task_origin"]:undefined,
     review_outcome:["success","partial","failed"].includes(scalar(raw.review_outcome))
