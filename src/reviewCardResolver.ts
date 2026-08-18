@@ -1,4 +1,4 @@
-import type { Attempt, Problem, ProblemAlias, ProblemContextPack, Review, Task } from "./types.ts";
+import type { AnswerIndexEntry, Attempt, Problem, ProblemAlias, ProblemContextPack, Review, Task } from "./types.ts";
 import { resolveCanonicalProblemId } from "./examReadiness.ts";
 import { resolveLearningPolicy, type LearningPrescription } from "./learningPolicyResolver.ts";
 import { buildGradingContractSnapshot, buildProblemContextPack } from "./gradingContract.ts";
@@ -174,8 +174,8 @@ function provenance(problem:Problem,attempt:Attempt|undefined,now:string):Derive
 }
 
 export function resolveReviewCard({
-  item,problems,attempts,aliases,today,examDate="",now=new Date().toISOString(),
-}:{item:ReviewCardInput;problems:Problem[];attempts:Attempt[];aliases:ProblemAlias[];today:string;examDate?:string;now?:string}):ResolvedReviewCard{
+  item,problems,attempts,aliases,answers,today,examDate="",now=new Date().toISOString(),
+}:{item:ReviewCardInput;problems:Problem[];attempts:Attempt[];aliases:ProblemAlias[];answers?:AnswerIndexEntry[];today:string;examDate?:string;now?:string}):ResolvedReviewCard{
   const warnings:ConsistencyWarning[]=[];
   const canonicalId=resolveCanonicalProblemId(String(item.problem_id||""),aliases);
   const problem=problems.find(entry=>resolveCanonicalProblemId(entry.problem_id,aliases)===canonicalId);
@@ -281,7 +281,7 @@ export function resolveReviewCard({
   if(!blocked&&targetDisplay?.targetCount)actions=targetDisplay.todayActions;
   const completion=blocked?[fallback]:scope.completionConditions;
   const sourceIssue=sourceAttempt?.error_point||item.source_error_summary||"元問題の弱点を確認";
-  const problemContext=buildProblemContextPack({problemId:canonicalId,problems:[master],aliases,attempts,
+  const problemContext=buildProblemContextPack({problemId:canonicalId,problems:[master],aliases,answers,attempts,
     reviews:item.id?[item as Review]:[],currentSourceAttemptId:targetAttempt?.id});
   return {
     taskId:String(item.id??`${canonicalId}:${item.review_type||item.kind||"task"}`),problemId:String(item.problem_id||""),canonicalProblemId:canonicalId,

@@ -89,8 +89,15 @@ export type GradedFinding={
 export type ObservedOutOfScopeFinding={
   mastery_level:1|2|3;finding:string;evidence:string;materiality:"minor"|"major";
   confidence:"low"|"medium"|"high";create_target_candidate:boolean;
+  correction?:string;
+  /** Original GPT-facing category. `mastery_level` remains the canonical numeric level. */
+  mastery_area?:"skeleton"|"main_calc"|"transfer"|"other";
   /** Issued only by the app after validation. GPT must not invent this identity. */
   stable_target_key?:string;
+};
+export type WholeAnswerScan={
+  performed:boolean;reference_coverage:"full"|"partial"|"insufficient";
+  confidence:"low"|"medium"|"high";reason:string;
 };
 export type MasteryLevelStatus="unconfirmed"|"repairing"|"retention_pending"|"retained"|"needs_recheck";
 export type MasteryLevelState={
@@ -143,6 +150,7 @@ export type Attempt = {
   evaluation_scope?:string; graded_parts?:string[]; graded_part_ids?:string[];
   graded_findings?:GradedFinding[]; assumed_correct_parts?:string[];
   observed_out_of_scope_findings?:ObservedOutOfScopeFinding[];
+  whole_answer_scan?:WholeAnswerScan;
   unresolved_carryover?:string[];
   review_scope?:"targeted_patch"|"full_skeleton"|"main_calc_target"|"check_only"|"full_answer"|"scan5";
   targeted_parts?:string[]; k_evidence?:string[]; k_evidence_valid?:boolean;
@@ -522,6 +530,7 @@ export type StudyUpdate = {
   explicitly_out_of_scope_parts?:string[];
   graded_part_ids?:string[];graded_findings?:GradedFinding[];
   observed_out_of_scope_findings?:ObservedOutOfScopeFinding[];
+  whole_answer_scan?:WholeAnswerScan;
   submission_id?:string;source_review_id?:number;
   semantic_rebind_from_review_id?:number;semantic_rebind_message?:string;
   /** Import provenance only. The persisted mark is recalculated by the app. */

@@ -10,6 +10,7 @@ import { projectStudyUpdateLifecycle } from "./studyUpdateLifecycle";
 import { reviewExecutionMessage, reviewExecutionState, selectCurrentReviewsForProblem, type ReviewExecutionState } from "./integrityEngine";
 import {resolveSemanticReviewGeneration} from "./reviewGeneration.ts";
 import type { AnswerIndexEntry, Attempt, Problem, ProblemAlias, Review, StudyUpdate } from "./types";
+import { wholeAnswerScanSummary } from "./wholeAnswerDiagnostic.ts";
 
 const modes:Record<string,string>={check:"チェック",skeleton:"骨格",main_calc:"主要計算",full:"フル答案",scan:"スキャン",exam_90min:"90分演習"};
 const priority=["K","N","W","C"];
@@ -298,6 +299,17 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
               {update.assumed_correct_parts?.length?<span>正しいと仮定 <strong>{update.assumed_correct_parts.join(" / ")}</strong></span>:null}
               {isReviewImport&&<span>参照状況 <strong>許可 {update.allowed_reference_level??0}・実際 {update.actual_reference_level??update.reference_level??0}・参照後再現 {update.reference_closed_reproduction||update.after_hint_reproduced||update.after_reference_reproduced?"済":"未確認"}</strong></span>}
             </div>}
+
+            {(()=>{const findings=update.observed_out_of_scope_findings||[];
+              const summary=wholeAnswerScanSummary(update.whole_answer_scan,findings.length);
+              return <div className={`whole-answer-result ${summary.tone}`}>
+                <div><strong>今回の採点</strong><span>{update.score_label||"—"} / {update.score_numeric??"—"}・current contractの結果</span></div>
+                <div><strong>答案全体の追加確認</strong><span>{summary.title}</span><small>{summary.detail}</small></div>
+                {!!findings.length&&<ul>{findings.map((finding,n)=><li key={`${finding.finding}-${n}`}>
+                  <strong>{finding.materiality==="major"?"major":"minor"}：{finding.finding}</strong>
+                  <span>根拠：{finding.evidence}</span>{finding.correction&&<small>修正：{finding.correction}</small>}
+                </li>)}</ul>}
+              </div>})()}
 
             <details className="detailed-feedback">
               <summary>修正版答案・途中計算・判定根拠を確認</summary>

@@ -30,12 +30,14 @@ test("in-scope retrieval graduation and a major out-of-scope Level 2 future rete
     graded_findings:contract.gradedParts.map(row=>({graded_part_id:row.id,error_type:"none",evidence:"参照なしで再現",resolved:true})),
     target_issue_resolved:true,minimum_pass_condition_met:true,review_outcome:"success",actual_reference_level:0,
     allowed_reference_level:0,hint_used:false,reference_closed_reproduction:true,unresolved_carryover:[],
+    whole_answer_scan:{performed:true,reference_coverage:"full",confidence:"high",reason:"問題文と参照解答で照合"},
     observed_out_of_scope_findings:[{mastery_level:2,finding:"積分範囲を場合分けできない",evidence:"後半で全区間を0から1とした",
       materiality:"major",confidence:"high",create_target_candidate:true}]};
   await localPost("/api/attempts",update);
   const saved=(await db.attempts.where("problem_id").equals(problemId).toArray()).find(row=>row.submission_id==="mastery-observation");
   assert.equal(saved.mark,"◎");
   assert.equal(saved.score_numeric,100);
+  assert.equal(saved.whole_answer_scan.reference_coverage,"full");
   assert.match(saved.observed_out_of_scope_findings[0].stable_target_key,/^target:WB-2-S-07:root:/);
   const active=(await db.reviews.where("problem_id").equals(problemId).toArray()).filter(row=>["pending","overdue"].includes(row.status));
   assert.equal(active.length,1);
@@ -51,4 +53,9 @@ test("in-scope retrieval graduation and a major out-of-scope Level 2 future rete
   assert.equal(bootstrap.masteryByProblem[problemId].levels[1].status,"retention_pending");
   const preview=await localPost("/api/integrity/preview",{});
   assert.equal(preview.changes.reviewsReplaced,0);
+  const beforeRetry=(await db.attempts.where("problem_id").equals(problemId).toArray()).length;
+  await localPost("/api/attempts",update);
+  const afterRetry=(await db.attempts.where("problem_id").equals(problemId).toArray());
+  assert.equal(afterRetry.length,beforeRetry);
+  assert.equal(afterRetry.filter(row=>row.submission_id==="mastery-observation").length,1);
 });

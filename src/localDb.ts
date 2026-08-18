@@ -796,7 +796,7 @@ async function validateOutOfScopeObservations(input:StudyUpdate&Record<string,un
     .filter(review=>ACTIVE_REVIEW_STATUSES.has(review.status)&&!review.exclude_from_planning);
   const currentText=new Set(reviews.flatMap(review=>(review.grading_contract?.gradedParts||[]).flatMap(part=>
     [part.currentLabel,part.currentEvidence,part.label].map(value=>String(value||"").trim()).filter(Boolean))));
-  return materializeObservedOutOfScopeFindings({rows,mode:String(input.mode),currentPayloads:currentText,
+  return materializeObservedOutOfScopeFindings({rows,scan:input.whole_answer_scan,mode:String(input.mode),currentPayloads:currentText,
     issueKey:()=>issueStableTargetKey(input.problem_id)});
 }
 
@@ -1124,6 +1124,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     graded_parts:input.graded_parts||[],graded_part_ids:input.graded_part_ids||[],
     graded_findings:input.graded_findings||[],assumed_correct_parts:input.assumed_correct_parts||[],
     observed_out_of_scope_findings:input.observed_out_of_scope_findings||[],
+    whole_answer_scan:input.whole_answer_scan,
     unresolved_carryover:input.unresolved_carryover||[],review_scope:input.review_scope,
     targeted_parts:input.targeted_parts||[],k_evidence:input.k_evidence||[],
     k_evidence_valid:input.k_evidence_valid==null?undefined:!!input.k_evidence_valid,effective_error_types:input.effective_error_types||[],hint_used:!!input.hint_used,

@@ -719,7 +719,7 @@ function TodayTaskDetails({task,problem,onOpenProblem,problemAliases,examPhase,r
   </div>;
 }
 function TodayTaskRows({task:t,problem,data,busy,run,date,onReview,onOpenProblem,onPostpone,examPhase}:{task:Task;problem?:Problem;data:Bootstrap;busy:boolean;run:(a:()=>Promise<unknown>,s:string)=>void;date:string;onReview:(task:Task)=>void;onOpenProblem:(problem:Problem)=>void;onPostpone:(task:Task,action:ScheduleAction)=>void;examPhase:ExamPhase}) {
-  const resolved=resolveReviewCard({item:t,problems:data.problems,attempts:data.attempts,aliases:data.problemAliases,today:data.dashboard.today,examDate:data.settings.exam_date});
+  const resolved=resolveReviewCard({item:t,problems:data.problems,attempts:data.attempts,aliases:data.problemAliases,answers:data.answerIndex,today:data.dashboard.today,examDate:data.settings.exam_date});
   const isReview=!!t.id&&!!t.review_type;
   const persistedReview=isReview?data.reviews.find(review=>review.id===t.id):undefined;
   const executionState=isReview?reviewExecutionState(persistedReview,data.dashboard.today):"actionable";
@@ -818,7 +818,7 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport}:{problem:Problem;
   });
   const currentReviewCards=reviewSelection.current.map(review=>({
     review,card:resolveReviewCard({item:review,problems:data.problems,attempts:data.attempts,
-      aliases:data.problemAliases,today:data.dashboard.today,examDate:data.settings.exam_date})
+      aliases:data.problemAliases,answers:data.answerIndex,today:data.dashboard.today,examDate:data.settings.exam_date})
   }));
   const latest=validAttempts[0],nextReview=currentReviewCards[0]?.review;
   const mastery=data.masteryByProblem[canonicalId]||data.masteryByProblem[problem.problem_id];
@@ -955,7 +955,7 @@ function ReviewsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>
     reviews:data.reviews,problemId:review.problem_id,aliases:data.problemAliases,today:data.dashboard.today
   }).current.filter(item=>item.id!==review.id);
   const resolveReview=(review:Review)=>{
-    const card=resolveReviewCard({item:review,problems:data.problems,attempts:data.attempts,aliases:data.problemAliases,today:data.dashboard.today,examDate:data.settings.exam_date});
+    const card=resolveReviewCard({item:review,problems:data.problems,attempts:data.attempts,aliases:data.problemAliases,answers:data.answerIndex,today:data.dashboard.today,examDate:data.settings.exam_date});
     const source=card.targetAttempt;
     const item:Partial<Review&Task>={...review,problem_id:card.canonicalProblemId,title:card.displayLabel,theme:card.theme,
       task_origin:card.taskOrigin,attempt_exists:!!source,mode:card.effectiveMode,effective_mode:card.effectiveMode,sheet_type:card.sheetType,

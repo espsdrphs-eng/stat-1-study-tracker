@@ -77,12 +77,13 @@ test("only app-validated major high-confidence observations receive a new stable
     {mastery_level:2,finding:"表記を改善",evidence:"添字が読みづらい",materiality:"minor",confidence:"high",create_target_candidate:true},
     {mastery_level:2,finding:"既存target",evidence:"既存根拠",materiality:"major",confidence:"high",create_target_candidate:true},
   ];
-  const result=materializeObservedOutOfScopeFindings({rows,mode:"skeleton",currentPayloads:["既存target"],issueKey:()=>`root-${++issued}`});
+  const scan={performed:true,reference_coverage:"full",confidence:"high",reason:"問題文と参照解答で照合"};
+  const result=materializeObservedOutOfScopeFindings({rows,scan,mode:"skeleton",currentPayloads:["既存target"],issueKey:()=>`root-${++issued}`});
   assert.equal(result[0].stable_target_key,"root-1");
   assert.equal(result[1].stable_target_key,undefined);
   assert.equal(result[2].stable_target_key,undefined);
   assert.equal(issued,1);
-  assert.equal(materializeObservedOutOfScopeFindings({rows:[rows[0]],mode:"scan5",currentPayloads:[],issueKey:()=>"bad"})[0].stable_target_key,undefined);
+  assert.equal(materializeObservedOutOfScopeFindings({rows:[rows[0]],scan,mode:"scan5",currentPayloads:[],issueKey:()=>"bad"})[0].stable_target_key,undefined);
 });
 
 test("review prompt and import keep in-scope grading separate from out-of-scope observation",()=>{
@@ -91,7 +92,7 @@ test("review prompt and import keep in-scope grading separate from out-of-scope 
   assert.match(prompt,/今回のscore・mark・successへ影響させない/);
   const problems=[{problem_id:problemId,source_type:"whitebook",category:"A",chapter:5,problem_number:14,title:"x",theme:"変数変換",
     priority:"core",role:"score",recommended_mode:"full",linked_past_exams:"",linked_s_problems:"",linked_a_problems:"",notes:"",completion_status:"active"}];
-  const parsed=parseStudyText(`study_update:\n  problem_id: ${problemId}\n  date: 2026-08-18\n  mode: check\n  score_label: S\n  score_numeric: 100\n  error_types: [none]\n  primary_error_type: none\n  error_point: \"\"\n  next_action: \"\"\n  observed_out_of_scope_findings:\n    - mastery_level: 2\n      finding: 積分範囲が逆\n      evidence: 上限を1と書いた\n      materiality: major\n      confidence: high\n      create_target_candidate: true`,problems);
+  const parsed=parseStudyText(`study_update:\n  problem_id: ${problemId}\n  date: 2026-08-18\n  mode: check\n  score_label: S\n  score_numeric: 100\n  error_types: [none]\n  primary_error_type: none\n  error_point: \"\"\n  next_action: \"\"\n  whole_answer_scan:\n    performed: true\n    reference_coverage: full\n    confidence: high\n    reason: 全体照合\n  observed_out_of_scope_findings:\n    - mastery_level: main_calc\n      finding: 積分範囲が逆\n      evidence: 上限を1と書いた\n      correction: 支持領域で場合分けする\n      materiality: major\n      confidence: high\n      create_target_candidate: true`,problems);
   assert.equal(parsed.updates[0].observed_out_of_scope_findings.length,1);
   assert.equal(parsed.updates[0].observed_out_of_scope_findings[0].mastery_level,2);
 });

@@ -314,9 +314,9 @@ export type DiagnosticPackResult={blob:Blob;fileName:string;summary:{files:strin
 export async function createDiagnosticPack():Promise<DiagnosticPackResult>{
   if(!db.isOpen()) throw new Error("データベースが開かれていません。画面を再読み込みしてからもう一度お試しください。");
   const before=await databaseFingerprint();
-  const [problems,aliases,attempts,reviews,weakNotes,pastSessions,metaRows,importLogs,correctionLogs]=await Promise.all([
+  const [problems,aliases,attempts,reviews,weakNotes,pastSessions,metaRows,importLogs,correctionLogs,answerIndex]=await Promise.all([
     db.problems.toArray(),db.problemAliases.toArray(),db.attempts.toArray(),db.reviews.toArray(),db.weakNotes.toArray(),
-    db.pastSessions.toArray(),db.meta.toArray(),db.importLogs.toArray(),db.correctionLogs.toArray()
+    db.pastSessions.toArray(),db.meta.toArray(),db.importLogs.toArray(),db.correctionLogs.toArray(),db.answerIndex.toArray()
   ]);
   const today=new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Tokyo"}).format(new Date());
   const examDate=metaRows.find(row=>row.key==="exam_date")?.value||"";
@@ -325,7 +325,7 @@ export async function createDiagnosticPack():Promise<DiagnosticPackResult>{
   const validCrossTargetReviewIds:number[]=[];
   for(const review of reviews){const origin=resolveReviewOrigin({review,attempts,aliases,relations:storedRelations,problems});
     if(origin.valid&&origin.origin==="verified_linked_problem") validCrossTargetReviewIds.push(review.id);
-    cards.set(review.id,resolveReviewCard({item:{...review,origin_verified:origin.valid},problems,attempts,aliases,today,examDate,now:new Date().toISOString()}));}
+    cards.set(review.id,resolveReviewCard({item:{...review,origin_verified:origin.valid},problems,attempts,aliases,answers:answerIndex,today,examDate,now:new Date().toISOString()}));}
   const promptAudits=reviews.map(review=>buildPromptAudit(review,cards.get(review.id)!));
   const relations=[...relationRows(problems,aliases),...storedRelations];
   const baseConsistency=buildConsistencyReport(problems,attempts,reviews,aliases,relations,cards,promptAudits);

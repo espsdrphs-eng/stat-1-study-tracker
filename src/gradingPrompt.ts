@@ -5,6 +5,7 @@ import { removeTimingExpressions } from "./reviewTiming.ts";
 import type { EffectiveReviewScope } from "./reviewScopeResolver.ts";
 import type { GradingContractSnapshot, ProblemContextPack } from "./types.ts";
 import { gradedPartIds, gradedPartLabels } from "./gradedParts.ts";
+import { suppliedReferenceCoverage } from "./wholeAnswerDiagnostic.ts";
 
 export type ReviewPromptContext={
   reviewId?:number;problemId:string;title?:string;theme?:string;date:string;mode:string;
@@ -101,6 +102,7 @@ next_action には日付や「何日後」を書かないでください。
 mark、次回状態、卒業可否、review_after_daysはアプリが答案証拠と学習履歴から決めるため出力しないでください。
 指定modeの採点範囲外でも、答案に実際に書かれたmajorな誤りはobserved_out_of_scope_findingsへ分離してください。
 その観察で今回のscoreを下げず、minor・自己訂正済み・単なる改善案はtarget候補にしないでください。
+答案全体の照合に必要な問題文・参照解答が不足する場合は、追加誤りなしとは断定せずwhole_answer_scanをinsufficientにしてください。
 
 \`\`\`yaml
 study_update:
@@ -135,6 +137,11 @@ study_update:
     - "答案から実際に採点した部分"
   assumed_correct_parts: []
   unresolved_carryover: []
+  whole_answer_scan:
+    performed: null
+    reference_coverage: "" # full/partial/insufficient
+    confidence: "" # high/medium/low
+    reason: ""
   observed_out_of_scope_findings: []
   uncertain_points: []
 \`\`\``;
@@ -199,7 +206,8 @@ rubric_version: ${GRADING_RUBRIC_VERSION}
    【省略してはいけない途中計算】
    【次回の直し方】
 16. evaluation_scopeはfull答案ならfull、それ以外はconditional_fullとする。
-17. modeの採点対象外でも答案に実際に書かれたmajorな誤りはobserved_out_of_scope_findingsへ分離し、今回のscoreへ混ぜない。minor・自己訂正済み・改善案はtarget候補にしない。
+17. まず現在modeの採点範囲だけでscore・successを確定する。その後、scoreを変更せず答案の残りを別監査する。mode外でも答案に実際に書かれたmajorな誤りはobserved_out_of_scope_findingsへ分離する。minor・自己訂正済み・改善案はtarget候補にしない。
+    問題文・参照解答が不足する場合はwhole_answer_scanをinsufficientとし、「追加誤りなし」と断定しない。答案に書かれていない内容は誤りにしない。
 18. 出力末尾に必ず次のYAMLを付ける。YAML内ではLaTeXを避け、できるだけ日本語で書く。
 
 study_update:
@@ -234,7 +242,12 @@ study_update:
     - "答案から実際に採点した部分"
   assumed_correct_parts: []
   unresolved_carryover: []
-  observed_out_of_scope_findings: [] # mastery_level, finding, evidence, materiality, confidence, create_target_candidate
+  whole_answer_scan:
+    performed: null
+    reference_coverage: "" # full/partial/insufficient
+    confidence: "" # high/medium/low
+    reason: ""
+  observed_out_of_scope_findings: [] # mastery_level, finding, evidence, correction, materiality, confidence, create_target_candidate
   uncertain_points: []
   weak_notes: []
 
@@ -277,14 +290,30 @@ export function buildReviewGradingPrompt(context:ReviewPromptContext){
   const targetText=targets.length?targets.map((part,index)=>`${index+1}. ${part}`).join("\n"):"指定なし";
   const conditionText=conditions.length?conditions.map((condition,index)=>`${index+1}. ${condition}`).join("\n"):"指定範囲を自力で再現する";
   const problemContext=context.problemContext;
+  const referenceCoverage=suppliedReferenceCoverage(problemContext);
+  const priorResolved=problemContext?.currentSourceAttempt?.graded_findings?.filter(row=>row.resolved)
+    .map(row=>`${row.graded_part_id}: ${row.evidence}`).join("\n")||"なし";
   const problemContextText=problemContext?`canonical problem_id：${problemContext.canonicalProblemId}
 表示名：${problemContext.displayLabel}
 テーマ：${problemContext.theme}
 問題型：${problemContext.canonicalProblemType}
 キーワード：${problemContext.canonicalKeywords.join("、")||"未登録"}
-情報充足度：${problemContext.contextCompleteness}`:`問題ID：${context.problemId}
+情報充足度：${problemContext.contextCompleteness}
+app_reference_coverage：${referenceCoverage}
+問題文：
+${problemContext.problemStatement||"（アプリ内に問題全文なし。必要なら貼り付ける）"}
+公式・正規参照解答：
+${problemContext.officialAnswerText||"（アプリ内に全文なし）"}
+参照解答抜粋：
+${problemContext.answerExcerpt||"（なし）"}
+現在contractのhidden answer key（current target限定）：
+${contract?.hiddenAnswerKey.map(row=>`- ${row.gradedPartId}: ${row.content}`).join("\n")||"なし"}
+既に解消済みと記録されたtarget（復活させない）：
+${priorResolved}`:`問題ID：${context.problemId}
 問題名：${context.title||""}
-テーマ：${context.theme||""}`;
+テーマ：${context.theme||""}
+app_reference_coverage：insufficient
+問題文・正規参照解答：アプリ内に未供給`;
   const contractText=contract?`contract_id：${contract.contractId}
 contract_version：${contract.contractVersion}
 contract_hash：${contract.contractHash}
@@ -327,8 +356,8 @@ ${conditionText}
 今回の答案：
 模範解答・参考解答（あれば）：
 
-【判定ルール】
-1. 採点対象は上記の復習範囲とtargetedPartsだけ。画面の最低クリア条件と同じ条件を使う。
+【STEP 1 — in-scope grading / current grading contract】
+1. 採点対象は上記の復習範囲とtargetedPartsだけ。画面の最低クリア条件と同じ条件を使い、このSTEPでscore・success・graded_findingsを確定する。
    problem_contextに問題全体の情報があってもgrading_contractを拡張しない。
    explicitly_out_of_scope_partsの欠落・未記入・空欄を減点しない。
 2. 誤り分類は採点項目ごとの許可範囲に従う。指定範囲外の空欄や未記入を誤りの根拠にしない。
@@ -344,11 +373,16 @@ ${allowed}
    今回のgraduation gate候補：${graduationGate?"eligible（全対象resolved・最低条件達成も必要）":"not_eligible"}
 7. next_actionに日付を書かない。review_after_days、次のlearning state、卒業可否はアプリが決定するため出力しない。
 8. result_summary、error_point、next_actionは各1〜2文。解消済みの履歴や長い一般論を繰り返さない。
-9. 答案全体を読み、採点対象外でも実際に書かれた部分に本番得点を失う明確な誤りがあれば observed_out_of_scope_findings へ分離する。
-   これは今回のscore・mark・successへ影響させない。majorは数学的結果・主要解法・再現性を明確に壊す場合だけ。
-   表記改善、補足、軽微な省略、自己訂正済み、一般的な改善案はminorとしcreate_target_candidate=falseにする。
-   答案に書かれていない採点対象外部分を推測して指摘しない。
-10. 最後に次のYAMLをコードブロックで出力する。空欄・null・[]は答案から判定した値で置き換える。
+
+【STEP 2 — whole-answer diagnostic / score locked】
+9. STEP 1で確定したscore・score_label・success・graded_findingsは、STEP 2の発見を理由に絶対に変更しない。今回のscore・mark・successへ影響させない。
+10. 問題文、正規参照解答、今回の答案が十分に揃う場合だけ、答案に実際に書かれた採点対象外の数式・変数変換・密度・支持領域・積分範囲・結論・推論を照合する。
+11. 本番で明確な失点になる誤りを observed_out_of_scope_findings へ分離する。majorは最終結果、主要工程、解法成立、再現性を明確に壊す場合だけ。
+12. 表記改善、任意の補足、軽微な省略、自己訂正済み、一般的改善案、採点対象外の未記入はminorまたはcreate_target_candidate=falseにする。
+13. 答案に実際に書かれていない内容を誤りとして生成しない。既に解消済みのtargetを古い文言から復活させない。
+14. 問題全文または正規参照解答が不足する場合、performed=falseまたはreference_coverage=insufficientとする。observed_out_of_scope_findings=[]を「追加誤りなし」と解釈させない。
+15. reference_coverage=fullは、問題全文と答案全体を照合できる正規参照解答の両方が実際に入力済みの場合だけ。アプリ表示のapp_reference_coverageを上限とし、ユーザーが後から完全資料を貼った場合だけ実入力に合わせて上げてよい。
+16. 最後に次のYAMLをコードブロックで出力する。空欄・null・[]は答案から判定した値で置き換える。
 
 study_update:
   contract_id: "${contract?.contractId||""}"
@@ -394,7 +428,12 @@ ${gradedIds.length?gradedIds.map(id=>`    - graded_part_id: "${id}"
       resolved: null`).join("\n"):"    []"}
   graded_parts: ${gradedLabels.length?`\n${gradedLabels.map(part=>`    - "${part.replaceAll('"','\\"')}"`).join("\n")}`:"[]"}
   explicitly_out_of_scope_parts: ${outOfScope.length?`\n${outOfScope.map(part=>`    - "${part.replaceAll('"','\\"')}"`).join("\n")}`:"[]"}
-  observed_out_of_scope_findings: [] # 必要時のみ mastery_level(1/2/3), finding, evidence, materiality(minor/major), confidence(low/medium/high), create_target_candidate を持つ項目を追加
+  whole_answer_scan:
+    performed: null # true/false
+    reference_coverage: "" # full/partial/insufficient
+    confidence: "" # high/medium/low
+    reason: ""
+  observed_out_of_scope_findings: [] # 必要時のみ mastery_level(skeleton/main_calc/transfer/other), finding, evidence, correction, materiality(minor/major), confidence(low/medium/high), create_target_candidate を持つ項目を追加
 ${fullScope?"  assumed_correct_parts: []":"  assumed_correct_parts:\n    - \"提出対象外として正しいと仮定した部分\""}
   unresolved_carryover: []
   uncertain_points: []
@@ -422,5 +461,5 @@ ${fullScope?"  assumed_correct_parts: []":"  assumed_correct_parts:\n    - \"提
   required_work_shown: []
   weak_notes: []
 
-今回の答案と指定範囲だけを根拠に、短く説明してからYAMLを出力してください。`;
+STEP 1の今回採点と、STEP 2の答案全体の追加確認を分けて短く説明してからYAMLを出力してください。`;
 }

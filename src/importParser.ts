@@ -3,6 +3,7 @@ import type { AnswerIndexEntry, GradedFinding, GradingErrorType, ObservedOutOfSc
 import { japaneseizeMathText } from "./mathJapanese.ts";
 import { reviewDaysForErrors, sanitizeStudyUpdateTiming } from "./reviewTiming.ts";
 import { applyCanonicalMaster } from "./masterData.ts";
+import { normalizeWholeAnswerScan } from "./wholeAnswerDiagnostic.ts";
 
 const errorPriority=["K","N","W","C"];
 
@@ -234,14 +235,18 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
     } satisfies GradedFinding];
   }).filter(item=>item.graded_part_id);
   const explicitlyOutOfScopeParts=stringArray(raw.explicitly_out_of_scope_parts).map(japaneseizeMathText);
+  const wholeAnswerScan=normalizeWholeAnswerScan(raw.whole_answer_scan);
   const observedOutOfScopeFindings=(Array.isArray(raw.observed_out_of_scope_findings)?raw.observed_out_of_scope_findings:[]).flatMap(item=>{
     if(!item||typeof item!=="object")return [];
-    const row=item as Record<string,unknown>,level=Number(row.mastery_level);
+    const row=item as Record<string,unknown>,rawLevel=scalar(row.mastery_level);
+    const masteryArea=(["skeleton","main_calc","transfer","other"].includes(rawLevel)?rawLevel:undefined) as ObservedOutOfScopeFinding["mastery_area"];
+    const level=Number(rawLevel)||({skeleton:1,main_calc:2,transfer:3,other:2} as Record<string,number>)[rawLevel];
     const materiality=scalar(row.materiality),confidence=scalar(row.confidence);
     if(![1,2,3].includes(level)||!["minor","major"].includes(materiality)||!["low","medium","high"].includes(confidence))return [];
     const finding=japaneseizeMathText(scalar(row.finding)),evidence=japaneseizeMathText(scalar(row.evidence));
     if(!finding||!evidence)return [];
-    return [{mastery_level:level as 1|2|3,finding,evidence,
+    return [{mastery_level:level as 1|2|3,mastery_area:masteryArea,finding,evidence,
+      correction:japaneseizeMathText(scalar(row.correction))||undefined,
       materiality:materiality as "minor"|"major",confidence:confidence as "low"|"medium"|"high",
       create_target_candidate:booleanValue(row.create_target_candidate)??false} satisfies ObservedOutOfScopeFinding];
   });
@@ -301,7 +306,8 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
     target_issue_resolved:targetIssueResolved,minimum_pass_condition_met:minimumPassConditionMet,
     resolution_evidence:resolutionEvidence,answer_change_summary:answerChangeSummary,required_work_shown:requiredWorkShown,
     evaluation_scope:evaluationScope,graded_parts:gradedParts,graded_part_ids:gradedPartIds,
-    graded_findings:gradedFindings,observed_out_of_scope_findings:observedOutOfScopeFindings,assumed_correct_parts:assumedCorrectParts,
+    graded_findings:gradedFindings,observed_out_of_scope_findings:observedOutOfScopeFindings,whole_answer_scan:wholeAnswerScan,
+    assumed_correct_parts:assumedCorrectParts,
     contract_id:scalar(raw.contract_id)||undefined,contract_version:scalar(raw.contract_version)||undefined,
     contract_hash:scalar(raw.contract_hash)||undefined,explicitly_out_of_scope_parts:explicitlyOutOfScopeParts,
     unresolved_carryover:unresolvedCarryover,
