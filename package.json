@@ -13,6 +13,7 @@
     "test:browser-scan5": "node tools/browser-scan5-import.mjs",
     "test:browser-layout": "node tools/browser-layout-check.mjs",
     "test:browser-past-core": "node tools/browser-past-exam-core.mjs",
+    "test:browser-review-generation": "node tools/browser-review-generation.mjs",
     "diagnostic:regenerate": "node tools/regenerate-diagnostic-from-pack.mjs"
   },
   "dependencies": {

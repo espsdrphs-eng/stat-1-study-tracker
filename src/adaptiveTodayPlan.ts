@@ -112,14 +112,14 @@ export function projectAdaptiveSnapshotTasks(args:{
   };
   const projected:Task[]=[];
   for(const saved of args.snapshotTasks){
-    if(args.isCompleted?.(saved)||saved.plan_origin==="adaptive_additional"){
-      projected.push(saved);continue;
-    }
     if(saved.id&&saved.review_type){
       const exact=take(task=>task.id===saved.id);
       const replacement=exact||take(task=>!!task.id&&!!task.review_type&&canonical(task.problem_id)===canonical(saved.problem_id));
       if(replacement)projected.push(replacement);
       continue;
+    }
+    if(args.isCompleted?.(saved)||saved.plan_origin==="adaptive_additional"){
+      projected.push(saved);continue;
     }
     const conflictsWithReview=activeReviewProblems.has(canonical(saved.problem_id));
     const exact=take(task=>projectionKey(task)===projectionKey(saved));

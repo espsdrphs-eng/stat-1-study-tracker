@@ -7,7 +7,6 @@ import { postponedDueDate } from "./reviewScheduling.ts";
 import { applyWeakNoteQuizResult } from "./weakNoteQuiz.ts";
 import { selectMixedPractice } from "./studyScheduler.ts";
 import { triageTodayTasks } from "./studyTriage.ts";
-import { deriveCurrentTodayState, qualifyingAttemptForTodayTask } from "./todayTaskProjection.ts";
 import { removeTimingExpressions, sanitizeStudyUpdateTiming } from "./reviewTiming.ts";
 import { buildProgressPlan, daysUntilExam } from "./studyProgress.ts";
 import { calculateExamReadinessMetrics } from "./examReadiness.ts";
@@ -48,7 +47,7 @@ import {
 } from "./examReferencePack.ts";
 import { analyzeConceptWeaknesses, buildPastExamRepairCandidates } from "./conceptWeakness.ts";
 import { buildAdaptivePlannerShadow } from "./adaptivePlanner.ts";
-import { ADAPTIVE_PLANNER_VERSION, adaptivePlanDayToTasks, projectAdaptiveSnapshotTasks } from "./adaptiveTodayPlan.ts";
+import { ADAPTIVE_PLANNER_VERSION, adaptivePlanDayToTasks } from "./adaptiveTodayPlan.ts";
 import { buildAdditionalStudyCandidates } from "./additionalStudy.ts";
 import { summarizeReviewPortfolio } from "./reviewPortfolio.ts";
 import { BUILT_IN_EXAM_REFERENCE_PACK, builtInReferencePackValidation } from "./builtinExamReferencePack.ts";
@@ -57,6 +56,8 @@ import {isValidStableTargetKey,issueStableTargetKey,stableTargetKeyForPart,withS
 import {buildCoachDiagnosisState, coachPreview, COACH_HISTORY_META_KEY, parseCoachUpdate} from "./coachDiagnosis.ts";
 import {deriveMasteryByProblem} from "./masteryProjection.ts";
 import {materializeObservedOutOfScopeFindings} from "./outOfScopeObservations.ts";
+import {deriveCurrentTodayProjection} from "./currentTodayProjection.ts";
+import {resolveSemanticReviewGeneration} from "./reviewGeneration.ts";
 
 const PLANNER_RUNTIME_MODE_META_KEY="planner-runtime-mode";
 
@@ -985,6 +986,15 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
   const answer=await db.answerIndex.get(problem.problem_id);
   input=finalizeStudyUpdateForSave(applyCanonicalMaster(input,problem,answer,await db.problems.toArray(),await db.answerIndex.toArray())) as StudyUpdate&Record<string,unknown>;
   if(input.requires_problem_confirmation) throw new Error(`取り込み内容は ${input.suggested_problem_id||"別の問題"} の可能性があります。問題IDを確認してください`);
+  if(input.generated_from_review_id){
+    const [generationReviews,generationAttempts,generationAliases]=await Promise.all([
+      db.reviews.toArray(),db.attempts.toArray(),db.problemAliases.toArray()
+    ]);
+    const generation=resolveSemanticReviewGeneration({update:input,reviews:generationReviews,
+      attempts:generationAttempts,aliases:generationAliases,today:todayString()});
+    if(generation.kind==="rebound")input=generation.update as StudyUpdate&Record<string,unknown>;
+    else if(generation.kind==="mismatch")throw new Error(generation.message||"復習内容が更新されています。現在ReviewのGPT採点プロンプトを再生成してください");
+  }
   const sourceReview=input.generated_from_review_id?await db.reviews.get(input.generated_from_review_id):undefined;
   if(input.generated_from_review_id&&!sourceReview)
     throw new Error(reviewExecutionMessage("missing"));
@@ -1120,6 +1130,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     ,superseded_by_policy_version:kPolicyValidity==="invalid_legacy_k"?LEARNING_POLICY_VERSION:undefined
     ,parent_past_session_id:Number(input.parent_past_session_id||0)||undefined
      ,contract_id:input.contract_id,contract_version:input.contract_version,contract_hash:input.contract_hash
+     ,semantic_rebind_from_review_id:input.semantic_rebind_from_review_id,semantic_rebind_message:input.semantic_rebind_message
      ,grading_contract:sourceReview?.grading_contract,explicitly_out_of_scope_parts:input.explicitly_out_of_scope_parts||[]
      ,submission_id:submissionId,source_review_id:input.generated_from_review_id,saved_at:new Date().toISOString()
      ,exclude_from_metrics:false
@@ -2759,23 +2770,7 @@ async function bootstrap():Promise<Bootstrap>{
         right.due_date.localeCompare(left.due_date)||right.id-left.id;
     })[0];
   };
-  const currentSnapshotTasks=plannerMode==="adaptive"?projectAdaptiveSnapshotTasks({
-    snapshotTasks:snapshot.tasks,generatedTasks:generatedTriage.tasks,reviews,today,aliases:problemAliases,
-    isCompleted:task=>checkedKeys.has(`today-check:${today}:${task.problem_id}:${task.kind}`)||
-      !!qualifyingAttemptForTodayTask({task,attempts,snapshot:snapshot!,aliases:problemAliases}),
-  }):snapshot.tasks;
-  const taskRows=currentSnapshotTasks.filter(saved=>{
-    if(saved.id&&saved.review_type){
-      const currentReview=currentReviewForSaved(saved);
-      if(!currentReview)return false;
-      // If the replacement already owns another saved slot, do not show/count it twice.
-      return currentReview.id===saved.id||!currentSnapshotTasks.some(other=>other.id===currentReview.id);
-    }
-    const record=taskPostponements.get(`${saved.problem_id}:${saved.kind}`);
-    if(!record) return true;
-    const destination=String(record.postponed_to||"");
-    return destination!=="unscheduled"&&destination<=today;
-  }).map(saved=>{
+  const hydrateCurrentTask=(saved:Task)=>{
     const key=taskSnapshotId(saved),current=generatedMap.get(key),review=currentReviewForSaved(saved);
     const record=!saved.id?taskPostponements.get(`${saved.problem_id}:${saved.kind}`):undefined;
     const answer=answerMap.get(saved.problem_id);
@@ -2802,10 +2797,18 @@ async function bootstrap():Promise<Bootstrap>{
       triage:forcedMust?"must":snapshot!.initial_bucket[key]||saved.triage||"tomorrow",
     } as Task;
     return projected;
-  });
+  };
   const actualMinutes=activeAttempts.filter(attempt=>attempt.date===today&&!attempt.parent_past_session_id).reduce((sum,attempt)=>sum+Math.max(0,Number(attempt.time_minutes||0)),0)
     +pastSessions.filter(session=>String(session.date)===today).reduce((sum,session)=>sum+sessionStudyMinutes(session,activeAttempts),0);
-  const currentToday=deriveCurrentTodayState({tasks:taskRows,attempts,snapshot,aliases:problemAliases,
+  const currentToday=deriveCurrentTodayProjection({snapshot,generatedTasks:generatedTriage.tasks,attempts,reviews,today,
+    aliases:problemAliases,adaptive:plannerMode==="adaptive",hydrateTask:hydrateCurrentTask,
+    includeTask:task=>{
+      if(task.id&&task.review_type)return true;
+      const record=taskPostponements.get(`${task.problem_id}:${task.kind}`);
+      if(!record)return true;
+      const destination=String(record.postponed_to||"");
+      return destination!=="unscheduled"&&destination<=today;
+    },
     manuallyChecked:task=>checkedKeys.has(`today-check:${today}:${task.problem_id}:${task.kind}`),
     completedMinutes:actualMinutes,targetMinutes:settings.daily_study_minutes});
   const tasks=currentToday.tasks,timeSummary=currentToday.timeSummary;
@@ -3329,9 +3332,11 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
   } else if(/^\/api\/attempts\/\d+\/update$/.test(path)) {
     await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.problemAliases],
       ()=>updateAttemptAnalysis(Number(path.split("/")[3]),body));
+    notifyStudyDataChanged({operation:"update-attempt"});
   } else if(/^\/api\/attempts\/\d+\/delete$/.test(path)) {
     await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.problemAliases],
       ()=>deleteAttemptAnalysis(Number(path.split("/")[3])));
+    notifyStudyDataChanged({operation:"delete-attempt"});
   } else if(/^\/api\/reviews\/\d+\/complete$/.test(path)) {
     await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.problemAliases],
       ()=>completeReview(Number(path.split("/")[3]),body));

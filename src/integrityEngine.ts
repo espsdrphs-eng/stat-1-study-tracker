@@ -1,13 +1,15 @@
-import type { AdditionalStudyCandidate, AdaptivePlanSummary, Attempt, GradingContractSnapshot, Problem, ProblemAlias, Review, Task, TodayPlanSnapshot } from "./types.ts";
+import type { AdditionalStudyCandidate, AdaptivePlanSummary, Attempt, GradingContractSnapshot, Problem, ProblemAlias, Review, StudyUpdate, Task, TodayPlanSnapshot } from "./types.ts";
 import { resolveCanonicalProblemId } from "./examReadiness.ts";
 import { addCalendarDays, resolveReviewSchedule } from "./reviewSchedulePolicy.ts";
-import { isActionableReview, validateGradingContract } from "./gradingContract.ts";
+import { validateGradingContract } from "./gradingContract.ts";
 import { analyzeReviewReconciliation, type ReconciliationAudit } from "./reviewReconciliation.ts";
 import {buildStableTargetIndex,isValidStableTargetKey} from "./stableTargetIdentity.ts";
 import {currentTargetDisplay,currentTargetLabels} from "./currentTargetPayload.ts";
 import {projectTodayTaskChecked,selectNextCurrentTodayTask} from "./todayTaskProjection.ts";
 import {buildReviewGradingPrompt} from "./gradingPrompt.ts";
 import {resolvePersistedAttemptLifecycle} from "./reviewTransition.ts";
+import {canonicalAttemptId,logicalReviewKey,reviewExecutionMessage,reviewExecutionState,type ReviewExecutionState} from "./reviewCurrentState.ts";
+import {resolveSemanticReviewGeneration} from "./reviewGeneration.ts";
 
 export const ACTIVE_REVIEW_STATUSES = new Set(["pending", "overdue"]);
 
@@ -55,32 +57,8 @@ export function classifyExactDuplicateAttempts(attempts: Attempt[]) {
   });
 }
 
-export function canonicalAttemptId(attempt: Attempt | undefined) {
-  return attempt?.canonical_attempt_id || attempt?.duplicate_of_attempt_id || attempt?.id || 0;
-}
-
-export function logicalReviewKey(args: {
-  review: Partial<Review>;
-  aliases?: ProblemAlias[];
-  sourceAttempt?: Attempt;
-}) {
-  const { review, aliases = [], sourceAttempt } = args;
-  const problemId = resolveCanonicalProblemId(String(review.problem_id || review.target_problem_id || ""), aliases);
-  const contract = review.grading_contract;
-  const purpose = contract?.learningPurpose || review.learning_purpose || "";
-  const timing = review.assessment_timing || "delayed_retrieval";
-  const mode = contract?.mode || review.effective_mode || review.inferred_mode || "";
-  const scope = contract?.reviewScope || review.effective_review_scope || review.review_scope || "";
-  const targetKind = contract?.targetKind || review.target_kind || "";
-  const gradedPartIds = [...(contract?.gradedParts.map((part) => part.stableTargetKey||part.stable_target_key||part.id) || review.graded_part_ids || [])].sort();
-  const sourceKey = sourceAttempt?.submission_id
-    ? `submission:${sourceAttempt.submission_id}`
-    : `attempt:${canonicalAttemptId(sourceAttempt) || review.source_attempt_id || review.generated_from_attempt_id || 0}`;
-  return [
-    problemId, purpose, timing, mode, scope, targetKind, gradedPartIds.join(","),
-    sourceKey, review.policy_version || contract?.contractVersion || "",
-  ].join("|");
-}
+export {canonicalAttemptId,logicalReviewKey,reviewExecutionMessage,reviewExecutionState};
+export type {ReviewExecutionState};
 
 export function contractIdForReview(reviewId: number, revision = 1) {
   return `review:${reviewId}:${revision}`;
@@ -92,21 +70,6 @@ export function bindContractToReview(
   revision = 1,
 ): GradingContractSnapshot {
   return { ...contract, reviewId, sourceReviewId: reviewId, contractId: contractIdForReview(reviewId, revision) };
-}
-
-export type ReviewExecutionState =
-  | "actionable" | "completed" | "superseded" | "invalid" | "expired_same_session"
-  | "needs_review" | "stale" | "missing";
-
-export function reviewExecutionState(review: Review | undefined, today: string): ReviewExecutionState {
-  if (!review) return "missing";
-  const row=review as Review&{review_needed?:boolean};
-  if (["done", "completed"].includes(review.status)) return "completed";
-  if (["superseded", "cancelled", "ignored"].includes(review.status)) return "superseded";
-  if (review.policy_validity === "invalid_legacy_k" || review.exclude_from_planning === true) return "invalid";
-  if (review.assessment_timing === "same_session_correction" && review.due_date < today) return "expired_same_session";
-  if (review.origin_verified === false || row.review_needed || ["review_needed", "id_review_needed"].includes(review.status)) return "needs_review";
-  return isActionableReview(review, review.grading_contract, today) ? "actionable" : "stale";
 }
 
 const PURPOSE_ORDER = ["error_repair", "retrieval_check", "integration_check", "transfer_check", "exam_performance"];
@@ -147,19 +110,6 @@ export function selectCurrentReviewsForProblem(args: {
   return { canonicalProblemId, current, history };
 }
 
-export function reviewExecutionMessage(state: ReviewExecutionState, review?: Partial<Review>) {
-  if (state === "completed") return "この復習課題はすでに完了しています";
-  if (state === "superseded") return "この復習課題は、より新しい答案または現行ポリシーにより終了しました";
-  if (state === "invalid") return review?.policy_validity === "invalid_legacy_k"
-    ? "旧ポリシー由来のため現在の計画から除外されています"
-    : "この復習課題は現在の計画から除外されています";
-  if (state === "expired_same_session") return "この同日補修課題は有効期限を過ぎています";
-  if (state === "needs_review") return "問題情報または復習履歴の確認が必要なため、現在は実行できません";
-  if (state === "missing") return "復習課題が見つかりません";
-  if (state === "stale") return "画面と採点契約が一致しないため、現在は実行できません";
-  return "現在実行できます";
-}
-
 export type IntegrityCategory =
   | "orphan_reference" | "exact_duplicate_attempt" | "duplicate_logical_review"
   | "duplicate_contract_id" | "repeated_deduplication_key" | "inactive_pending"
@@ -173,7 +123,10 @@ export type IntegrityCategory =
   | "today_task_completion_mismatch" | "inactive_review_current_task" | "today_next_action_mismatch"
   | "duplicate_problem_task" | "current_planner_eligibility_mismatch" | "review_window_violation"
   | "overdue_starvation" | "optional_extra_priority_violation" | "actionable_review_prompt_missing"
-  | "graduated_mark_mismatch" | "graduated_but_rescheduled" | "lifecycle_status_mismatch";
+  | "graduated_mark_mismatch" | "graduated_but_rescheduled" | "lifecycle_status_mismatch"
+  | "current_today_missing_active_review" | "current_today_stale_review"
+  | "formal_plan_current_projection_mismatch" | "deleted_attempt_active_descendant"
+  | "stale_contract_equivalent_replacement";
 
 export type IntegrityIssue = {
   category: IntegrityCategory;
@@ -207,9 +160,10 @@ export function runIntegrityAudit(args: {
   currentPlanSummary?:AdaptivePlanSummary;
   additionalCandidates?:AdditionalStudyCandidate[];
   eligibleTodayTasks?:Task[];
+  pendingImportUpdates?:StudyUpdate[];
 }): IntegrityAudit {
   const { attempts, reviews, problems = [], aliases = [], today, todayPlanSnapshots = [], validCrossTargetReviewIds = [],
-    currentTodayTasks, currentNextTask, currentPlanSummary, additionalCandidates=[],eligibleTodayTasks } = args;
+    currentTodayTasks, currentNextTask, currentPlanSummary, additionalCandidates=[],eligibleTodayTasks,pendingImportUpdates=[] } = args;
   const validCrossTarget=new Set(validCrossTargetReviewIds);
   const issues: IntegrityIssue[] = [];
   const attemptsById = new Map(attempts.map((row) => [row.id, row]));
@@ -268,8 +222,13 @@ export function runIntegrityAudit(args: {
     if (review.contract_id) contractGroups.set(review.contract_id, [...(contractGroups.get(review.contract_id) || []), review]);
     if (review.deduplication_key) dedupGroups.set(review.deduplication_key, [...(dedupGroups.get(review.deduplication_key) || []), review]);
 
-    if (!source) issues.push({ category: "orphan_reference", severity: "active", reviewIds: [review.id],
-      detail: `Review ${review.id} source Attempt is missing`, repairable: false });
+    if (!source) {
+      issues.push({ category: "orphan_reference", severity: "active", reviewIds: [review.id],
+        detail: `Review ${review.id} source Attempt is missing`, repairable: false });
+      issues.push({category:"deleted_attempt_active_descendant",severity:"active",reviewIds:[review.id],
+        attemptIds:[Number(review.source_attempt_id||review.generated_from_attempt_id||0)].filter(Boolean),
+        detail:`Review ${review.id} remains active after its source Attempt disappeared`,repairable:true});
+    }
     else if (!validCrossTarget.has(review.id)&&!["verified_linked_problem", "transfer_schedule"].includes(String(review.origin || "")) &&
       resolveCanonicalProblemId(source.problem_id, aliases) !== resolveCanonicalProblemId(review.problem_id, aliases)) {
       issues.push({ category: "source_target_mismatch", severity: "active", reviewIds: [review.id],
@@ -425,6 +384,8 @@ export function runIntegrityAudit(args: {
           category:"inactive_review_current_task",severity:"active",reviewIds:[task.id],
           detail:`Current Today projection still contains ${state} Review ${task.id}`,repairable:false,
         });
+        if(state!=="actionable")issues.push({category:"current_today_stale_review",severity:"active",reviewIds:[task.id],
+          detail:`Current Today refers to ${state} Review ${task.id}`,repairable:false});
       }
     }
     if(Object.prototype.hasOwnProperty.call(args,"currentNextTask")){
@@ -449,6 +410,10 @@ export function runIntegrityAudit(args: {
     for(const placement of todayPlacements){
       if(!currentReviewIds.has(placement.reviewId))issues.push({category:"current_planner_eligibility_mismatch",severity:"active",
         reviewIds:[placement.reviewId],detail:`Review ${placement.reviewId} is scheduled today but missing from the current projection`,repairable:false});
+      if(!currentReviewIds.has(placement.reviewId))issues.push({category:"current_today_missing_active_review",severity:"active",
+        reviewIds:[placement.reviewId],detail:`Current Today is missing formal Review ${placement.reviewId}`,repairable:false});
+      if(!currentReviewIds.has(placement.reviewId))issues.push({category:"formal_plan_current_projection_mismatch",severity:"active",
+        reviewIds:[placement.reviewId],detail:`Formal planner Review ${placement.reviewId} differs from Current Today`,repairable:false});
     }
     const urgentConflicts=currentPlanSummary.reviewSchedule.capacityConflicts.filter(row=>row.preferredDate<=today||row.latestDate<=today);
     for(const conflict of urgentConflicts)issues.push({category:"overdue_starvation",severity:"active",reviewIds:[conflict.reviewId],
@@ -467,13 +432,26 @@ export function runIntegrityAudit(args: {
       `problem:${resolveCanonicalProblemId(task.problem_id,aliases)}`;
     const currentKeys=new Set(currentTodayTasks.filter(task=>task.plan_origin!=="adaptive_additional").map(eligibilityKey));
     const eligibleKeys=new Set(eligibleTodayTasks.map(eligibilityKey));
-    for(const key of eligibleKeys)if(!currentKeys.has(key))issues.push({category:"current_planner_eligibility_mismatch",severity:"active",
-      detail:`Eligible task ${key} is missing from the current projection`,repairable:false});
+    for(const key of eligibleKeys)if(!currentKeys.has(key)){
+      issues.push({category:"current_planner_eligibility_mismatch",severity:"active",
+        detail:`Eligible task ${key} is missing from the current projection`,repairable:false});
+      issues.push({category:"formal_plan_current_projection_mismatch",severity:"active",
+        detail:`Formal eligible task ${key} is missing from Current Today`,repairable:false});
+      if(key.startsWith("review:"))issues.push({category:"current_today_missing_active_review",severity:"active",
+        reviewIds:[Number(key.slice(7))],detail:`Current Today is missing active ${key}`,repairable:false});
+    }
     for(const task of currentTodayTasks.filter(row=>!row.checked&&row.plan_origin!=="adaptive_additional")){
       const key=eligibilityKey(task);
       if(!eligibleKeys.has(key))issues.push({category:"current_planner_eligibility_mismatch",severity:"active",
         reviewIds:task.review_type&&task.id?[task.id]:undefined,detail:`Current task ${key} is not eligible in the canonical planner`,repairable:false});
     }
+  }
+
+  for(const update of pendingImportUpdates){
+    const generation=resolveSemanticReviewGeneration({update,reviews,attempts,aliases,today});
+    if(generation.kind==="rebound")issues.push({category:"stale_contract_equivalent_replacement",severity:"active",
+      reviewIds:[generation.oldReview!.id,generation.currentReview!.id],
+      detail:generation.message||"A stale GPT result can be rebound to the current semantic Review",repairable:true});
   }
 
   const reviewMap=new Map(reviews.map(row=>[row.id,row]));
@@ -532,6 +510,8 @@ export function runIntegrityAudit(args: {
     "duplicate_problem_task", "current_planner_eligibility_mismatch", "review_window_violation",
     "overdue_starvation", "optional_extra_priority_violation", "actionable_review_prompt_missing",
     "graduated_mark_mismatch", "graduated_but_rescheduled", "lifecycle_status_mismatch",
+    "current_today_missing_active_review", "current_today_stale_review", "formal_plan_current_projection_mismatch",
+    "deleted_attempt_active_descendant", "stale_contract_equivalent_replacement",
   ];
   const counts = Object.fromEntries(categories.map((category) =>
     [category, issues.filter((issue) => issue.category === category).length])) as Record<IntegrityCategory, number>;

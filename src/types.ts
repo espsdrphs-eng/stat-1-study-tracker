@@ -166,6 +166,7 @@ export type Attempt = {
   grading_contract?:GradingContractSnapshot;contract_id?:string;contract_version?:string;contract_hash?:string;
   explicitly_out_of_scope_parts?:string[];
   submission_id?:string;source_review_id?:number;saved_at?:string;
+  semantic_rebind_from_review_id?:number;semantic_rebind_message?:string;
   canonical_attempt_id?:number;duplicate_of_attempt_id?:number;
   exclude_from_metrics?:boolean;duplicate_reason?:string;
 };
@@ -495,7 +496,7 @@ export type StudyUpdate = {
   reference_closed_reproduction?:boolean; saved_gpt_feedback?:boolean; external_reference?:boolean;
   evaluation_scope?:string; graded_parts?:string[]; assumed_correct_parts?:string[];
   unresolved_carryover?:string[];
-  review_scope?:"targeted_patch"|"full_skeleton"|"main_calc_target"|"check_only"|"full_answer";
+  review_scope?:"targeted_patch"|"full_skeleton"|"main_calc_target"|"check_only"|"full_answer"|"scan5";
   targeted_parts?:string[]; completion_conditions?:string[];
   k_evidence?:string[]; k_evidence_valid?:boolean; effective_error_types?:string[];
   master_matched?:boolean; status?:string; math_localized?:boolean;
@@ -516,6 +517,7 @@ export type StudyUpdate = {
   graded_part_ids?:string[];graded_findings?:GradedFinding[];
   observed_out_of_scope_findings?:ObservedOutOfScopeFinding[];
   submission_id?:string;source_review_id?:number;
+  semantic_rebind_from_review_id?:number;semantic_rebind_message?:string;
   /** Import provenance only. The persisted mark is recalculated by the app. */
   raw_gpt_mark_present?:boolean;
 };

@@ -7,7 +7,8 @@ import { buildGradingPrompt, GRADING_RUBRIC_VERSION, REVIEW_RUBRIC_VERSION } fro
 import { reviewDaysForErrors, sanitizeStudyUpdateTiming, timingWarningMessage, timingWarnings } from "./reviewTiming";
 import { finalizeStudyUpdateForSave, prepareImportedStudyUpdate } from "./studyCycle";
 import { projectStudyUpdateLifecycle } from "./studyUpdateLifecycle";
-import { reviewExecutionMessage, reviewExecutionState, selectCurrentReviewsForProblem } from "./integrityEngine";
+import { reviewExecutionMessage, reviewExecutionState, selectCurrentReviewsForProblem, type ReviewExecutionState } from "./integrityEngine";
+import {resolveSemanticReviewGeneration} from "./reviewGeneration.ts";
 import type { AnswerIndexEntry, Attempt, Problem, ProblemAlias, Review, StudyUpdate } from "./types";
 
 const modes:Record<string,string>={check:"チェック",skeleton:"骨格",main_calc:"主要計算",full:"フル答案",scan:"スキャン",exam_90min:"90分演習"};
@@ -103,7 +104,10 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
     const problem=problems.find(row=>row.problem_id===update.problem_id);
     return projectStudyUpdateLifecycle({update:finalizeStudyUpdateForSave(update),sourceReview,sourceAttempt,problem}).update;
   };
-  const projectedUpdates=updates.map(projectForPreview);
+  const reviewGenerations=updates.map(update=>resolveSemanticReviewGeneration({
+    update,reviews,attempts,aliases:problemAliases,today:todayString(),
+  }));
+  const projectedUpdates=reviewGenerations.map(result=>projectForPreview(result.update));
 
   useEffect(()=>{
     if(text||updates.length) sessionStorage.setItem(draftKey,JSON.stringify({text,updates,savedAt:new Date().toISOString()}));
@@ -158,16 +162,23 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
 
   const firstMissing=projectedUpdates.map((row,index)=>({index,missing:missingRequiredFields(row)[0]})).find(item=>item.missing);
   const allMissing=projectedUpdates.flatMap((row,index)=>missingRequiredFields(row).map(item=>({...item,index})));
-  const invalidSourceUpdates=projectedUpdates.flatMap((row,index)=>{
-    if(!row.generated_from_review_id)return [];
-    const review=reviews.find(item=>item.id===row.generated_from_review_id);
-    const state=reviewExecutionState(review,todayString());
-    if(state==="actionable")return [];
-    const successors=selectCurrentReviewsForProblem({
-      reviews,problemId:review?.problem_id||row.problem_id,aliases:problemAliases,today:todayString()
-    }).current;
-    return [{index,row,review,state,message:reviewExecutionMessage(state,review),successors}];
-  });
+  const invalidSourceUpdates=(()=>{
+    const result:Array<{index:number;row:StudyUpdate;review?:Review;state:ReviewExecutionState;message:string;successors:Review[]}>=[];
+    projectedUpdates.forEach((row,index)=>{
+      if(!row.generated_from_review_id)return;
+      const generation=reviewGenerations[index];
+      if(generation.kind==="mismatch"||generation.kind==="unavailable"){
+        result.push({index,row,review:generation.oldReview,state:reviewExecutionState(generation.oldReview,todayString()),
+          message:generation.message||"現在のReviewへ安全に適用できません",successors:[]});return;
+      }
+      const review=reviews.find(item=>item.id===row.generated_from_review_id),state=reviewExecutionState(review,todayString());
+      if(state==="actionable")return;
+      const successors=selectCurrentReviewsForProblem({reviews,problemId:review?.problem_id||row.problem_id,
+        aliases:problemAliases,today:todayString()}).current;
+      result.push({index,row,review,state,message:reviewExecutionMessage(state,review),successors});
+    });
+    return result;
+  })();
   const canSave=projectedUpdates.length>0&&allMissing.length===0&&!projectedUpdates.some(row=>row.requires_problem_confirmation)&&invalidSourceUpdates.length===0;
 
   const scrollToMissing=(index:number,field:string)=>{
@@ -245,6 +256,7 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
               <button onClick={()=>remove(index)} aria-label="候補を削除"><X size={16}/></button></div>
             {!update.master_matched&&<div className="match-warning"><AlertTriangle size={17}/><div><strong>問題マスターに未照合です</strong><span>保存前に登録済み問題を選択してください。</span></div></div>}
             {update.auto_corrected&&<div className="master-correction"><Check size={17}/><div><strong>自動補正しました</strong><span>{update.correction_fields?.join(" / ")}</span><small>{update.correction_reason}</small></div></div>}
+            {reviewGenerations[index]?.kind==="rebound"&&<div className="master-correction"><Check size={17}/><div><strong>現在のReviewへ安全に適用します</strong><span>{reviewGenerations[index].message}</span><small>採点契約・source lineage・stable target・scope・参照条件が同一です。</small></div></div>}
             {update.requires_problem_confirmation&&update.suggested_problem_id&&<div className="candidate-confirm"><AlertTriangle size={17}/><div><strong>問題IDの確認が必要です</strong><span>取り込み内容は {update.problem_id} ではなく {update.suggested_problem_id}（{update.suggested_problem_label}）の可能性があります。</span><div>
               <button type="button" className="primary small" onClick={()=>selectProblem(index,update.suggested_problem_id!)}>{update.suggested_problem_id}として保存</button>
               <button type="button" className="ghost small" onClick={()=>setUpdates(rows=>rows.map((row,i)=>i===index?{...row,requires_problem_confirmation:false,problem_id_confirmed:true}:row))}>{update.problem_id}として保存</button>

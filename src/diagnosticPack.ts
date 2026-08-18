@@ -18,10 +18,10 @@ import {
 } from "./examReferencePack.ts";
 import {analyzeConceptWeaknesses,buildPastExamRepairCandidates} from "./conceptWeakness.ts";
 import {buildAdaptivePlannerShadow} from "./adaptivePlanner.ts";
-import {adaptivePlanDayToTasks,projectAdaptiveSnapshotTasks} from "./adaptiveTodayPlan.ts";
-import {deriveCurrentTodayState,qualifyingAttemptForTodayTask} from "./todayTaskProjection.ts";
+import {adaptivePlanDayToTasks} from "./adaptiveTodayPlan.ts";
+import {deriveCurrentTodayProjection} from "./currentTodayProjection.ts";
 import {buildAdditionalStudyCandidates} from "./additionalStudy.ts";
-import type { Attempt, Problem, ProblemAlias, ProblemRelation, Review, TodayPlanSnapshot } from "./types.ts";
+import type { Attempt, Problem, ProblemAlias, ProblemRelation, Review, Task, TodayPlanSnapshot } from "./types.ts";
 
 type JsonRecord=Record<string,unknown>;
 type FingerprintEntry={count:number;primaryKeyDigest:string};
@@ -249,11 +249,12 @@ function logicalReviewPlan(review:Review){
 
 function parseSnapshot(row:{key:string;value:string}){try{return JSON.parse(row.value) as TodayPlanSnapshot}catch{return {parseError:true,rawValue:row.value}}}
 
-function buildPlannerAudit(snapshotRows:Array<{key:string;value:string}>,reviews:Review[],attempts:Attempt[],targetMinutes:number){
+function buildPlannerAudit(snapshotRows:Array<{key:string;value:string}>,reviews:Review[],attempts:Attempt[],targetMinutes:number,currentTasks?:Task[]){
   const snapshots=snapshotRows.map(row=>({key:row.key,snapshot:parseSnapshot(row)}));
   const latest=snapshots.sort((a,b)=>a.key.localeCompare(b.key)).at(-1);
   const snapshot=latest?.snapshot as TodayPlanSnapshot|undefined;
-  const tasks=Array.isArray(snapshot?.tasks)?snapshot.tasks:[];
+  const snapshotTasks=Array.isArray(snapshot?.tasks)?snapshot.tasks:[];
+  const tasks=currentTasks||snapshotTasks;
   const completed=tasks.filter(task=>task.checked||task.status==="done"||task.status==="completed");
   const remaining=tasks.filter(task=>!completed.includes(task)&&task.triage!=="tomorrow");
   const candidates=tasks.filter(task=>task.triage==="tomorrow"&&!task.postponed_to);
@@ -268,8 +269,8 @@ function buildPlannerAudit(snapshotRows:Array<{key:string;value:string}>,reviews
       remainingMinutes:remaining.reduce((sum,task)=>sum+Number(task.minutes||0),0),
       postponeCandidateMinutes:candidates.reduce((sum,task)=>sum+Number(task.minutes||0),0),
       postponedMinutes:postponed.reduce((sum,task)=>sum+Number(task.minutes||0),0),
-      sources:{startOfDay:"meta today-plan-snapshot:* / start_of_day_planned_minutes",current:"snapshot.tasks",
-        completion:"snapshot task checked/status",actualTime:"attempts.time_minutes (別表 learning-data.json)"}},
+      sources:{startOfDay:"meta today-plan-snapshot:* / start_of_day_planned_minutes",current:"canonical Current Today projection",
+        completion:"current projection from Attempts and Review execution state",actualTime:"attempts.time_minutes (別表 learning-data.json)"}},
     automaticRecalculationHistory:{available:false,events:[],note:"専用の自動再計算履歴テーブルはありません。snapshotのcreated_atと保存値のみを出力しています。"},
     executionLimits:{targetMinutes,mustCount:must.length,optionalCount:optional.length,mustMinutes,activeMinutes:mustMinutes+optionalMinutes,
       activeLinkedSCount:[...must,...optional].filter(task=>task.task_origin==="linked_s_check").length,
@@ -384,14 +385,11 @@ export async function createDiagnosticPack():Promise<DiagnosticPackResult>{
     today,examDate,targetMinutes:Math.max(30,Number(settings.daily_study_minutes||150))});
   const formalTodayTasks=adaptivePlanDayToTasks({day:adaptiveShadow.plan14.plan.find(day=>day.date===today),
     problems,reviews,today});
-  const currentProjectionTasks=currentSnapshot?projectAdaptiveSnapshotTasks({snapshotTasks:currentSnapshot.tasks,
-    generatedTasks:formalTodayTasks,reviews,today,aliases,isCompleted:task=>
-      !!qualifyingAttemptForTodayTask({task,attempts,snapshot:currentSnapshot,aliases})}):formalTodayTasks;
   const completedMinutes=attempts.filter(attempt=>attempt.date===today&&!attempt.parent_past_session_id)
     .reduce((sum,attempt)=>sum+Math.max(0,Number(attempt.time_minutes||0)),0)+
     pastSessions.filter(session=>String(session.date)===today).reduce((sum,session)=>sum+sessionStudyMinutes(session,attempts),0);
-  const projectedToday=currentSnapshot?deriveCurrentTodayState({tasks:currentProjectionTasks,attempts,snapshot:currentSnapshot,
-    aliases,completedMinutes,targetMinutes:Math.max(30,Number(settings.daily_study_minutes||150))}):undefined;
+  const projectedToday=currentSnapshot?deriveCurrentTodayProjection({snapshot:currentSnapshot,generatedTasks:formalTodayTasks,
+    attempts,reviews,today,aliases,completedMinutes,targetMinutes:Math.max(30,Number(settings.daily_study_minutes||150))}):undefined;
   const additional=buildAdditionalStudyCandidates({today,targetMinutes:Math.max(30,Number(settings.daily_study_minutes||150)),
     completedMinutes,activeRemainingMinutes:projectedToday?.timeSummary.activeRemainingMinutes||0,
     currentTasks:projectedToday?.tasks||formalTodayTasks,shadow:adaptiveShadow,
@@ -408,7 +406,7 @@ export async function createDiagnosticPack():Promise<DiagnosticPackResult>{
     topConceptWeaknesses:conceptWeaknesses.slice(0,20),
     repairCandidates:buildPastExamRepairCandidates({record:referenceRecord,sessions:pastSessions,attempts,conceptWeaknesses}),
     adaptivePlanner:formalAdaptiveAudit};
-  const plannerAudit={...buildPlannerAudit(snapshotRows,reviews,attempts,Math.max(30,Number(settings.daily_study_minutes||150))),
+  const plannerAudit={...buildPlannerAudit(snapshotRows,reviews,attempts,Math.max(30,Number(settings.daily_study_minutes||150)),projectedToday?.tasks||formalTodayTasks),
     plannerSource:"adaptive",formalPlan14:adaptiveShadow.plan14,formalPlan30:adaptiveShadow.plan30,
     weeklyActual:adaptiveShadow.weeklyActual,weeklyTarget:adaptiveShadow.weeklyTarget,
     phaseDiagnostics:adaptiveShadow.phaseDiagnostics};

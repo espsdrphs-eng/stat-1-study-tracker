@@ -48,6 +48,14 @@ This document is the implementation-level source of truth for data integrity. Le
 - Today, Dashboard NEXT ACTION, time totals, and integrity status consume one current projection. For normal tasks,
   completion means execution rather than mastery: `skeleton` accepts `skeleton`/`main_calc`/`full`, `main_calc` accepts
   `main_calc`/`full`, and `full` accepts `full`; a low score may create a separate Review without reopening the plan slot.
+- A start-of-day snapshot records the morning plan, not current eligibility. Current Today overlays the latest Attempts
+  and active Reviews, adds newly due formal Reviews, replaces terminal Review generations by their current logical
+  generation, and never mutates the stored snapshot.
+- Review IDs and `contractId` values identify persisted generations, not the logical learning task. Attempt deletion may
+  leave a completed generation as history and create a new pending generation for the same logical Review.
+- A GPT result for a terminal generation may be rebound only after an explicit preview and only when problem, logical
+  Review key, contract hash, source lineage, stable target set, scope, and reference policy are identical and no newer
+  grading evidence changed the semantics. Otherwise current-prompt regeneration is mandatory.
 - The active `GradingContractSnapshot` is the only source for purpose, mode, scope, sheet, minutes, and graded parts.
 - Diagnostic, preview, repair, and post-repair verification use the same `runIntegrityAudit` classifier.
 - Rebuild and repair operations are idempotent and do not create a new Review when an active logical key exists.
