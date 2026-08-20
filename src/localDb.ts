@@ -2576,7 +2576,7 @@ async function bootstrap():Promise<Bootstrap>{
   const smap=new Map(sMemory.map(memory=>[memory.problem_id,memory]));
   const attemptMap=new Map(attempts.map(attempt=>[attempt.id,attempt]));
   const settings={
-    exam_date:metaEntries.find(entry=>entry.key==="exam_date")?.value||"",
+    exam_date:metaEntries.find(entry=>entry.key==="exam_date")?.value||"2026-11-15",
     daily_study_minutes:Math.max(30,Number(metaEntries.find(entry=>entry.key==="daily_study_minutes")?.value||150))
   };
   const referenceRecord=storedExamReferencePack(metaEntries);
@@ -2645,7 +2645,7 @@ async function bootstrap():Promise<Bootstrap>{
     skeletonCount:skeleton.length,skeletonRate:skeleton.length?Math.round(skeletonGood/skeleton.length*100):0,
     studyDays14,actualMinutes14,delayed3,dailyTargetMinutes:settings.daily_study_minutes
   });
-  const pastExamCatalog=buildPastExamCatalog({record:referenceRecord,sessions:pastSessions,exposureOverrides});
+  const pastExamCatalog=buildPastExamCatalog({record:referenceRecord,sessions:pastSessions,attempts:activeAttempts,exposureOverrides});
   const availablePastYearOrder=orderCorePastExamYears({
     catalog:pastExamCatalog,daysRemaining:progress.daysRemaining
   });
@@ -2967,6 +2967,7 @@ async function bootstrap():Promise<Bootstrap>{
     attempts,reviews:rawReviews,problems,aliases:problemAliases,today,todayPlanSnapshots:[snapshot],validCrossTargetReviewIds,
     currentTodayTasks:tasks,currentNextTask:currentToday.currentTask,currentPlanSummary:plannerShadow.plan14,
     additionalCandidates:additionalStudy.candidates,eligibleTodayTasks:generatedTriage.tasks,
+    examDate:settings.exam_date||"2026-11-15",pastExamCatalog,
   });
   const masterStatus={
     problem_count:problems.length,answer_count:answerIndex.length,
@@ -3122,6 +3123,7 @@ async function integrityAudit():Promise<IntegrityAudit>{
   return runIntegrityAudit({attempts,reviews,problems,aliases,today:todayString(),todayPlanSnapshots:snapshots,validCrossTargetReviewIds,
     currentTodayTasks:current.today.tasks,currentNextTask:current.today.currentTask,
     currentPlanSummary:current.adaptiveLearning.plannerShadow.plan14,
+    examDate:current.settings.exam_date||"2026-11-15",pastExamCatalog:current.adaptiveLearning.pastExamCatalog,
     additionalCandidates:current.today.additionalCandidates,
     eligibleTodayTasks:adaptivePlanDayToTasks({day:current.adaptiveLearning.plannerShadow.plan14.plan.find(day=>day.date===todayString()),
       problems:current.problems,reviews:current.reviews,today:todayString()})});

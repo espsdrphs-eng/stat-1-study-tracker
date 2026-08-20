@@ -350,3 +350,7 @@ header h1{font-size:28px;font-weight:700;letter-spacing:-.02em;color:var(--text-
 .whole-answer-result>div{display:grid;gap:3px}.whole-answer-result>div>span,.whole-answer-result small{color:var(--muted)}
 .whole-answer-result.warning{border-color:#d9a441}.whole-answer-result.danger{border-color:#d66}.whole-answer-result.success{border-color:#55a77b}
 .whole-answer-result ul{margin:0;padding-left:20px}.whole-answer-result li{display:grid;gap:3px;margin:5px 0}
+.coach-review-panel .helper-text{margin:.35rem 0 .75rem;color:var(--muted);font-size:.88rem}
+.coach-diff-lists{display:grid;gap:.55rem;margin:.75rem 0}
+.coach-diff-lists>div{display:grid;gap:.2rem;padding:.65rem .75rem;border:1px solid var(--line);border-radius:10px}
+.coach-diff-lists span{color:var(--muted);font-size:.88rem}

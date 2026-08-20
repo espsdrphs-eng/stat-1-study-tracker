@@ -45,7 +45,8 @@ test("既存20問DBへ2016〜2019・2021を冪等追加し履歴・露出・snap
   assert.equal(first.adaptiveLearning.pastExamCatalog.length,45);
   assert.equal(first.adaptiveLearning.pastExamCatalog.some(row=>row.year===2020),false);
   assert.equal(first.adaptiveLearning.pastExamCatalog.filter(row=>[2016,2017,2018].includes(row.year)).every(row=>
-    row.availability==="verified_problem"&&row.schedulable&&row.exposure==="unknown"&&!row.simulationProtected),true);
+    row.availability==="verified_problem"&&row.schedulable&&row.exposure==="unseen"&&
+    row.exposureSource==="inferred_unseen"&&!row.simulationProtected),true);
   assert.equal(first.adaptiveLearning.pastExamCatalog.find(row=>row.canonicalProblemId==="PY-2024-Q1")?.exposure,
     "prompt_scanned");
   const countAfterFirst=await db.problems.count();

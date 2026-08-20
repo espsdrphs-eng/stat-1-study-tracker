@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {buildAdaptivePlannerShadow,rollingPastExamShare} from "../src/adaptivePlanner.ts";
 import {buildPastExamCatalog} from "../src/examReferencePack.ts";
-import {problem,record} from "./adaptiveFixture.mjs";
+import {pastProblem,problem,record} from "./adaptiveFixture.mjs";
 
 const whitebook=[
   ...[2,4,6].flatMap(ch=>Array.from({length:8},(_,i)=>problem(`WB-${ch}-A-${String(i+1).padStart(2,"0")}`,ch))),
@@ -69,7 +69,7 @@ test("active Review problem is not duplicated as generic score-building and is s
   assert.equal(shadow.plan14.reviewSchedule.capacityConflicts.length,0);
 });
 
-test("unknown exposureを特定の未見年度として推薦せず、2024・2025を61日以上で保護する",()=>{
+test("2024・2025は未見推定でも30日超で保護し、warningは学習時間へ数えない",()=>{
   const protectedRecord=record({data:{...baseRecord.data,pastExamProblems:[
     {...baseRecord.data.pastExamProblems[0],year:2024,problem_id:"PE-2024-Q01",simulation_protection_default:true},
     {...baseRecord.data.pastExamProblems[1],year:2025,problem_id:"PE-2025-Q01",simulation_protection_default:true}
@@ -79,8 +79,50 @@ test("unknown exposureを特定の未見年度として推薦せず、2024・202
     attempts:[],reviews:[],pastSessions:[],currentTasks:[],today:"2026-07-29",examDate:"2026-11-15",targetMinutes:150});
   assert.equal(shadow.plan30.plan.flatMap(day=>day.tasks).some(task=>task.referenceProblemId),false);
   const confirmations=shadow.plan30.plan.flatMap(day=>day.tasks).filter(task=>task.kind==="exposure_confirmation");
-  assert.ok(confirmations.length>0);
-  assert.equal(confirmations.every(task=>task.requiresUserSelection&&task.minutes===10&&task.purpose==="material_selection_confirmation"),true);
+  assert.equal(confirmations.length,1);
+  assert.equal(confirmations.every(task=>task.requiresUserSelection&&task.minutes===0&&task.purpose==="material_selection_confirmation"),true);
+});
+
+test("D87は履歴のないverified過去問をunseenとして2016年から具体配置する",()=>{
+  const rows=[2016,2017,2018].flatMap(year=>Array.from({length:5},(_,index)=>pastProblem(year,index+1)));
+  const source=record({data:{...baseRecord.data,pastExamProblems:rows}});
+  const unknownCatalog=buildPastExamCatalog({record:source,sessions:[],attempts:[],exposureOverrides:{}});
+  assert.equal(unknownCatalog.every(row=>row.exposure==="unseen"),true);
+  const plan=buildAdaptivePlannerShadow({record:source,catalog:unknownCatalog,weaknesses:[],problems:whitebook,
+    attempts:[],reviews:[],pastSessions:[],currentTasks:[],today:"2026-08-20",examDate:"2026-11-15",targetMinutes:150});
+  const week=plan.plan14.plan.slice(0,7),tasks=week.flatMap(day=>day.tasks);
+  assert.equal(tasks.some(task=>task.kind==="exposure_confirmation"),false);
+  assert.equal(tasks.filter(task=>["past_exam","scan5","timed"].includes(task.kind)).every(task=>/^2016年/.test(task.label)),true);
+  const share=rollingPastExamShare(week);
+  assert.ok(share>=.3&&share<=.4,`D87 share=${share}`);
+  assert.match(tasks.find(task=>task.kind==="scan5")?.label||"",/5問scan・3問選択/);
+  const rerun=buildAdaptivePlannerShadow({record:source,catalog:unknownCatalog,weaknesses:[],problems:whitebook,
+    attempts:[],reviews:[],pastSessions:[],currentTasks:[],today:"2026-08-20",examDate:"2026-11-15",targetMinutes:150});
+  assert.deepEqual(rerun.plan14,plan.plan14);
+});
+
+test("D79は2019〜2021を優先し過去問・timedを50〜60%配置する",()=>{
+  const rows=[2016,2017,2018,2019,2021,2022,2023,2024,2025]
+    .flatMap(year=>Array.from({length:5},(_,index)=>pastProblem(year,index+1)));
+  const source=record({data:{...baseRecord.data,pastExamProblems:rows}});
+  const fresh=buildPastExamCatalog({record:source,sessions:[],attempts:[],exposureOverrides:{}});
+  const plan=buildAdaptivePlannerShadow({record:source,catalog:fresh,weaknesses:[],problems:whitebook,attempts:[],reviews:[],
+    pastSessions:[],currentTasks:[],today:"2026-08-28",examDate:"2026-11-15",targetMinutes:150});
+  const week=plan.plan14.plan.slice(0,7),concrete=week.flatMap(day=>day.tasks)
+    .filter(task=>["past_exam","scan5","timed"].includes(task.kind));
+  assert.equal(concrete.every(task=>[2019,2021].some(year=>task.label.startsWith(`${year}年`))),true);
+  const share=rollingPastExamShare(week);
+  assert.ok(share>=.5&&share<=.6,`D79 share=${share}`);
+});
+
+test("eligible過去問0件では学習時間に数えないwarningを1件だけ出す",()=>{
+  const source=record({data:{...baseRecord.data,pastExamProblems:[]}});
+  const plan=buildAdaptivePlannerShadow({record:source,catalog:[],weaknesses:[],problems:whitebook,attempts:[],reviews:[],
+    pastSessions:[],currentTasks:[],today:"2026-08-20",examDate:"2026-11-15",targetMinutes:150});
+  const warnings=plan.plan14.plan.flatMap(day=>day.tasks).filter(task=>task.kind==="exposure_confirmation");
+  assert.equal(warnings.length,1);
+  assert.equal(warnings[0].minutes,0);
+  assert.equal(rollingPastExamShare(plan.plan14.plan.slice(0,7)),0);
 });
 
 test("残り60日以下で90分演習と過去問比率50%以上を満たす",()=>{
@@ -152,17 +194,17 @@ test("D90・D60・D30診断は純粋にフェーズを切り替え、D60以降�
   assert.ok(d30.pastExamShare>=50);
 });
 
-test("将来フェーズ診断はunknownを実DBで変更せず、素材確認後という仮定を明示する",()=>{
+test("将来フェーズ診断はunknownを実DBで変更せず具体素材を非破壊選択する",()=>{
   const unknownCatalog=expandedCatalog.map(row=>({...row,exposure:"unknown"}));
   const before=structuredClone(unknownCatalog);
   const result=buildAdaptivePlannerShadow({record:expandedRecord,catalog:unknownCatalog,weaknesses:[],problems:whitebook,
     attempts:[],reviews:[],pastSessions:[],currentTasks:[],today:"2026-08-04",examDate:"2026-11-15",targetMinutes:150});
   assert.deepEqual(unknownCatalog,before);
-  assert.equal(result.plan14.plan.flatMap(day=>day.tasks).some(task=>task.referenceProblemId),false);
+  assert.equal(result.plan14.plan.flatMap(day=>day.tasks).some(task=>task.referenceProblemId),true);
   const d60=result.phaseDiagnostics.find(row=>row.checkpoint==="D60");
   assert.ok(d60.timed>=2);
   assert.ok(d60.pastExamShare>=50);
-  assert.match(d60.assumption,/素材選択確認/);
+  assert.match(d60.assumption,/非破壊/);
 });
 
 test("正式順位はraw weakNoteではなくconcept evidenceの強い証拠を優先する",()=>{

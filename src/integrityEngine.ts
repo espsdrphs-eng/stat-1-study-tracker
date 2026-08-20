@@ -1,4 +1,4 @@
-import type { AdditionalStudyCandidate, AdaptivePlanSummary, Attempt, GradingContractSnapshot, Problem, ProblemAlias, Review, StudyUpdate, Task, TodayPlanSnapshot } from "./types.ts";
+import type { AdditionalStudyCandidate, AdaptivePlanSummary, Attempt, ExamReferenceCatalogItem, GradingContractSnapshot, Problem, ProblemAlias, Review, StudyUpdate, Task, TodayPlanSnapshot } from "./types.ts";
 import { resolveCanonicalProblemId } from "./examReadiness.ts";
 import { addCalendarDays, resolveReviewSchedule } from "./reviewSchedulePolicy.ts";
 import { validateGradingContract } from "./gradingContract.ts";
@@ -137,7 +137,11 @@ export type IntegrityCategory =
   | "whole_scan_empty_with_material_uncertainty" | "same_root_duplicate_target"
   | "independent_major_finding_not_promoted" | "contract_confidence_used_as_whole_scan_confidence"
   | "rediagnosis_changed_original_score" | "rediagnosis_changed_original_mark"
-  | "rediagnosis_duplicate_target" | "rediagnosis_duplicate_review" | "problem_specific_whole_scan_branch";
+  | "rediagnosis_duplicate_target" | "rediagnosis_duplicate_review" | "problem_specific_whole_scan_branch"
+  | "eligible_past_exam_but_confirmation_scheduled" | "past_exam_candidate_false_negative"
+  | "repeated_material_selection_confirmation" | "past_exam_share_counted_from_non_exam_task"
+  | "current_plan_zero_past_exam_when_phase_requires" | "protected_past_exam_scheduled_without_release"
+  | "coach_update_parse_failed" | "coach_update_schema_invalid" | "coach_diff_generated_from_invalid_update";
 
 export type IntegrityIssue = {
   category: IntegrityCategory;
@@ -173,6 +177,7 @@ export function runIntegrityAudit(args: {
   eligibleTodayTasks?:Task[];
   pendingImportUpdates?:StudyUpdate[];
   examDate?:string;
+  pastExamCatalog?:ExamReferenceCatalogItem[];
 }): IntegrityAudit {
   const { attempts, reviews, problems = [], aliases = [], today, todayPlanSnapshots = [], validCrossTargetReviewIds = [],
     currentTodayTasks, currentNextTask, currentPlanSummary, additionalCandidates=[],eligibleTodayTasks,pendingImportUpdates=[] } = args;
@@ -234,13 +239,36 @@ export function runIntegrityAudit(args: {
   if(currentPlanSummary&&currentPlanSummary.plan.length>=7){
     const week=currentPlanSummary.plan.slice(0,7),tasks=week.flatMap(day=>day.tasks);
     const total=tasks.reduce((sum,row)=>sum+row.minutes,0);
-    const past=tasks.filter(row=>["past_exam","scan5","timed"].includes(row.kind)).reduce((sum,row)=>sum+row.minutes,0);
+    const concrete=tasks.filter(row=>["past_exam","scan5","timed"].includes(row.kind)&&!!row.referenceProblemId);
+    const past=concrete.reduce((sum,row)=>sum+row.minutes,0);
     const horizon=examHorizonPolicy(daysUntilExam(today,args.examDate||"2026-11-15")),share=total?past/total:0;
     if(currentPlanSummary.counts.pastExam>0&&share+1e-9<horizon.pastExamShareMin)issues.push({category:"past_exam_share_below_phase_target",severity:"active",
       detail:`rolling 7-day past-exam share ${Math.round(share*100)}% is below phase target ${Math.round(horizon.pastExamShareMin*100)}%`,repairable:false});
     const whitebookReviews=active.filter(review=>problems.find(problem=>problem.problem_id===review.problem_id)?.source_type!=="past_exam");
     if(currentPlanSummary.counts.pastExam>0&&share<horizon.pastExamShareMin&&whitebookReviews.length)issues.push({category:"whitebook_backlog_suppressing_past_exam",severity:"active",
       reviewIds:whitebookReviews.map(review=>review.id),detail:"whitebook Review backlog is suppressing the exam-horizon past-exam floor",repairable:false});
+    const confirmations=tasks.filter(row=>row.kind==="exposure_confirmation");
+    const remaining=daysUntilExam(today,args.examDate||"2026-11-15");
+    const eligible=(args.pastExamCatalog||[]).filter(row=>row.availability==="verified_problem"&&row.schedulable&&row.gradable&&
+      !(remaining>30&&row.simulationProtected));
+    if(confirmations.length>1)issues.push({category:"repeated_material_selection_confirmation",severity:"active",
+      detail:`material selection confirmation is repeated ${confirmations.length} times`,repairable:false});
+    if(confirmations.some(row=>row.minutes>0))issues.push({category:"past_exam_share_counted_from_non_exam_task",severity:"active",
+      detail:"material/exposure confirmation consumes planned learning minutes",repairable:false});
+    if(eligible.length&&confirmations.length)issues.push({category:"eligible_past_exam_but_confirmation_scheduled",severity:"active",
+      detail:`${eligible.length} eligible past-exam problems exist but a material confirmation was scheduled`,repairable:false});
+    if(eligible.length&&!concrete.length){
+      issues.push({category:"past_exam_candidate_false_negative",severity:"active",
+        detail:`${eligible.length} eligible past-exam problems resolved to zero concrete candidates`,repairable:false});
+      if(horizon.pastExamShareMin>0)issues.push({category:"current_plan_zero_past_exam_when_phase_requires",severity:"active",
+        detail:"exam-horizon phase requires past-exam minutes but the rolling plan has zero",repairable:false});
+    }
+    const catalogByReference=new Map((args.pastExamCatalog||[]).map(row=>[row.referenceProblemId,row]));
+    const protectedRows=concrete.filter(task=>{
+      const row=catalogByReference.get(task.referenceProblemId!);return !!row?.simulationProtected&&remaining>30;
+    });
+    if(protectedRows.length)issues.push({category:"protected_past_exam_scheduled_without_release",severity:"active",
+      detail:`${protectedRows.length} protected past-exam tasks were scheduled before the release phase`,repairable:false});
   }
 
   for(const state of reconciliation.problems.filter(row=>row.graduated&&row.graduationAttemptId)){
@@ -589,6 +617,10 @@ export function runIntegrityAudit(args: {
     "same_root_duplicate_target", "independent_major_finding_not_promoted", "contract_confidence_used_as_whole_scan_confidence",
     "rediagnosis_changed_original_score", "rediagnosis_changed_original_mark", "rediagnosis_duplicate_target",
     "rediagnosis_duplicate_review", "problem_specific_whole_scan_branch",
+    "eligible_past_exam_but_confirmation_scheduled", "past_exam_candidate_false_negative",
+    "repeated_material_selection_confirmation", "past_exam_share_counted_from_non_exam_task",
+    "current_plan_zero_past_exam_when_phase_requires", "protected_past_exam_scheduled_without_release",
+    "coach_update_parse_failed", "coach_update_schema_invalid", "coach_diff_generated_from_invalid_update",
   ];
   const counts = Object.fromEntries(categories.map((category) =>
     [category, issues.filter((issue) => issue.category === category).length])) as Record<IntegrityCategory, number>;

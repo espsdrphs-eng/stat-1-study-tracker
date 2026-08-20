@@ -241,3 +241,23 @@ test("planner audit detects duplicate problem tasks, window violations, and opti
   assert.equal(audit.counts.overdue_starvation,1);
   assert.equal(audit.counts.optional_extra_priority_violation,1);
 });
+
+test("planner audit detects eligible past-exam false negatives and never counts material confirmation as exam study",()=>{
+  const warning={taskKey:"warning",date:"2026-08-20",slot:"maintenance_selection",kind:"exposure_confirmation",
+    label:"過去問素材の露出状態を確認",minutes:10,reason:"missing",requiresUserSelection:true};
+  const plan=Array.from({length:7},(_,index)=>({date:`2026-08-${20+index}`,tasks:index===0?[warning]:[],
+    totalMinutes:index===0?10:0}));
+  const summary={days:7,plan,totalMinutes:10,counts:{scoreBuilding:0,repair:0,maintenance:1,scan5:0,full:0,timed:0,
+    pastExam:0,chapter5:0,chapter7:0,chapter8:0},weeklyMinimumViolations:[],dailyCapacityViolations:0,
+    reviewSchedule:{repairBudgetMinutes:0,placements:[],capacityConflicts:[]}};
+  const catalog=[{referenceProblemId:"PE-2016-Q01",canonicalProblemId:"PY-2016-Q1",year:2016,questionNumber:1,
+    title:"2016年問1",availability:"verified_problem",schedulable:true,gradable:true,fineConceptIds:[],coarseTopics:[],
+    exposure:"unseen",simulationProtected:false,classificationConfidence:"verified"}];
+  const audit=runIntegrityAudit({attempts:[],reviews:[],today:"2026-08-20",examDate:"2026-11-15",
+    currentPlanSummary:summary,pastExamCatalog:catalog});
+  assert.equal(audit.counts.eligible_past_exam_but_confirmation_scheduled,1);
+  assert.equal(audit.counts.past_exam_candidate_false_negative,1);
+  assert.equal(audit.counts.current_plan_zero_past_exam_when_phase_requires,1);
+  assert.equal(audit.counts.past_exam_share_counted_from_non_exam_task,1);
+  assert.ok(audit.activeIssueCount>=4);
+});

@@ -287,18 +287,36 @@ export function deriveReferenceProblemExposure(args:{
 }
 
 export function buildPastExamCatalog(args:{
-  record?:StoredExamReferencePack|null;sessions:PastSession[];exposureOverrides?:Record<string,PastExamExposure>;
+  record?:StoredExamReferencePack|null;sessions:PastSession[];attempts?:Attempt[];
+  exposureOverrides?:Record<string,PastExamExposure>;
 }):ExamReferenceCatalogItem[]{
   if(!args.record)return [];
   return args.record.data.pastExamProblems
     .filter(reference=>reference.availability==="verified_problem"&&reference.schedulable)
     .map(reference=>{
     const canonicalProblemId=canonicalPastExamProblemId(reference);
+    const explicit=Object.prototype.hasOwnProperty.call(args.exposureOverrides||{},canonicalProblemId);
+    const relevantSessions=args.sessions.filter(session=>Number(session.year)===reference.year&&
+      (!(session.questions||[]).length||(session.questions||[]).some(question=>
+        canonicalPastExamProblemId(question.problemId||"")===canonicalProblemId||
+        questionNumberFromLabel(question.questionLabel)===reference.question_number)));
+    const relevantAttempts=(args.attempts||[]).filter(attempt=>!attempt.exclude_from_planning&&
+      canonicalPastExamProblemId(attempt.problem_id)===canonicalProblemId);
+    const attemptExposure:PastExamExposure|undefined=relevantAttempts.length?
+      (relevantAttempts.some(attempt=>["full","exam_90min","past_exam","timed_single"].includes(String(attempt.mode)))
+        ?"fully_attempted":relevantAttempts.some(attempt=>["skeleton","main_calc","check"].includes(String(attempt.mode)))
+          ?"partially_attempted":"prompt_scanned"):undefined;
+    const derived=deriveReferenceProblemExposure({reference,sessions:args.sessions,
+      override:args.exposureOverrides?.[canonicalProblemId]});
+    const exposure:PastExamExposure=(explicit?derived:attemptExposure)||
+      (!explicit&&!relevantSessions.length&&derived==="unknown"?"unseen":derived);
+    const exposureSource:ExamReferenceCatalogItem["exposureSource"]=explicit?"explicit":attemptExposure?"attempt":
+      relevantSessions.length?"session":exposure==="unseen"?"inferred_unseen":"reference_default";
     return {referenceProblemId:reference.problem_id,canonicalProblemId,year:reference.year,
       questionNumber:reference.question_number,title:reference.title,availability:reference.availability,
       schedulable:reference.schedulable,gradable:reference.gradable,fineConceptIds:reference.fine_concept_ids,
       coarseTopics:reference.coarse_topics,
-      exposure:deriveReferenceProblemExposure({reference,sessions:args.sessions,override:args.exposureOverrides?.[canonicalProblemId]}),
+      exposure,exposureSource,
       simulationProtected:reference.simulation_protection_default,
       classificationConfidence:reference.classification_confidence};
   });

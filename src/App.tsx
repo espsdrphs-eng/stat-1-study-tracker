@@ -1071,15 +1071,20 @@ function ConceptWeaknessPanel({data}:{data:Bootstrap}){
       </article>)}</div>:<Empty>独立した失敗証拠はまだありません。証拠不足は「苦手」ではなく未確認として扱います</Empty>}
   </section>;
 }
-const coachConfidenceText=(value:string)=>value==="high"?"高":value==="medium"?"中":"低";
+const coachConfidenceText=(value:string)=>value==="high"?"高":value==="medium"?"中":value==="low"?"低":value;
+type CoachListDiff={before:string[];after:string[];added:string[];removed:string[];changed:string[]};
+type CoachPreviewResult={next:CoachDiagnosis;diff:{level:string;unchanged:boolean;
+  passOutlook:{before:string;after:string};confidence:{before:string;after:string};
+  bottleneck:{before:string;after:string};nextActions:CoachListDiff;strengths:CoachListDiff;
+  improvements:CoachListDiff;unknowns:CoachListDiff}};
 function CoachPanel({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean}){
   const coach=data.coach,diagnosis=coach.display;
   const masteryRows=Object.values(data.masteryByProblem);
   const masteryCounts=[1,2,3].map(level=>masteryRows.filter(row=>row.currentLevel===level).length);
   const [copied,setCopied]=useState(false),[text,setText]=useState(""),[error,setError]=useState("");
-  const [preview,setPreview]=useState<{next:CoachDiagnosis;diff:{level:string;bottleneck:{before:string;after:string};nextActions:{before:string[];after:string[]}}}|null>(null);
+  const [preview,setPreview]=useState<CoachPreviewResult|null>(null);
   const copy=async()=>{await navigator.clipboard.writeText(coach.prompt);setCopied(true);setTimeout(()=>setCopied(false),1800)};
-  const parse=async()=>{setError("");try{setPreview(await post("/api/coach/preview",{text}))}catch(reason){setError(reason instanceof Error?reason.message:String(reason))}};
+  const parse=async()=>{setError("");try{setPreview(await post<CoachPreviewResult>("/api/coach/preview",{text}))}catch(reason){setError(reason instanceof Error?reason.message:String(reason))}};
   const save=()=>{if(!preview)return;setPreview(null);run(()=>post("/api/coach/save",{text}),"学習コーチ診断を履歴へ保存しました")};
   return <>
     <section className="coach-hero">
@@ -1105,13 +1110,25 @@ function CoachPanel({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,
       <div className="panel-title"><div><span className="eyebrow">GPT COACH REVIEW</span><h3>GPTで現在地をレビュー</h3></div><Badge>API不使用</Badge></div>
       <p>代表Attempt・concept evidence・本番系指標だけをまとめた入力済みプロンプトです。raw履歴や計画は変更せず、保存されるのはコーチ診断だけです。</p>
       <div className="button-row"><button className="primary" onClick={copy}><Copy size={16}/>{copied?"コピーしました":"入力済みGPTプロンプトをコピー"}</button></div>
-      <details><summary>GPTのcoach_updateを取り込む</summary><textarea className="paste-area coach-paste" value={text} onChange={event=>setText(event.target.value)} placeholder="GPTが返したcoach_update YAMLを貼り付け"/>
-        <button className="secondary" disabled={busy||!text.trim()} onClick={parse}>差分をプレビュー</button>{error&&<p className="field-error">{error}</p>}</details>
+      <details><summary>GPTのcoach_updateを取り込む</summary><p className="helper-text">現在保存中のコーチ診断と、今回のGPT診断を比較します。確認するまで保存されません。</p>
+        <textarea className="paste-area coach-paste" value={text} onChange={event=>setText(event.target.value)} placeholder="GPTが返したcoach_update JSONをそのまま貼り付け"/>
+        <button className="secondary" disabled={busy||!text.trim()} onClick={parse}>診断の変更内容を確認</button>{error&&<p className="field-error">{error}</p>}</details>
       {!!coach.history.length&&<details><summary>過去のコーチ診断（{coach.history.length}件）</summary><div className="coach-history">{coach.history.map((row,index)=><div key={`${row.reviewedAt}-${index}`}><strong>{row.reviewedAt.slice(0,10)}・LEVEL {row.level.value}</strong><span>{row.primaryBottleneck.title}</span></div>)}</div></details>}
     </section>
-    {preview&&<Modal title="コーチ診断の差分確認" close={()=>setPreview(null)}><div className="coach-preview"><dl><dt>LEVEL</dt><dd>{preview.diff.level}</dd><dt>最大ボトルネック（旧）</dt><dd>{preview.diff.bottleneck.before}</dd><dt>最大ボトルネック（新）</dt><dd>{preview.diff.bottleneck.after}</dd><dt>次の課題（新）</dt><dd>{preview.diff.nextActions.after.join("／")||"なし"}</dd></dl>
+    {preview&&<Modal title="コーチ診断の変更内容" close={()=>setPreview(null)}><div className="coach-preview"><dl><dt>本番レベル</dt><dd>{preview.diff.level}</dd>
+      <dt>合格見通し</dt><dd>{preview.diff.passOutlook.before} → {preview.diff.passOutlook.after}</dd>
+      <dt>信頼度</dt><dd>{coachConfidenceText(preview.diff.confidence.before)} → {coachConfidenceText(preview.diff.confidence.after)}</dd>
+      <dt>最大ボトルネック</dt><dd>{preview.diff.bottleneck.before} → {preview.diff.bottleneck.after}</dd></dl>
+      {preview.diff.unchanged?<p>保存中の診断から変更はありません。</p>:<div className="coach-diff-lists">
+        <CoachDiffList title="次に鍛えること" diff={preview.diff.nextActions}/><CoachDiffList title="現在の強み" diff={preview.diff.strengths}/>
+        <CoachDiffList title="最近の改善" diff={preview.diff.improvements}/><CoachDiffList title="未確認事項" diff={preview.diff.unknowns}/></div>}
       <p>Attempt・Review・problem masterは変更しません。この診断を履歴へ追加します。</p><div className="form-actions"><button className="ghost" onClick={()=>setPreview(null)}>キャンセル</button><button className="primary" disabled={busy} onClick={save}>確認して保存</button></div></div></Modal>}
   </>;
+}
+function CoachDiffList({title,diff}:{title:string;diff:CoachListDiff}){
+  if(!diff.added.length&&!diff.removed.length&&!diff.changed.length)return <div><strong>{title}</strong><span>変更なし</span></div>;
+  return <div><strong>{title}</strong>{!!diff.added.length&&<span>追加：{diff.added.join("／")}</span>}
+    {!!diff.removed.length&&<span>削除：{diff.removed.join("／")}</span>}{!!diff.changed.length&&<span>変更：{diff.changed.join("／")}</span>}</div>;
 }
 function CoachFactList({rows}:{rows:Array<{title:string;evidence:string}>}){
   return <div className="coach-fact-list">{rows.length?rows.slice(0,3).map((row,index)=><div key={`${row.title}-${index}`}><strong>{row.title}</strong><span>{row.evidence}</span></div>):<p>確認できる証拠がまだありません。</p>}</div>;

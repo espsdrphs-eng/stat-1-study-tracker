@@ -27,7 +27,8 @@ function phaseName(daysRemaining:number){return examHorizonPolicy(daysRemaining)
 
 export function rollingPastExamShare(days:AdaptivePlanDay[]){
   const tasks=days.flatMap(day=>day.tasks),total=tasks.reduce((sum,row)=>sum+row.minutes,0);
-  const past=tasks.filter(row=>["past_exam","scan5","timed"].includes(row.kind)).reduce((sum,row)=>sum+row.minutes,0);
+  const past=tasks.filter(row=>["past_exam","scan5","timed"].includes(row.kind)&&!!row.referenceProblemId)
+    .reduce((sum,row)=>sum+row.minutes,0);
   return total?past/total:0;
 }
 
@@ -70,17 +71,47 @@ function chooseWhitebook(args:{
 }
 
 function pastRank(exposure:string){
-  return exposure==="prompt_scanned"?0:exposure==="partially_attempted"?1:exposure==="fully_attempted"?2:
-    exposure==="answer_exposed"?3:exposure==="simulated"?4:exposure==="unseen"?5:9;
+  return exposure==="unseen"?0:exposure==="unknown"?1:exposure==="prompt_scanned"?2:
+    exposure==="partially_attempted"?3:exposure==="fully_attempted"?4:exposure==="answer_exposed"?5:6;
 }
 
+function preferredPastExamYears(daysRemaining:number){
+  if(daysRemaining>=81)return [2016,2017,2018];
+  if(daysRemaining>=61)return [2019,2020,2021];
+  if(daysRemaining>=31)return [2022,2023];
+  return [2024,2025];
+}
+const stableTie=(value:string)=>[...value].reduce((hash,char)=>Math.imul(hash^char.charCodeAt(0),16777619)>>>0,2166136261);
+
 function choosePastExam(args:{
-  catalog:ExamReferenceCatalogItem[];daysRemaining:number;used:Map<string,string>;date:string;avoidProblemIds?:Set<string>;
+  catalog:ExamReferenceCatalogItem[];daysRemaining:number;used:Map<string,string>;date:string;attempts:Attempt[];
+  weaknesses:ConceptWeaknessInsight[];avoidProblemIds?:Set<string>;
 }){
+  const preferred=preferredPastExamYears(args.daysRemaining),yearRank=(year:number)=>{
+    const index=preferred.indexOf(year);return index>=0?index:preferred.length+Math.abs(year-preferred.at(-1)!);
+  };
+  const recentCutoff=addCalendarDays(args.date,-14),attempted=new Map<string,Attempt>();
+  for(const attempt of args.attempts){
+    const id=canonicalPastExamProblemId(attempt.problem_id),current=attempted.get(id);
+    if(!current||attempt.date>current.date||attempt.date===current.date&&attempt.id>current.id)attempted.set(id,attempt);
+  }
+  const weaknessMap=new Map(args.weaknesses.map(row=>[row.conceptId,row]));
+  const transferValue=(row:ExamReferenceCatalogItem)=>Math.max(0,...row.fineConceptIds.map(id=>{
+    const weakness=weaknessMap.get(id);if(!weakness)return 0;
+    return (["confirmed","repairing","relapsed","transfer_pending"].includes(weakness.state)?1000:0)+weakness.priorityScore;
+  }));
   const rows=args.catalog.filter(row=>row.schedulable&&row.availability==="verified_problem"&&
+    row.gradable&&
     !args.avoidProblemIds?.has(row.canonicalProblemId)&&
-    row.exposure!=="unknown"&&!(args.daysRemaining>=61&&row.simulationProtected&&["unseen","unknown","prompt_scanned"].includes(row.exposure)))
-    .sort((a,b)=>pastRank(a.exposure)-pastRank(b.exposure)||a.year-b.year||a.questionNumber-b.questionNumber);
+    !(args.daysRemaining>30&&row.simulationProtected))
+    .sort((a,b)=>{
+      const attemptA=attempted.get(a.canonicalProblemId),attemptB=attempted.get(b.canonicalProblemId);
+      const doneA=attemptA?1:0,doneB=attemptB?1:0;
+      const recentA=attemptA&&attemptA.date>=recentCutoff?1:0,recentB=attemptB&&attemptB.date>=recentCutoff?1:0;
+      return yearRank(a.year)-yearRank(b.year)||doneA-doneB||transferValue(b)-transferValue(a)||
+        recentA-recentB||pastRank(a.exposure)-pastRank(b.exposure)||
+        stableTie(`${args.date}|${a.canonicalProblemId}`)-stableTie(`${args.date}|${b.canonicalProblemId}`);
+    });
   // A simulation must not invent a second purpose after merely placing the
   // first task. Reuse requires a persisted Attempt/exposure event in a later run.
   const selected=rows.find(row=>!args.used.has(row.referenceProblemId));
@@ -101,7 +132,7 @@ function planSummary(days:AdaptivePlanDay[],reviewSchedule?:ReturnType<typeof sc
     if(row.kind==="scan5")counts.scan5++;
     if(row.kind==="full")counts.full++;
     if(row.kind==="timed")counts.timed++;
-    if(row.kind==="past_exam"||row.kind==="scan5"||row.kind==="timed"&&!!row.referenceProblemId)counts.pastExam++;
+    if(["past_exam","scan5","timed"].includes(row.kind)&&!!row.referenceProblemId)counts.pastExam++;
     if(row.reason.includes("第5章"))counts.chapter5++;
     if(row.reason.includes("第7章"))counts.chapter7++;
     if(row.reason.includes("第8章"))counts.chapter8++;
@@ -191,22 +222,22 @@ function planDays(args:{
   };
   const makePast=(date:string,kind:"past_exam"|"scan5"|"timed",minutes:number,reason:string)=>{
     const selected=choosePastExam({catalog:args.catalog,daysRemaining:args.daysRemaining,used:usedPast,date,
-      avoidProblemIds:activeReviewProblemIds});
+      attempts:args.attempts,weaknesses:args.weaknesses,avoidProblemIds:activeReviewProblemIds});
     if(!selected)return task({date,slot:"maintenance_selection",kind:"exposure_confirmation",label:"過去問素材の露出状態を確認",
-      minutes:10,reason:"unknownまたは模試保護中の素材を50分答案へ直接配置しないため、先に素材を確認します。",
+      minutes:0,reason:"具体的に利用できる過去問がないため、設定画面で素材登録状態を確認してください。",
       purpose:"material_selection_confirmation",purposeLabel:"素材選択確認",
       basis:"利用可能な具体問題がないため、露出状態を変更せずユーザー確認を求めます。",exposure:"unknown",
       requiresUserSelection:true});
     const latest=[...args.attempts].filter(attempt=>
       canonicalPastExamProblemId(attempt.problem_id)===canonicalPastExamProblemId(selected.canonicalProblemId))
       .sort((a,b)=>b.date.localeCompare(a.date)||b.id-a.id)[0];
-    const purpose=kind==="timed"?"timed_reconfirmation":
+    const purpose=kind==="scan5"?"selection_scan":kind==="timed"?"timed_reconfirmation":
       selected.exposure==="unseen"?"initial_diagnosis":
       selected.exposure==="prompt_scanned"&&!latest?"first_answer":"delayed_reattempt";
-    const purposeLabel=purpose==="timed_reconfirmation"?"時間制限再確認":
+    const purposeLabel=purpose==="selection_scan"?"5問scan・3問選択":purpose==="timed_reconfirmation"?"時間制限再確認":
       purpose==="initial_diagnosis"?"初回診断":purpose==="first_answer"?"初回答案":"補修後の遅延再挑戦";
     const basis=`露出状態：${selected.exposure}${latest?`／前回Attempt：${latest.date}`:"／対象問題のAttemptなし"}`;
-    return task({date,slot:"score_building",kind,label:`${selected.year}年問${selected.questionNumber}`,
+    return task({date,slot:"score_building",kind,label:kind==="scan5"?`${selected.year}年 5問scan・3問選択`:`${selected.year}年問${selected.questionNumber}`,
       referenceProblemId:selected.referenceProblemId,problemId:selected.canonicalProblemId,minutes,
       reason:`${reason}・${purposeLabel}`,purpose,purposeLabel,basis,exposure:selected.exposure,
       previousEventDate:latest?.date,simulationProtected:selected.simulationProtected,requiresUserSelection:false});
@@ -249,8 +280,8 @@ function planDays(args:{
       requiresUserSelection:false,reviewEarliestDate:placement.earliestDate,reviewPreferredDate:placement.preferredDate,
       reviewLatestDate:placement.latestDate,reviewScheduleStatus:placement.status}));
     if(score?.kind==="exposure_confirmation"){
+      if(!materialConfirmationPlanned)tasks.push(score);
       materialConfirmationPlanned=true;
-      tasks.push(score);
       score=makeWhitebook(date,[2,4,5,6,7,8],"skeleton","露出確認待ちの間も得点形成を止めない");
     }
     if(score&&tasks.reduce((sum,row)=>sum+row.minutes,0)+score.minutes<=args.targetMinutes)tasks.push(score);
@@ -328,20 +359,17 @@ export function buildAdaptivePlannerShadow(args:{
     ["D90",90],["D60",60],["D30",30]
   ] as const).map(([checkpoint,remaining])=>{
     const diagnosticStart=addCalendarDays(args.examDate,-remaining);
-    // This is a pure capacity/phase simulation. It assumes that the explicit
-    // material-selection check has been completed before the checkpoint, but
-    // never persists or reclassifies an unknown exposure in the real catalog.
-    const diagnosticCatalog=args.catalog.map(row=>row.exposure==="unknown"
-      ?{...row,exposure:"prompt_scanned" as const}:row);
-    const planned=planDays({...args,catalog:diagnosticCatalog,startDate:diagnosticStart,days:14,daysRemaining:remaining});
+    // Pure simulation: candidate selection never persists or rewrites exposure.
+    const planned=planDays({...args,catalog:args.catalog,startDate:diagnosticStart,days:14,daysRemaining:remaining});
     const summary=validateMinimums(planSummary(planned.days,planned.reviewSchedule),remaining,args.targetMinutes);
     const all=summary.plan.flatMap(day=>day.tasks);
     const total=all.reduce((sum,row)=>sum+row.minutes,0);
-    const past=all.filter(row=>["past_exam","scan5","timed"].includes(row.kind)).reduce((sum,row)=>sum+row.minutes,0);
+    const past=all.filter(row=>["past_exam","scan5","timed"].includes(row.kind)&&!!row.referenceProblemId)
+      .reduce((sum,row)=>sum+row.minutes,0);
     return {checkpoint,phase:phaseName(remaining),daysRemaining:remaining,scan5:summary.counts.scan5,
       full:summary.counts.full,timed:summary.counts.timed,pastExam:summary.counts.pastExam,
       pastExamShare:total?Math.round(past/total*100):0,weeklyMinimumViolations:summary.weeklyMinimumViolations,
-      assumption:"素材選択確認をチェックポイント前に完了"};
+      assumption:"verified・schedulable・gradable素材を履歴と保護状態から非破壊で選択"};
   });
   return {available:true,mode:"active",generatedAt,phase,daysRemaining,targetMinutes:args.targetMinutes,plan14,plan30,
     legacy30:{scan5:legacy.purposeCounts.scan5,full:legacy.purposeCounts.fullSkeleton,
@@ -350,7 +378,7 @@ export function buildAdaptivePlannerShadow(args:{
       legacy.purposeCounts.scan5===0&&plan30.counts.scan5>0?"現行30日では0件のscan5を週最低枠で補完":"scan5実績を比較",
       legacy.purposeCounts.timedFull===0&&plan30.counts.timed>0?"現行30日では0件のtimedを日付フェーズで補完":"timed実績を比較",
       "Reviewは日付窓と分単位repair budgetで配置し、期限超過とlatest超過リスクを優先",
-      "unknown exposureは特定年度を未見扱いせず、素材選択確認として提示"
+      "露出metadata未設定かつ実施履歴なしのverified素材は、保存値を変えずunseen候補として選択"
     ],activationEligible:blockers.length===0,activationBlockers:blockers,
     weeklyTarget:{phase,
       minimums:JSON.stringify((policy as Record<string,unknown>).minimums_per_7_days||{}),

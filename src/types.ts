@@ -365,6 +365,7 @@ export type ExamReferenceCatalogItem = {
   referenceProblemId:string;canonicalProblemId:string;year:number;questionNumber:number;
   title:string;availability:"verified_problem"|"metadata_only";schedulable:boolean;gradable:boolean;
   fineConceptIds:string[];coarseTopics:string[];exposure:PastExamExposure;
+  exposureSource?:"explicit"|"session"|"attempt"|"inferred_unseen"|"reference_default";
   simulationProtected:boolean;classificationConfidence:string;
 };
 export type ExamReferencePackStatus = {

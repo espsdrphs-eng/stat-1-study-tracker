@@ -377,7 +377,7 @@ export async function createDiagnosticPack():Promise<DiagnosticPackResult>{
   };
   const referenceRecord=parseMetaJson<StoredExamReferencePack|null>(EXAM_REFERENCE_PACK_META_KEY,null);
   const exposureOverrides=parseMetaJson<Record<string,import("./types.ts").PastExamExposure>>(EXAM_REFERENCE_EXPOSURE_META_KEY,{});
-  const referenceCatalog=buildPastExamCatalog({record:referenceRecord,sessions:pastSessions,exposureOverrides});
+  const referenceCatalog=buildPastExamCatalog({record:referenceRecord,sessions:pastSessions,attempts,exposureOverrides});
   const conceptWeaknesses=analyzeConceptWeaknesses({record:referenceRecord,problems,attempts,reviews,weakNotes,today});
   const currentSnapshot=todayPlanSnapshots.find(row=>row.date===today);
   const adaptiveShadow=buildAdaptivePlannerShadow({record:referenceRecord,catalog:referenceCatalog,

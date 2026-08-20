@@ -24,6 +24,32 @@ test("fenced YAMLからcoach_updateを読み取る",()=>{
   assert.equal(parseCoachUpdate(`説明\n\`\`\`yaml\n${yaml}\n\`\`\``).primaryBottleneck.title,"制約追跡");
 });
 
+test("strict JSON・code fence・前後説明からcoach_updateを安全に抽出する",()=>{
+  const json=JSON.stringify(diagnosis());
+  assert.equal(parseCoachUpdate(json).level.value,3.5);
+  assert.equal(parseCoachUpdate(`\n\`\`\`json\n${json}\n\`\`\`\n`).primaryBottleneck.title,"変数・係数・制約の追跡");
+  assert.equal(parseCoachUpdate(`診断結果です。\n${json}\n以上です。`).evidenceCutoffAttemptId,4);
+});
+
+test("壊れたJSONとschema不足はfriendly errorで拒否し診断へ進めない",()=>{
+  assert.throws(()=>parseCoachUpdate('{"coach_update":{"schema_version":"stat1-coach-v1",}'),/JSON形式が崩れています/);
+  const missing=diagnosis();delete missing.coach_update.primary_bottleneck;
+  assert.throws(()=>parseCoachUpdate(JSON.stringify(missing)),/必須項目が不足/);
+});
+
+test("semantic diffはlevel・outlook・confidenceと各リストの追加削除を示す",()=>{
+  const current=normalizeCoachUpdate(diagnosis(3,3));
+  const changed=diagnosis(4,3.5);
+  changed.coach_update.level.pass_outlook="合格圏";
+  changed.coach_update.level.confidence="high";
+  changed.coach_update.next_actions=[{title:"新しい訓練",purpose:"転移",practice_method:"過去問",success_condition:"参照なし"}];
+  const preview=coachPreview(current,normalizeCoachUpdate(changed));
+  assert.equal(preview.diff.passOutlook.after,"合格圏");
+  assert.equal(preview.diff.confidence.after,"high");
+  assert.deepEqual(preview.diff.nextActions.added,["新しい訓練"]);
+  assert.deepEqual(preview.diff.nextActions.removed,["置換後の全式更新"]);
+});
+
 test("新Attemptは診断をstaleにし再レビューでcutoffを更新できる",()=>{
   const current=normalizeCoachUpdate(diagnosis(3));
   const attempts=[1,2,3,4].map(id=>({id,problem_id:"WB-6-A-20",date:"2026-08-17",mode:"full",time_minutes:10,mark:"○",score_label:"A",error_type:"none",error_point:"",next_action:"",memo:""}));
@@ -55,5 +81,6 @@ test("レビューpromptは代表Attemptを12件に圧縮し精密確率を要�
     planner:{phase:"foundation_to_A",daysRemaining:90,weeklyActual:{},weeklyTarget:{}},today:"2026-08-17"});
   const payload=JSON.parse(prompt.match(/RECENT_REPRESENTATIVE_ATTEMPTS: (\[[^\n]+\])/)[1]);
   assert.equal(payload.length,12);assert.match(prompt,/根拠のない精密な合格確率は出さず/);
-  assert.match(prompt,/evidence_cutoff_attempt_id: 20/);
+  assert.match(prompt,/"evidence_cutoff_attempt_id": 20/);
+  assert.match(prompt,/JSON objectを1個だけ/);assert.doesNotMatch(prompt,/次のYAMLだけ/);
 });

@@ -15,7 +15,9 @@ test("追加候補は明示操作だけでsnapshotへ入り、同じ操作を2�
     reason:"fixture",mode:"full",minutes:61,load:1,checked:true,triage:"must"};
   await db.attempts.put({id:9901,problem_id:problem.problem_id,date,mode:"full",time_minutes:61,
     mark:"○",score_label:"A",score_numeric:80,error_type:"none",error_types:["none"],error_point:"",next_action:""});
-  await db.meta.put({key:"daily_study_minutes",value:"150"});
+  // Keep enough spare capacity after the formal D87 concrete past-exam slot;
+  // this fixture verifies opt-in persistence, not the 150-minute planner mix.
+  await db.meta.put({key:"daily_study_minutes",value:"180"});
   await db.meta.put({key:`today-plan-snapshot:${date}`,value:JSON.stringify({
     date,task_ids:["fixture"],start_of_day_planned_minutes:61,initial_bucket:{fixture:"must"},
     initial_estimated_minutes:{fixture:61},tasks:[originalTask],created_at:new Date().toISOString()
@@ -25,7 +27,7 @@ test("追加候補は明示操作だけでsnapshotへ入り、同じ操作を2�
     before.today.tasks.filter(task=>!task.checked).reduce((sum,task)=>sum+Number(task.minutes||0),0));
   assert.ok(before.today.active_remaining_minutes>0,"current projection should include the formal adaptive tasks");
   assert.equal(before.today.remaining_learning_capacity_minutes,
-    Math.max(0,150-61-before.today.active_remaining_minutes));
+    Math.max(0,180-61-before.today.active_remaining_minutes));
   assert.ok(before.today.additionalCandidates.length);
   const candidate=before.today.additionalCandidates[0];
   const rawBefore=(await db.meta.get(`today-plan-snapshot:${date}`)).value;
