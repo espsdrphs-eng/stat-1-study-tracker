@@ -19,13 +19,14 @@ const localExamEvidence=(readiness:Readiness)=>readiness.sampleSizes.unseen+read
   readiness.sampleSizes.scans+readiness.sampleSizes.pastExams;
 
 export function deriveDashboardKpis(input:DashboardKpiInput):DashboardKpiProjection{
-  const r=input.readiness,total=localExamEvidence(r),freshCoach=input.coach.source==="gpt"&&!input.coach.stale;
+  const r=input.readiness,directEvidence=localExamEvidence(r),transferEvidence=input.concepts.reduce((sum,row)=>sum+row.transferSuccesses,0);
+  const total=directEvidence+transferEvidence,freshCoach=input.coach.source==="gpt"&&!input.coach.stale;
   const timedMeasured=measured(r.sampleSizes.timed),pastMeasured=measured(r.sampleSizes.pastExams);
   const unseenMeasured=measured(r.sampleSizes.unseen),selectionMeasured=measured(r.sampleSizes.scans);
-  const readinessDetail=`時間内完走 ${pct(r.timedCompletionRate)}${r.sampleSizes.timed<3&&r.sampleSizes.timed?"（標本少）":""}・過去問得点 ${pct(r.pastExamScoreRate)}`;
-  const examReadiness:DashboardKpiValue={value:total<3?"測定中":pastMeasured&&Number(r.pastExamScoreRate)>=70?"合格答案を形成中":"本番証拠を蓄積中",
-    detail:readinessDetail,source:"exam_evidence",evidenceCount:total,freshness:total<3?"measuring":"current",
-    confidence:total>=6?"high":total>=3?"medium":"low",updatedAt:input.updatedAt};
+  const readinessDetail=`時間内完走 ${pct(r.timedCompletionRate)}${r.sampleSizes.timed<3&&r.sampleSizes.timed?"（標本少）":""}・過去問得点 ${pct(r.pastExamScoreRate)}・転移成功 ${transferEvidence}件`;
+  const examReadiness:DashboardKpiValue={value:directEvidence<3?"測定中":pastMeasured&&Number(r.pastExamScoreRate)>=70?"合格答案を形成中":"本番証拠を蓄積中",
+    detail:readinessDetail,source:transferEvidence?"exam_and_transfer_evidence":"exam_evidence",evidenceCount:total,freshness:directEvidence<3?"measuring":"current",
+    confidence:directEvidence>=6?"high":directEvidence>=3?"medium":"low",updatedAt:input.updatedAt};
 
   let passZoneValue="判定材料不足",passSource="insufficient_evidence",passConfidence:"low"|"medium"|"high"="low",passCount=total;
   if(freshCoach&&input.coach.display.level.confidence!=="low"){

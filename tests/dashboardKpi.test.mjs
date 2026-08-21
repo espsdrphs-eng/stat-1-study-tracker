@@ -37,3 +37,10 @@ test("本番証拠0件は0%ではなく測定中・判定材料不足になる",
   assert.equal(result.passZone.value,"判定材料不足");
   assert.match(result.examReadiness.detail,/未計測/);
 });
+
+test("transfer成功はKPI証拠へ反映するが局所証拠だけで本番対応力を確定しない",()=>{
+  const concepts=[{transferSuccesses:2,distinctProblemCount:1,independentFailures:0,priorityScore:0}];
+  const result=deriveDashboardKpis(base({coach:{...coach(),source:"local_provisional"},concepts}));
+  assert.equal(result.examReadiness.value,"測定中");assert.equal(result.examReadiness.evidenceCount,2);
+  assert.match(result.examReadiness.detail,/転移成功 2件/);
+});
