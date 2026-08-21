@@ -8,6 +8,7 @@ const context=await browser.newContext({viewport:{width:1180,height:900},service
 const page=await context.newPage(),url=process.env.APP_URL||"http://127.0.0.1:4174/";
 try{
   await page.goto(url,{waitUntil:"networkidle"});
+  await page.getByText("詳細指標を見る",{exact:true}).click();
   await page.getByText("14日計画とフェーズ診断",{exact:true}).click();
   const planText=await page.locator(".adaptive-plan-preview").innerText();
   if(!planText.includes("2016年"))throw new Error("D87 plan has no concrete 2016 past-exam task");
@@ -32,11 +33,18 @@ try{
   await modal.getByRole("button",{name:"確認して保存",exact:true}).click();
   await page.getByText("学習コーチ診断を履歴へ保存しました",{exact:false}).waitFor();
   await page.getByText("過去のコーチ診断（1件）",{exact:true}).waitFor();
+  await page.getByRole("button",{name:"ダッシュボード",exact:true}).evaluate(element=>element.click());
+  const kpis=page.locator(".dashboard-kpi-grid");await kpis.waitFor();
+  const kpiText=await kpis.innerText();
+  for(const expected of ["本番対応力","合格圏","最大ボトルネック","今やること","制約と係数の追跡"])
+    if(!kpiText.includes(expected))throw new Error(`dashboard KPI missing: ${expected}`);
+  const box=await kpis.boundingBox();
+  if(!box||box.x<0||box.x+box.width>1180||box.y>500)throw new Error(`iPad KPI layout is outside the first view: ${JSON.stringify(box)}`);
   await page.getByRole("button",{name:"設定",exact:true}).evaluate(element=>element.click());
   const health=await page.locator(".integrity-health-card").innerText();
-  if(!health.includes("正常")||!health.includes("active問題 0件"))throw new Error(`current audit is not clean: ${health}`);
+  if(!health.includes("正常")||!health.includes("現在の異常 0件"))throw new Error(`current audit is not clean: ${health}`);
   console.log(JSON.stringify({status:"PASS",url,concrete2016:true,genericConfirmation:false,
-    coachJsonImport:true,semanticDiff:true,coachSaved:true,activeAuditIssues:0},null,2));
+    coachJsonImport:true,semanticDiff:true,coachSaved:true,dashboardKpis:4,activeAuditIssues:0},null,2));
 }finally{
   await context.close();await browser.close();
 }

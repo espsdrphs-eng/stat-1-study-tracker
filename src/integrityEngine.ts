@@ -145,7 +145,7 @@ export type IntegrityCategory =
 
 export type IntegrityIssue = {
   category: IntegrityCategory;
-  severity: "active" | "history";
+  severity: "active" | "history" | "informational";
   reviewIds?: number[];
   attemptIds?: number[];
   detail: string;
@@ -158,8 +158,17 @@ export type IntegrityAudit = {
   counts: Record<IntegrityCategory, number>;
   activeIssueCount: number;
   historyWarningCount: number;
+  informationalHistoryCount: number;
   reconciliation: ReconciliationAudit;
 };
+
+export function deriveSystemHealth(audit:Pick<IntegrityAudit,"generatedAt"|"issues"|"activeIssueCount"|"historyWarningCount"|"informationalHistoryCount">){
+  const categories=(severity:IntegrityIssue["severity"])=>[...new Set(audit.issues.filter(issue=>issue.severity===severity).map(issue=>issue.category))];
+  return {status:audit.activeIssueCount>0?"needs_attention" as const:"healthy" as const,
+    generatedAt:audit.generatedAt,activeIssueCount:audit.activeIssueCount,historicalWarningCount:audit.historyWarningCount,
+    informationalHistoryCount:audit.informationalHistoryCount,activeCategories:categories("active"),
+    historicalCategories:categories("history"),informationalCategories:categories("informational")};
+}
 
 export function runIntegrityAudit(args: {
   attempts: Attempt[];
@@ -627,6 +636,7 @@ export function runIntegrityAudit(args: {
   return {
     generatedAt: new Date().toISOString(), issues, counts,
     activeIssueCount: issues.filter((issue) => issue.severity === "active").length,
-    historyWarningCount: issues.filter((issue) => issue.severity === "history").length,reconciliation,
+    historyWarningCount: issues.filter((issue) => issue.severity === "history").length,
+    informationalHistoryCount:issues.filter((issue)=>issue.severity==="informational").length,reconciliation,
   };
 }

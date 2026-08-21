@@ -7,6 +7,25 @@ import type {
 export const COACH_SCHEMA_VERSION="stat1-coach-v1" as const;
 export const COACH_HISTORY_META_KEY="coach-diagnosis-history-v1";
 
+export type CoachImportStage="extract"|"parse"|"schema"|"semantic";
+export class CoachImportError extends Error{
+  readonly stage:CoachImportStage;
+  readonly path:string;
+  readonly reason:string;
+  constructor(stage:CoachImportStage,path:string,reason:string){
+    const message=stage==="parse"||stage==="extract"
+      ?"GPT結果のJSONを読み込めませんでした。"
+      :stage==="schema"
+        ?"JSONは読み込めましたが、coach_updateの項目が現在の仕様と一致しません。"
+        :"coach_updateは読み込めましたが、診断内容に必要な値が不足しています。";
+    super(message);this.name="CoachImportError";this.stage=stage;this.path=path;this.reason=reason;
+  }
+}
+export const isCoachImportError=(error:unknown):error is CoachImportError=>error instanceof CoachImportError;
+
+const COACH_REQUIRED_OBJECTS=["level","primary_bottleneck"] as const;
+const COACH_REQUIRED_ARRAYS=["next_actions","strengths","improvements","unknowns"] as const;
+
 const text=(value:unknown,max=500)=>String(value??"").trim().slice(0,max);
 const list=(value:unknown,max=3)=>Array.isArray(value)?value.slice(0,max):[];
 const confidence=(value:unknown):CoachConfidence=>{
@@ -26,32 +45,32 @@ const normalizeRows=<T>(rows:unknown,mapper:(row:Record<string,unknown>)=>T)=>(
 );
 const requiredObject=(source:Record<string,unknown>,key:string)=>{
   const value=source[key];
-  if(!value||typeof value!=="object"||Array.isArray(value))throw new Error(`coach_updateの必須項目が不足しています: ${key}`);
+  if(!value||typeof value!=="object"||Array.isArray(value))throw new CoachImportError("schema",`coach_update.${key}`,`${key} must be an object`);
   return value as Record<string,unknown>;
 };
 const requiredArray=(source:Record<string,unknown>,key:string)=>{
-  if(!Array.isArray(source[key]))throw new Error(`coach_updateの必須項目が不足しています: ${key}`);
+  if(!Array.isArray(source[key]))throw new CoachImportError("schema",`coach_update.${key}`,`${key} must be an array`);
   return source[key];
 };
 
 export function normalizeCoachUpdate(raw:unknown):CoachDiagnosis{
   const root=(raw&&typeof raw==="object"?raw:{}) as Record<string,unknown>;
   const source=(root.coach_update&&typeof root.coach_update==="object"?root.coach_update:root) as Record<string,unknown>;
-  if(!source.schema_version)throw new Error("coach_updateの必須項目が不足しています: schema_version");
+  if(!source.schema_version)throw new CoachImportError("schema","coach_update.schema_version","schema_version is required");
   if(text(source.schema_version)!==COACH_SCHEMA_VERSION)
-    throw new Error(`coach_update schema_versionが不正です: ${text(source.schema_version)}`);
-  if(!text(source.reviewed_at))throw new Error("coach_updateの必須項目が不足しています: reviewed_at");
-  if(source.evidence_cutoff_attempt_id==null)throw new Error("coach_updateの必須項目が不足しています: evidence_cutoff_attempt_id");
-  const level=requiredObject(source,"level");
-  const bottleneck=requiredObject(source,"primary_bottleneck");
-  for(const key of ["next_actions","strengths","improvements","unknowns"])requiredArray(source,key);
+    throw new CoachImportError("schema","coach_update.schema_version",`expected ${COACH_SCHEMA_VERSION}`);
+  if(!text(source.reviewed_at))throw new CoachImportError("schema","coach_update.reviewed_at","reviewed_at is required");
+  if(source.evidence_cutoff_attempt_id==null)throw new CoachImportError("schema","coach_update.evidence_cutoff_attempt_id","evidence_cutoff_attempt_id is required");
+  const level=requiredObject(source,COACH_REQUIRED_OBJECTS[0]);
+  const bottleneck=requiredObject(source,COACH_REQUIRED_OBJECTS[1]);
+  for(const key of COACH_REQUIRED_ARRAYS)requiredArray(source,key);
   const probability=(source.optional_pass_probability&&typeof source.optional_pass_probability==="object"
     ?source.optional_pass_probability:null) as Record<string,unknown>|null;
   const rawLevel=finite(level.value);
-  if(rawLevel<1||rawLevel>5)throw new Error("level.valueは1〜5で指定してください");
+  if(rawLevel<1||rawLevel>5)throw new CoachImportError("semantic","coach_update.level.value","level.value must be between 1 and 5");
   const value=Math.round(rawLevel*2)/2;
   const cutoff=Math.trunc(finite(source.evidence_cutoff_attempt_id));
-  if(cutoff<0)throw new Error("evidence_cutoff_attempt_idが不正です");
+  if(cutoff<0)throw new CoachImportError("semantic","coach_update.evidence_cutoff_attempt_id","cutoff must be zero or greater");
   const diagnosis:CoachDiagnosis={
     schemaVersion:COACH_SCHEMA_VERSION,reviewedAt:text(source.reviewed_at)||new Date().toISOString(),
     evidenceCutoffAttemptId:cutoff,
@@ -69,13 +88,13 @@ export function normalizeCoachUpdate(raw:unknown):CoachDiagnosis{
       rationale:text(probability.rationale,400)}:null,
   };
   if(!diagnosis.level.label||!diagnosis.level.passOutlook||!diagnosis.primaryBottleneck.title)
-    throw new Error("levelとprimary_bottleneckの必須項目が不足しています");
+    throw new CoachImportError("semantic",!diagnosis.level.label?"coach_update.level.label":!diagnosis.level.passOutlook?"coach_update.level.pass_outlook":"coach_update.primary_bottleneck.title","required diagnosis text is empty");
   return diagnosis;
 }
 
 export function parseCoachUpdate(input:string){
   const source=input.trim();
-  if(!source)throw new Error("GPT結果を読み込めませんでした。coach_updateのJSONが空です。");
+  if(!source)throw new CoachImportError("extract","$","input is empty");
   const jsonCandidates:string[]=[];
   const fencedJson=[...source.matchAll(/```json\s*([\s\S]*?)```/gi)].map(match=>match[1].trim());
   jsonCandidates.push(...fencedJson);
@@ -92,17 +111,22 @@ export function parseCoachUpdate(input:string){
     if(char==="{"){if(depth===0)start=index;depth++;continue;}
     if(char==="}"&&depth>0){depth--;if(depth===0&&start>=0){balanced.push(source.slice(start,index+1));start=-1;}}
   }
-  if(balanced.length===1)jsonCandidates.push(balanced[0]);
+  jsonCandidates.push(...balanced);
   let jsonSyntaxFailure=false;
+  const valid:CoachDiagnosis[]=[];
+  let validationFailure:unknown;
   for(const candidate of [...new Set(jsonCandidates)]){
-    try{return normalizeCoachUpdate(JSON.parse(candidate))}
+    try{valid.push(normalizeCoachUpdate(JSON.parse(candidate)))}
     catch(error){
       if(error instanceof SyntaxError){jsonSyntaxFailure=true;continue;}
-      throw error;
+      validationFailure=error;
     }
   }
+  if(valid.length===1)return valid[0];
+  if(valid.length>1)throw new CoachImportError("extract","$","multiple valid coach_update objects were found");
   const jsonIntent=fencedJson.length>0||source.startsWith("{")||source.includes('"coach_update"');
-  if(jsonIntent||jsonSyntaxFailure)throw new Error("GPT結果を読み込めませんでした。coach_updateのJSON形式が崩れています。GPTに『JSONのみで再出力』させてください。");
+  if(validationFailure&&jsonIntent)throw validationFailure;
+  if(jsonIntent||jsonSyntaxFailure)throw new CoachImportError("parse","$","no valid JSON object could be parsed");
   // Existing YAML imports remain supported, but all newly generated prompts use strict JSON.
   const fencedYaml=[...source.matchAll(/```ya?ml\s*([\s\S]*?)```/gi)].map(match=>match[1]);
   const candidates=[...fencedYaml,block(source,"coach_update")];
@@ -110,7 +134,7 @@ export function parseCoachUpdate(input:string){
   for(const candidate of candidates){
     try{return normalizeCoachUpdate(yaml.load(candidate))}catch(error){failure=error}
   }
-  throw failure instanceof Error?failure:new Error("GPT結果を読み込めませんでした。coach_updateのJSON形式を確認してください。");
+  throw failure instanceof Error?failure:new CoachImportError("parse","$","legacy YAML could not be parsed");
 }
 
 const scoreFor=(attempt:Attempt)=>attempt.score_numeric??Number(String(attempt.score_text||"").match(/\d+/)?.[0]||NaN);
@@ -176,12 +200,7 @@ export function buildCoachReviewPrompt(args:{
   const reviewSummary={active:args.reviews.filter(row=>["pending","overdue"].includes(row.status)).length,
     success:args.reviews.filter(row=>row.completion_result==="success").length,
     failed:args.reviews.filter(row=>row.completion_result==="failed").length};
-  const outputShape={coach_update:{schema_version:COACH_SCHEMA_VERSION,reviewed_at:"YYYY-MM-DDTHH:mm:ss+09:00",
-    evidence_cutoff_attempt_id:cutoff,level:{value:null,label:"",pass_outlook:"",confidence:"low | medium | high",rationale:""},
-    primary_bottleneck:{title:"",explanation:"",evidence_problem_ids:[],effect_on_exam:""},
-    next_actions:[{title:"",purpose:"",practice_method:"",success_condition:""}],
-    strengths:[{title:"",evidence:""}],improvements:[{title:"",evidence:""}],
-    unknowns:[{title:"",evidence_needed:""}],optional_pass_probability:null}};
+  const outputShape=coachPromptContract(cutoff);
   return `あなたは統計検定1級・統計数理の学習コーチです。以下のFACTだけを根拠に、本番得点力としての現在地を評価してください。\n`+
     `テーマ別件数を言い換えるだけでなく、複数問題に共通する横断能力の最大ボトルネックを1件に絞ってください。根拠のない精密な合格確率は出さず、証拠不足はconfidenceとunknownsへ反映してください。\n\n`+
     `FACT_EVIDENCE_CUTOFF_ATTEMPT_ID: ${cutoff}\nDATE: ${args.today}\n`+
@@ -190,6 +209,15 @@ export function buildCoachReviewPrompt(args:{
     `RECENT_REPRESENTATIVE_ATTEMPTS: ${jsonLine(attempts)}\nTOP_CONCEPT_EVIDENCE: ${jsonLine(concepts)}\n\n`+
     `JSON objectを1個だけ返してください。Markdown・code fence・説明文は禁止です。次のJSON shapeに完全準拠し、level.valueのnullは1〜5の0.5刻みの数値へ置き換えてください。reviewed_atは現在時刻、evidence_cutoff_attempt_idは${cutoff}をそのまま使用してください。optional_pass_probabilityは十分な根拠がなければnullにしてください。\n`+
     `${JSON.stringify(outputShape,null,2)}`;
+}
+
+export function coachPromptContract(cutoff:number){
+  return {coach_update:{schema_version:COACH_SCHEMA_VERSION,reviewed_at:"YYYY-MM-DDTHH:mm:ss+09:00",
+    evidence_cutoff_attempt_id:cutoff,level:{value:null,label:"",pass_outlook:"",confidence:"low | medium | high",rationale:""},
+    primary_bottleneck:{title:"",explanation:"",evidence_problem_ids:[],effect_on_exam:""},
+    next_actions:[{title:"",purpose:"",practice_method:"",success_condition:""}],
+    strengths:[{title:"",evidence:""}],improvements:[{title:"",evidence:""}],
+    unknowns:[{title:"",evidence_needed:""}],optional_pass_probability:null}};
 }
 
 export function buildCoachDiagnosisState(args:{

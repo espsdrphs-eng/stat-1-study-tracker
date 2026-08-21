@@ -29,6 +29,11 @@ const yaml=(cutoff,reviewedAt)=>`coach_update:
     - title: 時間内完走
       evidence_needed: timed答案
   optional_pass_probability: null`;
+const json=(cutoff,reviewedAt,title="変数・係数・制約の追跡")=>JSON.stringify({coach_update:{schema_version:"stat1-coach-v1",
+  reviewed_at:reviewedAt,evidence_cutoff_attempt_id:cutoff,
+  level:{value:3.5,label:"A/S問題を解けるが再現不安定",pass_outlook:"境界手前〜境界圏",confidence:"medium",rationale:"現在の答案証拠"},
+  primary_bottleneck:{title,explanation:"複数問題で再発",evidence_problem_ids:[],effect_on_exam:"途中式の失点"},
+  next_actions:[],strengths:[],improvements:[],unknowns:[],optional_pass_probability:null}});
 
 test("coach preview/saveはraw factを変えず履歴・current・staleを管理する",async()=>{
   await localGet("/api/bootstrap");await db.meta.delete("coach-diagnosis-history-v1");
@@ -50,4 +55,26 @@ test("coach preview/saveはraw factを変えず履歴・current・staleを管理
   await assert.rejects(()=>localPost("/api/coach/save",{text:first}),/採点が更新/);
   const second=yaml(newId,"2026-08-17T11:00:00+09:00");await localPost("/api/coach/save",{text:second});
   bootstrap=await localGet("/api/bootstrap");assert.equal(bootstrap.coach.stale,false);assert.equal(bootstrap.coach.history.length,2);
+});
+
+test("strict JSON coach保存はreload不要のprojectionを更新し、不正importは既存KPIを変えない",async()=>{
+  await localGet("/api/bootstrap");await db.meta.delete("coach-diagnosis-history-v1");
+  const attempts=await db.attempts.toArray(),cutoff=Math.max(0,...attempts.filter(row=>!row.exclude_from_metrics).map(row=>row.id));
+  const text=json(cutoff,"2026-08-22T12:00:00+09:00","新しい最大ボトルネック");
+  await localPost("/api/coach/preview",{text});await localPost("/api/coach/save",{text});
+  const after=await localGet("/api/bootstrap");
+  assert.equal(after.dashboard.kpis.bottleneck.value,"新しい最大ボトルネック");
+  assert.equal(after.dashboard.kpis.passZone.value,"境界手前〜境界圏");
+  await assert.rejects(()=>localPost("/api/coach/save",{text:'{"coach_update":'}));
+  const unchanged=await localGet("/api/bootstrap");
+  assert.equal(unchanged.dashboard.kpis.bottleneck.value,"新しい最大ボトルネック");
+  assert.equal(unchanged.coach.history.length,1);
+});
+
+test("保存済みauditが古くてもbootstrapはlive current auditを表示する",async()=>{
+  await localGet("/api/bootstrap");
+  await db.meta.put({key:"integrity_audit_summary",value:JSON.stringify({generatedAt:"2026-08-12T00:00:00Z",activeIssueCount:99,historyWarningCount:7,repairedAt:"2026-08-12T00:00:00Z"})});
+  const bootstrap=await localGet("/api/bootstrap");
+  assert.notEqual(bootstrap.masterStatus.integrity_summary.activeIssueCount,99);
+  assert.equal(bootstrap.masterStatus.integrity_summary.repairedAt,"2026-08-12T00:00:00Z");
 });

@@ -438,6 +438,16 @@ export type AdaptiveLearning = {
   plannerMode:"adaptive"|"legacy";
   weaknessModel:"concept_evidence_v1";
 };
+export type DashboardKpiConfidence="low"|"medium"|"high";
+export type DashboardKpiValue={
+  value:string;detail:string;source:string;evidenceCount:number;freshness:"current"|"stale"|"measuring";
+  confidence:DashboardKpiConfidence;updatedAt:string;
+};
+export type DashboardKpiProjection={
+  examReadiness:DashboardKpiValue;passZone:DashboardKpiValue;bottleneck:DashboardKpiValue;
+  nextAction:DashboardKpiValue&{problemId?:string;minutes?:number};
+  support:{daysRemaining:number;phaseLabel:string;pastExamShare:number|null;pastExamShareTarget:string;pendingReviews:number};
+};
 export type Dashboard = {
   today:string; weekA:number; weekPast:number; kRecurrence:number; pending:number; overdue:number;
   sStableRate:number; sForgotten:number; scanSuccess:number; examSuccess:number;
@@ -459,6 +469,7 @@ export type Dashboard = {
   pace:{label:string;checks:boolean[];items:{label:string;detail:string;status:"ok"|"warning"|"pending"}[];
     a14:number;pastSkeleton:number;kRepeat:number;skeletonRate:number;weakUpdates:number;delayed3:number;
     suggestion:string;dangerCriteria:string[];phase:string;phaseLabel:string;summary:string;allocation:string;nextPhase:string;daysRemaining:number;examDateIsEstimate:boolean};
+  kpis?:DashboardKpiProjection;
 };
 export type Bootstrap = {
   problems:Problem[]; attempts:Attempt[]; reviews:Review[]; roadmap:Roadmap[];
@@ -490,8 +501,8 @@ export type Bootstrap = {
       today_plan_snapshot_unchanged:boolean;preview:boolean;success:boolean;
     };
     integrity_summary?:{
-      generatedAt:string;activeIssueCount:number;historyWarningCount:number;
-      counts:Record<string,number>;repairedAt?:string;
+      generatedAt:string;activeIssueCount:number;historyWarningCount:number;informationalHistoryCount:number;
+      counts:Record<string,number>;activeCategories:string[];repairedAt?:string;
     };
   };
   databaseStatus:{

@@ -197,31 +197,24 @@ function readinessValue(value:number|null,sample:number,unit="%"){
 function DashboardView({data,go,select}:{data:Bootstrap;go:(p:Page)=>void;select:(p:Problem)=>void}) {
   const d=data.dashboard;
   const pmap=Object.fromEntries(data.problems.map(problem=>[problem.problem_id,problem]));
-  const pastIds=new Set(data.problems.filter(problem=>problem.category==="past_exam").map(problem=>problem.problem_id));
-  const pastAttemptCount=data.attempts.filter(attempt=>pastIds.has(attempt.problem_id)).length;
-  const pastReviewCount=data.reviews.filter(review=>
-    reviewExecutionState(review,data.dashboard.today)==="actionable"&&pastIds.has(review.problem_id)).length;
   const next=nextQueueTask(data);
   const nextTask=next.task;
   const nextProblem=nextTask?pmap[nextTask.problem_id]:undefined;
-  const gradingPending=data.today.tasks.filter(task=>task.checked).length;
+  const k=d.kpis!;
+  const confidence=(value:string)=>value==="high"?"高":value==="medium"?"中":"低";
   return <>
-    <section className="hero next-task-card">
-      <div><span className="eyebrow">NEXT ACTION</span><h2>{nextTask?`${nextTask.problem_id}｜${nextTask.title}`:(gradingPending?`${gradingPending}件の採点結果を取り込む`:"本日の課題は完了です")}</h2>
-        {nextTask?<div className="next-task-meta"><Badge>{modes[nextTask.mode]||nextTask.mode}</Badge><span>{nextTask.minutes}分</span><span>表示元：{next.source}</span></div>:null}
-        <p>{nextTask?.reason||(gradingPending?"解答済みの問題をGPTで採点し、結果を貼り付けてください。":"記録を振り返り、次のロードマップを確認しましょう。")}</p></div>
-      <div className="hero-actions"><button className="primary" onClick={()=>go(!nextTask&&gradingPending?"import":"today")}>{!nextTask&&gradingPending?<ClipboardPaste size={18}/>:<Play size={18}/>} {!nextTask&&gradingPending?"GPT採点を取り込む":"今日の課題を見る"}</button>
-        {nextProblem&&<button className="ghost" onClick={()=>select(nextProblem)}><BookOpen size={18}/>この問題を開く</button>}</div>
+    <section className="dashboard-kpi-intro"><div><strong>本番まで {k.support.daysRemaining}日</strong><span>{k.support.phaseLabel}</span></div>
+      {data.coach.stale&&<small>GPT診断後に新しい採点 {data.coach.newAttemptCount}件・再レビュー推奨</small>}</section>
+    <section className="dashboard-kpi-grid" aria-label="合格判断の主要4指標">
+      <article className="panel dashboard-kpi"><span className="eyebrow">EXAM PERFORMANCE</span><h3>本番対応力</h3><strong>{k.examReadiness.value}</strong><p>{k.examReadiness.detail}</p><small>信頼度：{confidence(k.examReadiness.confidence)}</small></article>
+      <article className="panel dashboard-kpi"><span className="eyebrow">PASS ZONE</span><h3>合格圏</h3><strong>{k.passZone.value}</strong><p>{k.passZone.detail}</p><small>信頼度：{confidence(k.passZone.confidence)}</small></article>
+      <article className="panel dashboard-kpi"><span className="eyebrow">BOTTLENECK</span><h3>最大ボトルネック</h3><strong>{k.bottleneck.value}</strong><p>{k.bottleneck.detail}</p><button className="text-btn" onClick={()=>go("weak")}>診断の根拠を見る <ChevronRight size={15}/></button></article>
+      <article className="panel dashboard-kpi dashboard-kpi-action"><span className="eyebrow">NEXT ACTION</span><h3>今やること</h3><strong>{k.nextAction.value}</strong><p>{k.nextAction.detail}</p><div className="button-row"><button className="primary" onClick={()=>go("today")}><Play size={17}/>今日の課題へ</button>{nextProblem&&<button className="ghost" onClick={()=>select(nextProblem)}><BookOpen size={17}/>問題を開く</button>}</div></article>
     </section>
-    <section className="panel dashboard-coach-card">
-      <div><span className="eyebrow">LEARNING COACH</span><h3>本番レベル {data.coach.display.level.value} / 5</h3>
-        <p>{data.coach.display.level.passOutlook}・信頼度 {data.coach.display.level.confidence==="high"?"高":data.coach.display.level.confidence==="medium"?"中":"低"}{data.coach.source==="local_provisional"?"（自動暫定）":""}</p></div>
-      <div><span>最大ボトルネック</span><strong>{data.coach.display.primaryBottleneck.title}</strong>
-        {data.coach.stale&&<small>前回診断後に新しい採点 {data.coach.newAttemptCount}件</small>}</div>
-      <button className="ghost" onClick={()=>go("weak")}>学習コーチを開く<ChevronRight size={15}/></button>
-    </section>
+    <section className="dashboard-support-strip"><span>今週の過去問 <strong>{k.support.pastExamShare==null?"未計測":`${Math.round(k.support.pastExamShare*100)}%`} / 目標{k.support.pastExamShareTarget}</strong></span><span>復習待ち <strong>{k.support.pendingReviews}件</strong></span><span>表示元 <strong>{next.source}</strong></span></section>
     {data.today.warning&&<div className="warning"><AlertTriangle/><div><strong>予定時間を調整してください</strong><p>{data.today.warning}</p></div></div>}
-    <section className="panel readiness-panel">
+    <details className="dashboard-details"><summary>詳細指標を見る</summary><div className="dashboard-details-body">
+      <section className="panel readiness-panel">
       <div className="panel-title"><div><span className="eyebrow">EXAM READINESS</span><h3>本番得点に直結する指標</h3></div><Badge tone={d.stableRelease.isStable?"green":"orange"}>{d.stableRelease.isStable?"学習運用安定版":"運用調整中"}</Badge></div>
       <div className="metrics-grid readiness-grid">
         {(()=>{const m=readinessValue(d.readiness.unseenScoreRate,d.readiness.sampleSizes.unseen);return <Metric label="未見・長期未実施得点率" value={m.value} unit={m.unit} hint={m.hint}/>})()}
@@ -236,8 +229,8 @@ function DashboardView({data,go,select}:{data:Bootstrap;go:(p:Page)=>void;select
       <div className="weekly-soft-quota"><strong>今週の不足候補</strong>{d.weeklyQuota.candidates.length
         ?d.weeklyQuota.candidates.map(item=><span key={item.kind}>{item.kind==="full_skeleton"?"全体統合":item.kind==="timed_full"?"時間制限答案":"5問スキャン"}・{item.minutes}分</span>)
         :<span>今週の最低構成を満たしています</span>}<small>soft quotaのため、今日の上限を超えて自動追加しません。</small></div>
-    </section>
-    <section className="panel adaptive-shadow-card">
+      </section>
+      <section className="panel adaptive-shadow-card">
       <div className="panel-title"><div><span className="eyebrow">ADAPTIVE PLANNER</span><h3>合格逆算プランナー</h3></div>
         <Badge tone={data.adaptiveLearning.plannerMode==="adaptive"?"green":"orange"}>
           {data.adaptiveLearning.plannerMode==="adaptive"?"正式運用":"旧方式（ロールバック）"}
@@ -265,21 +258,21 @@ function DashboardView({data,go,select}:{data:Bootstrap;go:(p:Page)=>void;select
           </div>)}</div>
         </details>
       </>}
-    </section>
-    <section className="section-head"><div><span className="eyebrow">OVERVIEW</span><h2>今週の学習状況</h2></div><span className="muted">直近7日間</span></section>
-    <div className="metrics-grid">
+      </section>
+      <section className="section-head"><div><span className="eyebrow">OVERVIEW</span><h2>今週の学習状況</h2></div><span className="muted">直近7日間</span></section>
+      <div className="metrics-grid">
       <Metric label="確定課題の残り" value={data.today.confirmed_remaining_minutes} unit="分" hint={`目標まであと${data.today.target_remaining_minutes}分・追加可能${data.today.additional_capacity_minutes}分`} tone={data.today.warning?"red":""}/>
       <Metric label="A問題進捗" value={d.weekA} unit="題" hint="今週の新規・復習"/>
       <Metric label={d.pace.phase==="foundation"?"過去問（任意）":"過去問GPT採点"} value={d.weekPast} unit="件" hint={d.pace.phase==="foundation"?"基礎期は未実施でも可":"今週の取り込み"}/>
       <Metric label="K再発" value={d.kRecurrence} unit="題" hint="直近2週間" tone={d.kRecurrence>2?"red":""}/>
       <Metric label="復習待ち" value={d.pending} unit="件" hint={`期限超過 ${d.reviewPortfolio.overdue}・今日 ${d.reviewPortfolio.dueToday}`} tone={d.overdue?"amber":""}/>
       <Metric label="S問題安定率" value={d.sStableRate} unit="%" hint={`要確認 ${d.sForgotten}件`}/>
-    </div>
-    <section className="progress-phase">
+      </div>
+      <section className="progress-phase">
       <div className="days-remaining"><strong>{d.pace.daysRemaining}</strong><span>日</span><small>{d.pace.examDateIsEstimate?"試験日未設定のため概算":"本番まで"}</small></div>
       <div><span className="eyebrow">CURRENT PHASE</span><h2>{d.pace.phaseLabel}</h2><p>{d.pace.summary}</p><strong className="phase-allocation">{d.pace.allocation}</strong><b>次の切替：{d.pace.nextPhase}</b></div>
-    </section>
-    <div className="two-col">
+      </section>
+      <div className="two-col">
       <section className="panel">
         <div className="panel-title"><div><span className="eyebrow">TODAY</span><h3>今日やること</h3></div><button className="text-btn" onClick={()=>go("today")}>すべて見る <ChevronRight size={16}/></button></div>
         <div className="task-list">{data.today.tasks.slice(0,4).map((t,i)=><TaskRow key={`${t.problem_id}-${i}`} task={t}/>)}</div>
@@ -292,35 +285,11 @@ function DashboardView({data,go,select}:{data:Bootstrap;go:(p:Page)=>void;select
         {d.pace.suggestion&&<p className="pace-advice">{d.pace.suggestion}</p>}
         <details className="danger-criteria"><summary>「危険」の判定基準</summary><ul>{d.pace.dangerCriteria.map(item=><li key={item}>{item}</li>)}</ul><small>危険は不合格確定ではなく、今週の配分を復習・復旧優先へ切り替えるサインです。</small></details>
       </section>
-    </div>
-    <section className="panel exam-roadmap"><div className="panel-title"><div><span className="eyebrow">4 MONTH ROADMAP</span><h3>残り4か月の得点最大化フェーズ</h3></div><Badge>{d.pace.phaseLabel}</Badge></div>
+      </div>
+      <section className="panel exam-roadmap"><div className="panel-title"><div><span className="eyebrow">4 MONTH ROADMAP</span><h3>残り4か月の得点最大化フェーズ</h3></div><Badge>{d.pace.phaseLabel}</Badge></div>
       <div>{EXAM_PHASES.map(phase=><article className={d.pace.daysRemaining>=phase.from&&d.pace.daysRemaining<=phase.to?"active":""} key={phase.title}><strong>{phase.to===999?"残り91日以上":`残り${phase.to}〜${phase.from}日`}</strong><span>{phase.title}</span><small>{phase.allocation}</small><p>{phase.summary}</p></article>)}</div>
-    </section>
-    <section className="section-head weakness-heading">
-      <div><span className="eyebrow">WEAKNESS ANALYSIS</span><h2>苦手分析と対策</h2></div>
-      <div className="analysis-status"><Badge tone={d.analysisConfidence==="分析可能"?"green":d.analysisConfidence==="暫定"?"orange":""}>{d.analysisConfidence}</Badge><span>{d.analysisAttemptCount}件の学習記録から判定</span></div>
-    </section>
-    {d.weaknessInsights.length?<div className="weakness-grid">{d.weaknessInsights.map((insight,index)=>
-      <section className={`panel weakness-card level-${insight.level}`} key={insight.theme}>
-        <div className="weakness-card-head">
-          <div><span className="weakness-rank">優先 {index+1}</span><h3>{insight.theme}</h3></div>
-          <div className="weakness-score"><strong>{insight.score}</strong><span>苦手度</span></div>
-        </div>
-        <div className="weakness-tags"><Badge tone={insight.level==="重点"?"red":insight.level==="注意"?"orange":""}>{insight.level}</Badge><ErrorBadge value={insight.dominantError}/><span>{insight.sampleCount}回の記録</span></div>
-        <ul className="evidence-list">{insight.evidence.map(item=><li key={item}>{item}</li>)}</ul>
-        <div className="repair-targets">
-          <span>戻る問題</span>
-          <div>{insight.recommendedS.map(id=><Badge tone="blue" key={id}>{id}</Badge>)}{insight.recommendedA.map(id=><Badge key={id}>{id}</Badge>)}{!insight.recommendedS.length&&!insight.recommendedA.length&&<small>関連問題を問題マスターに設定してください</small>}</div>
-        </div>
-        <div className="recommended-action"><Target size={18}/><div><span>推奨する次の行動</span><strong>{insight.action}</strong><small>{modes[insight.mode]||insight.mode}・約{insight.minutes}分</small></div></div>
-        <div className="weakness-actions"><button className="ghost weakness-start" onClick={()=>go("weak")}><Pencil size={15}/>登録内容を編集</button><button className="ghost weakness-start" onClick={()=>go("import")}><ClipboardPaste size={15}/>GPT採点結果を取り込む</button></div>
-      </section>)}</div>:
-      <section className="panel analysis-empty"><Target size={28}/><div><strong>分析に必要な記録を蓄積中です</strong><p>学習記録にK/W/N/Cまたは△・×が入ると、苦手テーマと戻る問題を自動提案します。</p></div></section>}
-    <div className="three-col">
-      <section className="panel mini-stat"><span>過去問GPT採点</span><strong>{pastAttemptCount}件</strong><div className="progress"><i style={{width:`${Math.min(100,pastAttemptCount*10)}%`}}/></div></section>
-      <section className="panel mini-stat"><span>過去問の復習待ち</span><strong>{pastReviewCount}件</strong><div className="progress"><i style={{width:`${Math.min(100,pastReviewCount*20)}%`}}/></div></section>
-      <section className="panel focus"><span>次の重点テーマ</span><strong>{d.nextTheme}</strong><small>危険章 {d.dangerChapters.map(x=>`第${x.chapter}章`).join("・")||"なし"}</small></section>
-    </div>
+      </section>
+    </div></details>
   </>
 }
 
@@ -1079,12 +1048,13 @@ type CoachPreviewResult={next:CoachDiagnosis;diff:{level:string;unchanged:boolea
   improvements:CoachListDiff;unknowns:CoachListDiff}};
 function CoachPanel({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean}){
   const coach=data.coach,diagnosis=coach.display;
+  const currentBottleneck=data.dashboard.kpis?.bottleneck;
   const masteryRows=Object.values(data.masteryByProblem);
   const masteryCounts=[1,2,3].map(level=>masteryRows.filter(row=>row.currentLevel===level).length);
-  const [copied,setCopied]=useState(false),[text,setText]=useState(""),[error,setError]=useState("");
+  const [copied,setCopied]=useState(false),[text,setText]=useState(""),[error,setError]=useState<{message:string;stage?:string;path?:string;reason?:string}|null>(null);
   const [preview,setPreview]=useState<CoachPreviewResult|null>(null);
   const copy=async()=>{await navigator.clipboard.writeText(coach.prompt);setCopied(true);setTimeout(()=>setCopied(false),1800)};
-  const parse=async()=>{setError("");try{setPreview(await post<CoachPreviewResult>("/api/coach/preview",{text}))}catch(reason){setError(reason instanceof Error?reason.message:String(reason))}};
+  const parse=async()=>{setError(null);try{setPreview(await post<CoachPreviewResult>("/api/coach/preview",{text}))}catch(reason){const row=reason as Error&{stage?:string;path?:string;reason?:string};setError({message:row instanceof Error?row.message:String(reason),stage:row.stage,path:row.path,reason:row.reason})}};
   const save=()=>{if(!preview)return;setPreview(null);run(()=>post("/api/coach/save",{text}),"学習コーチ診断を履歴へ保存しました")};
   return <>
     <section className="coach-hero">
@@ -1098,8 +1068,8 @@ function CoachPanel({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,
       </div>
     </section>
     <section className="coach-summary-grid">
-      <article className="panel coach-bottleneck"><span className="eyebrow">PRIMARY BOTTLENECK</span><h3>最大ボトルネック</h3><strong>{diagnosis.primaryBottleneck.title}</strong>
-        <p>{diagnosis.primaryBottleneck.explanation}</p><small>{diagnosis.primaryBottleneck.effectOnExam}</small>
+      <article className="panel coach-bottleneck"><span className="eyebrow">PRIMARY BOTTLENECK</span><h3>最大ボトルネック</h3><strong>{currentBottleneck?.value||diagnosis.primaryBottleneck.title}</strong>
+        <p>{currentBottleneck?.detail||diagnosis.primaryBottleneck.explanation}</p><small>{diagnosis.primaryBottleneck.effectOnExam}</small>
         {!!diagnosis.primaryBottleneck.evidenceProblemIds.length&&<div className="coach-evidence-ids">根拠：{diagnosis.primaryBottleneck.evidenceProblemIds.join(" / ")}</div>}</article>
       <article className="panel"><span className="eyebrow">NEXT ACTIONS</span><h3>次に鍛えること</h3><div className="coach-list">{diagnosis.nextActions.length?diagnosis.nextActions.map((row,index)=><div key={`${row.title}-${index}`}><b>{index+1}</b><span><strong>{row.title}</strong><small>{row.practiceMethod}</small><em>成功条件：{row.successCondition}</em></span></div>):<p>GPTレビューで具体化してください。</p>}</div></article>
       <article className="panel"><span className="eyebrow">IMPROVEMENTS</span><h3>最近改善したこと</h3><CoachFactList rows={diagnosis.improvements}/></article>
@@ -1112,7 +1082,7 @@ function CoachPanel({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,
       <div className="button-row"><button className="primary" onClick={copy}><Copy size={16}/>{copied?"コピーしました":"入力済みGPTプロンプトをコピー"}</button></div>
       <details><summary>GPTのcoach_updateを取り込む</summary><p className="helper-text">現在保存中のコーチ診断と、今回のGPT診断を比較します。確認するまで保存されません。</p>
         <textarea className="paste-area coach-paste" value={text} onChange={event=>setText(event.target.value)} placeholder="GPTが返したcoach_update JSONをそのまま貼り付け"/>
-        <button className="secondary" disabled={busy||!text.trim()} onClick={parse}>診断の変更内容を確認</button>{error&&<p className="field-error">{error}</p>}</details>
+        <button className="secondary" disabled={busy||!text.trim()} onClick={parse}>診断の変更内容を確認</button>{error&&<div className="field-error"><p>{error.message}</p>{error.stage&&<details className="coach-import-error-details"><summary>詳細</summary><code>stage: {error.stage}{error.path?`\npath: ${error.path}`:""}{error.reason?`\nreason: ${error.reason}`:""}</code></details>}</div>}</details>
       {!!coach.history.length&&<details><summary>過去のコーチ診断（{coach.history.length}件）</summary><div className="coach-history">{coach.history.map((row,index)=><div key={`${row.reviewedAt}-${index}`}><strong>{row.reviewedAt.slice(0,10)}・LEVEL {row.level.value}</strong><span>{row.primaryBottleneck.title}</span></div>)}</div></details>}
     </section>
     {preview&&<Modal title="コーチ診断の変更内容" close={()=>setPreview(null)}><div className="coach-preview"><dl><dt>本番レベル</dt><dd>{preview.diff.level}</dd>
@@ -1525,7 +1495,9 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
     <section className="panel integrity-health-card"><div className="panel-title"><div><span className="eyebrow">SYSTEM</span><h3>システム状態</h3></div>
       <Badge tone={health?.activeIssueCount?"orange":"green"}>{health?.activeIssueCount?"要対応":"正常"}</Badge></div>
       <div className="integrity-health-summary"><span>最終診断 <strong>{health?.generatedAt?new Date(health.generatedAt).toLocaleString("ja-JP"):"未実施"}</strong></span>
-        <span>active問題 <strong>{health?.activeIssueCount||0}件</strong></span><span>履歴上の警告レコード <strong>{health?.historyWarningCount||0}件</strong></span></div>
+        <span>現在の異常 <strong>{health?.activeIssueCount||0}件</strong></span><span>過去の修復・警告履歴 <strong>{health?.historyWarningCount||0}件</strong></span></div>
+      {!!health?.activeIssueCount&&<details className="review-consistency-details"><summary>現在の異常カテゴリ</summary><ul>{health.activeCategories.map(category=><li key={category}>{category}：{health.counts[category]||0}件</li>)}</ul></details>}
+      {!!health?.historyWarningCount&&<details className="review-consistency-details"><summary>過去の修復・警告履歴を表示</summary><p>履歴上の警告は保持しますが、現在の異常が0件ならシステム状態は正常です。</p></details>}
       {integrityPreview&&<div className="legacy-k-preview"><span>重複Attempt <strong>{integrityPreview.changes.duplicateAttempts}件</strong></span>
         <span>終了予定Review <strong>{integrityPreview.changes.reviewsSuperseded}件</strong></span>
         <span>stale終了 <strong>{integrityPreview.changes.staleReviewsSuperseded||0}件</strong></span>
@@ -1540,8 +1512,8 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
         {integrityPreview.details.map((row,index)=><li key={`${row.problemId}-${index}`}><strong>{row.problemId}</strong>：Review {row.reviewIds.join("・")||"新規不足"}／source Attempt {row.sourceAttemptId||"要確認"}／target {row.beforeTargetCount}→{row.afterTargetCount}（stable {row.distinctStableTargetCount}、世代重複 {row.duplicateGenerationCount}）／{row.reason}</li>)}
       </ul></details>}
       <div className="button-row"><button className="secondary" disabled={busy} onClick={()=>run(()=>post("/api/integrity/audit",{}),"全体整合性を確認しました")}>全体整合性を確認</button>
-        <button className="ghost" disabled={busy} onClick={()=>void previewIntegrity()}>修復内容をプレビュー</button>
-        {integrityPreview&&<button className="primary" disabled={busy} onClick={()=>{setIntegrityPreview(null);run(()=>post("/api/integrity/repair",{}),"全体整合性を安全に整えました")}}>安全に整える</button>}</div>
+        {!!health?.activeIssueCount&&<button className="ghost" disabled={busy} onClick={()=>void previewIntegrity()}>修復内容を確認</button>}
+        {!!health?.activeIssueCount&&integrityPreview&&<button className="primary" disabled={busy} onClick={()=>{setIntegrityPreview(null);run(()=>post("/api/integrity/repair",{}),"全体整合性を安全に整えました")}}>安全に整える</button>}</div>
     </section>
     <details className="advanced-management"><summary>高度な管理</summary><div className="advanced-management-body">
     <section className="panel reference-pack-import" id="exam-reference-pack-import">

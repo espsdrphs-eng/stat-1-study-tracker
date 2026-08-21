@@ -31,10 +31,20 @@ test("strict JSON・code fence・前後説明からcoach_updateを安全に抽�
   assert.equal(parseCoachUpdate(`診断結果です。\n${json}\n以上です。`).evidenceCutoffAttemptId,4);
 });
 
+test("説明中の波括弧が先行しても唯一のvalid coach_updateを抽出する",()=>{
+  const raw=`以下の {coach_update} が診断結果です。\n${JSON.stringify(diagnosis())}\n保存前に確認してください。`;
+  assert.equal(parseCoachUpdate(raw).primaryBottleneck.title,"変数・係数・制約の追跡");
+});
+
 test("壊れたJSONとschema不足はfriendly errorで拒否し診断へ進めない",()=>{
-  assert.throws(()=>parseCoachUpdate('{"coach_update":{"schema_version":"stat1-coach-v1",}'),/JSON形式が崩れています/);
+  assert.throws(()=>parseCoachUpdate('{"coach_update":{"schema_version":"stat1-coach-v1",}'),error=>
+    error.stage==="parse"&&/JSONを読み込めません/.test(error.message));
   const missing=diagnosis();delete missing.coach_update.primary_bottleneck;
-  assert.throws(()=>parseCoachUpdate(JSON.stringify(missing)),/必須項目が不足/);
+  assert.throws(()=>parseCoachUpdate(JSON.stringify(missing)),error=>
+    error.stage==="schema"&&error.path==="coach_update.primary_bottleneck"&&/現在の仕様と一致/.test(error.message));
+  const semantic=diagnosis();semantic.coach_update.level.value=0;
+  assert.throws(()=>parseCoachUpdate(JSON.stringify(semantic)),error=>
+    error.stage==="semantic"&&error.path==="coach_update.level.value"&&/必要な値/.test(error.message));
 });
 
 test("semantic diffはlevel・outlook・confidenceと各リストの追加削除を示す",()=>{

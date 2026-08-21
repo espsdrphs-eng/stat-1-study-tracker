@@ -35,7 +35,7 @@ import {
   GPT_SAVE_REQUIRED_STORES, IndexedDbSchemaError, LATEST_STORE_SCHEMAS, REQUIRED_APP_STORES, STORES
 } from "./dbSchema.ts";
 import {
-  ACTIVE_REVIEW_STATUSES, bindContractToReview, classifyExactDuplicateAttempts, logicalReviewKey,
+  ACTIVE_REVIEW_STATUSES, bindContractToReview, classifyExactDuplicateAttempts, deriveSystemHealth, logicalReviewKey,
   reviewExecutionMessage, reviewExecutionState, runIntegrityAudit, type IntegrityAudit
 } from "./integrityEngine.ts";
 import { notifyStudyDataChanged } from "./appEvents.ts";
@@ -46,7 +46,7 @@ import {
   type ReferencePackValidation, type StoredExamReferencePack
 } from "./examReferencePack.ts";
 import { analyzeConceptWeaknesses, buildPastExamRepairCandidates } from "./conceptWeakness.ts";
-import { buildAdaptivePlannerShadow } from "./adaptivePlanner.ts";
+import { buildAdaptivePlannerShadow, rollingPastExamShare } from "./adaptivePlanner.ts";
 import { ADAPTIVE_PLANNER_VERSION, adaptivePlanDayToTasks } from "./adaptiveTodayPlan.ts";
 import { buildAdditionalStudyCandidates } from "./additionalStudy.ts";
 import { summarizeReviewPortfolio } from "./reviewPortfolio.ts";
@@ -58,8 +58,9 @@ import {deriveMasteryByProblem} from "./masteryProjection.ts";
 import {materializeObservedOutOfScopeFindings} from "./outOfScopeObservations.ts";
 import {deriveCurrentTodayProjection} from "./currentTodayProjection.ts";
 import {resolveSemanticReviewGeneration} from "./reviewGeneration.ts";
-import {classifyFailureStrength,learningEventKind,masteryLevelForTargets} from "./examOptimizationPolicy.ts";
+import {classifyFailureStrength,examHorizonPolicy,learningEventKind,masteryLevelForTargets} from "./examOptimizationPolicy.ts";
 import {parseWholeAnswerRediagnosis,WHOLE_ANSWER_DIAGNOSTIC_VERSION,wholeAnswerDiagnosticFingerprint} from "./wholeAnswerDiagnostic.ts";
+import {deriveDashboardKpis} from "./dashboardKpi.ts";
 
 const PLANNER_RUNTIME_MODE_META_KEY="planner-runtime-mode";
 
@@ -2969,6 +2970,7 @@ async function bootstrap():Promise<Bootstrap>{
     additionalCandidates:additionalStudy.candidates,eligibleTodayTasks:generatedTriage.tasks,
     examDate:settings.exam_date||"2026-11-15",pastExamCatalog,
   });
+  const systemHealth=deriveSystemHealth(integrityHealth);
   const masterStatus={
     problem_count:problems.length,answer_count:answerIndex.length,
     problem_version:metaEntries.find(entry=>entry.key==="problem_master_version")?.value||"未設定",
@@ -2985,7 +2987,8 @@ async function bootstrap():Promise<Bootstrap>{
     ,review_schedule_summary:(()=>{try{return JSON.parse(metaEntries.find(entry=>entry.key==="review_schedule_repair_summary")?.value||"null")||undefined}catch{return undefined}})()
     ,integrity_summary:{
       generatedAt:integrityHealth.generatedAt,activeIssueCount:integrityHealth.activeIssueCount,
-      historyWarningCount:integrityHealth.historyWarningCount,counts:integrityHealth.counts,
+      historyWarningCount:integrityHealth.historyWarningCount,informationalHistoryCount:integrityHealth.informationalHistoryCount,
+      counts:integrityHealth.counts,activeCategories:systemHealth.activeCategories,
       ...(()=>{try{const saved=JSON.parse(metaEntries.find(entry=>entry.key==="integrity_audit_summary")?.value||"null");return saved?.repairedAt?{repairedAt:saved.repairedAt}:{}}
         catch{return {}}})()
     }
@@ -2998,8 +3001,15 @@ async function bootstrap():Promise<Bootstrap>{
   try{coachHistory=JSON.parse(metaEntries.find(entry=>entry.key===COACH_HISTORY_META_KEY)?.value||"[]")}catch{coachHistory=[]}
   const coach=buildCoachDiagnosisState({history:coachHistory,attempts:activeAttempts,concepts:conceptWeaknesses,
     dashboard,reviews,problems,planner:plannerShadow,today});
+  const horizon=examHorizonPolicy(plannerShadow.daysRemaining);
+  const dashboardWithKpis={...dashboard,kpis:deriveDashboardKpis({today,updatedAt:new Date().toISOString(),coach,
+    readiness:dashboard.readiness,concepts:conceptWeaknesses,currentTask:currentToday.currentTask,
+    daysRemaining:plannerShadow.daysRemaining,phaseLabel:dashboard.pace.phaseLabel,
+    pastExamShare:rollingPastExamShare(plannerShadow.plan14.plan.slice(0,7)),
+    pastExamShareTarget:`${Math.round(horizon.pastExamShareMin*100)}〜${Math.round(horizon.pastExamShareMax*100)}%`,
+    pendingReviews:reviewPortfolio.actionable})};
   const masteryByProblem=deriveMasteryByProblem({problemIds:problems.map(problem=>problem.problem_id),attempts:activeAttempts,reviews});
-  return {problems:problems.sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.category.localeCompare(b.category)||a.problem_number-b.problem_number),attempts,reviews,roadmap,weakNotes,pastSessions,answerIndex,problemAliases,dashboard,settings,masterStatus,databaseStatus,adaptiveLearning,
+  return {problems:problems.sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.category.localeCompare(b.category)||a.problem_number-b.problem_number),attempts,reviews,roadmap,weakNotes,pastSessions,answerIndex,problemAliases,dashboard:dashboardWithKpis,settings,masterStatus,databaseStatus,adaptiveLearning,
     coach,masteryByProblem,
     today:{tasks,currentTask:currentToday.currentTask,totalLoad,plannedMinutes:plannedTotal,remainingMinutes,actualMinutes,targetMinutes:settings.daily_study_minutes,capacityPercent,warning,guidance,
       planned_minutes_total:plannedTotal,completed_minutes_today:actualMinutes,remaining_minutes_today:remainingMinutes,
