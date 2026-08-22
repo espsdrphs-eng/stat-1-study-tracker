@@ -61,6 +61,11 @@ test("strict JSON coach保存はreload不要のprojectionを更新し、不正im
   await localGet("/api/bootstrap");await db.meta.delete("coach-diagnosis-history-v1");
   const attempts=await db.attempts.toArray(),cutoff=Math.max(0,...attempts.filter(row=>!row.exclude_from_metrics).map(row=>row.id));
   const text=json(cutoff,"2026-08-22T12:00:00+09:00","新しい最大ボトルネック");
+  let inString=false;
+  const typographic=[...text].map((char,index,chars)=>{if(char!==String.fromCharCode(34)||chars[index-1]==="\\")return char;
+    inString=!inString;return inString?"“":"”";}).join("");
+  const compatiblePreview=await localPost("/api/coach/preview",{text:typographic});
+  assert.equal(compatiblePreview.next.primaryBottleneck.title,"新しい最大ボトルネック");
   await localPost("/api/coach/preview",{text});await localPost("/api/coach/save",{text});
   const after=await localGet("/api/bootstrap");
   assert.equal(after.dashboard.kpis.bottleneck.value,"新しい最大ボトルネック");

@@ -36,6 +36,29 @@ test("説明中の波括弧が先行しても唯一のvalid coach_updateを抽�
   assert.equal(parseCoachUpdate(raw).primaryBottleneck.title,"変数・係数・制約の追跡");
 });
 
+test("typographic quoteをJSON delimiterとして使った実入力を無加工で取り込む",()=>{
+  const ascii=JSON.stringify(diagnosis());
+  let inString=false;
+  const smart=[...ascii].map((char,index,chars)=>{
+    if(char!==String.fromCharCode(34)||chars[index-1]==="\\")return char;
+    inString=!inString;return inString?"“":"”";
+  }).join("");
+  const parsed=parseCoachUpdate(smart);
+  assert.equal(parsed.level.value,3.5);
+  assert.equal(parsed.primaryBottleneck.title,"変数・係数・制約の追跡");
+});
+
+test("全角quote delimiterを受理し文字列内部の引用と日本語括弧は保持する",()=>{
+  const raw=`{＂coach_update＂:{＂schema_version＂:＂stat1-coach-v1＂,＂reviewed_at＂:＂2026-08-22T10:00:00+09:00＂,＂evidence_cutoff_attempt_id＂:4,＂level＂:{＂value＂:3.5,＂label＂:＂「境界圏」＂,＂pass_outlook＂:＂境界手前〜境界圏＂,＂confidence＂:＂medium＂,＂rationale＂:＂GPTは“制約”を追跡と評価し、『根拠』を確認＂},＂primary_bottleneck＂:{＂title＂:＂制約追跡＂,＂explanation＂:＂再発＂,＂evidence_problem_ids＂:[],＂effect_on_exam＂:＂失点＂},＂next_actions＂:[],＂strengths＂:[],＂improvements＂:[],＂unknowns＂:[],＂optional_pass_probability＂:null}}`;
+  const parsed=parseCoachUpdate(raw);
+  assert.equal(parsed.level.label,"「境界圏」");
+  assert.equal(parsed.level.rationale,"GPTは“制約”を追跡と評価し、『根拠』を確認");
+});
+
+test("quote互換化後もbraceが壊れている入力は推測修復しない",()=>{
+  assert.throws(()=>parseCoachUpdate(`{“coach_update”:{“schema_version”:“stat1-coach-v1”}`),error=>error.stage==="parse");
+});
+
 test("壊れたJSONとschema不足はfriendly errorで拒否し診断へ進めない",()=>{
   assert.throws(()=>parseCoachUpdate('{"coach_update":{"schema_version":"stat1-coach-v1",}'),error=>
     error.stage==="parse"&&/JSONを読み込めません/.test(error.message));
@@ -93,4 +116,5 @@ test("レビューpromptは代表Attemptを12件に圧縮し精密確率を要�
   assert.equal(payload.length,12);assert.match(prompt,/根拠のない精密な合格確率は出さず/);
   assert.match(prompt,/"evidence_cutoff_attempt_id": 20/);
   assert.match(prompt,/JSON objectを1個だけ/);assert.doesNotMatch(prompt,/次のYAMLだけ/);
+  assert.match(prompt,/ASCII double quote U\+0022/);assert.match(prompt,/typographic quotation marks/);
 });

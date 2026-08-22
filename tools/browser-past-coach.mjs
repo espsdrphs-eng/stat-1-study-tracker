@@ -23,7 +23,12 @@ try{
     next_actions:[{title:"制約付き計算",purpose:"主要計算",practice_method:"別問題",success_condition:"参照なしで完遂"}],
     strengths:[{title:"型識別",evidence:"代表Attempt"}],improvements:[{title:"初手",evidence:"直近改善"}],
     unknowns:[{title:"本番時間配分",evidence_needed:"timed evidence"}],optional_pass_probability:null}};
-  await page.locator("textarea.coach-paste").fill(`結果です。\n\n\`\`\`json\n${JSON.stringify(update,null,2)}\n\`\`\``);
+  let inJsonString=false;
+  const smartJson=[...JSON.stringify(update,null,2)].map((char,index,chars)=>{
+    if(char!==String.fromCharCode(34)||chars[index-1]==="\\")return char;
+    inJsonString=!inJsonString;return inJsonString?"“":"”";
+  }).join("");
+  await page.locator("textarea.coach-paste").fill(smartJson);
   await page.getByRole("button",{name:"診断の変更内容を確認",exact:true}).click();
   const modal=page.locator(".modal").filter({hasText:"コーチ診断の変更内容"});
   try{await modal.waitFor()}catch(error){console.log((await page.locator("body").innerText()).slice(-2500));throw error}
@@ -44,7 +49,7 @@ try{
   const health=await page.locator(".integrity-health-card").innerText();
   if(!health.includes("正常")||!health.includes("現在の異常 0件"))throw new Error(`current audit is not clean: ${health}`);
   console.log(JSON.stringify({status:"PASS",url,concrete2016:true,genericConfirmation:false,
-    coachJsonImport:true,semanticDiff:true,coachSaved:true,dashboardKpis:4,activeAuditIssues:0},null,2));
+    coachTypographicJsonImport:true,semanticDiff:true,coachSaved:true,dashboardKpis:4,activeAuditIssues:0},null,2));
 }finally{
   await context.close();await browser.close();
 }

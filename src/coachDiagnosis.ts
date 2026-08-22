@@ -25,6 +25,9 @@ export const isCoachImportError=(error:unknown):error is CoachImportError=>error
 
 const COACH_REQUIRED_OBJECTS=["level","primary_bottleneck"] as const;
 const COACH_REQUIRED_ARRAYS=["next_actions","strengths","improvements","unknowns"] as const;
+const TYPOGRAPHIC_JSON_QUOTES=new Set(["\u201c","\u201d","\uff02"]);
+const JSON_STRING_PREFIXES=new Set(["{","[",",",":"]);
+const JSON_STRING_SUFFIXES=new Set([":",",","}","]"]);
 
 const text=(value:unknown,max=500)=>String(value??"").trim().slice(0,max);
 const list=(value:unknown,max=3)=>Array.isArray(value)?value.slice(0,max):[];
@@ -92,6 +95,48 @@ export function normalizeCoachUpdate(raw:unknown):CoachDiagnosis{
   return diagnosis;
 }
 
+/**
+ * Normalizes only typographic quotes that occupy a JSON string-token boundary.
+ * Quotes inside string content remain untouched; malformed structure is never repaired.
+ */
+export function normalizeCompatibleJsonQuotes(source:string){
+  let output="",inAsciiString=false,inCompatibleString=false,escaped=false,nestedCurlyQuotes=0;
+  let compatibleOpener="",changed=false;
+  const previousSignificant=(index:number)=>{
+    for(let cursor=index-1;cursor>=0;cursor--)if(!/\s/.test(source[cursor]))return source[cursor];
+    return "";
+  };
+  const nextSignificant=(index:number)=>{
+    for(let cursor=index+1;cursor<source.length;cursor++)if(!/\s/.test(source[cursor]))return source[cursor];
+    return "";
+  };
+  for(let index=0;index<source.length;index++){
+    const char=source[index];
+    if(inAsciiString){
+      output+=char;
+      if(escaped)escaped=false;else if(char==="\\")escaped=true;else if(char==='"')inAsciiString=false;
+      continue;
+    }
+    if(inCompatibleString){
+      if(escaped){output+=char;escaped=false;continue;}
+      if(char==="\\"){output+=char;escaped=true;continue;}
+      if(char==="\u201c"){nestedCurlyQuotes++;output+=char;continue;}
+      if(char==="\u201d"&&nestedCurlyQuotes>0){nestedCurlyQuotes--;output+=char;continue;}
+      const isCompatibleCloser=char===compatibleOpener||compatibleOpener==="\u201c"&&char==="\u201d";
+      if(isCompatibleCloser&&nestedCurlyQuotes===0&&JSON_STRING_SUFFIXES.has(nextSignificant(index))){
+        output+='"';inCompatibleString=false;compatibleOpener="";changed=true;continue;
+      }
+      output+=char;continue;
+    }
+    if(char==='"'){output+=char;inAsciiString=true;continue;}
+    if(TYPOGRAPHIC_JSON_QUOTES.has(char)&&JSON_STRING_PREFIXES.has(previousSignificant(index))){
+      output+='"';inCompatibleString=true;compatibleOpener=char;nestedCurlyQuotes=0;changed=true;continue;
+    }
+    output+=char;
+  }
+  return {json:output,normalized:changed};
+}
+
 export function parseCoachUpdate(input:string){
   const source=input.trim();
   if(!source)throw new CoachImportError("extract","$","input is empty");
@@ -116,7 +161,16 @@ export function parseCoachUpdate(input:string){
   const valid:CoachDiagnosis[]=[];
   let validationFailure:unknown;
   for(const candidate of [...new Set(jsonCandidates)]){
-    try{valid.push(normalizeCoachUpdate(JSON.parse(candidate)))}
+    try{
+      let parsed:unknown;
+      try{parsed=JSON.parse(candidate)}catch(strictError){
+        if(!(strictError instanceof SyntaxError))throw strictError;
+        const compatible=normalizeCompatibleJsonQuotes(candidate);
+        if(!compatible.normalized)throw strictError;
+        parsed=JSON.parse(compatible.json);
+      }
+      valid.push(normalizeCoachUpdate(parsed));
+    }
     catch(error){
       if(error instanceof SyntaxError){jsonSyntaxFailure=true;continue;}
       validationFailure=error;
@@ -207,7 +261,7 @@ export function buildCoachReviewPrompt(args:{
     `READINESS: ${jsonLine(args.dashboard.readiness)}\nREVIEW_SUMMARY: ${jsonLine(reviewSummary)}\n`+
     `PLANNER_READINESS: ${jsonLine({phase:args.planner.phase,days_remaining:args.planner.daysRemaining,weekly_actual:args.planner.weeklyActual,weekly_target:args.planner.weeklyTarget})}\n`+
     `RECENT_REPRESENTATIVE_ATTEMPTS: ${jsonLine(attempts)}\nTOP_CONCEPT_EVIDENCE: ${jsonLine(concepts)}\n\n`+
-    `JSON objectを1個だけ返してください。Markdown・code fence・説明文は禁止です。次のJSON shapeに完全準拠し、level.valueのnullは1〜5の0.5刻みの数値へ置き換えてください。reviewed_atは現在時刻、evidence_cutoff_attempt_idは${cutoff}をそのまま使用してください。optional_pass_probabilityは十分な根拠がなければnullにしてください。\n`+
+    `JSON objectを1個だけ返してください。Markdown・code fence・説明文は禁止です。JSONのキーと文字列には必ずASCII double quote U+0022 (\")を使用し、typographic quotation marks “ ” や全角＂をdelimiterに使用しないでください。次のJSON shapeに完全準拠し、level.valueのnullは1〜5の0.5刻みの数値へ置き換えてください。reviewed_atは現在時刻、evidence_cutoff_attempt_idは${cutoff}をそのまま使用してください。optional_pass_probabilityは十分な根拠がなければnullにしてください。\n`+
     `${JSON.stringify(outputShape,null,2)}`;
 }
 
