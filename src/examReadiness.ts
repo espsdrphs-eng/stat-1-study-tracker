@@ -2,6 +2,7 @@ import type { Attempt, PastSession, Problem, ProblemAlias } from "./types.ts";
 import { examScoreEligibility } from "./scoreEligibility.ts";
 import { excludeLegacyKFromPlanning } from "./legacyKPolicy.ts";
 import { scanMetrics, selectionSuccessRate, validatePastExamSession } from "./pastExamWorkflow.ts";
+import {examHorizonPolicy} from "./examOptimizationPolicy.ts";
 
 export type ExamPhase =
   | "foundation_to_A"
@@ -24,6 +25,7 @@ export type ExamReadinessMetrics = {
     unseen: number;
     timed: number;
     scans: number;
+    selectionPending?: number;
     pastExams: number;
     kReviews: number;
     wReviews: number;
@@ -61,24 +63,21 @@ export function resolveCanonicalProblemId(problemId: string, aliases: ProblemAli
 }
 
 export function getExamPhase(daysRemaining: number): ExamPhase {
-  if (daysRemaining >= 91) return "foundation_to_A";
-  if (daysRemaining >= 61) return "A_and_past_parallel";
-  if (daysRemaining >= 31) return "past_exam_main";
-  return "final_stabilization";
+  return examHorizonPolicy(daysRemaining).phase;
 }
 
 export const examPhaseLabels: Record<ExamPhase, string> = {
   foundation_to_A: "S限定補修＋A問題着手",
   A_and_past_parallel: "A問題＋過去問並行",
-  past_exam_main: "過去問主軸＋A問題補修",
+  past_exam_main: "過去問主軸＋Whitebook補修",
   final_stabilization: "本番演習＋弱点限定補修",
 };
 
 export const examPhaseAllocations: Record<ExamPhase, string> = {
   foundation_to_A: "A問題45%・S限定補修25%・型識別/5問スキャン15%・過去問観察15%",
   A_and_past_parallel: "A問題40%・過去問30%・S限定補修15%・型識別/選題15%",
-  past_exam_main: "過去問55%・A問題補修25%・S限定補修10%・型識別10%",
-  final_stabilization: "過去問/本番形式60%・A問題補修25%・S限定補修10%・型識別5%",
+  past_exam_main: "過去問・本番型60〜65%・Whitebook補修20〜25%・保持確認10〜15%",
+  final_stabilization: "simulation/本番形式70%以上・確認済み弱点だけ補修",
 };
 
 const validScore = (attempt: Attempt) =>
@@ -187,6 +186,7 @@ export function calculateExamReadinessMetrics(args: {
       unseen: transferAttempts.length,
       timed: timedAttempts.length+timedSessions.length,
       scans: scanScores.length,
+      selectionPending:Math.max(0,scanSessions.length-scanScores.length),
       pastExams: pastExamAttempts.length+pastSessionScores.length,
       kReviews: kDenominator,
       wReviews: wDenominator,

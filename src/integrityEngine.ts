@@ -141,6 +141,8 @@ export type IntegrityCategory =
   | "eligible_past_exam_but_confirmation_scheduled" | "past_exam_candidate_false_negative"
   | "repeated_material_selection_confirmation" | "past_exam_share_counted_from_non_exam_task"
   | "current_plan_zero_past_exam_when_phase_requires" | "protected_past_exam_scheduled_without_release"
+  | "single_problem_ninety_minute_session" | "past_exam_session_shape_mismatch" | "clean_scan_year_skipped"
+  | "generic_whitebook_in_past_exam_main"
   | "coach_update_parse_failed" | "coach_update_schema_invalid" | "coach_diff_generated_from_invalid_update";
 
 export type IntegrityIssue = {
@@ -278,6 +280,21 @@ export function runIntegrityAudit(args: {
     });
     if(protectedRows.length)issues.push({category:"protected_past_exam_scheduled_without_release",severity:"active",
       detail:`${protectedRows.length} protected past-exam tasks were scheduled before the release phase`,repairable:false});
+    const badNinety=tasks.filter(row=>row.minutes===90&&!["timed_three_question_session","simulation"].includes(String(row.pastExamTaskType||"")));
+    if(badNinety.length)issues.push({category:"single_problem_ninety_minute_session",severity:"active",
+      detail:`${badNinety.length} 90-minute tasks are not three-question sessions`,repairable:false});
+    const malformedSessions=tasks.filter(row=>["timed_three_question_session","simulation"].includes(String(row.pastExamTaskType||""))&&
+      Number(row.sessionProblemIds?.length||0)!==5);
+    if(malformedSessions.length)issues.push({category:"past_exam_session_shape_mismatch",severity:"active",
+      detail:`${malformedSessions.length} exam sessions do not carry a five-question scan set`,repairable:false});
+    const cleanYears=[...new Set((args.pastExamCatalog||[]).filter(row=>!row.simulationProtected&&row.exposure==="unseen")
+      .map(row=>row.year))].filter(year=>(args.pastExamCatalog||[]).filter(row=>row.year===year&&row.exposure==="unseen").length>=5).sort((a,b)=>a-b);
+    const firstSession=tasks.find(row=>["clean_scan5","timed_three_question_session"].includes(String(row.pastExamTaskType||"")));
+    if(remaining<=80&&cleanYears.length&&firstSession?.pastExamYear!==cleanYears[0])issues.push({category:"clean_scan_year_skipped",severity:"active",
+      detail:`clean year ${cleanYears[0]} was skipped for ${firstSession?.pastExamYear||"no session"}`,repairable:false});
+    const genericWhitebook=tasks.filter(row=>horizon.pastExamIsPrimary&&row.kind==="whitebook"&&!row.conceptId);
+    if(genericWhitebook.length)issues.push({category:"generic_whitebook_in_past_exam_main",severity:"active",
+      detail:`${genericWhitebook.length} whitebook tasks lack past-exam/concept repair evidence`,repairable:false});
   }
 
   for(const state of reconciliation.problems.filter(row=>row.graduated&&row.graduationAttemptId)){
@@ -629,6 +646,8 @@ export function runIntegrityAudit(args: {
     "eligible_past_exam_but_confirmation_scheduled", "past_exam_candidate_false_negative",
     "repeated_material_selection_confirmation", "past_exam_share_counted_from_non_exam_task",
     "current_plan_zero_past_exam_when_phase_requires", "protected_past_exam_scheduled_without_release",
+    "single_problem_ninety_minute_session", "past_exam_session_shape_mismatch", "clean_scan_year_skipped",
+    "generic_whitebook_in_past_exam_main",
     "coach_update_parse_failed", "coach_update_schema_invalid", "coach_diff_generated_from_invalid_update",
   ];
   const counts = Object.fromEntries(categories.map((category) =>

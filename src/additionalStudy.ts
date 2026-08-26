@@ -18,6 +18,8 @@ function shadowTaskToTodayTask(item:AdaptivePlannerShadow["plan14"]["plan"][numb
       item.kind==="timed"?"90分演習":item.kind==="past_exam"?"過去問":"追加学習",
     reason:item.reason,mode,minutes:item.minutes,load:0,triage:"if_time",
     plan_origin:"adaptive_additional",additional_candidate_key:item.taskKey,
+    past_exam_task_type:item.pastExamTaskType,past_exam_year:item.pastExamYear,
+    session_problem_ids:item.sessionProblemIds,clean_selection_evidence:item.cleanSelectionEvidence,
     purpose_label:item.purposeLabel||(
       item.slot==="score_building"?"得点形成":item.slot==="maintenance_selection"?"重要概念の維持":"追加学習"
     )

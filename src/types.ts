@@ -285,6 +285,7 @@ export type PastSession = Record<string, unknown> & {
   exam_score_eligible?:boolean;prompt_scanned_at?:string;attempt_started_at?:string;attempt_completed_at?:string;
   answer_viewed_at?:string;simulation_completed_at?:string;linked_attempt_ids?:number[];
   analysis?:Record<string,unknown>;rubric_version?:string;
+  scan_evidence_kind?:"clean"|"practice";
 };
 export type Task = {
   id?:number; problem_id:string; title:string; kind:string; reason:string; mode:string;
@@ -324,6 +325,8 @@ export type Task = {
   graded_part_ids?:string[];graded_findings?:GradedFinding[];
   plan_origin?:"adaptive_planner"|"adaptive_additional"|"legacy_planner";additional_candidate_key?:string;purpose_label?:string;
   logical_review_key?:string;mastery_level?:1|2|3;
+  past_exam_task_type?:"clean_scan5"|"practice_scan5"|"individual_full"|"timed_three_question_session"|"simulation";
+  past_exam_year?:number;session_problem_ids?:string[];clean_selection_evidence?:boolean;
 };
 export type WeaknessInsight = {
   theme:string; score:number; level:"重点"|"注意"|"観察"; confidence:"参考"|"暫定"|"分析可能";
@@ -390,6 +393,8 @@ export type AdaptivePlanTask = {
   reviewId?:number;mode?:"check"|"skeleton"|"main_calc"|"full"|"scan5";
   reviewEarliestDate?:string;reviewPreferredDate?:string;reviewLatestDate?:string;
   reviewScheduleStatus?:"within_window"|"overdue_recovery";
+  pastExamTaskType?:"clean_scan5"|"practice_scan5"|"individual_full"|"timed_three_question_session"|"simulation";
+  pastExamYear?:number;sessionProblemIds?:string[];cleanSelectionEvidence?:boolean;
 };
 export type AdaptivePlanDay = {date:string;tasks:AdaptivePlanTask[];totalMinutes:number};
 export type AdaptiveReviewScheduleConflict = {
@@ -442,6 +447,7 @@ export type DashboardKpiConfidence="low"|"medium"|"high";
 export type DashboardKpiValue={
   value:string;detail:string;source:string;evidenceCount:number;freshness:"current"|"stale"|"measuring";
   confidence:DashboardKpiConfidence;updatedAt:string;
+  missingEvidence?:string[];nextEvidenceAction?:string;
 };
 export type DashboardKpiProjection={
   examReadiness:DashboardKpiValue;passZone:DashboardKpiValue;bottleneck:DashboardKpiValue;
@@ -459,7 +465,7 @@ export type Dashboard = {
     pastExamScoreRate:number|null;kRecurrenceRate:number|null;repeatedWRate:number|null;
     typeIdentificationAccuracy:number|null;firstStepAccuracy:number|null;
     predictedScoreCalibration:number|null;predictedTimeCalibration:number|null;
-    sampleSizes:{unseen:number;timed:number;scans:number;pastExams:number;kReviews:number;wReviews:number};
+    sampleSizes:{unseen:number;timed:number;scans:number;selectionPending?:number;pastExams:number;kReviews:number;wReviews:number};
   };
   stableRelease:{isStable:boolean;blockingIssues:string[];message:string};
   reviewPortfolio:ReviewPortfolioSummary;

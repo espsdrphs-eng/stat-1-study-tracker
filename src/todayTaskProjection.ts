@@ -1,4 +1,4 @@
-import type {Attempt,ProblemAlias,Task,TodayPlanSnapshot} from "./types.ts";
+import type {Attempt,PastSession,ProblemAlias,Task,TodayPlanSnapshot} from "./types.ts";
 import {resolveCanonicalProblemId} from "./examReadiness.ts";
 import {summarizeTodayTime} from "./todayPlan.ts";
 
@@ -49,13 +49,27 @@ export function qualifyingAttemptForTodayTask(args:{
     .sort((left,right)=>right.id-left.id)[0];
 }
 
+export function qualifyingPastSessionForTodayTask(args:{task:Task;pastSessions?:PastSession[];snapshot:TodayPlanSnapshot}){
+  if(!args.task.past_exam_task_type)return undefined;
+  const matching=(args.pastSessions||[]).filter(session=>session.date===args.snapshot.date&&
+    Number(session.year||0)===Number(args.task.past_exam_year||0));
+  if(args.task.past_exam_task_type==="clean_scan5"||args.task.past_exam_task_type==="practice_scan5")
+    return matching.find(session=>Number(session.scan_minutes||0)>0);
+  if(args.task.past_exam_task_type==="timed_three_question_session"||args.task.past_exam_task_type==="simulation")
+    return matching.find(session=>session.session_kind==="selected_three_timed"&&
+      Number(session.actual_total_minutes||0)>0&&(session.questions||[]).filter(row=>row.completed).length===3);
+  return undefined;
+}
+
 export function projectTodayTaskChecked(args:{
-  task:Task;attempts:Attempt[];snapshot:TodayPlanSnapshot;aliases?:ProblemAlias[];manuallyChecked?:boolean;
+  task:Task;attempts:Attempt[];pastSessions?:PastSession[];snapshot:TodayPlanSnapshot;aliases?:ProblemAlias[];manuallyChecked?:boolean;
 }){
   // `task.checked` inside a persisted snapshot is historical display state,
   // not current execution evidence. Explicit completion metadata and a
   // qualifying Attempt are the only current sources of truth.
-  return !!args.manuallyChecked||!!qualifyingAttemptForTodayTask(args);
+  if(args.manuallyChecked)return true;
+  if(qualifyingPastSessionForTodayTask(args))return true;
+  return !!qualifyingAttemptForTodayTask(args);
 }
 
 export function selectNextCurrentTodayTask(tasks:Task[]){
@@ -65,11 +79,11 @@ export function selectNextCurrentTodayTask(tasks:Task[]){
 
 /** Canonical current projection consumed by Today, Dashboard, time totals and audit. */
 export function deriveCurrentTodayState(args:{
-  tasks:Task[];attempts:Attempt[];snapshot:TodayPlanSnapshot;aliases?:ProblemAlias[];
+  tasks:Task[];attempts:Attempt[];pastSessions?:PastSession[];snapshot:TodayPlanSnapshot;aliases?:ProblemAlias[];
   manuallyChecked?:(task:Task)=>boolean;completedMinutes:number;targetMinutes:number;
 }){
   const tasks=args.tasks.map(task=>({...task,checked:projectTodayTaskChecked({
-    task,attempts:args.attempts,snapshot:args.snapshot,aliases:args.aliases,
+    task,attempts:args.attempts,pastSessions:args.pastSessions,snapshot:args.snapshot,aliases:args.aliases,
     manuallyChecked:args.manuallyChecked?.(task),
   })}));
   const timeSummary=summarizeTodayTime(tasks,args.completedMinutes,args.targetMinutes,args.snapshot.start_of_day_planned_minutes);

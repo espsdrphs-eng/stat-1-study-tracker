@@ -8,6 +8,13 @@ const whitebook=[
   ...[2,4,6].flatMap(ch=>Array.from({length:8},(_,i)=>problem(`WB-${ch}-A-${String(i+1).padStart(2,"0")}`,ch))),
   ...[5,7,8].flatMap(ch=>Array.from({length:4},(_,i)=>problem(`WB-${ch}-A-${String(i+1).padStart(2,"0")}`,ch)))
 ];
+const repairWhitebook=whitebook.map(row=>({...row,fine_concept_ids:["c1"]}));
+const repairWeakness={conceptId:"c1",displayName:"過去問由来の主要計算",state:"confirmed",independentOpportunities:4,
+  independentFailures:2,failureRate:.5,strongFailures:2,weakFailures:0,delayedNoReferenceSuccesses:0,transferSuccesses:0,
+  distinctProblemCount:2,distinctFailureDateCount:2,recurrenceCount:1,examYearCount:2,examOccurrenceYearCount:2,
+  pastExamFailureCount:2,pastExamFailureYearCount:2,recentExamYearCount:1,examImportance:3,weaknessScore:90,
+  priorityScore:90,estimatedRepairMinutes:20,mappingConfidence:"verified",evidenceConfidence:"high",
+  nextRecommendedAction:"Whitebookを1問だけ補修",latestEvidenceDate:"2026-08-26",evidenceSummary:[]};
 const baseRecord=record();
 const catalog=buildPastExamCatalog({record:baseRecord,sessions:[],exposureOverrides:{"PY-2021-Q1":"prompt_scanned","PY-2022-Q1":"unseen"}});
 const manyPast=Array.from({length:30},(_,index)=>({
@@ -95,24 +102,43 @@ test("D87は履歴のないverified過去問をunseenとして2016年から具�
   assert.equal(tasks.filter(task=>["past_exam","scan5","timed"].includes(task.kind)).every(task=>/^2016年/.test(task.label)),true);
   const share=rollingPastExamShare(week);
   assert.ok(share>=.3&&share<=.4,`D87 share=${share}`);
-  assert.match(tasks.find(task=>task.kind==="scan5")?.label||"",/5問scan・3問選択/);
+  assert.equal(tasks.find(task=>task.kind==="scan5")?.pastExamTaskType,"clean_scan5");
   const rerun=buildAdaptivePlannerShadow({record:source,catalog:unknownCatalog,weaknesses:[],problems:whitebook,
     attempts:[],reviews:[],pastSessions:[],currentTasks:[],today:"2026-08-20",examDate:"2026-11-15",targetMinutes:150});
   assert.deepEqual(rerun.plan14,plan.plan14);
 });
 
-test("D79は2019〜2021を優先し過去問・timedを50〜60%配置する",()=>{
+test("D79はcalendar bucketで2019へ飛ばずclean年度を古い順に使い60〜65%配置する",()=>{
   const rows=[2016,2017,2018,2019,2021,2022,2023,2024,2025]
     .flatMap(year=>Array.from({length:5},(_,index)=>pastProblem(year,index+1)));
   const source=record({data:{...baseRecord.data,pastExamProblems:rows}});
   const fresh=buildPastExamCatalog({record:source,sessions:[],attempts:[],exposureOverrides:{}});
-  const plan=buildAdaptivePlannerShadow({record:source,catalog:fresh,weaknesses:[],problems:whitebook,attempts:[],reviews:[],
+  const plan=buildAdaptivePlannerShadow({record:source,catalog:fresh,weaknesses:[repairWeakness],problems:repairWhitebook,attempts:[],reviews:[],
     pastSessions:[],currentTasks:[],today:"2026-08-28",examDate:"2026-11-15",targetMinutes:150});
   const week=plan.plan14.plan.slice(0,7),concrete=week.flatMap(day=>day.tasks)
     .filter(task=>["past_exam","scan5","timed"].includes(task.kind));
-  assert.equal(concrete.every(task=>[2019,2021].some(year=>task.label.startsWith(`${year}年`))),true);
+  assert.equal(concrete.some(task=>task.label.startsWith("2016年")),true);
+  assert.equal(concrete.some(task=>task.label.startsWith("2019年")),false);
+  const timed=concrete.find(task=>task.kind==="timed");
+  assert.equal(timed.minutes,90);assert.equal(timed.pastExamTaskType,"timed_three_question_session");
+  assert.equal(timed.sessionProblemIds.length,5);assert.match(timed.label,/3問timed/);
   const share=rollingPastExamShare(week);
-  assert.ok(share>=.5&&share<=.6,`D79 share=${share}`);
+  assert.ok(share>=.6&&share<=.65,`D79 share=${share}`);
+});
+
+test("D80で2016露出・2017部分露出・2018未露出なら2018 clean sessionを最優先する",()=>{
+  const rows=[2016,2017,2018,2019,2024,2025].flatMap(year=>Array.from({length:5},(_,index)=>pastProblem(year,index+1)));
+  const source=record({data:{...baseRecord.data,pastExamProblems:rows}});
+  const attempts=[{id:1,problem_id:"PY-2016-Q1",date:"2026-08-01",mode:"full"},{id:2,problem_id:"PY-2017-Q1",date:"2026-08-05",mode:"full"}];
+  const currentCatalog=buildPastExamCatalog({record:source,sessions:[],attempts,exposureOverrides:{}});
+  const plan=buildAdaptivePlannerShadow({record:source,catalog:currentCatalog,weaknesses:[repairWeakness],problems:repairWhitebook,
+    attempts,reviews:[],pastSessions:[],currentTasks:[],today:"2026-08-27",examDate:"2026-11-15",targetMinutes:150});
+  const session=plan.plan14.plan.flatMap(day=>day.tasks).find(task=>task.kind==="timed");
+  assert.equal(session.pastExamYear,2018);assert.equal(session.cleanSelectionEvidence,true);
+  assert.equal(session.minutes,90);assert.equal(session.sessionProblemIds.length,5);
+  assert.equal(plan.plan14.plan.flatMap(day=>day.tasks).some(task=>task.minutes===90&&task.pastExamTaskType!=="timed_three_question_session"),false);
+  const share=rollingPastExamShare(plan.plan14.plan.slice(0,7));
+  assert.ok(share>=.6&&share<=.65,`D80 share=${share}`);
 });
 
 test("eligible過去問0件では学習時間に数えないwarningを1件だけ出す",()=>{
@@ -134,16 +160,16 @@ test("残り60日以下で90分演習と過去問比率50%以上を満たす",()
 });
 
 test("exam horizon policy shifts rolling 7-day minutes at D89, D79, D45 and D20",()=>{
-  const buildHorizon=today=>buildAdaptivePlannerShadow({record:expandedRecord,catalog:expandedCatalog,weaknesses:[],
-    problems:whitebook,attempts:[],reviews:[],pastSessions:[],currentTasks:[],today,examDate:"2026-11-15",targetMinutes:150});
+  const buildHorizon=today=>buildAdaptivePlannerShadow({record:expandedRecord,catalog:expandedCatalog,weaknesses:[repairWeakness],
+    problems:repairWhitebook,attempts:[],reviews:[],pastSessions:[],currentTasks:[],today,examDate:"2026-11-15",targetMinutes:150});
   const d89=rollingPastExamShare(buildHorizon("2026-08-18").plan14.plan.slice(0,7));
   const d79=rollingPastExamShare(buildHorizon("2026-08-28").plan14.plan.slice(0,7));
   const d45=rollingPastExamShare(buildHorizon("2026-10-01").plan14.plan.slice(0,7));
   const d20=rollingPastExamShare(buildHorizon("2026-10-26").plan14.plan.slice(0,7));
   assert.ok(d89>=.3&&d89<=.4,`D89 share=${d89}`);
-  assert.ok(d79>=.5&&d79<=.6,`D79 share=${d79}`);
-  assert.ok(d45>=.5&&d45<=.6,`D45 share=${d45}`);
-  assert.ok(d20>=.6,`D20 share=${d20}`);
+  assert.ok(d79>=.6&&d79<=.65,`D79 share=${d79}`);
+  assert.ok(d45>=.6&&d45<=.65,`D45 share=${d45}`);
+  assert.ok(d20>=.7,`D20 share=${d20}`);
   assert.equal(buildHorizon("2026-10-26").plan14.plan.flatMap(day=>day.tasks).some(task=>task.kind==="whitebook"),false);
 });
 

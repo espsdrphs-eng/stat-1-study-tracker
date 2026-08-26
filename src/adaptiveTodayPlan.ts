@@ -75,6 +75,10 @@ export function adaptivePlanDayToTasks(args:{
       plan_origin:"adaptive_planner",
       additional_candidate_key:item.taskKey,
       purpose_label:item.purposeLabel||(item.slot==="score_building"?"得点形成":"維持・選択"),
+      past_exam_task_type:item.pastExamTaskType,
+      past_exam_year:item.pastExamYear,
+      session_problem_ids:item.sessionProblemIds,
+      clean_selection_evidence:item.cleanSelectionEvidence,
     });
   }
   const seen=new Set<string>();

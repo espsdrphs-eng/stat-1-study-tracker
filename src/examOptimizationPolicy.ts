@@ -15,9 +15,9 @@ export function examHorizonPolicy(daysRemaining:number):ExamHorizonPolicy{
     allowNewWhitebook:true,pastExamIsPrimary:false};
   if(daysRemaining>=81)return {phase:"A_and_past_parallel",pastExamShareMin:.3,pastExamShareMax:.4,
     allowNewWhitebook:true,pastExamIsPrimary:false};
-  if(daysRemaining>=31)return {phase:"past_exam_main",pastExamShareMin:.5,pastExamShareMax:.6,
+  if(daysRemaining>=31)return {phase:"past_exam_main",pastExamShareMin:.6,pastExamShareMax:.65,
     allowNewWhitebook:true,pastExamIsPrimary:true};
-  return {phase:"final_stabilization",pastExamShareMin:.6,pastExamShareMax:.9,
+  return {phase:"final_stabilization",pastExamShareMin:.7,pastExamShareMax:.9,
     allowNewWhitebook:false,pastExamIsPrimary:true};
 }
 
@@ -87,7 +87,8 @@ export function currentActionFingerprint(task:Partial<Task>,review?:Partial<Revi
   // Persisted row IDs are generation identity, not learning-action identity.
   // Legacy rows without a logical key fall back to immutable contract content.
   const logical=review?.logical_review_key||task.logical_review_key||review?.grading_contract?.contractHash||review?.contract_hash||"";
-  return [task.problem_id,logical,level,purpose,mode,partKeys(review).join(",")].join("|");
+  const session=[task.past_exam_task_type||"",task.past_exam_year||"",...(task.session_problem_ids||[])].join(":");
+  return [task.problem_id,logical,level,purpose,mode,partKeys(review).join(","),session].join("|");
 }
 
 export function learningEventKind(args:{purpose?:LearningPurpose;timing?:AssessmentTiming;transferEvidence?:boolean;

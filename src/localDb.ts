@@ -2914,7 +2914,7 @@ async function bootstrap():Promise<Bootstrap>{
   };
   const actualMinutes=activeAttempts.filter(attempt=>attempt.date===today&&!attempt.parent_past_session_id).reduce((sum,attempt)=>sum+Math.max(0,Number(attempt.time_minutes||0)),0)
     +pastSessions.filter(session=>String(session.date)===today).reduce((sum,session)=>sum+sessionStudyMinutes(session,activeAttempts),0);
-  const currentToday=deriveCurrentTodayProjection({snapshot,generatedTasks:generatedTriage.tasks,attempts,reviews,today,
+  const currentToday=deriveCurrentTodayProjection({snapshot,generatedTasks:generatedTriage.tasks,attempts,pastSessions,reviews,today,
     aliases:problemAliases,adaptive:plannerMode==="adaptive",hydrateTask:hydrateCurrentTask,
     includeTask:task=>{
       if(task.id&&task.review_type)return true;

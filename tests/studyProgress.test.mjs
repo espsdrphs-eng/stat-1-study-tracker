@@ -13,11 +13,11 @@ const metrics = {
 test("残り日数から4か月用フェーズへ切り替える", () => {
   assert.deepEqual(
     [getExamPhase(120), getExamPhase(80), getExamPhase(45), getExamPhase(20)],
-    ["foundation_to_A", "A_and_past_parallel", "past_exam_main", "final_stabilization"],
+    ["foundation_to_A", "past_exam_main", "past_exam_main", "final_stabilization"],
   );
   assert.deepEqual(
     [phaseForDays(120), phaseForDays(80), phaseForDays(45), phaseForDays(20)],
-    ["foundation", "integration", "past_practice", "final"],
+    ["foundation", "past_practice", "past_practice", "final"],
   );
 });
 

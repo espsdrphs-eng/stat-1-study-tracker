@@ -261,3 +261,21 @@ test("planner audit detects eligible past-exam false negatives and never counts 
   assert.equal(audit.counts.past_exam_share_counted_from_non_exam_task,1);
   assert.ok(audit.activeIssueCount>=4);
 });
+
+test("planner audit rejects one-problem 90-minute work and skipping an older clean year",()=>{
+  const task={taskKey:"bad",date:"2026-08-27",slot:"score_building",kind:"timed",label:"2019年問1",
+    referenceProblemId:"PE-2019-Q01",problemId:"PY-2019-Q1",minutes:90,reason:"3問90分",requiresUserSelection:false,
+    pastExamYear:2019};
+  const plan=Array.from({length:7},(_,index)=>({date:`2026-08-${27+index}`,tasks:index===0?[task]:[],totalMinutes:index===0?90:0}));
+  const summary={days:7,plan,totalMinutes:90,counts:{scoreBuilding:1,repair:0,maintenance:0,scan5:0,full:0,timed:1,
+    pastExam:1,chapter5:0,chapter7:0,chapter8:0},weeklyMinimumViolations:[],dailyCapacityViolations:0,
+    reviewSchedule:{repairBudgetMinutes:0,placements:[],capacityConflicts:[]}};
+  const catalog=[2018,2019].flatMap(year=>Array.from({length:5},(_,index)=>({referenceProblemId:`PE-${year}-Q0${index+1}`,
+    canonicalProblemId:`PY-${year}-Q${index+1}`,year,questionNumber:index+1,title:"past",availability:"verified_problem",
+    schedulable:true,gradable:true,fineConceptIds:[],coarseTopics:[],exposure:"unseen",simulationProtected:false,
+    classificationConfidence:"verified"})));
+  const audit=runIntegrityAudit({attempts:[],reviews:[],today:"2026-08-27",examDate:"2026-11-15",
+    currentPlanSummary:summary,pastExamCatalog:catalog});
+  assert.equal(audit.counts.single_problem_ninety_minute_session,1);
+  assert.equal(audit.counts.clean_scan_year_skipped,1);
+});

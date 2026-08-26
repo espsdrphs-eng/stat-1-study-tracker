@@ -28,6 +28,7 @@ import { EXAM_PHASES } from "./studyProgress";
 import { sheetUsageForPhase, type ExamPhase } from "./examReadiness";
 import { resolveReviewCard, type ResolvedReviewCard } from "./reviewCardResolver";
 import { buildScan5Prompt, deriveExposure, scanMetrics, stageForDays, defaultSessionKind } from "./pastExamWorkflow";
+import {derivePastExamWorkspace} from "./pastExamPlanning.ts";
 import { CHAPTER_META } from "./officialMaster";
 import { isProblemPack, masterDiff, parseAliasesPayload, parseIntegratedMasterPayload, parseProblemMasterPayload } from "./masterData";
 import { isIndexedDbSchemaError, schemaErrorMessage, type IndexedDbSchemaDiagnostic } from "./dbSchema";
@@ -47,7 +48,7 @@ import type { AnswerIndexEntry, Attempt, Bootstrap, CoachDiagnosis, MasteryLevel
 type Page = "dashboard"|"today"|"problems"|"attempt"|"import"|"reviews"|"weak"|"past"|"sheets"|"settings";
 const pageTitles:Record<Page,string> = {
   dashboard:"ダッシュボード",today:"今日やること",problems:"問題一覧",attempt:"手入力（予備）",
-  import:"GPT回答取り込み",reviews:"復習予定",weak:"弱点傾向",past:"過去問分析",sheets:"解答シート",settings:"設定"
+  import:"GPT回答取り込み",reviews:"復習予定",weak:"弱点傾向",past:"過去問演習",sheets:"解答シート",settings:"設定"
 };
 const navGroups = [
   {label:"今日",items:[["dashboard",LayoutDashboard],["today",ListChecks],["reviews",CalendarCheck]]},
@@ -206,8 +207,8 @@ function DashboardView({data,go,select}:{data:Bootstrap;go:(p:Page)=>void;select
     <section className="dashboard-kpi-intro"><div><strong>本番まで {k.support.daysRemaining}日</strong><span>{k.support.phaseLabel}</span></div>
       {data.coach.stale&&<small>GPT診断後に新しい採点 {data.coach.newAttemptCount}件・再レビュー推奨</small>}</section>
     <section className="dashboard-kpi-grid" aria-label="合格判断の主要4指標">
-      <article className="panel dashboard-kpi"><span className="eyebrow">EXAM PERFORMANCE</span><h3>本番対応力</h3><strong>{k.examReadiness.value}</strong><p>{k.examReadiness.detail}</p><small>信頼度：{confidence(k.examReadiness.confidence)}</small></article>
-      <article className="panel dashboard-kpi"><span className="eyebrow">PASS ZONE</span><h3>合格圏</h3><strong>{k.passZone.value}</strong><p>{k.passZone.detail}</p><small>信頼度：{confidence(k.passZone.confidence)}</small></article>
+      <article className="panel dashboard-kpi"><span className="eyebrow">EXAM PERFORMANCE</span><h3>本番対応力</h3><strong>{k.examReadiness.value}</strong><p>{k.examReadiness.detail}</p>{!!k.examReadiness.missingEvidence?.length&&<><small>不足：{k.examReadiness.missingEvidence.join("／")}</small><b className="kpi-next-evidence">評価を進めるには：{k.examReadiness.nextEvidenceAction}</b></>}<small>信頼度：{confidence(k.examReadiness.confidence)}</small></article>
+      <article className="panel dashboard-kpi"><span className="eyebrow">PASS ZONE</span><h3>合格圏</h3><strong>{k.passZone.value}</strong><p>{k.passZone.detail}</p>{!!k.passZone.missingEvidence?.length&&<><small>不足：{k.passZone.missingEvidence.join("／")}</small><b className="kpi-next-evidence">次に測る：{k.passZone.nextEvidenceAction}</b></>}<small>信頼度：{confidence(k.passZone.confidence)}</small></article>
       <article className="panel dashboard-kpi"><span className="eyebrow">BOTTLENECK</span><h3>最大ボトルネック</h3><strong>{k.bottleneck.value}</strong><p>{k.bottleneck.detail}</p><button className="text-btn" onClick={()=>go("weak")}>診断の根拠を見る <ChevronRight size={15}/></button></article>
       <article className="panel dashboard-kpi dashboard-kpi-action"><span className="eyebrow">NEXT ACTION</span><h3>今やること</h3><strong>{k.nextAction.value}</strong><p>{k.nextAction.detail}</p><div className="button-row"><button className="primary" onClick={()=>go("today")}><Play size={17}/>今日の課題へ</button>{nextProblem&&<button className="ghost" onClick={()=>select(nextProblem)}><BookOpen size={17}/>問題を開く</button>}</div></article>
     </section>
@@ -1184,8 +1185,15 @@ function WeakView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:
 
 function PastView({data,go,run,busy}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()=>Promise<unknown>,s:string)=>Promise<boolean>;busy:boolean}) {
   const days=data.dashboard.pace.daysRemaining;
+  const referenceCatalog=data.adaptiveLearning.pastExamCatalog;
+  const plannedReferenceIds=data.adaptiveLearning.plannerShadow.plan30.plan.flatMap(day=>
+    day.tasks.map(task=>task.referenceProblemId).filter((value):value is string=>!!value)
+  );
+  const catalogYears=orderCorePastExamYears({catalog:referenceCatalog,plannedReferenceProblemIds:plannedReferenceIds,daysRemaining:days});
+  const workspace=derivePastExamWorkspace({catalog:referenceCatalog,attempts:data.attempts,pastSessions:data.pastSessions,
+    weaknesses:data.adaptiveLearning.conceptWeaknesses,today:data.dashboard.today,daysRemaining:days});
   const blankQuestions=():ScanQuestion[]=>Array.from({length:5},(_,index)=>({questionLabel:`問${index+1}`,predictedType:"",firstStep:"",predictedScore:null,predictedMinutes:null,sinkRisk:"medium",selected:index<3,selectionReason:"",plannedOrder:index<3?index+1:null,actualScore:null,actualMinutes:null,typeJudgmentCorrect:null,firstStepCorrect:null,sank:null,hintUsed:false,referenceUsed:false,completed:false}));
-  const [session,setSession]=useState<{session_kind:PastExamSessionKind;date:string;year:string;scan_set_source:string;scan_minutes:string;actual_total_minutes:string;selection_strategy:string;selection_change_reason:string;notes:string;answer_exposure:boolean;initial_selected_problem_ids:string[];questions:ScanQuestion[]}>({session_kind:defaultSessionKind(days),date:todayString(),year:"2025",scan_set_source:"past_exam_year",scan_minutes:"10",actual_total_minutes:"",selection_strategy:"",selection_change_reason:"",notes:"",answer_exposure:false,initial_selected_problem_ids:[],questions:blankQuestions()});
+  const [session,setSession]=useState<{session_kind:PastExamSessionKind;date:string;year:string;scan_set_source:string;scan_minutes:string;actual_total_minutes:string;selection_strategy:string;selection_change_reason:string;notes:string;answer_exposure:boolean;initial_selected_problem_ids:string[];questions:ScanQuestion[]}>({session_kind:workspace.recommended?.taskType==="timed_three_question_session"||workspace.recommended?.taskType==="simulation"?"selected_three_timed":defaultSessionKind(days),date:todayString(),year:String(workspace.recommended?.year||catalogYears[0]||""),scan_set_source:"past_exam_year",scan_minutes:"10",actual_total_minutes:"",selection_strategy:"",selection_change_reason:"",notes:"",answer_exposure:false,initial_selected_problem_ids:[],questions:blankQuestions()});
   const [analysisText,setAnalysisText]=useState<Record<number,string>>({});
   const [editingSessionId,setEditingSessionId]=useState<number|null>(null);
   const pastProblems=data.problems.filter(problem=>problem.category==="past_exam");
@@ -1195,18 +1203,12 @@ function PastView({data,go,run,busy}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()
   const pending=data.reviews.filter(review=>
     reviewExecutionState(review,data.dashboard.today)==="actionable"&&pmap.has(review.problem_id));
   const themes=new Set(errorAttempts.map(attempt=>pmap.get(attempt.problem_id)?.theme).filter(Boolean));
-  const referenceCatalog=data.adaptiveLearning.pastExamCatalog;
-  const plannedReferenceIds=data.adaptiveLearning.plannerShadow.plan30.plan.flatMap(day=>
-    day.tasks.map(task=>task.referenceProblemId).filter((value):value is string=>!!value)
-  );
-  const catalogYears=orderCorePastExamYears({
-    catalog:referenceCatalog,plannedReferenceProblemIds:plannedReferenceIds,daysRemaining:days
-  });
   const updateExposure=(problemId:string,exposure:PastExamExposure)=>
     run(()=>post("/api/exam-reference-pack/exposure",{problemId,exposure}),"過去問の露出状態を保存しました");
   const submitSession=async()=>{
     const selectedProblemIds=session.questions.filter(row=>row.selected).map(row=>row.problemId||row.questionLabel);
     const payload={...session,year:Number(session.year),stage:stageForDays(days),scan_minutes:Number(session.scan_minutes||0),actual_total_minutes:Number(session.actual_total_minutes||0),
+      scan_evidence_kind:workspace.candidates.find(row=>row.year===Number(session.year))?.cleanScanEligible?"clean":"practice",
       initial_selected_problem_ids:editingSessionId?session.initial_selected_problem_ids:selectedProblemIds,
       final_selected_problem_ids:editingSessionId?selectedProblemIds:[],
       solve_order:session.questions.filter(row=>row.selected).sort((a,b)=>Number(a.plannedOrder||99)-Number(b.plannedOrder||99)).map(row=>row.problemId||row.questionLabel)};
@@ -1222,16 +1224,17 @@ function PastView({data,go,run,busy}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()
     window.scrollTo({top:0,behavior:"smooth"});
   };
   return <>
+    <section className="panel past-workspace-next"><div><span className="eyebrow">NEXT PAST-EXAM SESSION</span><h2>次の推奨過去問session</h2>{workspace.recommended?<><strong>{workspace.recommended.year}年・{workspace.recommended.label}</strong><p>{workspace.recommended.workflow}</p><small>{workspace.recommended.clean?"clean selection evidenceとして記録できます":"practice scanとして扱い、clean指標とは分離します"}</small></>:<p>{workspace.warning}</p>}</div>{workspace.recommended&&<button className="primary" onClick={()=>{setSession({...session,year:String(workspace.recommended!.year),session_kind:workspace.recommended!.taskType==="timed_three_question_session"||workspace.recommended!.taskType==="simulation"?"selected_three_timed":"scan_only",questions:blankQuestions()});document.getElementById("past-session-form")?.scrollIntoView({behavior:"smooth"})}}><Play size={17}/>開始</button>}</section>
     <section className="past-analysis-intro">
-      <div><span className="eyebrow">PAST EXAM WORKFLOW</span><h2>5問を見て、得点できる3問を選ぶ</h2><p>スキャン判断は通常答案のK/W/N/Cと分離します。実際に解いた問題だけをGPT採点へ接続し、未解答問題は0点にしません。</p></div>
+      <div><span className="eyebrow">PAST EXAM WORKSPACE</span><h2>過去問演習</h2><p>scan5 → 3問選択 → 答案 → 採点を一つの本番型workflowとして記録します。未解答問題は0点にしません。</p></div>
       <button className="primary" onClick={()=>go("import")}><ClipboardPaste size={17}/>解いた問題をGPT採点</button>
     </section>
-    <div className="past-analysis-metrics">
+    <details className="panel past-analytics-detail"><summary>詳細分析</summary><div className="past-analysis-metrics">
       <Metric label="取り込み済み" value={attempts.length} unit="件" hint="過去問の採点履歴"/>
       <Metric label="要復習" value={errorAttempts.length} unit="件" hint="K/W/N/Cあり" tone={errorAttempts.length?"amber":""}/>
       <Metric label="復習待ち" value={pending.length} unit="件" hint="過去問の未完了予定"/>
       <Metric label="苦手テーマ" value={themes.size} unit="件" hint="失点したテーマ"/>
-    </div>
+    </div></details>
     <details className="panel reference-catalog-panel">
       <summary>正規化済み過去問カタログと露出状態</summary>
       {!data.adaptiveLearning.referencePack.installed?<Empty>設定画面で参照パックを照合してください</Empty>:<>
@@ -1241,7 +1244,7 @@ function PastView({data,go,run,busy}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()
           <span>concept <strong>{data.adaptiveLearning.referencePack.counts.concepts}件</strong></span>
           <span>白本候補 <strong>{data.adaptiveLearning.referencePack.counts.whitebookLinks}件</strong></span>
         </div>
-        <p>2016〜2018年は実物未提供のため表示専用で、通常計画・採点・模試へ入りません。unknownはunseenとして扱いません。</p>
+        <p>2016〜2023年はtraining pool、2024・2025年はsimulation holdoutです。明示的な露出履歴は保持し、Attemptもsessionもない検証済み素材だけを未見候補として扱います。</p>
         <div className="reference-year-list">{catalogYears.map(year=><details key={year}><summary>{year}年（{referenceCatalog.filter(row=>row.year===year).length}問）</summary>
           {referenceCatalog.filter(row=>row.year===year).map(row=><div className="reference-question-row" key={row.referenceProblemId}>
             <div><strong>{year}年問{row.questionNumber}</strong><span>{row.title}</span>
@@ -1253,7 +1256,7 @@ function PastView({data,go,run,busy}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()
         </details>)}</div>
       </>}
     </details>
-    <details className="panel past-session-quick" open><summary>{editingSessionId?"5問スキャンの事後結果を入力":"5問スキャンを開始"}</summary><form className="scan5-form" onSubmit={event=>{event.preventDefault();void submitSession()}}>
+    <details className="panel past-session-quick" id="past-session-form" open><summary>{editingSessionId?"5問スキャンの事後結果を入力":"演習形式を選ぶ"}</summary><form className="scan5-form" onSubmit={event=>{event.preventDefault();void submitSession()}}>
       <div className="form-grid"><Field label="形式"><select value={session.session_kind} onChange={event=>setSession({...session,session_kind:event.target.value as PastExamSessionKind})}><option value="scan_only">scan only</option><option value="scan_plus_one">scan＋1問</option><option value="selected_three_timed">3問90分</option><option value="retrospective_review">事後レビュー</option></select></Field>
       <Field label="実施日"><input type="date" value={session.date} onChange={event=>setSession({...session,date:event.target.value})}/></Field>
       <Field label="年度"><select value={session.year} onChange={event=>setSession({...session,year:event.target.value})}>{catalogYears.map(year=><option key={year} value={year}>{year}</option>)}</select></Field>

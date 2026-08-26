@@ -31,16 +31,25 @@ test("古いcoachより十分なtimed客観deficitを優先し、n=1では断定
   assert.equal(enough.bottleneck.source,"timed_evidence");
 });
 
-test("本番証拠0件は0%ではなく測定中・判定材料不足になる",()=>{
+test("本番証拠0件は0%ではなく不足証拠と次の測定行動を示す",()=>{
   const result=deriveDashboardKpis(base({coach:{...coach(),source:"local_provisional"}}));
-  assert.equal(result.examReadiness.value,"測定中");
+  assert.equal(result.examReadiness.value,"本番証拠を蓄積中");
   assert.equal(result.passZone.value,"判定材料不足");
   assert.match(result.examReadiness.detail,/未計測/);
+  assert.ok(result.examReadiness.missingEvidence.length);
+  assert.match(result.examReadiness.nextEvidenceAction,/完全未見年度/);
 });
 
 test("transfer成功はKPI証拠へ反映するが局所証拠だけで本番対応力を確定しない",()=>{
   const concepts=[{transferSuccesses:2,distinctProblemCount:1,independentFailures:0,priorityScore:0}];
   const result=deriveDashboardKpis(base({coach:{...coach(),source:"local_provisional"},concepts}));
-  assert.equal(result.examReadiness.value,"測定中");assert.equal(result.examReadiness.evidenceCount,2);
+  assert.equal(result.examReadiness.value,"本番証拠を蓄積中");assert.equal(result.examReadiness.evidenceCount,2);
   assert.match(result.examReadiness.detail,/転移成功 2件/);
+});
+
+test("scanだけ保存済みなら選題精度0%ではなく選択3問の採点待ちを示す",()=>{
+  const result=deriveDashboardKpis(base({coach:{...coach(),source:"local_provisional"},readiness:readiness({
+    sampleSizes:{unseen:0,timed:0,scans:0,selectionPending:1,pastExams:0,kReviews:0,wReviews:0}})}));
+  assert.equal(result.examReadiness.missingEvidence.includes("選択した3問の採点"),true);
+  assert.match(result.examReadiness.nextEvidenceAction,/3問を採点/);
 });

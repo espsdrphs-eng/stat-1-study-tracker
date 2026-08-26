@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import "fake-indexeddb/auto";
 import {buildGradingContractSnapshot,taskFieldsFromContract} from "../src/gradingContract.ts";
+import {retentionWindow} from "../src/examOptimizationPolicy.ts";
+import {daysUntilExam} from "../src/studyProgress.ts";
 
 const {db,localGet,localPost}=await import("../src/localDb.ts");
 
@@ -46,8 +48,11 @@ test("in-scope retrieval graduation and a major out-of-scope Level 2 future rete
   assert.equal(active[0].learning_purpose,"retrieval_check");
   assert.equal(active[0].assessment_timing,"delayed_retrieval");
   assert.equal(active[0].correction_provided,true);
-  assert.equal(active[0].earliest_date,"2026-08-21");
-  assert.equal(active[0].latest_date,"2026-08-25");
+  const today=new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Tokyo",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
+  const expectedWindow=retentionWindow({sourceDate:"2026-08-18",daysRemaining:daysUntilExam(today,"2026-11-15"),
+    masteryLevel:2,failureStrength:"standard"});
+  assert.equal(active[0].earliest_date,expectedWindow.earliestDate);
+  assert.equal(active[0].latest_date,expectedWindow.latestDate);
   const bootstrap=await localGet("/api/bootstrap");
   assert.equal(bootstrap.masteryByProblem[problemId].levels[0].status,"retained");
   assert.equal(bootstrap.masteryByProblem[problemId].levels[1].status,"retention_pending");
