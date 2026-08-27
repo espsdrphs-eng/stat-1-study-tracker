@@ -448,6 +448,7 @@ export type DashboardKpiValue={
   value:string;detail:string;source:string;evidenceCount:number;freshness:"current"|"stale"|"measuring";
   confidence:DashboardKpiConfidence;updatedAt:string;
   missingEvidence?:string[];nextEvidenceAction?:string;
+  evidenceReasons?:string[];nextEvidenceActions?:string[];meaning?:string;
 };
 export type DashboardKpiProjection={
   examReadiness:DashboardKpiValue;passZone:DashboardKpiValue;bottleneck:DashboardKpiValue;

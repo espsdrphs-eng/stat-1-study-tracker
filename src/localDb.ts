@@ -24,7 +24,7 @@ import { analyzeLegacyKReorganization } from "./legacyKRepair.ts";
 import { classifyKPolicyValidity, excludeLegacyKFromPlanning, planningErrorsForSource } from "./legacyKPolicy.ts";
 import { analyzeSourceMismatchRepair, resolveReviewOrigin, REVIEW_ORIGIN_POLICY_VERSION } from "./reviewOrigin.ts";
 import { normalizePastExamSession, parseScan5Update, sessionStudyMinutes, validatePastExamSession } from "./pastExamWorkflow.ts";
-import { auditLegacyReviewContracts, buildGradingContractSnapshot, buildProblemContextPack, computeContractHash, contractDifferences, prescriptionFromContract, repairTargets, taskFieldsFromContract } from "./gradingContract.ts";
+import { auditLegacyReviewContracts, buildGradingContractSnapshot, buildInitialGradingContract, buildProblemContextPack, computeContractHash, contractDifferences, prescriptionFromContract, repairTargets, taskFieldsFromContract } from "./gradingContract.ts";
 import { primaryErrorFromFindings, validateGradedFindings } from "./gradedParts.ts";
 import {
   addCalendarDays, auditReviewSchedules, differenceInCalendarDays, pendingReviewIdentityKey, resolveReviewSchedule,
@@ -1027,14 +1027,33 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     const sourceState=reviewExecutionState(sourceReview,todayString());
     if(sourceState!=="actionable")throw new Error(reviewExecutionMessage(sourceState,sourceReview));
   }
-  if(sourceReview?.grading_contract){
+  const requestedContractId=String(input.contract_id||"");
+  const requestedInitialContract=requestedContractId.startsWith(`initial:${problem.problem_id}:`);
+  if(!sourceReview&&requestedContractId&&!requestedInitialContract)
+    throw new Error("Review採点契約には対象Reviewが必要です。現在の採点プロンプトを再生成してください");
+  if(requestedInitialContract){
+    const [existingAttempts,existingReviews]=await Promise.all([
+      db.attempts.where("problem_id").equals(problem.problem_id).toArray(),
+      db.reviews.where("problem_id").equals(problem.problem_id).toArray(),
+    ]);
+    const hasCurrentAttempt=existingAttempts.some(row=>!row.exclude_from_planning&&!row.exclude_from_metrics&&
+      !row.duplicate_of_attempt_id&&!row.invalidated_at&&!row.superseded_by_attempt_id);
+    const hasCurrentReview=existingReviews.some(row=>reviewExecutionState(row,todayString())==="actionable");
+    if(hasCurrentAttempt||hasCurrentReview)
+      throw new Error("初回採点契約は現在の初回答案にだけ使用できます。現在のReviewまたは差し替え用プロンプトを使用してください");
+  }
+  const initialContract=requestedInitialContract
+    ?buildInitialGradingContract({problem,mode:String(input.mode||problem.recommended_mode),createdAt:String(input.date||todayString())})
+    :undefined;
+  const gradingContract=sourceReview?.grading_contract||initialContract;
+  if(gradingContract){
     const supplied={
       contractId:String(input.contract_id||""),contractVersion:String(input.contract_version||""),
       contractHash:String(input.contract_hash||""),problemId:String(input.problem_id||""),
-      learningPurpose:input.learning_purpose,mode:input.mode as "check"|"skeleton"|"main_calc"|"full"|"scan5",reviewScope:input.review_scope,
+      learningPurpose:input.learning_purpose,mode:initialContract?.mode||(input.mode as "check"|"skeleton"|"main_calc"|"full"|"scan5"),reviewScope:input.review_scope,
       targetKind:input.target_kind,gradedParts:input.graded_part_ids||input.graded_parts||[],
     };
-    const differences=contractDifferences(sourceReview.grading_contract,supplied);
+    const differences=contractDifferences(gradingContract,supplied);
     if(differences.length){
       const detail=differences.map(row=>`${String(row.field)}: 画面=${JSON.stringify(row.expected)} / GPT=${JSON.stringify(row.actual)}`).join("\n");
       throw new Error(`画面に表示した課題とGPT採点範囲が一致しません。\n${detail}`);
@@ -1043,12 +1062,12 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     if(!findings.length){
       const errors=(input.error_types||[]).filter(Boolean);
       if(errors.length===0||errors.every(error=>error==="none")){
-        findings=sourceReview.grading_contract.gradedParts.map(part=>({
+        findings=gradingContract.gradedParts.map(part=>({
           graded_part_id:part.id,error_type:"none" as const,evidence:"大きな問題なし",resolved:true
         }));
-      }else if(sourceReview.grading_contract.gradedParts.length===1){
+      }else if(gradingContract.gradedParts.length===1){
         findings=[{
-          graded_part_id:sourceReview.grading_contract.gradedParts[0].id,
+          graded_part_id:gradingContract.gradedParts[0].id,
           error_type:(input.primary_error_type||errors[0]) as "K"|"W"|"N"|"C"|"none",
           evidence:String(input.error_point||input.result_summary||""),resolved:false
         }];
@@ -1056,14 +1075,14 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
         throw new Error("採点項目が複数あるため、graded_findingsを含む現行プロンプトで再採点してください。");
       }
     }
-    const findingErrors=validateGradedFindings(sourceReview.grading_contract.gradedParts,findings);
+    const findingErrors=validateGradedFindings(gradingContract.gradedParts,findings);
     if(findingErrors.length){
       const detail=findingErrors.map(row=>`${row.gradedPartId}: ${row.reason}（GPT=${row.errorType}）`).join("\n");
       throw new Error(`画面に表示した課題とGPT採点範囲が一致しません。\n${detail}`);
     }
     const primary=primaryErrorFromFindings(findings);
     const errors=[...new Set(findings.filter(finding=>!finding.resolved).map(finding=>finding.error_type))];
-    input={...input,graded_findings:findings,graded_part_ids:sourceReview.grading_contract.gradedParts.map(part=>part.id),
+    input={...input,graded_findings:findings,graded_part_ids:gradingContract.gradedParts.map(part=>part.id),
       primary_error_type:primary,error_type:primary,error_types:errors.length?errors:["none"]};
   }
   if(sourceReview){
@@ -1146,7 +1165,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     auto_corrected:!!input.auto_corrected,correction_fields:input.correction_fields||[],
     correction_reason:input.correction_reason||"",consistency_score:input.consistency_score
     ,learning_purpose:learningPurpose
-    ,learning_stage:input.learning_stage||sourceReview?.grading_contract?.learningStage||(examEligibility.eligible?"performance":input.generated_from_review_id?"repair":"acquisition")
+    ,learning_stage:input.learning_stage||gradingContract?.learningStage||(examEligibility.eligible?"performance":input.generated_from_review_id?"repair":"acquisition")
     ,assessment_timing:assessmentTiming,task_score:taskScoreForAttempt(scoreCandidate),exam_score:examEligibility.examScore
     ,exam_score_eligible:examEligibility.eligible,time_limit_minutes:examEligibility.timeLimitMinutes||undefined
     ,conclusion_reached:input.conclusion_reached,incomplete_reason:input.incomplete_reason
@@ -1162,7 +1181,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
      ,replacement_reason:input.replacement_reason
      ,learning_event_kind:learningEventKind({purpose:learningPurpose,timing:assessmentTiming,
        transferEvidence:!!input.transfer_evidence,isAssessment:!input.generated_from_review_id})
-     ,grading_contract:sourceReview?.grading_contract,explicitly_out_of_scope_parts:input.explicitly_out_of_scope_parts||[]
+     ,grading_contract:gradingContract,explicitly_out_of_scope_parts:input.explicitly_out_of_scope_parts||[]
      ,submission_id:submissionId,source_review_id:input.generated_from_review_id,saved_at:new Date().toISOString()
      ,exclude_from_metrics:false
    }));

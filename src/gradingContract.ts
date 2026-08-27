@@ -107,6 +107,56 @@ export function validateGradingContract(contract:GradingContractSnapshot){
   return errors;
 }
 
+export function initialGradingContractMode(mode?:string):GradingContractSnapshot["mode"]{
+  if(mode==="exam_90min"||mode==="timed_single"||mode==="past_exam")return "full";
+  if(["check","skeleton","main_calc","full"].includes(String(mode)))return mode as GradingContractSnapshot["mode"];
+  return "full";
+}
+
+/** Immutable, Review-free contract for a problem's first formally graded answer. */
+export function buildInitialGradingContract(args:{problem:Problem;mode?:string;createdAt?:string}){
+  const mode=initialGradingContractMode(args.mode||args.problem.recommended_mode);
+  const part=(id:string,label:string,cueLabel:string,criterion:string,allowedErrorTypes:Array<"K"|"W"|"N"|"C"|"none">,
+    masteryLevel:1|2)=>({id,label,cueLabel,completionCriterionId:criterion,allowedErrorTypes,
+      stableTargetKey:`target:${args.problem.problem_id}:slot:${id}`,masteryLevel});
+  const level1=[
+    part("problem_type","問題の型","型","identify_problem_type",["K","N","C","none"],1),
+    part("first_step","最初の一手","初手","choose_first_step",["K","W","N","C","none"],1),
+    part("focal_quantity","主役となる量","主役の量","identify_focal_quantity",["K","N","C","none"],1),
+    part("critical_condition","重要条件または注意点","重要条件","track_critical_condition",["K","W","N","C","none"],1),
+  ];
+  const level2=[
+    part("major_calculation","主要計算の完遂","主要計算","complete_major_calculation",["K","W","N","C","none"],2),
+    part("answer_conclusion","結論への到達","結論","reach_requested_conclusion",["W","N","C","none"],2),
+  ];
+  const gradedParts=mode==="check"||mode==="skeleton"?level1:mode==="main_calc"?[...level2]:[...level1,...level2];
+  const reviewScope:GradingContractSnapshot["reviewScope"]=mode==="check"?"check_only":mode==="skeleton"?"full_skeleton":
+    mode==="main_calc"?"main_calc_target":"full_answer";
+  const sheetType:GradingContractSnapshot["sheetType"]=mode==="check"?"check_sheet":mode==="skeleton"?"skeleton_sheet":
+    mode==="main_calc"?"main_calc_sheet":"full_answer_sheet";
+  const isPastExam=args.problem.category==="past_exam"||args.problem.source_type==="past_exam";
+  const learningPurpose:LearningPurpose=isPastExam||mode==="full"||mode==="check"?"exam_performance":"integration_check";
+  const completionCriteria=gradedParts.map(row=>({id:row.completionCriterionId,displayText:`${row.label}を今回の答案で確認できた`}));
+  const explicitlyOutOfScopeParts=mode==="check"||mode==="skeleton"?["主要計算の完遂","最終結論"]:mode==="main_calc"?
+    ["採点対象として指定していない問題全体の説明"]:[];
+  const payload={
+    contractVersion:GRADING_CONTRACT_VERSION,problemId:args.problem.problem_id,
+    learningPurpose,learningStage:isPastExam||mode==="full"?"performance" as const:"acquisition" as const,
+    mode,reviewScope,targetedParts:gradedParts.map(row=>row.label),gradedParts,
+    explicitlyOutOfScopePartIds:explicitlyOutOfScopeParts.map(value=>`out_${hashText(value)}`),explicitlyOutOfScopeParts,
+    completionCriteria,hiddenAnswerKey:[],completionConditions:completionCriteria.map(row=>row.displayText),
+    requiredEvidence:gradedParts.map(row=>row.label),allowedErrorTypes:["K","W","N","C"],requiresKEvidence:true,
+    allowedReferenceLevel:0,estimatedMinutes:mode==="check"?5:mode==="skeleton"?15:mode==="main_calc"?25:35,sheetType,
+  } satisfies Omit<GradingContractSnapshot,"contractHash"|"contractId"|"createdAt">;
+  const contractHash=computeContractHash(payload);
+  const contract:GradingContractSnapshot={...payload,
+    contractId:`initial:${args.problem.problem_id}:${mode}:${contractHash.slice(3)}`,
+    contractHash,createdAt:args.createdAt||new Date().toISOString()};
+  const errors=validateGradingContract(contract);
+  if(errors.length)throw new Error(`初回採点契約を生成できません: ${errors.join(" / ")}`);
+  return contract;
+}
+
 export function buildGradingContractSnapshot(args:{
   review:Partial<Review&Task>;problem?:Problem;sourceAttempt?:Attempt;createdAt?:string;
 }):ContractBuildResult{

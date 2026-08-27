@@ -38,6 +38,17 @@ test("本番証拠0件は0%ではなく不足証拠と次の測定行動を示�
   assert.match(result.examReadiness.detail,/未計測/);
   assert.ok(result.examReadiness.missingEvidence.length);
   assert.match(result.examReadiness.nextEvidenceAction,/完全未見年度/);
+  assert.equal(result.passZone.evidenceReasons.length,3);
+  assert.ok(result.passZone.nextEvidenceActions.length>0);
+  assert.match(result.passZone.meaning,/本番形式の実測/);
+});
+
+test("本番合格判定は判定済みでも根拠と次の行動を常に返す",()=>{
+  const result=deriveDashboardKpis(base({coach:coach("制約追跡")}));
+  assert.equal(result.passZone.value,"境界圏");
+  assert.deepEqual(result.passZone.evidenceReasons.slice(0,2),["過去問得点 未計測","時間内完遂 未計測"]);
+  assert.ok(result.passZone.nextEvidenceActions.length>0);
+  assert.match(result.passZone.meaning,/再現がまだ不安定/);
 });
 
 test("transfer成功はKPI証拠へ反映するが局所証拠だけで本番対応力を確定しない",()=>{

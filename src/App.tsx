@@ -14,7 +14,7 @@ import { problemDisplayLabel } from "./importParser";
 import { createAttemptReviewPlan } from "./reviewRules";
 import { analyzeWeakTrends, buildQuizPrompt } from "./weakTrend";
 import { buildAttemptReplacementGradingPrompt, buildFirstAttemptGradingPrompt, buildRepairPrompt, buildReviewGradingPrompt, buildWholeAnswerRediagnosisPrompt } from "./gradingPrompt";
-import { buildProblemContextPack } from "./gradingContract.ts";
+import { buildInitialGradingContract, buildProblemContextPack } from "./gradingContract.ts";
 import {shouldShowReviewPrompt} from "./reviewUiPolicy.ts";
 import { reviewMode, reviewTemplate } from "./reviewPresentation";
 import {
@@ -43,7 +43,7 @@ import {
   orderCorePastExamYears, parseExamReferencePack, reconcileExamReferencePack,
   type ExamReferencePackData, type ReferencePackReconciliation, type ReferencePackValidation
 } from "./examReferencePack";
-import type { AnswerIndexEntry, Attempt, Bootstrap, CoachDiagnosis, MasteryLevelState, PastExamExposure, PastExamSessionKind, PastSession, Problem, ProblemAlias, Review, ScanQuestion, StudyUpdate, Task } from "./types";
+import type { AnswerIndexEntry, Attempt, Bootstrap, CoachDiagnosis, DashboardKpiValue, MasteryLevelState, PastExamExposure, PastExamSessionKind, PastSession, Problem, ProblemAlias, Review, ScanQuestion, StudyUpdate, Task } from "./types";
 
 type Page = "dashboard"|"today"|"problems"|"attempt"|"import"|"reviews"|"weak"|"past"|"sheets"|"settings";
 const pageTitles:Record<Page,string> = {
@@ -195,6 +195,19 @@ function readinessValue(value:number|null,sample:number,unit="%"){
   if(value==null) return {value:"未計測",hint:"対象0件",unit:""};
   return {value,unit,hint:`対象${sample}件`};
 }
+function PassJudgementContent({value}:{value:DashboardKpiValue}){
+  const reasons=(value.evidenceReasons||[]).slice(0,3),actions=(value.nextEvidenceActions||[]).slice(0,2);
+  return <>
+    <strong>{value.value}</strong><p>{value.detail}</p>
+    <div className="pass-judgement-evidence"><b>判定根拠</b><ul>{reasons.map(row=><li key={row}>{row}</li>)}</ul></div>
+    <div className="pass-judgement-actions"><b>次に必要な証拠 / 行動</b><ul>{actions.map(row=><li key={row}>{row}</li>)}</ul></div>
+    <details className="pass-judgement-meaning"><summary>この判定の意味</summary><p>{value.meaning}</p><ul>
+      <li>判定材料不足：本番形式の実測が足りない</li><li>ボーダー手前：既習能力はあるが本番再現性が不足</li>
+      <li>ボーダー域：合格点へ届く可能性はあるが再現が不安定</li><li>合格圏：複数の本番形式で必要点を再現</li>
+      <li>安定合格圏：複数年度・複数sessionで余裕を持って再現</li>
+    </ul></details>
+  </>;
+}
 function DashboardView({data,go,select}:{data:Bootstrap;go:(p:Page)=>void;select:(p:Problem)=>void}) {
   const d=data.dashboard;
   const pmap=Object.fromEntries(data.problems.map(problem=>[problem.problem_id,problem]));
@@ -208,7 +221,7 @@ function DashboardView({data,go,select}:{data:Bootstrap;go:(p:Page)=>void;select
       {data.coach.stale&&<small>GPT診断後に新しい採点 {data.coach.newAttemptCount}件・再レビュー推奨</small>}</section>
     <section className="dashboard-kpi-grid" aria-label="合格判断の主要4指標">
       <article className="panel dashboard-kpi"><span className="eyebrow">EXAM PERFORMANCE</span><h3>本番対応力</h3><strong>{k.examReadiness.value}</strong><p>{k.examReadiness.detail}</p>{!!k.examReadiness.missingEvidence?.length&&<><small>不足：{k.examReadiness.missingEvidence.join("／")}</small><b className="kpi-next-evidence">評価を進めるには：{k.examReadiness.nextEvidenceAction}</b></>}<small>信頼度：{confidence(k.examReadiness.confidence)}</small></article>
-      <article className="panel dashboard-kpi"><span className="eyebrow">PASS ZONE</span><h3>合格圏</h3><strong>{k.passZone.value}</strong><p>{k.passZone.detail}</p>{!!k.passZone.missingEvidence?.length&&<><small>不足：{k.passZone.missingEvidence.join("／")}</small><b className="kpi-next-evidence">次に測る：{k.passZone.nextEvidenceAction}</b></>}<small>信頼度：{confidence(k.passZone.confidence)}</small></article>
+      <article className="panel dashboard-kpi dashboard-pass-judgement"><span className="eyebrow">PASS JUDGEMENT</span><h3>本番合格判定</h3><PassJudgementContent value={k.passZone}/><small>信頼度：{confidence(k.passZone.confidence)}</small></article>
       <article className="panel dashboard-kpi"><span className="eyebrow">BOTTLENECK</span><h3>最大ボトルネック</h3><strong>{k.bottleneck.value}</strong><p>{k.bottleneck.detail}</p><button className="text-btn" onClick={()=>go("weak")}>診断の根拠を見る <ChevronRight size={15}/></button></article>
       <article className="panel dashboard-kpi dashboard-kpi-action"><span className="eyebrow">NEXT ACTION</span><h3>今やること</h3><strong>{k.nextAction.value}</strong><p>{k.nextAction.detail}</p><div className="button-row"><button className="primary" onClick={()=>go("today")}><Play size={17}/>今日の課題へ</button>{nextProblem&&<button className="ghost" onClick={()=>select(nextProblem)}><BookOpen size={17}/>問題を開く</button>}</div></article>
     </section>
@@ -785,6 +798,9 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport}:{problem:Problem;
   const [replacing,setReplacing]=useState<Attempt|null>(null);
   const [rediagnosisText,setRediagnosisText]=useState("");
   const [rediagnosisPreview,setRediagnosisPreview]=useState<any>(null);
+  const [initialMode,setInitialMode]=useState(problem.category==="past_exam"?"full":problem.recommended_mode||"full");
+  const [initialPromptCopied,setInitialPromptCopied]=useState(false);
+  useEffect(()=>{setInitialMode(problem.category==="past_exam"?"full":problem.recommended_mode||"full");setInitialPromptCopied(false)},[problem.problem_id]);
   const canonicalId=resolveCanonicalProblemId(problem.problem_id,data.problemAliases);
   const attempts=data.attempts.filter(a=>resolveCanonicalProblemId(a.problem_id,data.problemAliases)===canonicalId);
   const validAttempts=attempts.filter(attempt=>attemptConsistentForDisplay(attempt,problem)&&
@@ -797,6 +813,18 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport}:{problem:Problem;
       aliases:data.problemAliases,answers:data.answerIndex,today:data.dashboard.today,examDate:data.settings.exam_date})
   }));
   const latest=validAttempts[0],nextReview=currentReviewCards[0]?.review;
+  const isCompletelyFirst=attempts.length===0&&reviewSelection.current.length===0&&reviewSelection.history.length===0;
+  const initialContract=isCompletelyFirst?buildInitialGradingContract({problem,mode:initialMode}):undefined;
+  const initialProblemContext=isCompletelyFirst?buildProblemContextPack({
+    problemId:problem.problem_id,problems:data.problems,aliases:data.problemAliases,answers:data.answerIndex,
+    attempts:data.attempts,reviews:data.reviews,
+  }):undefined;
+  const initialPrompt=initialContract?buildFirstAttemptGradingPrompt({
+    problemId:problem.problem_id,displayLabel:problemDisplayLabel(problem),theme:problem.theme,
+    canonicalProblemType:problem.canonical_problem_type,mode:initialMode,estimatedMinutes:initialContract.estimatedMinutes,
+    gradingContract:initialContract,problemContext:initialProblemContext,
+  }):"";
+  const copyInitialPrompt=async()=>{await navigator.clipboard.writeText(initialPrompt);setInitialPromptCopied(true);setTimeout(()=>setInitialPromptCopied(false),1800)};
   const mastery=data.masteryByProblem[canonicalId]||data.masteryByProblem[problem.problem_id];
   const related=problem.related_s_problem_ids?.length?problem.related_s_problem_ids:String(problem.linked_s_problems||"").split(";").filter(Boolean);
   const editAttempt=(attempt:Attempt)=>{
@@ -840,6 +868,11 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport}:{problem:Problem;
     setRediagnosing(null);setRediagnosisPreview(null);setRediagnosisText("");return result;
   },"元の採点を保持して、答案全体の追加診断だけを更新しました");};
   return <><button className="back" onClick={onBack}>← 問題一覧へ</button><div className="detail-hero"><div><div className="detail-badges"><Badge tone={problem.category==="S"?"blue":""}>原典 {problem.category}</Badge>{problem.strategy_rank&&<Badge tone={problem.strategy_rank==="SS"?"red":problem.strategy_rank==="A+"?"orange":""}>実戦 {problem.strategy_rank}</Badge>}</div><h2>{problemDisplayLabel(problem)}</h2><p>{problem.problem_id} ・ {problem.theme}</p></div><button className="primary" onClick={onImport}><ClipboardPaste size={17}/>GPT採点結果を取り込む</button></div>
+    {isCompletelyFirst&&<section className="panel initial-grading-panel"><div><span className="eyebrow">FIRST ATTEMPT</span><h3>この問題は初回です</h3><p>まず参照なしで解答してください。Reviewを作らず、problem masterと選択モードから初回採点契約を生成します。</p></div>
+      <label>採点モード<select value={initialMode} onChange={event=>setInitialMode(event.target.value)}>
+        <option value="skeleton">骨格</option><option value="main_calc">主要計算</option><option value="full">フル答案</option>
+      </select></label><div className="button-row"><button className="primary" onClick={copyInitialPrompt}><Copy size={16}/>{initialPromptCopied?"コピーしました":"初回採点プロンプトをコピー"}</button><button className="ghost" onClick={onImport}><ClipboardPaste size={16}/>GPT回答取り込みへ</button></div>
+      <small>初回採点の保存後、major failureがある場合だけ必要なReviewを生成します。過去問scan_onlyは過去問演習のscan workflowを使用します。</small></section>}
     {mastery&&<section className="panel problem-mastery"><div className="panel-title"><div><span className="eyebrow">CURRENT MASTERY</span><h3>現在地　Level {mastery.currentLevel} / 3　{mastery.currentTitle}</h3></div><Badge tone={mastery.normalReviewComplete?"blue":"orange"}>{mastery.normalReviewComplete?"通常復習なし":`現在の復習 ${mastery.activeTargetCount} target`}</Badge></div><MasteryLevels levels={mastery.levels}/></section>}
     {latest&&<section className="panel latest-result"><div><span>最新評価</span><strong>{latest.score_text||latest.score_label} {latest.score_numeric!=null?`/ ${latest.score_numeric}点`:""} / {latest.mark}</strong></div><div><span>K/W/N/C</span><strong>{latest.error_types?.join(" + ")||latest.error_type}</strong></div><div><span>次回復習</span><strong>{nextReview?.due_date||"—"}</strong></div></section>}
     {(latest?.corrected_answer||latest?.required_derivation||latest?.improvement_guidance)&&<details className="panel answer-feedback compact-feedback"><summary>GPTの修正版答案・途中計算を確認</summary><div className="feedback-body">
@@ -1050,6 +1083,7 @@ type CoachPreviewResult={next:CoachDiagnosis;diff:{level:string;unchanged:boolea
 function CoachPanel({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean}){
   const coach=data.coach,diagnosis=coach.display;
   const currentBottleneck=data.dashboard.kpis?.bottleneck;
+  const passJudgement=data.dashboard.kpis?.passZone;
   const masteryRows=Object.values(data.masteryByProblem);
   const masteryCounts=[1,2,3].map(level=>masteryRows.filter(row=>row.currentLevel===level).length);
   const [copied,setCopied]=useState(false),[text,setText]=useState(""),[error,setError]=useState<{message:string;stage?:string;path?:string;reason?:string}|null>(null);
@@ -1068,6 +1102,7 @@ function CoachPanel({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,
         {coach.stale&&<div className="coach-stale"><AlertTriangle size={17}/><strong>前回診断後に新しい採点 {coach.newAttemptCount}件・再レビュー推奨</strong></div>}
       </div>
     </section>
+    {passJudgement&&<section className="panel coach-pass-judgement"><div className="panel-title"><div><span className="eyebrow">PASS JUDGEMENT</span><h3>本番合格判定</h3></div><Badge tone={passJudgement.confidence==="high"?"green":passJudgement.confidence==="medium"?"orange":""}>信頼度 {coachConfidenceText(passJudgement.confidence)}</Badge></div><PassJudgementContent value={passJudgement}/></section>}
     <section className="coach-summary-grid">
       <article className="panel coach-bottleneck"><span className="eyebrow">PRIMARY BOTTLENECK</span><h3>最大ボトルネック</h3><strong>{currentBottleneck?.value||diagnosis.primaryBottleneck.title}</strong>
         <p>{currentBottleneck?.detail||diagnosis.primaryBottleneck.explanation}</p><small>{diagnosis.primaryBottleneck.effectOnExam}</small>

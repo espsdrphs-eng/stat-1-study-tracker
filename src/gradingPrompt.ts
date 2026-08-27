@@ -32,6 +32,8 @@ export type FirstAttemptPromptContext={
   canonicalProblemType?:string;
   mode?:string;
   estimatedMinutes?:number;
+  gradingContract?:GradingContractSnapshot;
+  problemContext?:ProblemContextPack;
 };
 
 const wholeAnswerRules=`STEP 0で、今回実際に渡された全添付を problem_statement / official_reference_answer / supplemental_reference / current_answer / unrelated_or_unknown に分類する。
@@ -55,6 +57,9 @@ const wholeAnswerYaml=`whole_answer_scan:
 
 export function buildFirstAttemptGradingPrompt(context:FirstAttemptPromptContext){
   const mode=context.mode||"full";
+  const contract=context.gradingContract;
+  const problemContext=context.problemContext;
+  const contractParts=contract?.gradedParts||[];
   return `あなたは統計検定1級・統計数理の答案採点者です。
 以下の問題について、私の初回答案を採点してください。
 
@@ -83,6 +88,22 @@ ${mode}
 
 予定時間の目安:
 ${context.estimatedMinutes||""}分
+
+【problem_context：採点の根拠】
+問題文：${problemContext?.problemStatement||"アプリ内に全文なし。添付された問題文を使用する"}
+公式・正規参照：${problemContext?.officialAnswerText||problemContext?.answerExcerpt||"アプリ内に全文なし。添付された公式解答を使用する"}
+情報充足度：${problemContext?.contextCompleteness||"metadata_only"}
+
+【initial grading contract：Review非依存の今回の採点範囲】
+contract_id: ${contract?.contractId||"legacy_initial_prompt"}
+contract_version: ${contract?.contractVersion||""}
+contract_hash: ${contract?.contractHash||""}
+learning_purpose: ${contract?.learningPurpose||"integration_check"}
+review_scope: ${contract?.reviewScope||"full_answer"}
+graded_parts:
+${contractParts.length?contractParts.map(part=>`- ${part.id}｜${part.label}｜許可: ${part.allowedErrorTypes.join("/")}`).join("\n"):"- 答案から実際に採点した部分"}
+
+このcontractは初回採点用であり、Reviewを参照しない。contract外の発見はwhole-answer diagnosticへ分離する。
 
 【入力】
 問題文：
@@ -125,11 +146,18 @@ ${wholeAnswerRules}
 
 \`\`\`yaml
 study_update:
+  contract_id: "${contract?.contractId||""}"
+  contract_version: "${contract?.contractVersion||""}"
+  contract_hash: "${contract?.contractHash||""}"
   problem_id: "${context.problemId}"
   display_label: "${context.displayLabel||context.problemId}"
   date: "auto_today"
   task_origin: "first_attempt"
   mode: "${mode}"
+  learning_purpose: "${contract?.learningPurpose||"integration_check"}"
+  learning_stage: "${contract?.learningStage||"acquisition"}"
+  assessment_timing: "independent_performance"
+  review_scope: "${contract?.reviewScope||"full_answer"}"
   review_method: ""
   score_text: ""
   score_numeric: null
@@ -151,9 +179,14 @@ study_update:
   s_check_suggestions: []
   grading_confidence: null
   rubric_version: "${GRADING_RUBRIC_VERSION}"
-  evaluation_scope: "full"
-  graded_parts:
-    - "答案から実際に採点した部分"
+  evaluation_scope: "${contract?.reviewScope||"full_answer"}"
+  graded_part_ids: ${contractParts.length?`\n${contractParts.map(part=>`    - "${part.id}"`).join("\n")}`:"[]"}
+  graded_findings:
+${contractParts.length?contractParts.map(part=>`    - graded_part_id: "${part.id}"
+      error_type: "" # K/W/N/C/none
+      evidence: ""
+      resolved: null`).join("\n"):"    []"}
+  graded_parts: ${contractParts.length?`\n${contractParts.map(part=>`    - "${part.label}"`).join("\n")}`:"[]"}
   assumed_correct_parts: []
   unresolved_carryover: []
   ${wholeAnswerYaml}
