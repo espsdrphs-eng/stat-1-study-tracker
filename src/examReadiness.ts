@@ -69,14 +69,14 @@ export function getExamPhase(daysRemaining: number): ExamPhase {
 export const examPhaseLabels: Record<ExamPhase, string> = {
   foundation_to_A: "S限定補修＋A問題着手",
   A_and_past_parallel: "A問題＋過去問並行",
-  past_exam_main: "過去問主軸＋Whitebook補修",
+  past_exam_main: "過去問主軸＋弱点補修",
   final_stabilization: "本番演習＋弱点限定補修",
 };
 
 export const examPhaseAllocations: Record<ExamPhase, string> = {
   foundation_to_A: "A問題45%・S限定補修25%・型識別/5問スキャン15%・過去問観察15%",
   A_and_past_parallel: "A問題40%・過去問30%・S限定補修15%・型識別/選題15%",
-  past_exam_main: "過去問・本番型60〜65%・Whitebook補修20〜25%・保持確認10〜15%",
+  past_exam_main: "本番演習65〜70%・過去問由来の補修30〜35%",
   final_stabilization: "simulation/本番形式70%以上・確認済み弱点だけ補修",
 };
 

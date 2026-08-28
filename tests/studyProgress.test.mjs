@@ -37,6 +37,13 @@ test("過去問主軸期は過去問と5問スキャン不足を警告する", (
   assert.equal(plan.checks.find(item => item.label === "選題練習").status, "pending");
 });
 
+test("残り79日はユーザー表示も過去問主軸＋弱点補修へ一致する",()=>{
+  const plan=buildProgressPlan(79,metrics);
+  assert.equal(plan.phase,"past_practice");
+  assert.equal(plan.phaseLabel,"過去問主軸＋弱点補修");
+  assert.match(plan.allocation,/本番演習65〜70%/);
+});
+
 test("試験日未設定時は136日を概算値として使う", () => {
   assert.equal(daysUntilExam("2026-07-02", ""), 136);
   assert.equal(daysUntilExam("2026-07-02", "2026-07-12"), 10);

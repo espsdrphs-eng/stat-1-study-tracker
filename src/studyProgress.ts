@@ -16,12 +16,12 @@ export const EXAM_PHASES = [
     summary: "Sは全面復習ではなく、K/Nや重要Sだけを補修しながらA問題へ入る時期です。",
   },
   {
-    from: 61, to: 90, title: examPhaseLabels.A_and_past_parallel,
+    from: 81, to: 90, title: examPhaseLabels.A_and_past_parallel,
     allocation: examPhaseAllocations.A_and_past_parallel,
     summary: "A問題で型を増やしつつ、過去問単問と5問スキャンで選題力を測り始めます。",
   },
   {
-    from: 31, to: 60, title: examPhaseLabels.past_exam_main,
+    from: 31, to: 80, title: examPhaseLabels.past_exam_main,
     allocation: examPhaseAllocations.past_exam_main,
     summary: "過去問を主軸にし、落とした型だけA/Sへ戻して補修します。",
   },
@@ -111,7 +111,7 @@ export function buildProgressPlan(days: number, metrics: ProgressMetrics) {
       ? "今日の主課題を1問に絞り、補修は原因部分だけにしてください。"
       : "";
   const nextPhase = phase === "foundation" ? "残り90日からA問題＋過去問並行へ"
-    : phase === "integration" ? "残り60日から過去問主軸へ"
+    : phase === "integration" ? "残り80日から過去問主軸＋弱点補修へ"
       : phase === "past_practice" ? "残り30日から本番演習＋弱点限定補修へ"
         : "試験直前は新規拡張を止め、完走率を優先";
   return {

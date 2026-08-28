@@ -327,6 +327,8 @@ export type Task = {
   logical_review_key?:string;mastery_level?:1|2|3;
   past_exam_task_type?:"clean_scan5"|"practice_scan5"|"individual_full"|"timed_three_question_session"|"simulation";
   past_exam_year?:number;session_problem_ids?:string[];clean_selection_evidence?:boolean;
+  today_category?:"exam_practice"|"repair";why_today?:string;
+  review_planning_tier?:"high_value_repair"|"exceptional_maintenance"|"deferred_maintenance";
 };
 export type WeaknessInsight = {
   theme:string; score:number; level:"重点"|"注意"|"観察"; confidence:"参考"|"暫定"|"分析可能";
@@ -395,6 +397,8 @@ export type AdaptivePlanTask = {
   reviewScheduleStatus?:"within_window"|"overdue_recovery";
   pastExamTaskType?:"clean_scan5"|"practice_scan5"|"individual_full"|"timed_three_question_session"|"simulation";
   pastExamYear?:number;sessionProblemIds?:string[];cleanSelectionEvidence?:boolean;
+  todayCategory?:"exam_practice"|"repair";whyToday?:string;
+  reviewPlanningTier?:"high_value_repair"|"exceptional_maintenance"|"deferred_maintenance";
 };
 export type AdaptivePlanDay = {date:string;tasks:AdaptivePlanTask[];totalMinutes:number};
 export type AdaptiveReviewScheduleConflict = {

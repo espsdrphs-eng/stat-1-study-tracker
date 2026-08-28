@@ -1,4 +1,5 @@
 import type { AdaptivePlannerShadow, AdditionalStudyCandidate, Task } from "./types.ts";
+import {todayLearningCategory,whyToday} from "./todayLearningPolicy.ts";
 
 const purposePriority=(task:AdaptivePlannerShadow["plan14"]["plan"][number]["tasks"][number])=>{
   if(task.slot==="score_building"&&task.date)return task.kind==="whitebook"||task.kind==="full"?1:2;
@@ -13,7 +14,7 @@ function shadowTaskToTodayTask(item:AdaptivePlannerShadow["plan14"]["plan"][numb
   if(!item.problemId||item.requiresUserSelection||item.kind==="exposure_confirmation"||item.kind==="review")return null;
   const mode=item.kind==="scan5"?"scan":item.kind==="timed"?"exam_90min":
     item.kind==="full"||item.kind==="past_exam"?"full":"skeleton";
-  return {
+  const task:Task={
     problem_id:item.problemId,title:item.label,kind:item.kind==="scan5"?"5問スキャン":
       item.kind==="timed"?"90分演習":item.kind==="past_exam"?"過去問":"追加学習",
     reason:item.reason,mode,minutes:item.minutes,load:0,triage:"if_time",
@@ -22,8 +23,11 @@ function shadowTaskToTodayTask(item:AdaptivePlannerShadow["plan14"]["plan"][numb
     session_problem_ids:item.sessionProblemIds,clean_selection_evidence:item.cleanSelectionEvidence,
     purpose_label:item.purposeLabel||(
       item.slot==="score_building"?"得点形成":item.slot==="maintenance_selection"?"重要概念の維持":"追加学習"
-    )
+    ),today_category:item.todayCategory,why_today:item.whyToday
   };
+  task.today_category=task.today_category||todayLearningCategory(task);
+  task.why_today=task.why_today||whyToday(task);
+  return task;
 }
 
 /**

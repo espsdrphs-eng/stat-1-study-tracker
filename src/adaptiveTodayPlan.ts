@@ -3,6 +3,7 @@ import { taskFieldsFromContract } from "./gradingContract.ts";
 import { reviewExecutionState } from "./integrityEngine.ts";
 import { resolveCanonicalProblemId } from "./examReadiness.ts";
 import {currentActionFingerprint} from "./examOptimizationPolicy.ts";
+import {todayLearningCategory,whyToday} from "./todayLearningPolicy.ts";
 
 export const ADAPTIVE_PLANNER_VERSION="adaptive-v1";
 
@@ -37,7 +38,7 @@ export function adaptivePlanDayToTasks(args:{
       if(!review||reviewExecutionState(review,args.today)!=="actionable")continue;
       const problem=problemMap.get(review.problem_id);
       const contract=review.grading_contract;
-      result.push({
+      const projected={
         ...review,
         ...(contract?taskFieldsFromContract(contract):{}),
         problem_id:review.problem_id,
@@ -49,17 +50,21 @@ export function adaptivePlanDayToTasks(args:{
         mode:contract?.mode||review.effective_mode||review.inferred_mode||"check",
         minutes:item.minutes,
         load:0,
-        triage:"must",
+        triage:item.slot==="repair"?"must":"if_time",
         plan_origin:"adaptive_planner",
-        purpose_label:"局所補修",
-      });
+        purpose_label:item.slot==="repair"?"補修・再発防止":"追加の維持確認",
+        review_planning_tier:item.reviewPlanningTier,
+        today_category:item.todayCategory||"repair",
+        why_today:item.whyToday||item.reason,
+      } as Task;
+      result.push(projected);
       continue;
     }
     if(!item.problemId)continue;
     const problem=problemMap.get(item.problemId);
     if(!problem)continue;
     const mode=item.mode||taskMode(item.kind);
-    result.push({
+    const projected={
       problem_id:item.problemId,
       title:problem.display_label||problem.title||item.label,
       theme:problem.theme,
@@ -79,7 +84,12 @@ export function adaptivePlanDayToTasks(args:{
       past_exam_year:item.pastExamYear,
       session_problem_ids:item.sessionProblemIds,
       clean_selection_evidence:item.cleanSelectionEvidence,
-    });
+      today_category:item.todayCategory,
+      why_today:item.whyToday,
+    } as Task;
+    projected.today_category=projected.today_category||todayLearningCategory(projected);
+    projected.why_today=projected.why_today||whyToday(projected);
+    result.push(projected);
   }
   const seen=new Set<string>();
   return result.filter(task=>{

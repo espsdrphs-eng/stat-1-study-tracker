@@ -21,7 +21,7 @@ test("正式日次計画は得点形成・補修・維持を同じToday Task表�
     grading_contract:contract,contract_id:contract.contractId,contract_hash:contract.contractHash};
   const day={date:"2026-08-04",totalMinutes:55,tasks:[
     {taskKey:"score",date:"2026-08-04",slot:"score_building",kind:"whitebook",label:"A",
-      problemId:"WB-4-A-01",minutes:35,reason:"得点形成",requiresUserSelection:false},
+      problemId:"WB-4-A-01",minutes:35,reason:"得点形成",requiresUserSelection:false,todayCategory:"repair"},
     {taskKey:"repair",date:"2026-08-04",slot:"repair",kind:"review",label:"repair",
       problemId:"WB-4-A-02",reviewId:9,minutes:5,reason:"局所補修",requiresUserSelection:false},
     {taskKey:"maint",date:"2026-08-04",slot:"maintenance_selection",kind:"whitebook",label:"M",
@@ -35,6 +35,8 @@ test("正式日次計画は得点形成・補修・維持を同じToday Task表�
   assert.equal(tasks.every(row=>row.plan_origin==="adaptive_planner"),true);
   assert.equal(tasks.find(row=>row.id===9)?.triage,"must");
   assert.equal(tasks.find(row=>row.kind==="維持・選択")?.triage,"if_time");
+  assert.equal(tasks.find(row=>row.problem_id==="WB-4-A-01")?.today_category,"repair");
+  assert.equal(tasks.find(row=>row.id===9)?.today_category,"repair");
 });
 
 test("選択確認と同一論理課題は確定計画へ重複投入しない",()=>{

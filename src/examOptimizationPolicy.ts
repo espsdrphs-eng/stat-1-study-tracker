@@ -15,7 +15,7 @@ export function examHorizonPolicy(daysRemaining:number):ExamHorizonPolicy{
     allowNewWhitebook:true,pastExamIsPrimary:false};
   if(daysRemaining>=81)return {phase:"A_and_past_parallel",pastExamShareMin:.3,pastExamShareMax:.4,
     allowNewWhitebook:true,pastExamIsPrimary:false};
-  if(daysRemaining>=31)return {phase:"past_exam_main",pastExamShareMin:.6,pastExamShareMax:.65,
+  if(daysRemaining>=31)return {phase:"past_exam_main",pastExamShareMin:.65,pastExamShareMax:.7,
     allowNewWhitebook:true,pastExamIsPrimary:true};
   return {phase:"final_stabilization",pastExamShareMin:.7,pastExamShareMax:.9,
     allowNewWhitebook:false,pastExamIsPrimary:true};

@@ -38,7 +38,7 @@ test("explicit transfer success or a low-ROI transfer opportunity can replace sa
 
 test("exam horizon moves rolling study time from whitebook to past exams",()=>{
   assert.deepEqual([examHorizonPolicy(89).pastExamShareMin,examHorizonPolicy(89).pastExamShareMax],[.3,.4]);
-  assert.deepEqual([examHorizonPolicy(79).pastExamShareMin,examHorizonPolicy(79).pastExamShareMax],[.6,.65]);
+  assert.deepEqual([examHorizonPolicy(79).pastExamShareMin,examHorizonPolicy(79).pastExamShareMax],[.65,.7]);
   assert.equal(examHorizonPolicy(20).allowNewWhitebook,false);
   assert.equal(examHorizonPolicy(20).pastExamIsPrimary,true);
 });

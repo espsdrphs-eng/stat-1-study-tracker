@@ -29,6 +29,7 @@ import { sheetUsageForPhase, type ExamPhase } from "./examReadiness";
 import { resolveReviewCard, type ResolvedReviewCard } from "./reviewCardResolver";
 import { buildScan5Prompt, deriveExposure, scanMetrics, stageForDays, defaultSessionKind } from "./pastExamWorkflow";
 import {derivePastExamWorkspace} from "./pastExamPlanning.ts";
+import {todayLearningCategory} from "./todayLearningPolicy.ts";
 import { CHAPTER_META } from "./officialMaster";
 import { isProblemPack, masterDiff, parseAliasesPayload, parseIntegratedMasterPayload, parseProblemMasterPayload } from "./masterData";
 import { isIndexedDbSchemaError, schemaErrorMessage, type IndexedDbSchemaDiagnostic } from "./dbSchema";
@@ -189,7 +190,8 @@ export default function App() {
 function nextQueueTask(data:Bootstrap){
   const task=data.today.currentTask;
   if(!task)return {task:null,source:"今日の確定課題は完了"};
-  return {task,source:task.triage==="must"?"今日やること > 必ずやる > 1番目":"今日やること > 余裕があれば > 1番目"};
+  return {task,source:todayLearningCategory(task)==="exam_practice"?
+    "今日やること > 本番演習 > 1番目":"今日やること > 補修 > 1番目"};
 }
 function readinessValue(value:number|null,sample:number,unit="%"){
   if(value==null) return {value:"未計測",hint:"対象0件",unit:""};
@@ -256,12 +258,12 @@ function DashboardView({data,go,select}:{data:Bootstrap;go:(p:Page)=>void;select
           <span>30日 full<strong>{data.adaptiveLearning.plannerShadow.plan30.counts.full}</strong></span>
           <span>30日 timed<strong>{data.adaptiveLearning.plannerShadow.plan30.counts.timed}</strong></span>
         </div>
-        <p>得点形成を1～2件、期限到来Reviewを局所補修として最大1件、維持・選択を0～1件配置します。直近7日の実績不足とconcept evidenceを正式順位に使用します。</p>
+        <p>本番演習65〜70%と、過去問・答案証拠に直結する補修30〜35%をrolling 7日で調整します。日数経過だけのmaintenanceは必須枠に入れません。</p>
         {!!data.adaptiveLearning.plannerShadow.plan30.weeklyMinimumViolations.length&&
           <div className="match-warning"><AlertTriangle size={17}/><span>{data.adaptiveLearning.plannerShadow.plan30.weeklyMinimumViolations.slice(0,3).join("／")}</span></div>}
         <details><summary>14日計画とフェーズ診断</summary>
           <div className="adaptive-plan-preview">{data.adaptiveLearning.plannerShadow.plan14.plan.map(day=><div key={day.date}>
-            <strong>{day.date}</strong><span>{day.tasks.map(task=>`${task.slot==="score_building"?"得点形成":task.slot==="repair"?"局所補修":"維持・選択"}：${task.label}［${task.purposeLabel||"通常配置"}］（${task.minutes}分）`).join("／")}</span>
+            <strong>{day.date}</strong><span>{day.tasks.map(task=>`${task.todayCategory==="exam_practice"?"本番演習":"補修"}：${task.label}［${task.purposeLabel||"通常配置"}］（${task.minutes}分）`).join("／")}</span>
             <small>合計{day.totalMinutes}分</small>
           </div>)}</div>
           <div className="phase-diagnostic-grid">{data.adaptiveLearning.plannerShadow.phaseDiagnostics.map(item=><div key={item.checkpoint}>
@@ -289,8 +291,8 @@ function DashboardView({data,go,select}:{data:Bootstrap;go:(p:Page)=>void;select
       <div className="two-col">
       <section className="panel">
         <div className="panel-title"><div><span className="eyebrow">TODAY</span><h3>今日やること</h3></div><button className="text-btn" onClick={()=>go("today")}>すべて見る <ChevronRight size={16}/></button></div>
-        <div className="task-list">{data.today.tasks.slice(0,4).map((t,i)=><TaskRow key={`${t.problem_id}-${i}`} task={t}/>)}</div>
-        {!data.today.tasks.length&&<Empty>今日が期限の課題はありません</Empty>}
+        <div className="task-list">{data.today.tasks.filter(task=>!task.checked&&task.triage!=="tomorrow").slice(0,4).map((t,i)=><TaskRow key={`${t.problem_id}-${i}`} task={t}/>)}</div>
+        {!data.today.tasks.some(task=>!task.checked&&task.triage!=="tomorrow")&&<Empty>今日の確定課題はありません</Empty>}
       </section>
       <section className="panel pace-panel">
         <div className="panel-title"><div><span className="eyebrow">14 DAY CHECK</span><h3>合格ペース判定</h3></div><Badge tone={d.pace.label==="合格ペース"?"green":d.pace.label==="注意"?"orange":d.pace.label==="危険"?"red":""}>{d.pace.label}</Badge></div>
@@ -538,7 +540,7 @@ function PostponeReviewModal({item,initial="tomorrow",busy,close,save}:{item:Par
 function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a:()=>Promise<unknown>,s:string)=>void;go:(p:Page)=>void;select:(p:Problem)=>void}) {
   const [reviewTask,setReviewTask]=useState<Task|null>(null);
   const [postponeTask,setPostponeTask]=useState<{item:Task;initial:ScheduleAction}|null>(null);
-  const [todayFilter,setTodayFilter]=useState<"must"|"if_time"|"tomorrow"|"completed"|"all">("must");
+  const [todayFilter,setTodayFilter]=useState<"exam_practice"|"repair"|"optional"|"completed"|"all">("all");
   const [recalculatePreview,setRecalculatePreview]=useState<{
     retained:number;added:number;removed:number;beforeMinutes:number;afterMinutes:number
   }|null>(null);
@@ -549,16 +551,18 @@ function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a
     run(()=>post(`/api/reviews/${id}/complete`,body),"復習結果を保存し、次回間隔を再計算しました")};
   const postponeReview=(body:Record<string,unknown>,label:string)=>{if(!postponeTask)return;const item=postponeTask.item;setPostponeTask(null);
     run(()=>post(item.id&&item.review_type?`/api/reviews/${item.id}/postpone`:"/api/tasks/postpone",body),`課題を「${label}」に変更しました`)};
+  const activeTodayTasks=data.today.tasks.filter(task=>task.triage!=="tomorrow"&&!task.checked);
   const allGroups=[
-    {key:"must",label:"今日必ずやる",description:"K・N・過去問直結の必修Aを優先",tasks:data.today.tasks.filter(task=>task.triage==="must")},
-    {key:"if_time",label:"余裕があればやる",description:"目標時間内に収まるW・C・通常課題",tasks:data.today.tasks.filter(task=>task.triage==="if_time")},
-    {key:"tomorrow",label:"先送り候補",description:"C・none・Sメンテ・緊急性の低い関連S確認",tasks:data.today.tasks.filter(task=>task.triage==="tomorrow")}
+    {key:"exam_practice",label:"今日の本番演習",description:"初見・選題・時間内完遂・別問題への転移を測る",tasks:activeTodayTasks.filter(task=>todayLearningCategory(task)==="exam_practice")},
+    {key:"repair",label:"今日の補修",description:"過去問・答案で確認されたmajor weaknessだけを局所補修する",tasks:activeTodayTasks.filter(task=>todayLearningCategory(task)==="repair")},
+    {key:"optional",label:"追加候補・先送り",description:"本番演習と高価値補修の後にだけ行う",tasks:data.today.tasks.filter(task=>task.triage==="tomorrow"&&!task.checked)}
   ];
-  const triageGroups=allGroups.filter(group=>(todayFilter==="all"||todayFilter===group.key)&&group.tasks.length);
+  const triageGroups=allGroups.filter(group=>todayFilter==="all"?
+    group.key!=="optional"||group.tasks.length:todayFilter===group.key&&group.tasks.length);
   const summary=[
-    {key:"must",label:"必ずやる",count:data.today.triageCounts.must,minutes:data.today.triageMinutes?.must||0},
-    {key:"if_time",label:"余裕があれば",count:data.today.triageCounts.if_time,minutes:data.today.triageMinutes?.if_time||0},
-    {key:"tomorrow",label:"先送り候補",count:data.today.triageCounts.tomorrow,minutes:data.today.triageMinutes?.tomorrow||0},
+    {key:"exam_practice",label:"本番演習",count:allGroups[0].tasks.length,minutes:allGroups[0].tasks.reduce((sum,task)=>sum+task.minutes,0)},
+    {key:"repair",label:"補修",count:allGroups[1].tasks.length,minutes:allGroups[1].tasks.reduce((sum,task)=>sum+task.minutes,0)},
+    {key:"optional",label:"追加・先送り",count:allGroups[2].tasks.length,minutes:allGroups[2].tasks.reduce((sum,task)=>sum+task.minutes,0)},
     {key:"completed",label:"完了済み",count:data.today.triageCounts.completed,minutes:data.today.completed_minutes_today}
   ] as const;
   const examPhase:ExamPhase=data.dashboard.pace.phase==="integration"?"A_and_past_parallel":
@@ -713,7 +717,7 @@ function TodayTaskRows({task:t,problem,data,busy,run,date,onReview,onOpenProblem
   if(isReview&&executionState!=="actionable")return <tr className="inactive-today-task"><td colSpan={6}>
     {persistedReview?<InactiveReviewNotice review={persistedReview} state={executionState}/>:<div className="inactive-review-notice"><AlertTriangle size={18}/><div><strong>見つかりません</strong><span>この復習課題は現在のデータに存在しません。</span></div></div>}
   </td></tr>;
-  return <><tr className={t.checked?"task-checked":""}><td><Badge tone={t.kind==="S確認"?"blue":t.error_type==="K"?"red":""}>{t.kind}</Badge></td><td><strong>{t.problem_id}</strong><small>{t.title}{t.checked&&<em className="grading-wait">採点待ち</em>}</small></td><td>{modes[t.mode]||t.mode}</td><td>{t.minutes}分</td><td>{t.reason}{t.postpone_count?` ・ 先送り${t.postpone_count}回（${t.postpone_reason}）`:""}</td><td><div className="task-actions"><SheetLink href={sheetHref(t.mode)} label="シート"/><label className="task-check"><input type="checkbox" checked={!!t.checked} disabled={busy} onChange={toggle}/><span>{isReview?"復習結果を記録":"解答済み"}</span></label></div><ScheduleQuickButtons item={t} busy={busy} select={action=>onPostpone(t,action)}/></td></tr>
+  return <><tr className={t.checked?"task-checked":""}><td><Badge tone={t.kind==="S確認"?"blue":t.error_type==="K"?"red":""}>{t.kind}</Badge></td><td><strong>{t.problem_id}</strong><small>{t.title}{t.checked&&<em className="grading-wait">採点待ち</em>}</small></td><td>{modes[t.mode]||t.mode}</td><td>{t.minutes}分</td><td><strong className="why-today">なぜ今日：{t.why_today||t.reason}</strong>{t.reason!==t.why_today&&<small>{t.reason}</small>}{t.postpone_count?` ・ 先送り${t.postpone_count}回（${t.postpone_reason}）`:""}</td><td><div className="task-actions"><SheetLink href={sheetHref(t.mode)} label="シート"/><label className="task-check"><input type="checkbox" checked={!!t.checked} disabled={busy} onChange={toggle}/><span>{isReview?"復習結果を記録":"解答済み"}</span></label></div><ScheduleQuickButtons item={t} busy={busy} select={action=>onPostpone(t,action)}/></td></tr>
     <tr className="task-plan-row"><td colSpan={6}><TodayTaskDetails task={t} problem={problem} onOpenProblem={onOpenProblem} problemAliases={data.problemAliases} examPhase={examPhase} resolved={resolved}/>{(t.review_method||t.review_reason)&&<ReviewPlanDetails item={t} compact resolved={resolved}/>}</td></tr></>;
 }
 

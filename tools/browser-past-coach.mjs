@@ -41,7 +41,7 @@ try{
   await page.getByRole("button",{name:"ダッシュボード",exact:true}).evaluate(element=>element.click());
   const kpis=page.locator(".dashboard-kpi-grid");await kpis.waitFor();
   const kpiText=await kpis.innerText();
-  for(const expected of ["本番対応力","合格圏","最大ボトルネック","今やること","制約と係数の追跡"])
+  for(const expected of ["本番対応力","本番合格判定","最大ボトルネック","今やること","制約と係数の追跡"])
     if(!kpiText.includes(expected))throw new Error(`dashboard KPI missing: ${expected}`);
   const box=await kpis.boundingBox();
   if(!box||box.x<0||box.x+box.width>1180||box.y>500)throw new Error(`iPad KPI layout is outside the first view: ${JSON.stringify(box)}`);

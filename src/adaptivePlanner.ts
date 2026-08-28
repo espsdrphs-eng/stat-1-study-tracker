@@ -12,6 +12,7 @@ import { resolvePersistedAttemptLifecycle } from "./reviewTransition.ts";
 import { scheduleActiveReviews, type ScheduledReviewPlacement } from "./reviewScheduling.ts";
 import {examHorizonPolicy} from "./examOptimizationPolicy.ts";
 import {buildPastExamYearCandidates,pastExamTaskTypeFor,selectPastExamYear} from "./pastExamPlanning.ts";
+import {reviewPlanningDecision} from "./todayLearningPolicy.ts";
 
 type SlotTask=AdaptivePlanDay["tasks"][number];
 export const GRADUATED_SAME_PROBLEM_COOLDOWN_DAYS=45;
@@ -176,15 +177,20 @@ function planDays(args:{
   weaknesses:ConceptWeaknessInsight[];
 }){
   const result:AdaptivePlanDay[]=[],usedProblems=new Map<string,string>(),usedPast=new Map<string,string>(),usedSessionYears=new Set<number>();
-  const activeReviews=args.reviews.filter(review=>reviewExecutionState(review,args.startDate)==="actionable")
+  const allActiveReviews=args.reviews.filter(review=>reviewExecutionState(review,args.startDate)==="actionable")
     .sort((a,b)=>a.due_date.localeCompare(b.due_date)||a.id-b.id);
+  const reviewDecisions=new Map(allActiveReviews.map(review=>[review.id,reviewPlanningDecision({
+    review,attempts:args.attempts,problems:args.problems,weaknesses:args.weaknesses
+  })]));
+  const activeReviews=allActiveReviews.filter(review=>reviewDecisions.get(review.id)?.scheduleAsRequired);
+  const deferredReviews=allActiveReviews.filter(review=>!reviewDecisions.get(review.id)?.scheduleAsRequired);
   const reviewSchedule=scheduleActiveReviews({reviews:activeReviews,startDate:args.startDate,days:args.days,
     dailyCapacity:args.targetMinutes});
   const reviewsByDate=new Map<string,ScheduledReviewPlacement[]>();
   for(const placement of reviewSchedule.placements)
     reviewsByDate.set(placement.date,[...(reviewsByDate.get(placement.date)||[]),placement]);
   const horizonEnd=addCalendarDays(args.startDate,Math.max(0,args.days-1));
-  const activeReviewProblemIds=new Set(activeReviews.filter(review=>String(review.earliest_date||review.due_date)<=horizonEnd)
+  const activeReviewProblemIds=new Set(allActiveReviews.filter(review=>String(review.earliest_date||review.due_date)<=horizonEnd)
     .map(review=>review.problem_id));
   const allowNew=examHorizonPolicy(args.daysRemaining).allowNewWhitebook;
   const recentEligibleSuccesses=args.attempts.filter(attempt=>attempt.date>=addCalendarDays(args.startDate,-14)&&
@@ -209,11 +215,16 @@ function planDays(args:{
       concept&&["confirmed","repairing","relapsed"].includes(concept.state)?`・${concept.displayName}の強い証拠を優先`:"";
     const purpose=concept?.state==="suspected"?"concept_diagnosis":
       concept?.state==="transfer_pending"?"transfer_check":undefined;
+    const repairCategory=repairOnly||!!concept&&["confirmed","repairing","relapsed"].includes(concept.state);
     return problem?task({date,slot,kind:mode==="full"?"full":"whitebook",
       label:problem.display_label||problem.title,problemId:problem.problem_id,
       minutes:modeMinutes(mode),reason:`${reason}${evidenceReason}`,
       purpose,purposeLabel:purpose==="concept_diagnosis"?"弱点診断":purpose==="transfer_check"?"別問題で転移確認":undefined,
-      conceptId:concept?.conceptId,mode,requiresUserSelection:false}):null;
+      conceptId:concept?.conceptId,mode,requiresUserSelection:false,
+      todayCategory:repairCategory?"repair":"exam_practice",
+      whyToday:purpose==="transfer_check"?"別問題で同じ能力を自力で使えるか測るため":repairCategory?
+        "過去問・答案証拠で確認された弱点だけを補修するため":
+        "初見の得点形成と時間内の答案化を測るため"}):null;
   };
   const makePast=(date:string,kind:"past_exam"|"scan5"|"timed",minutes:number,reason:string)=>{
     const selected=choosePastExam({catalog:args.catalog,daysRemaining:args.daysRemaining,used:usedPast,date,
@@ -241,7 +252,8 @@ function planDays(args:{
       reason:`${reason}・${purposeLabel}`,purpose,purposeLabel,basis,exposure:selected.exposure,
       previousEventDate:latest?.date,simulationProtected:selected.simulationProtected,requiresUserSelection:false,
       pastExamTaskType:selected.planningTaskType,pastExamYear:selected.year,
-      sessionProblemIds:selected.sessionProblemIds,cleanSelectionEvidence:selected.cleanSelectionEvidence});
+      sessionProblemIds:selected.sessionProblemIds,cleanSelectionEvidence:selected.cleanSelectionEvidence,
+      todayCategory:"exam_practice",whyToday:"初見・選題・時間内完遂・別問題への転移を測るため"});
   };
   let materialConfirmationPlanned=false;
   for(let offset=0;offset<args.days;offset++){
@@ -269,7 +281,7 @@ function planDays(args:{
       if(weekday===0)score=makePast(date,"timed",90,"5問scan・3問選択・3問答案を一つの本番型sessionで実施");
       else if([2,4].includes(weekday))score=makePast(date,"past_exam",35,"未見・過去問で得点形成とtransferを測定");
       else if(weekday===6)score=makePast(date,"scan5",10,"clean selection evidenceを確保");
-      else score=makeWhitebook(date,[2,4,5,6,7,8],"full","過去問で確認された高価値targetだけを補修","score_building",true);
+      else score=makeWhitebook(date,[2,4,5,6,7,8],"skeleton","過去問で確認された高価値targetだけを局所補修","score_building",true);
     }else{
       score=makePast(date,weekday===0||weekday===4?"timed":weekday===2?"scan5":"past_exam",
         weekday===0||weekday===4?90:weekday===2?10:35,"本番形式・3題選択・確認済み弱点を主軸に固定");
@@ -278,7 +290,9 @@ function planDays(args:{
       label:`${placement.review.problem_id} 局所補修`,problemId:placement.review.problem_id,reviewId:placement.review.id,
       mode:placement.review.grading_contract?.mode||placement.review.effective_mode||placement.review.inferred_mode||"check",
       minutes:placement.minutes,reason:placement.status==="overdue_recovery"?"期限超過Reviewを最優先で回収":"復習ウィンドウ内に配置",
-      requiresUserSelection:false,reviewEarliestDate:placement.earliestDate,reviewPreferredDate:placement.preferredDate,
+      requiresUserSelection:false,todayCategory:"repair",whyToday:reviewDecisions.get(placement.review.id)?.reason,
+      reviewPlanningTier:reviewDecisions.get(placement.review.id)?.tier,
+      reviewEarliestDate:placement.earliestDate,reviewPreferredDate:placement.preferredDate,
       reviewLatestDate:placement.latestDate,reviewScheduleStatus:placement.status}));
     if(score?.kind==="exposure_confirmation"){
       if(!materialConfirmationPlanned)tasks.push(score);
@@ -286,6 +300,18 @@ function planDays(args:{
       score=makeWhitebook(date,[2,4,5,6,7,8],"skeleton","露出確認待ちの間も得点形成を止めない");
     }
     if(score&&tasks.reduce((sum,row)=>sum+row.minutes,0)+score.minutes<=args.targetMinutes)tasks.push(score);
+    if(!score&&!tasks.length){
+      const fallback=deferredReviews.find(review=>String(review.earliest_date||review.due_date)<=date);
+      if(fallback){
+        const decision=reviewDecisions.get(fallback.id)!;
+        tasks.push(task({date,slot:"maintenance_selection",kind:"review",label:`${fallback.problem_id} 追加確認`,
+          problemId:fallback.problem_id,reviewId:fallback.id,
+          mode:fallback.grading_contract?.mode||fallback.effective_mode||fallback.inferred_mode||"check",
+          minutes:Number(fallback.grading_contract?.estimatedMinutes||fallback.estimated_minutes||5),
+          reason:decision.reason,requiresUserSelection:true,todayCategory:"repair",whyToday:decision.reason,
+          reviewPlanningTier:decision.tier}));
+      }
+    }
     const coreFloor=Math.min(90,Math.max(60,Math.round(args.targetMinutes*.4)));
     if(phase==="foundation_to_A"&&score&&score.kind!=="scan5"&&
       tasks.reduce((sum,row)=>sum+row.minutes,0)<coreFloor){

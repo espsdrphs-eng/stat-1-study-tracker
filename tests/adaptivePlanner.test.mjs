@@ -108,7 +108,7 @@ test("D87は履歴のないverified過去問をunseenとして2016年から具�
   assert.deepEqual(rerun.plan14,plan.plan14);
 });
 
-test("D79はcalendar bucketで2019へ飛ばずclean年度を古い順に使い60〜65%配置する",()=>{
+test("D79はcalendar bucketで2019へ飛ばずclean年度を古い順に使い65〜70%配置する",()=>{
   const rows=[2016,2017,2018,2019,2021,2022,2023,2024,2025]
     .flatMap(year=>Array.from({length:5},(_,index)=>pastProblem(year,index+1)));
   const source=record({data:{...baseRecord.data,pastExamProblems:rows}});
@@ -123,7 +123,7 @@ test("D79はcalendar bucketで2019へ飛ばずclean年度を古い順に使い60
   assert.equal(timed.minutes,90);assert.equal(timed.pastExamTaskType,"timed_three_question_session");
   assert.equal(timed.sessionProblemIds.length,5);assert.match(timed.label,/3問timed/);
   const share=rollingPastExamShare(week);
-  assert.ok(share>=.6&&share<=.65,`D79 share=${share}`);
+  assert.ok(share>=.65&&share<=.7,`D79 share=${share}`);
 });
 
 test("D80で2016露出・2017部分露出・2018未露出なら2018 clean sessionを最優先する",()=>{
@@ -138,7 +138,7 @@ test("D80で2016露出・2017部分露出・2018未露出なら2018 clean sessio
   assert.equal(session.minutes,90);assert.equal(session.sessionProblemIds.length,5);
   assert.equal(plan.plan14.plan.flatMap(day=>day.tasks).some(task=>task.minutes===90&&task.pastExamTaskType!=="timed_three_question_session"),false);
   const share=rollingPastExamShare(plan.plan14.plan.slice(0,7));
-  assert.ok(share>=.6&&share<=.65,`D80 share=${share}`);
+  assert.ok(share>=.65&&share<=.7,`D80 share=${share}`);
 });
 
 test("eligible過去問0件では学習時間に数えないwarningを1件だけ出す",()=>{
@@ -167,8 +167,8 @@ test("exam horizon policy shifts rolling 7-day minutes at D89, D79, D45 and D20"
   const d45=rollingPastExamShare(buildHorizon("2026-10-01").plan14.plan.slice(0,7));
   const d20=rollingPastExamShare(buildHorizon("2026-10-26").plan14.plan.slice(0,7));
   assert.ok(d89>=.3&&d89<=.4,`D89 share=${d89}`);
-  assert.ok(d79>=.6&&d79<=.65,`D79 share=${d79}`);
-  assert.ok(d45>=.6&&d45<=.65,`D45 share=${d45}`);
+  assert.ok(d79>=.65&&d79<=.7,`D79 share=${d79}`);
+  assert.ok(d45>=.65&&d45<=.7,`D45 share=${d45}`);
   assert.ok(d20>=.7,`D20 share=${d20}`);
   assert.equal(buildHorizon("2026-10-26").plan14.plan.flatMap(day=>day.tasks).some(task=>task.kind==="whitebook"),false);
 });
@@ -320,4 +320,45 @@ test("同一問題を卒業したconceptは別問題のtransfer_checkへ展開�
   const transfer=plan.plan14.plan[0].tasks.find(task=>task.problemId==="WB-2-A-02");
   assert.equal(transfer?.purpose,"transfer_check");
   assert.equal(transfer?.purposeLabel,"別問題で転移確認");
+});
+
+test("低価値maintenance backlog 20件は必須枠へ置かず本番演習を押し出さない",()=>{
+  const reviews=whitebook.slice(0,20).map((row,index)=>{
+    const base=reviewFixture(800+index,row.problem_id,{due:"2026-08-01",earliest:"2026-08-01",latest:"2026-08-20",minutes:7});
+    return {...base,learning_purpose:"retrieval_check",correction_provided:false,retention_pending:false,
+      grading_contract:{...base.grading_contract,learningPurpose:"retrieval_check",learningStage:"maintenance"}};
+  });
+  const attempts=reviews.flatMap((review,index)=>[
+    {id:review.source_attempt_id,problem_id:review.problem_id,date:"2026-07-01",mode:"check",mark:"◎",score_label:"S",score_numeric:100,
+      error_type:"none",error_types:["none"],learning_purpose:"retrieval_check",assessment_timing:"delayed_retrieval",
+      actual_reference_level:0,hint_used:false,target_issue_resolved:true,minimum_pass_condition_met:true,
+      graded_part_ids:[`part-${review.id}`],graded_findings:[{graded_part_id:`part-${review.id}`,error_type:"none",evidence:"保持",resolved:true}]},
+    {id:9000+index,problem_id:`PY-2018-Q${index%5+1}`,source_problem_id:review.problem_id,date:"2026-08-20",mode:"full",mark:"◎",
+      score_label:"A",score_numeric:80,error_type:"none",error_types:["none"],transfer_evidence:true,review_outcome:"success",actual_reference_level:0}
+  ]);
+  const rows=[2016,2017,2018,2019].flatMap(year=>Array.from({length:5},(_,index)=>pastProblem(year,index+1)));
+  const source=record({data:{...baseRecord.data,pastExamProblems:rows}});
+  const currentCatalog=buildPastExamCatalog({record:source,sessions:[],attempts,exposureOverrides:{}});
+  const plan=buildAdaptivePlannerShadow({record:source,catalog:currentCatalog,weaknesses:[repairWeakness],problems:repairWhitebook,
+    attempts,reviews,pastSessions:[],currentTasks:[],today:"2026-08-28",examDate:"2026-11-15",targetMinutes:150});
+  const week=plan.plan14.plan.slice(0,7),tasks=week.flatMap(day=>day.tasks);
+  assert.equal(tasks.some(task=>task.reviewId&&task.reviewPlanningTier==="deferred_maintenance"),false);
+  assert.equal(tasks.filter(task=>["past_exam","scan5","timed"].includes(task.kind)).length>=4,true);
+  assert.equal(plan.plan14.reviewSchedule.placements.length,0);
+});
+
+test("major修復後の未確認retention Reviewは補修枠へ残す",()=>{
+  const base=reviewFixture(950,"WB-6-A-01",{due:"2026-08-28",earliest:"2026-08-28",latest:"2026-08-30",minutes:7});
+  const review={...base,learning_purpose:"retrieval_check",correction_provided:true,retention_pending:true,
+    assessment_timing:"delayed_retrieval",review_scope:"check_only",effective_review_scope:"check_only",
+    grading_contract:{...base.grading_contract,learningPurpose:"retrieval_check",learningStage:"maintenance",
+      mode:"check",reviewScope:"check_only",sheetType:"check_sheet"}};
+  const sourceAttempt={id:950,problem_id:"WB-6-A-01",date:"2026-08-25",mode:"main_calc",mark:"○",score_label:"B",score_numeric:70,
+    error_type:"W",error_types:["W"],review_outcome:"success",parent_past_session_id:90};
+  const plan=buildAdaptivePlannerShadow({record:baseRecord,catalog,weaknesses:[repairWeakness],problems:repairWhitebook,
+    attempts:[sourceAttempt],reviews:[review],pastSessions:[],currentTasks:[],today:"2026-08-28",examDate:"2026-11-15",targetMinutes:150});
+  const placed=plan.plan14.plan.flatMap(day=>day.tasks).find(task=>task.reviewId===950);
+  assert.equal(placed?.todayCategory,"repair");
+  assert.equal(placed?.reviewPlanningTier,"high_value_repair");
+  assert.match(placed?.whyToday||"",/過去問/);
 });
