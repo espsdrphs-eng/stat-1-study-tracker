@@ -232,7 +232,7 @@ test("planner audit detects duplicate problem tasks, window violations, and opti
     pastExam:0,chapter5:0,chapter7:0,chapter8:0},weeklyMinimumViolations:[],dailyCapacityViolations:0,
     reviewSchedule:{repairBudgetMinutes:45,placements:[{reviewId:384,problemId:"WB-7-A-07",date:"2026-08-17",
       latestDate:"2026-08-16",status:"within_window"}],capacityConflicts:[{reviewId:385,problemId:"WB-7-A-08",
-      earliestDate:"2026-08-13",preferredDate:"2026-08-14",latestDate:"2026-08-14",minutes:12,reason:"capacity"}]}};
+      earliestDate:"2026-08-12",preferredDate:"2026-08-13",latestDate:"2026-08-13",minutes:12,reason:"capacity"}]}};
   const audit=runIntegrityAudit({attempts:[],reviews:[],today:"2026-08-14",todayPlanSnapshots:[snapshot],
     currentTodayTasks:[generic,reviewTask],currentPlanSummary:summary,
     additionalCandidates:[{candidateKey:"extra",source:"adaptive",priority:1,purposeLabel:"extra",reason:"extra",minutes:20,task:generic}]});

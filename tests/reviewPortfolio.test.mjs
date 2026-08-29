@@ -57,3 +57,10 @@ test("直近7日の完了・次回生成・差引とactive論理重複を分け�
   assert.equal(result.netChangeLast7Days,1);
   assert.equal(result.activeDuplicateLogicalKeys,1);
 });
+
+test("preferred超過でもlatest内なら期限超過件数へ入れない",()=>{
+  const row=review(19,"2026-08-25",{preferred_date:"2026-08-25",latest_date:"2026-09-01"});
+  const result=summarizeReviewPortfolio({reviews:[row],attempts:[],today:"2026-08-30"});
+  assert.equal(result.overdue,0);
+  assert.equal(result.actionable,1);
+});

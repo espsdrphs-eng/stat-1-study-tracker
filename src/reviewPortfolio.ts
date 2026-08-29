@@ -1,6 +1,7 @@
 import type { Attempt, ProblemAlias, Review, ReviewPortfolioSummary } from "./types.ts";
 import { logicalReviewKey, reviewExecutionState } from "./integrityEngine.ts";
 import { addCalendarDays } from "./reviewSchedulePolicy.ts";
+import {reviewDueState} from "./todayLearningPolicy.ts";
 
 function tokyoDate(value?:string){
   if(!value)return "";
@@ -39,10 +40,11 @@ export function summarizeReviewPortfolio(args:{
   }
   return {
     actionable:actionable.length,
-    overdue:actionable.filter(review=>review.due_date<args.today).length,
-    dueToday:actionable.filter(review=>review.due_date===args.today).length,
-    next7Days:actionable.filter(review=>review.due_date>args.today&&review.due_date<=next7End).length,
-    later:actionable.filter(review=>review.due_date>next7End).length,
+    overdue:actionable.filter(review=>reviewDueState(review,args.today)==="hard_overdue").length,
+    dueToday:actionable.filter(review=>String(review.preferred_date||review.due_date)===args.today).length,
+    next7Days:actionable.filter(review=>String(review.preferred_date||review.due_date)>args.today&&
+      String(review.preferred_date||review.due_date)<=next7End).length,
+    later:actionable.filter(review=>String(review.preferred_date||review.due_date)>next7End).length,
     inactivePending:args.reviews.filter(review=>
       ["pending","overdue","review_needed","id_review_needed"].includes(review.status)&&
       reviewExecutionState(review,args.today)!=="actionable").length,

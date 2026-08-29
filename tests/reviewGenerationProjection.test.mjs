@@ -60,7 +60,9 @@ test("current Today adds a newly due Review without mutating the morning snapsho
   const current=deriveCurrentTodayProjection({snapshot,generatedTasks:[generatedTask],attempts:[sourceAttempt],
     reviews:[currentReview],today:"2026-08-18",completedMinutes:0,targetMinutes:150});
   assert.equal(current.tasks[0].id,397);
-  assert.equal(current.currentTask?.id,397);
+  assert.equal(current.tasks[0].action_class,"maintenance");
+  assert.equal(current.tasks[0].triage,"tomorrow");
+  assert.equal(current.currentTask,undefined);
   assert.equal(JSON.stringify(snapshot),before);
 });
 

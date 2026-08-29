@@ -539,11 +539,12 @@ export function runIntegrityAudit(args: {
       if(!currentReviewIds.has(placement.reviewId))issues.push({category:"formal_plan_current_projection_mismatch",severity:"active",
         reviewIds:[placement.reviewId],detail:`Formal planner Review ${placement.reviewId} differs from Current Today`,repairable:false});
     }
-    const urgentConflicts=currentPlanSummary.reviewSchedule.capacityConflicts.filter(row=>row.preferredDate<=today||row.latestDate<=today);
-    for(const conflict of urgentConflicts)issues.push({category:"overdue_starvation",severity:"active",reviewIds:[conflict.reviewId],
+    const dueConflicts=currentPlanSummary.reviewSchedule.capacityConflicts.filter(row=>row.preferredDate<=today);
+    const overdueConflicts=dueConflicts.filter(row=>row.latestDate<today);
+    for(const conflict of overdueConflicts)issues.push({category:"overdue_starvation",severity:"active",reviewIds:[conflict.reviewId],
       detail:`Review ${conflict.reviewId} could not be placed before score-building/optional work (${conflict.reason})`,repairable:false});
-    if(urgentConflicts.length&&additionalCandidates.length)issues.push({category:"optional_extra_priority_violation",severity:"active",
-      reviewIds:urgentConflicts.map(row=>row.reviewId),detail:"Optional extra is visible while an urgent Review remains unplaced",repairable:false});
+    if(dueConflicts.length&&additionalCandidates.length)issues.push({category:"optional_extra_priority_violation",severity:"active",
+      reviewIds:dueConflicts.map(row=>row.reviewId),detail:"Optional extra is visible while a due Review remains unplaced",repairable:false});
     const activeReviewProblems=new Set(reviews.filter(review=>reviewExecutionState(review,today)==="actionable"&&
       String(review.earliest_date||review.due_date)<=today)
       .map(review=>resolveCanonicalProblemId(review.problem_id,aliases)));

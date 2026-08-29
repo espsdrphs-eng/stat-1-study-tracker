@@ -342,7 +342,8 @@ test("低価値maintenance backlog 20件は必須枠へ置かず本番演習を�
   const plan=buildAdaptivePlannerShadow({record:source,catalog:currentCatalog,weaknesses:[repairWeakness],problems:repairWhitebook,
     attempts,reviews,pastSessions:[],currentTasks:[],today:"2026-08-28",examDate:"2026-11-15",targetMinutes:150});
   const week=plan.plan14.plan.slice(0,7),tasks=week.flatMap(day=>day.tasks);
-  assert.equal(tasks.some(task=>task.reviewId&&task.reviewPlanningTier==="deferred_maintenance"),false);
+  const deferred=tasks.filter(task=>task.reviewId&&task.reviewPlanningTier==="deferred_maintenance");
+  assert.equal(deferred.every(task=>task.requiresUserSelection&&task.actionClass==="maintenance"),true);
   assert.equal(tasks.filter(task=>["past_exam","scan5","timed"].includes(task.kind)).length>=4,true);
   assert.equal(plan.plan14.reviewSchedule.placements.length,0);
 });

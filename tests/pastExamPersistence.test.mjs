@@ -52,7 +52,7 @@ test("past_exam full/timedのclean答案は採点対象だが同一問題の定�
   assert.equal((await db.problems.get(problemId)).completion_status,"completed");
 });
 
-test("past_exam full/timed失敗は即時訂正後の同一problem delayed確認だけを作りcandidate relationを自動採用しない",async()=>{
+test("past_exam full/timed失敗は明示的repair成功までerror_repairを保ちcandidate relationを自動採用しない",async()=>{
   await localGet("/api/bootstrap");
   const problemId="PY-2021-Q1";
   const oldAttempts=(await db.attempts.toArray()).filter(row=>row.problem_id===problemId).map(row=>row.id);
@@ -75,10 +75,10 @@ test("past_exam full/timed失敗は即時訂正後の同一problem delayed確認
   const delayed=(await db.reviews.toArray()).filter(row=>row.problem_id===problemId&&
     ["pending","overdue"].includes(row.status));
   assert.equal(delayed.length,1);
-  assert.equal(delayed[0].grading_contract?.learningPurpose||delayed[0].learning_purpose,"retrieval_check");
+  assert.equal(delayed[0].grading_contract?.learningPurpose||delayed[0].learning_purpose,"error_repair");
   assert.equal(delayed[0].assessment_timing,"delayed_retrieval");
-  assert.equal(delayed[0].correction_provided,true);
-  assert.equal(delayed[0].retention_pending,true);
+  assert.notEqual(delayed[0].correction_provided,true);
+  assert.notEqual(delayed[0].retention_pending,true);
   assert.equal(delayed[0].problem_id,problemId);
   assert.ok(!delayed[0].target_problem_id||delayed[0].target_problem_id===problemId);
   assert.ok(!delayed[0].relation_id);

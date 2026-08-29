@@ -116,19 +116,38 @@ test("a delayed check sourced from an unresolved Attempt is stale",()=>{
   assert.equal(plan.replacementRequired,true);
 });
 
-test("feedback-backed unresolved evidence goes directly to one delayed retrieval Review",()=>{
+test("feedback alone does not supersede an existing repair with delayed retrieval",()=>{
   const stableTargetKey="target:WB-4-A-29:root:00000000-0000-4000-8000-000000000055";
   const stablePart={...part("A"),stableTargetKey,currentLabel:"A-evidence",currentEvidence:"A-evidence",
     currentErrorType:"N",currentCorrection:"Aをその場で訂正済み",evidenceSourceAttemptId:2,evidenceUpdatedAt:"2026-08-05"};
   const failed=attempt(2,"2026-08-05",[finding("A","N",false)],{next_action:"Aをその場で訂正済み",saved_gpt_feedback:true,
     learning_event_kind:"assessment",grading_contract:{...contract(["A"]),sourceAttemptId:2,gradedParts:[stablePart]}});
+  const repairRow=review(11,2,["A"],{learning_purpose:"error_repair",
+    grading_contract:{...contract(["A"],"error_repair"),sourceAttemptId:2,gradedParts:[stablePart]}});
   const delayed=review(12,2,["A"],{review_type:"light_check",learning_purpose:"retrieval_check",
     assessment_timing:"delayed_retrieval",correction_provided:true,retention_pending:true,
     grading_contract:{...contract(["A"],"retrieval_check"),sourceAttemptId:2,gradedParts:[stablePart]}});
-  const plan=analyzeReviewReconciliation({attempts:[failed],reviews:[delayed],today:"2026-08-10"}).problems[0];
-  assert.equal(plan.desiredReviewPurpose,"retrieval_check");
-  assert.equal(plan.reviewsToSupersede.length,0);
+  const plan=analyzeReviewReconciliation({attempts:[failed],reviews:[repairRow,delayed],today:"2026-08-10"}).problems[0];
+  assert.equal(plan.desiredReviewPurpose,"error_repair");
+  assert.equal(plan.reviewsToSupersede.some(row=>row.reviewId===12),true);
+  assert.equal(plan.reviewsToSupersede.some(row=>row.reviewId===11),false);
   assert.equal(plan.replacementRequired,false);
+});
+
+test("a superseded repair without success evidence rolls an active retrieval back to repair",()=>{
+  const stableTargetKey="target:WB-4-A-29:root:00000000-0000-4000-8000-000000000056";
+  const stablePart={...part("A"),stableTargetKey,currentLabel:"A-evidence",currentEvidence:"A-evidence",
+    currentErrorType:"W",currentCorrection:"Aを訂正",evidenceSourceAttemptId:223,evidenceUpdatedAt:"2026-08-29"};
+  const failed=attempt(223,"2026-08-29",[finding("A","W",false)],{next_action:"Aを訂正",saved_gpt_feedback:true,
+    learning_event_kind:"assessment",grading_contract:{...contract(["A"]),sourceAttemptId:223,gradedParts:[stablePart]}});
+  const oldRepair=review(436,223,["A"],{status:"superseded",learning_purpose:"error_repair",
+    grading_contract:{...contract(["A"],"error_repair"),sourceAttemptId:223,gradedParts:[stablePart]}});
+  const currentCheck=review(437,223,["A"],{learning_purpose:"retrieval_check",correction_provided:true,retention_pending:true,
+    grading_contract:{...contract(["A"],"retrieval_check"),sourceAttemptId:223,gradedParts:[stablePart]}});
+  const plan=analyzeReviewReconciliation({attempts:[failed],reviews:[oldRepair,currentCheck],today:"2026-08-30"}).problems[0];
+  assert.equal(plan.desiredReviewPurpose,"error_repair");
+  assert.equal(plan.reviewsToSupersede.some(row=>row.reviewId===437),true);
+  assert.equal(plan.replacementRequired,true);
 });
 
 test("explicit success on another problem substitutes the same-problem delayed Review",()=>{

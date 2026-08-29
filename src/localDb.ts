@@ -61,6 +61,7 @@ import {resolveSemanticReviewGeneration} from "./reviewGeneration.ts";
 import {classifyFailureStrength,examHorizonPolicy,learningEventKind,masteryLevelForTargets} from "./examOptimizationPolicy.ts";
 import {parseWholeAnswerRediagnosis,WHOLE_ANSWER_DIAGNOSTIC_VERSION,wholeAnswerDiagnosticFingerprint} from "./wholeAnswerDiagnostic.ts";
 import {deriveDashboardKpis} from "./dashboardKpi.ts";
+import {reviewDueState} from "./todayLearningPolicy.ts";
 
 const PLANNER_RUNTIME_MODE_META_KEY="planner-runtime-mode";
 
@@ -924,6 +925,8 @@ async function reconcileProblemLearningState(problemId?:string,preview=false):Pr
           targeted_parts:prescription.targetedParts,scope_completion_conditions:prescription.completionConditions,
           required_evidence:prescription.requiredEvidence,allowed_reference_level:prescription.allowedReferenceLevel,
           policy_version:prescription.policyVersion,retention_eligible:true,success_transition:"stable",failure_transition:"error_repair",
+          lifecycle_success_evidence_id:`attempt:${source.id}`,
+          lifecycle_transition_provenance:"qualifying_repair_attempt_success",
           deduplication_key:draft.deduplicationKey,earliest_date:draft.window.earliestDate,
           preferred_date:draft.window.preferredDate,latest_date:draft.window.latestDate});
         for(const id of plan.reviewsToSupersede.map(row=>row.reviewId))await db.reviews.update(id,{replaced_by_review_id:inserted});
@@ -1627,7 +1630,10 @@ async function completeReview(id:number,body:Record<string,unknown>){
       source_attempt_id:attemptId,deduplication_key:nextDraft.deduplicationKey,
       earliest_date:nextDraft.window.earliestDate,preferred_date:nextDraft.window.preferredDate,latest_date:nextDraft.window.latestDate,
       retention_eligible:nextPrescription.assessmentTiming==="delayed_retrieval",success_transition:nextPrescription.successTransition,
-      failure_transition:nextPrescription.failureTransition,...planFields(plan),interval_days:nextInterval});
+      failure_transition:nextPrescription.failureTransition,
+      lifecycle_success_evidence_id:`attempt:${attemptId}`,
+      lifecycle_transition_provenance:"qualifying_repair_attempt_success",
+      ...planFields(plan),interval_days:nextInterval});
   }
   if(evaluation.reviewOutcome==="success"){
     const resolved=(await db.weakNotes.toArray()).filter(note=>note.generated_from_attempt_id===source.id);
@@ -2618,7 +2624,9 @@ async function bootstrap():Promise<Bootstrap>{
     const resolvedReview={...review,origin_verified:originResolution.valid};
     const card=resolveReviewCard({item:resolvedReview,problems,attempts,aliases:problemAliases,today,examDate:settings.exam_date});
     const resolvedDue=correctedDueDate(card);
-    const status=["pending","overdue"].includes(review.status)&&resolvedDue<today?"overdue":review.status;
+    const dueAware={...resolvedReview,due_date:resolvedDue};
+    const status=["pending","overdue"].includes(review.status)?
+      reviewDueState(dueAware,today)==="hard_overdue"?"overdue":"pending":review.status;
     return {...resolvedReview,problem_id:card.canonicalProblemId,due_date:resolvedDue,status,
       inferred_mode:card.inferredMode,mode_override:card.modeOverride,sheet_name:card.sheetLabel,
       consistency_warnings:card.consistencyWarnings,review_needed:card.reviewNeeded,
@@ -2647,7 +2655,7 @@ async function bootstrap():Promise<Bootstrap>{
   const kRepeat=[...kGroups.values()].filter(n=>n>1).length;
   const pastSkeleton=activeAttempts.filter(a=>a.date>=fortnight&&pmap.get(a.problem_id)?.category==="past_exam").length;
   const delayed3=reviews.filter(r=>reviewExecutionState(r,today)==="actionable"&&
-    r.status==="overdue"&&r.due_date<addDays(today,-3)).length;
+    reviewDueState(r,today)==="hard_overdue"&&String(r.latest_date||r.due_date)<addDays(today,-3)).length;
   const weakUpdates=weakNotes.filter(w=>w.date>=week).length;
   const scans=pastSessions.filter(s=>["scan_5_questions","scan5"].includes(s.session_type)||!!s.session_kind),exams=pastSessions.filter(s=>["exam_90min","past_exam"].includes(s.session_type)||s.session_kind==="selected_three_timed");
   const studyDays14=new Set([...activeAttempts.filter(a=>a.date>=fortnight).map(a=>a.date),...pastSessions.filter(s=>String(s.date)>=fortnight).map(s=>String(s.date))]).size;
@@ -2703,7 +2711,7 @@ async function bootstrap():Promise<Bootstrap>{
     today,weekA:new Set(activeAttempts.filter(a=>a.date>=week&&pmap.get(a.problem_id)?.category==="A").map(a=>a.problem_id)).size,
     weekPast:pastAttempts.filter(attempt=>attempt.date>=week).length,kRecurrence:kRepeat,
     pending:reviews.filter(reviewIsExecutable).length,
-    overdue:reviews.filter(r=>reviewIsExecutable(r)&&r.status==="overdue").length,
+    overdue:reviews.filter(r=>reviewIsExecutable(r)&&reviewDueState(r,today)==="hard_overdue").length,
     sStableRate:sMemory.length?Math.round(sMemory.filter(s=>s.state==="stable").length/sMemory.length*100):0,
     sForgotten:sMemory.filter(s=>["forgotten","collapsed","check"].includes(s.state)).length,
     scanSuccess:scans.length?Math.round(scans.filter(s=>s.selection_result==="good").length/scans.length*100):0,

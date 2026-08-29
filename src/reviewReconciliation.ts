@@ -255,10 +255,30 @@ export function analyzeReviewReconciliation(args:{
     const desiredRows=[...desired.values()].sort((a,b)=>a.stableIdentityKey.localeCompare(b.stableIdentityKey));
     const desiredIds=desiredRows.map(row=>row.stableIdentityKey);
     const desiredSource=desiredRows.map(row=>attemptMap.get(row.attemptId)).filter((row):row is Attempt=>!!row).sort(attemptOrder).at(-1);
-    const desiredReviewPurpose:"error_repair"|"retrieval_check"=desiredRows.length&&desiredRows.every(event=>{
+    const feedbackBacked=desiredRows.length>0&&desiredRows.every(event=>{
       const source=attemptMap.get(event.attemptId);
       return event.observedOutOfScope||!!source&&source.learning_event_kind==="assessment"&&correctiveFeedbackAvailable(source);
-    })?"retrieval_check":"error_repair";
+    });
+    const lineageKeys=(review:Review)=>new Set(partsFromContract(review).map(part=>
+      part.stableTargetKey||part.stable_target_key||part.id));
+    const explicitRepairSuccess=(repair:Review)=>{
+      if(repair.completion_result==="success"&&["done","completed"].includes(repair.status))return true;
+      return problemAttempts.some(attempt=>Number(attempt.generated_from_review_id||0)===repair.id&&
+        resolvePersistedAttemptLifecycle(attempt).reviewOutcome==="success"&&
+        attempt.minimum_pass_condition_met===true&&attempt.target_issue_resolved===true&&errorsFor(attempt).length===0);
+    };
+    const unprovenRepairPromotion=delayed.some(check=>{
+      const checkSource=Number(check.source_attempt_id||check.generated_from_attempt_id||0),checkKeys=lineageKeys(check);
+      return problemReviews.some(repair=>reviewPurpose(repair)==="error_repair"&&
+        Number(repair.source_attempt_id||repair.generated_from_attempt_id||0)===checkSource&&
+        [...lineageKeys(repair)].some(key=>checkKeys.has(key))&&!explicitRepairSuccess(repair));
+    });
+    // Once an explicit repair Review exists it can only advance after graded
+    // success. Merely generating/showing feedback is not transition evidence.
+    // A new assessment without an existing repair may still schedule its first
+    // delayed check directly under the immediate-correction policy.
+    const desiredReviewPurpose:"error_repair"|"retrieval_check"=
+      repairs.length>0||unprovenRepairPromotion?"error_repair":feedbackBacked?"retrieval_check":"error_repair";
     const latestGraduation=[...problemAttempts].filter(objectiveGraduation).sort(attemptOrder).at(-1);
     const latestAttempt=problemAttempts.at(-1);
     const latestAttemptHasUnresolved=!!latestAttempt&&events.some(event=>event.attemptId===latestAttempt.id&&!event.resolved);
@@ -303,7 +323,7 @@ export function analyzeReviewReconciliation(args:{
     const obsoletePurposeRows=desiredRows.length?(desiredReviewPurpose==="retrieval_check"?repairs:delayed):[];
     for(const review of obsoletePurposeRows)if(!supersedes.some(item=>item.reviewId===review.id))supersedes.push({
       reviewId:review.id,category:reviewPurpose(review)==="retrieval_check"?"stale_delayed_check":"stale_repair",
-      reason:`corrective feedback後のcurrent lifecycleは${desiredReviewPurpose}`,
+      reason:`明示的なrepair成功証拠に基づくcurrent lifecycleは${desiredReviewPurpose}`,
     });
     const viableRepairs=purposeRows.filter(row=>!supersedes.some(item=>item.reviewId===row.id));
     // Ambiguous legacy lineage is never auto-resolved. A missing replay event

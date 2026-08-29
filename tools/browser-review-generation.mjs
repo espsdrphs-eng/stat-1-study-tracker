@@ -89,7 +89,7 @@ try{
   await page.locator("button.problem-chip").first().click();
   const attemptRow=page.locator("tbody tr").filter({hasText:"初手を再現できない"}).first();
   await attemptRow.getByRole("button",{name:"削除"}).click();
-  await page.getByText(/解答履歴と関連する復習予定.*削除しました/).waitFor({timeout:20000});
+  await page.getByText(/解答履歴を無効化し、現在の復習予定を再計算しました/).waitFor({timeout:20000});
 
   const afterDelete=await page.evaluate(async({problemId,oldReviewId,today})=>{
     const open=indexedDB.open("stat-1-study-tracker"),db=await new Promise((resolve,reject)=>{open.onsuccess=()=>resolve(open.result);open.onerror=()=>reject(open.error)});
@@ -105,9 +105,11 @@ try{
   try{await page.getByText(problemId,{exact:true}).first().waitFor({timeout:20000})}catch(error){
     throw new Error(`Current Today UI missing ${problemId}; current=${JSON.stringify({id:afterDelete.current.id,due:afterDelete.current.due_date,status:afterDelete.current.status,logical:afterDelete.current.logical_review_key,hash:afterDelete.current.contract_hash,oldLogical:afterDelete.old?.logical_review_key,oldHash:afterDelete.old?.contract_hash})}; body=${(await page.locator("body").innerText()).slice(0,4000)}`,{cause:error});
   }
+  await page.getByText("任意の維持確認",{exact:true}).waitFor({timeout:20000});
   await page.getByRole("button",{name:"ダッシュボード",exact:true}).first().click();
   const nextAction=page.locator("section.next-task-card");
-  await nextAction.getByText(new RegExp(problemId)).waitFor({timeout:20000});
+  if(await nextAction.count()&&(await nextAction.innerText()).includes(problemId))
+    throw new Error("optional maintenance became Dashboard Next Action");
 
   await importUpdate({...failedUpdate,submission_id:"browser-generation-rebind"},{expectRebind:true});
   const attempts=await readStore("attempts"),reviews=await readStore("reviews");
@@ -122,7 +124,8 @@ try{
   await mkdir("outputs",{recursive:true});
   await download.saveAs(diagnosticPath);
   console.log(JSON.stringify({status:"PASS",oldReviewId:seeded.review.id,currentReviewId:afterDelete.current.id,
-    currentTodayProblemId:problemId,dashboardNextAction:problemId,reboundAttemptId:rebound.id,snapshotUnchanged:true,
+    currentTodayProblemId:problemId,currentTodayLane:"optional maintenance",dashboardNextAction:"not maintenance",
+    reboundAttemptId:rebound.id,snapshotUnchanged:true,
     diagnosticPath},null,2));
 }finally{
   await browser.close();

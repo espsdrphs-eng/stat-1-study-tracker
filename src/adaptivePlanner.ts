@@ -28,7 +28,7 @@ const modeMinutes=(mode:string)=>mode==="full"?35:mode==="main_calc"?20:mode==="
 function phaseName(daysRemaining:number){return examHorizonPolicy(daysRemaining).phase;}
 
 export function rollingPastExamShare(days:AdaptivePlanDay[]){
-  const tasks=days.flatMap(day=>day.tasks),total=tasks.reduce((sum,row)=>sum+row.minutes,0);
+  const tasks=days.flatMap(day=>day.tasks).filter(row=>!row.requiresUserSelection),total=tasks.reduce((sum,row)=>sum+row.minutes,0);
   const past=tasks.filter(row=>["past_exam","scan5","timed"].includes(row.kind)&&!!row.referenceProblemId)
     .reduce((sum,row)=>sum+row.minutes,0);
   return total?past/total:0;
@@ -177,6 +177,7 @@ function planDays(args:{
   weaknesses:ConceptWeaknessInsight[];
 }){
   const result:AdaptivePlanDay[]=[],usedProblems=new Map<string,string>(),usedPast=new Map<string,string>(),usedSessionYears=new Set<number>();
+  const usedDeferredReviewIds=new Set<number>();
   const allActiveReviews=args.reviews.filter(review=>reviewExecutionState(review,args.startDate)==="actionable")
     .sort((a,b)=>a.due_date.localeCompare(b.due_date)||a.id-b.id);
   const reviewDecisions=new Map(allActiveReviews.map(review=>[review.id,reviewPlanningDecision({
@@ -300,18 +301,6 @@ function planDays(args:{
       score=makeWhitebook(date,[2,4,5,6,7,8],"skeleton","露出確認待ちの間も得点形成を止めない");
     }
     if(score&&tasks.reduce((sum,row)=>sum+row.minutes,0)+score.minutes<=args.targetMinutes)tasks.push(score);
-    if(!score&&!tasks.length){
-      const fallback=deferredReviews.find(review=>String(review.earliest_date||review.due_date)<=date);
-      if(fallback){
-        const decision=reviewDecisions.get(fallback.id)!;
-        tasks.push(task({date,slot:"maintenance_selection",kind:"review",label:`${fallback.problem_id} 追加確認`,
-          problemId:fallback.problem_id,reviewId:fallback.id,
-          mode:fallback.grading_contract?.mode||fallback.effective_mode||fallback.inferred_mode||"check",
-          minutes:Number(fallback.grading_contract?.estimatedMinutes||fallback.estimated_minutes||5),
-          reason:decision.reason,requiresUserSelection:true,todayCategory:"repair",whyToday:decision.reason,
-          reviewPlanningTier:decision.tier}));
-      }
-    }
     const coreFloor=Math.min(90,Math.max(60,Math.round(args.targetMinutes*.4)));
     if(phase==="foundation_to_A"&&score&&score.kind!=="scan5"&&
       tasks.reduce((sum,row)=>sum+row.minutes,0)<coreFloor){
@@ -328,6 +317,18 @@ function planDays(args:{
       tasks.push(task({date,slot:"maintenance_selection",kind:"review",label:`${maintenanceConcept.displayName} 短時間確認`,
         conceptId:maintenanceConcept.conceptId,minutes:10,reason:"転移・保持の確認",requiresUserSelection:true}));
     }
+    const optionalMaintenance=deferredReviews.find(review=>!usedDeferredReviewIds.has(review.id)&&
+      String(review.earliest_date||review.due_date)<=date);
+    if(optionalMaintenance){
+      const decision=reviewDecisions.get(optionalMaintenance.id)!;
+      usedDeferredReviewIds.add(optionalMaintenance.id);
+      tasks.push(task({date,slot:"maintenance_selection",kind:"review",label:`${optionalMaintenance.problem_id} 任意の維持確認`,
+        problemId:optionalMaintenance.problem_id,reviewId:optionalMaintenance.id,
+        mode:optionalMaintenance.grading_contract?.mode||optionalMaintenance.effective_mode||optionalMaintenance.inferred_mode||"check",
+        minutes:Number(optionalMaintenance.grading_contract?.estimatedMinutes||optionalMaintenance.estimated_minutes||5),
+        reason:decision.reason,requiresUserSelection:true,todayCategory:"repair",whyToday:decision.reason,
+        actionClass:"maintenance",reviewPlanningTier:decision.tier}));
+    }
     for(const row of tasks){
       const plannedProblem=row.problemId?args.problems.find(problem=>problem.problem_id===row.problemId):undefined;
       if(plannedProblem?.chapter===5)weekActual.chapter5++;
@@ -337,7 +338,7 @@ function planDays(args:{
       if(row.kind==="full"||row.kind==="timed")weekActual.fullOrTimed++;
       if(["past_exam","scan5","timed"].includes(row.kind)&&row.referenceProblemId)weekActual.pastExam++;
     }
-    result.push({date,tasks,totalMinutes:tasks.reduce((sum,row)=>sum+row.minutes,0)});
+    result.push({date,tasks,totalMinutes:tasks.filter(row=>!row.requiresUserSelection).reduce((sum,row)=>sum+row.minutes,0)});
   }
   return {days:result,reviewSchedule};
 }

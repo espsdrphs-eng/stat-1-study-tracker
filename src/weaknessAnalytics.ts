@@ -49,7 +49,8 @@ export function analyzeWeaknesses(
   problems:Problem[],attempts:Attempt[],reviews:Review[],weakNotes:WeakNote[],today:string
 ):{confidence:WeaknessInsight["confidence"];attemptCount:number;insights:WeaknessInsight[]}{
   const pmap=new Map(problems.map(problem=>[problem.problem_id,problem]));
-  const overdueProblems=new Set(reviews.filter(review=>review.status!=="done"&&review.due_date<today).map(review=>review.problem_id));
+  const overdueProblems=new Set(reviews.filter(review=>review.status!=="done"&&
+    String(review.latest_date||review.due_date)<today).map(review=>review.problem_id));
   const groups=new Map<string,Attempt[]>();
   for(const attempt of attempts){
     const problem=pmap.get(attempt.problem_id);

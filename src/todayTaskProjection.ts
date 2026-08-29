@@ -1,6 +1,7 @@
 import type {Attempt,PastSession,ProblemAlias,Task,TodayPlanSnapshot} from "./types.ts";
 import {resolveCanonicalProblemId} from "./examReadiness.ts";
 import {summarizeTodayTime} from "./todayPlan.ts";
+import {prioritizeCurrentTodayTasks} from "./todayLearningPolicy.ts";
 
 const scanModes=new Set(["scan","scan5","scan_only"]);
 
@@ -82,10 +83,10 @@ export function deriveCurrentTodayState(args:{
   tasks:Task[];attempts:Attempt[];pastSessions?:PastSession[];snapshot:TodayPlanSnapshot;aliases?:ProblemAlias[];
   manuallyChecked?:(task:Task)=>boolean;completedMinutes:number;targetMinutes:number;
 }){
-  const tasks=args.tasks.map(task=>({...task,checked:projectTodayTaskChecked({
+  const tasks=prioritizeCurrentTodayTasks(args.tasks.map(task=>({...task,checked:projectTodayTaskChecked({
     task,attempts:args.attempts,pastSessions:args.pastSessions,snapshot:args.snapshot,aliases:args.aliases,
     manuallyChecked:args.manuallyChecked?.(task),
-  })}));
+  })})),args.snapshot.date);
   const timeSummary=summarizeTodayTime(tasks,args.completedMinutes,args.targetMinutes,args.snapshot.start_of_day_planned_minutes);
   return {
     tasks,

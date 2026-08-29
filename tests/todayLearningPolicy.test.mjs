@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {reviewPlanningDecision,todayLearningCategory,whyToday} from "../src/todayLearningPolicy.ts";
+import {
+  deriveActionPriority,deriveCurrentActionClass,reviewDueState,reviewPlanningDecision,
+  todayLearningCategory,whyToday
+} from "../src/todayLearningPolicy.ts";
 
 const problem={id:1,problem_id:"WB-6-A-01",source_type:"whitebook",category:"A",chapter:6,problem_number:1,
   title:"A1",theme:"推定",priority:"core",role:"training",recommended_mode:"full",linked_past_exams:"",
@@ -61,4 +64,45 @@ test("Todayの表示分類は本番演習と補修の2本に集約する",()=>{
   assert.equal(todayLearningCategory(repair),"repair");
   assert.match(whyToday(exam),/初見|選題/);
   assert.match(whyToday(repair),/局所補修|再発/);
+});
+
+test("past_exam由来でもretrieval Reviewは本番演習へ誤分類しない",()=>{
+  const task={...review({problem_id:"PY-2017-Q2"}),review_planning_tier:"high_value_repair",
+    past_exam_task_type:undefined,mode:"check"};
+  assert.equal(deriveCurrentActionClass(task),"targeted_repair");
+  assert.equal(todayLearningCategory(task),"repair");
+});
+
+test("大きな問題のないgeneric retrievalはmaintenanceとして任意化する",()=>{
+  const task={...review(),review_planning_tier:"deferred_maintenance",review_reason:"大きな問題はないため軽く確認"};
+  assert.equal(deriveCurrentActionClass(task),"maintenance");
+});
+
+test("preferred超過とhard overdueはlatest dateで分離する",()=>{
+  const scheduled=review({preferred_date:"2026-08-25",latest_date:"2026-09-01"});
+  assert.equal(reviewDueState(scheduled,"2026-08-24"),"upcoming");
+  assert.equal(reviewDueState(scheduled,"2026-08-30"),"due_window");
+  assert.equal(reviewDueState(scheduled,"2026-09-02"),"hard_overdue");
+});
+
+test("本番演習はgeneric maintenanceよりcanonical priorityが高い",()=>{
+  const exam={problem_id:"PY-2018-Q5",kind:"past_exam",past_exam_task_type:"individual_full",mode:"full",triage:"must"};
+  const maintenance={...review(),review_planning_tier:"deferred_maintenance",triage:"must"};
+  assert.ok(deriveActionPriority(exam,"2026-08-30")<deriveActionPriority(maintenance,"2026-08-30"));
+});
+
+test("hard overdue major repairだけは本番演習より先にできる",()=>{
+  const exam={problem_id:"PY-2018-Q5",kind:"past_exam",past_exam_task_type:"individual_full",mode:"full",triage:"must"};
+  const repair={...review({learning_purpose:"error_repair",grading_contract:contract("error_repair"),
+    preferred_date:"2026-08-20",latest_date:"2026-08-25"}),review_planning_tier:"high_value_repair",triage:"must"};
+  assert.ok(deriveActionPriority(repair,"2026-08-30")<deriveActionPriority(exam,"2026-08-30"));
+});
+
+test("A95・errorなしのlegacy generic checkは○だけでhigh-value retentionにしない",()=>{
+  const source={id:1,problem_id:problem.problem_id,date:"2026-08-11",mode:"check",mark:"○",score_label:"A",score_numeric:95,
+    error_type:"none",error_types:["none"],review_outcome:"success",target_issue_resolved:true,minimum_pass_condition_met:true};
+  const decision=reviewPlanningDecision({review:review({preferred_date:"2026-08-25",latest_date:"2026-09-01"}),
+    attempts:[source],problems:[problem],weaknesses:[]});
+  assert.equal(decision.tier,"deferred_maintenance");
+  assert.equal(decision.scheduleAsRequired,false);
 });

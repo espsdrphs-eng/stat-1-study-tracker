@@ -259,6 +259,7 @@ export type Review = {
   /** Feedback was supplied at assessment time; this Review is the later test, not another correction session. */
   correction_provided?:boolean;retention_pending?:boolean;mastery_level?:1|2|3;
   review_strategy?:"same_problem_retention"|"transfer_preferred"|"deferred_low_roi";
+  lifecycle_success_evidence_id?:string;lifecycle_transition_provenance?:string;
 };
 export type TodayPlanSnapshot = {
   date:string;task_ids:string[];start_of_day_planned_minutes:number;
@@ -325,10 +326,14 @@ export type Task = {
   graded_part_ids?:string[];graded_findings?:GradedFinding[];
   plan_origin?:"adaptive_planner"|"adaptive_additional"|"legacy_planner";additional_candidate_key?:string;purpose_label?:string;
   logical_review_key?:string;mastery_level?:1|2|3;
+  correction_provided?:boolean;retention_pending?:boolean;
   past_exam_task_type?:"clean_scan5"|"practice_scan5"|"individual_full"|"timed_three_question_session"|"simulation";
   past_exam_year?:number;session_problem_ids?:string[];clean_selection_evidence?:boolean;
   today_category?:"exam_practice"|"repair";why_today?:string;
+  action_class?:"exam_practice"|"targeted_repair"|"maintenance";
+  review_due_state?:"upcoming"|"due_window"|"hard_overdue";
   review_planning_tier?:"high_value_repair"|"exceptional_maintenance"|"deferred_maintenance";
+  lifecycle_success_evidence_id?:string;lifecycle_transition_provenance?:string;
 };
 export type WeaknessInsight = {
   theme:string; score:number; level:"重点"|"注意"|"観察"; confidence:"参考"|"暫定"|"分析可能";
@@ -398,6 +403,7 @@ export type AdaptivePlanTask = {
   pastExamTaskType?:"clean_scan5"|"practice_scan5"|"individual_full"|"timed_three_question_session"|"simulation";
   pastExamYear?:number;sessionProblemIds?:string[];cleanSelectionEvidence?:boolean;
   todayCategory?:"exam_practice"|"repair";whyToday?:string;
+  actionClass?:"exam_practice"|"targeted_repair"|"maintenance";
   reviewPlanningTier?:"high_value_repair"|"exceptional_maintenance"|"deferred_maintenance";
 };
 export type AdaptivePlanDay = {date:string;tasks:AdaptivePlanTask[];totalMinutes:number};

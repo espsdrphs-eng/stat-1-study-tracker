@@ -30,7 +30,7 @@ export function adaptivePlanDayToTasks(args:{
   const reviewMap=new Map(args.reviews.map(review=>[review.id,review]));
   const result:Task[]=[];
   for(const item of args.day.tasks){
-    if(item.kind==="exposure_confirmation"||item.requiresUserSelection)continue;
+    if(item.kind==="exposure_confirmation"||item.requiresUserSelection&&item.kind!=="review")continue;
     if(item.kind==="review"){
       const review=item.reviewId?reviewMap.get(item.reviewId):
         args.reviews.filter(row=>row.problem_id===item.problemId&&reviewExecutionState(row,args.today)==="actionable")
@@ -54,6 +54,7 @@ export function adaptivePlanDayToTasks(args:{
         plan_origin:"adaptive_planner",
         purpose_label:item.slot==="repair"?"補修・再発防止":"追加の維持確認",
         review_planning_tier:item.reviewPlanningTier,
+        action_class:item.actionClass,
         today_category:item.todayCategory||"repair",
         why_today:item.whyToday||item.reason,
       } as Task;

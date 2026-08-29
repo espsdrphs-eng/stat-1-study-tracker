@@ -74,7 +74,9 @@ test("delete rollback restores the logical Review into Current Today and stale G
 
   const reloaded=await localGet("/api/bootstrap");
   assert.equal(reloaded.today.tasks.find(task=>task.problem_id===problemId&&!task.checked)?.id,replacement.id);
-  assert.equal(reloaded.today.currentTask?.id,replacement.id);
+  assert.equal(reloaded.today.tasks.find(task=>task.id===replacement.id)?.action_class,"maintenance");
+  assert.equal(reloaded.today.tasks.find(task=>task.id===replacement.id)?.triage,"tomorrow");
+  assert.notEqual(reloaded.today.currentTask?.id,replacement.id);
   assert.equal((await db.meta.get(snapshotKey)).value,snapshotBefore);
 
   await assert.rejects(()=>localPost("/api/import",{updates:[{...failedUpdate,submission_id:"semantic-mismatch",

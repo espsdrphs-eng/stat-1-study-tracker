@@ -131,3 +131,18 @@ test("canonical Today projection completes planned skeleton with main_calc and a
     currentTodayTasks:current.tasks,currentNextTask:current.tasks[0]});
   assert.equal(staleDashboard.counts.today_next_action_mismatch,1);
 });
+
+test("canonical Today priority makes exam practice the Dashboard/Today first action and defers maintenance",()=>{
+  const maintenance={problem_id:"WB-6-A-19",title:"WB maintenance",kind:"review",reason:"generic",mode:"check",minutes:5,load:.2,
+    triage:"must",id:378,review_type:"light_check",learning_purpose:"retrieval_check",review_planning_tier:"deferred_maintenance",
+    preferred_date:"2026-08-25",latest_date:"2026-09-01"};
+  const exam={problem_id:"PY-2018-Q5",title:"2018 Q5",kind:"past_exam",reason:"timed completion",mode:"full",minutes:35,load:1,
+    triage:"must",past_exam_task_type:"individual_full"};
+  const snapshot={date:"2026-08-30",task_ids:[],start_of_day_planned_minutes:40,initial_bucket:{},initial_estimated_minutes:{},
+    tasks:[maintenance,exam],created_at:"2026-08-30T00:00:00Z"};
+  const current=deriveCurrentTodayState({tasks:snapshot.tasks,attempts:[],snapshot,completedMinutes:0,targetMinutes:150});
+  assert.equal(current.currentTask?.problem_id,"PY-2018-Q5");
+  assert.equal(current.remainingTasks.find(task=>task.id===378)?.triage,"tomorrow");
+  assert.equal(current.remainingTasks.find(task=>task.id===378)?.action_class,"maintenance");
+  assert.equal(current.remainingTasks.find(task=>task.problem_id==="PY-2018-Q5")?.action_class,"exam_practice");
+});
