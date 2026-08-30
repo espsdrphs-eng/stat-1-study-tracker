@@ -106,3 +106,14 @@ test("A95・errorなしのlegacy generic checkは○だけでhigh-value retentio
   assert.equal(decision.tier,"deferred_maintenance");
   assert.equal(decision.scheduleAsRequired,false);
 });
+
+test("単発Cだけのrepairは本番由来でもrequiredへ昇格しない",()=>{
+  const source={id:1,problem_id:problem.problem_id,date:"2026-08-29",mode:"full",mark:"△",score_label:"A",score_numeric:82,
+    error_type:"C",error_types:["C"],parent_past_session_id:44,review_outcome:"partial",
+    error_point:"V^2をE[V^2]と書いた"};
+  const decision=reviewPlanningDecision({review:review({learning_purpose:"error_repair",grading_contract:contract("error_repair"),
+    generated_from_past_session_id:44}),attempts:[source],problems:[problem],weaknesses:[weakness({recurrenceCount:0,
+      strongFailures:0,pastExamFailureCount:1})]});
+  assert.equal(decision.scheduleAsRequired,false);
+  assert.equal(decision.tier,"deferred_maintenance");
+});

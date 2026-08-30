@@ -277,5 +277,29 @@ test("planner audit rejects one-problem 90-minute work and skipping an older cle
   const audit=runIntegrityAudit({attempts:[],reviews:[],today:"2026-08-27",examDate:"2026-11-15",
     currentPlanSummary:summary,pastExamCatalog:catalog});
   assert.equal(audit.counts.single_problem_ninety_minute_session,1);
+  assert.equal(audit.counts.past_exam_single_problem_90min,1);
   assert.equal(audit.counts.clean_scan_year_skipped,1);
+});
+
+test("canonical plan audit catches unstable session identity and low-value required repair",()=>{
+  const saved={problem_id:"PY-2018-Q1",title:"2018年 本番型session",kind:"得点形成",reason:"本番型",mode:"full",
+    minutes:90,load:0,triage:"must",past_exam_task_type:"timed_three_question_session",past_exam_year:2018,
+    session_problem_ids:[1,2,3,4,5].map(n=>`PY-2018-Q${n}`),stable_session_key:"past_exam_session:2018:timed:clean:2026-08-30"};
+  const repair={problem_id:"WB-5-A-20",title:"minor",kind:"得点形成",reason:"単発C",mode:"skeleton",minutes:10,load:0,
+    triage:"must",today_category:"repair",repair_lineage:{sourceAttemptId:1,sourceProblemId:"PY-2017-Q2",
+      sourceFindingId:"attempt:1:error:C",rootConceptId:"c1",materiality:"minor",recurrence:0,examImpact:"low",
+      repairProblemId:"WB-5-A-20",matchReason:"fine concept match"}};
+  const currentSession={taskKey:"past_exam_session:2019:timed:clean:2026-08-30",stableSessionKey:"past_exam_session:2019:timed:clean:2026-08-30",
+    date:"2026-08-30",slot:"score_building",kind:"timed",label:"2019年 本番型session",problemId:"PY-2019-Q1",
+    referenceProblemId:"PE-2019-Q01",minutes:90,reason:"本番型",requiresUserSelection:false,pastExamTaskType:"timed_three_question_session",
+    pastExamYear:2019,sessionProblemIds:[1,2,3,4,5].map(n=>`PY-2019-Q${n}`),sessionWorkflow:"5問scan → 3問選択 → 3問答案 → 採点"};
+  const summary={days:1,plan:[{date:"2026-08-30",tasks:[currentSession],totalMinutes:90}],totalMinutes:90,
+    counts:{scoreBuilding:1,repair:0,maintenance:0,scan5:0,full:0,timed:1,pastExam:1,chapter5:0,chapter7:0,chapter8:0},
+    weeklyMinimumViolations:[],dailyCapacityViolations:0,reviewSchedule:{repairBudgetMinutes:0,placements:[],capacityConflicts:[]}};
+  const snapshot={date:"2026-08-30",task_ids:[],start_of_day_planned_minutes:100,initial_bucket:{},initial_estimated_minutes:{},
+    tasks:[saved,repair],created_at:"2026-08-30T00:00:00Z"};
+  const audit=runIntegrityAudit({attempts:[],reviews:[],today:"2026-08-30",todayPlanSnapshots:[snapshot],
+    currentTodayTasks:[saved,repair],currentNextTask:saved,currentPlanSummary:summary});
+  assert.equal(audit.counts.unexecuted_past_session_replaced,1);
+  assert.equal(audit.counts.minor_issue_promoted_to_required_repair,1);
 });

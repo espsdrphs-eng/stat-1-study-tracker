@@ -87,8 +87,9 @@ export function currentActionFingerprint(task:Partial<Task>,review?:Partial<Revi
   // Persisted row IDs are generation identity, not learning-action identity.
   // Legacy rows without a logical key fall back to immutable contract content.
   const logical=review?.logical_review_key||task.logical_review_key||review?.grading_contract?.contractHash||review?.contract_hash||"";
-  const session=[task.past_exam_task_type||"",task.past_exam_year||"",...(task.session_problem_ids||[])].join(":");
-  return [task.problem_id,logical,level,purpose,mode,partKeys(review).join(","),session].join("|");
+  const session=task.stable_session_key||[task.past_exam_task_type||"",task.past_exam_year||"",...(task.session_problem_ids||[])].join(":");
+  const problemIdentity=task.stable_session_key?"past_exam_session":task.problem_id;
+  return [problemIdentity,logical,level,purpose,mode,partKeys(review).join(","),session].join("|");
 }
 
 export function learningEventKind(args:{purpose?:LearningPurpose;timing?:AssessmentTiming;transferEvidence?:boolean;

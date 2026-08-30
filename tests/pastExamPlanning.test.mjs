@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {buildPastExamYearCandidates,derivePastExamWorkspace,generatedUnseenPolicy,selectPastExamYear} from "../src/pastExamPlanning.ts";
+import {buildPastExamYearCandidates,derivePastExamSessionState,derivePastExamWorkspace,generatedUnseenPolicy,selectPastExamYear} from "../src/pastExamPlanning.ts";
 import {buildPastExamCatalog} from "../src/examReferencePack.ts";
 import {pastProblem,record} from "./adaptiveFixture.mjs";
 import {deriveCurrentTodayState} from "../src/todayTaskProjection.ts";
+import {currentActionFingerprint} from "../src/examOptimizationPolicy.ts";
 
 const source=record({data:{...record().data,pastExamProblems:[2016,2017,2018,2019,2024,2025]
   .flatMap(year=>Array.from({length:5},(_,index)=>pastProblem(year,index+1)))}});
@@ -34,6 +35,22 @@ test("workspaceはD80でscan・選択・3問答案・採点を一つの推奨ses
   assert.equal(workspace.recommended.year,2018);
   assert.equal(workspace.recommended.taskType,"timed_three_question_session");
   assert.match(workspace.recommended.workflow,/5問scan.+3問選択.+3問答案.+採点/);
+});
+
+test("PastExamSession progressはscan・選択・答案・採点の事実から導出する",()=>{
+  assert.equal(derivePastExamSessionState(null),"planned");
+  assert.equal(derivePastExamSessionState({prompt_scanned_at:"2026-08-30T00:00:00Z"}),"scan_started");
+  assert.equal(derivePastExamSessionState({final_selected_problem_ids:["a","b","c"]}),"selection_committed");
+  assert.equal(derivePastExamSessionState({questions:[{completed:true,actualScore:null}]}),"grading_pending");
+  assert.equal(derivePastExamSessionState({attempt_completed_at:"2026-08-30T02:00:00Z",
+    questions:[1,2,3].map(()=>({completed:true,actualScore:70}))}),"completed");
+});
+
+test("PastExamSession identityは内部anchor problemの変更に依存しない",()=>{
+  const base={title:"2018年 本番型session",kind:"得点形成",mode:"full",past_exam_task_type:"timed_three_question_session",
+    stable_session_key:"past_exam_session:2018:timed_three_question_session:clean:2026-08-30"};
+  assert.equal(currentActionFingerprint({...base,problem_id:"PY-2018-Q1"}),
+    currentActionFingerprint({...base,problem_id:"PY-2018-Q5"}));
 });
 
 test("2024/2025は通常trainingから保護し最終simulationだけで選択可能",()=>{

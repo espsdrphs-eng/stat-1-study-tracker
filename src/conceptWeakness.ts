@@ -172,7 +172,7 @@ export function analyzeConceptWeaknesses(args:{
 
 export function buildPastExamRepairCandidates(args:{
   record?:StoredExamReferencePack|null;sessions:PastSession[];attempts:Attempt[];
-  conceptWeaknesses:ConceptWeaknessInsight[];
+  conceptWeaknesses:ConceptWeaknessInsight[];problems?:Problem[];
 }):PastExamRepairCandidate[]{
   if(!args.record)return [];
   const references=new Map(args.record.data.pastExamProblems.map(problem=>[canonicalPastExamProblemId(problem),problem]));
@@ -197,12 +197,31 @@ export function buildPastExamRepairCandidates(args:{
         .filter((row):row is ConceptWeaknessInsight=>!!row)
         .sort((a,b)=>b.priorityScore-a.priorityScore).slice(0,2);
       for(const row of ranked){
+        const errors=errorValues(attempt),observedMajor=attempt.observed_out_of_scope_findings?.find(finding=>
+          finding.materiality==="major"&&finding.confidence!=="low"&&
+          (!finding.root_cause_key||finding.root_cause_key===row.conceptId));
+        const unresolvedFinding=attempt.graded_findings?.find(finding=>!finding.resolved);
+        const recurrence=Number(row.recurrenceCount||0);
+        const materiality:PastExamRepairCandidate["materiality"]=observedMajor||errors.some(error=>["K","W"].includes(error))||
+          attempt.review_outcome==="failed"||errors.includes("N")&&Number(attempt.score_numeric||0)<70||recurrence>0?"major":"minor";
+        const required=materiality==="major"&&(recurrence>0||row.pastExamFailureCount>0||attempt.review_outcome==="failed");
+        const sourceFindingId=observedMajor?.finding_id||observedMajor?.stable_target_key||unresolvedFinding?.graded_part_id||
+          `attempt:${attempt.id}:error:${errors.sort().join("-")}`;
+        const linkedWhitebook=(linksByPast.get(sourceProblemId)||[]).filter(problemId=>{
+          const problem=args.problems?.find(item=>item.problem_id===problemId);
+          return !!problem?.fine_concept_ids?.includes(row.conceptId);
+        }).slice(0,2);
         const transfer=args.record.data.pastExamProblems.filter(problem=>problem.schedulable&&
           canonicalPastExamProblemId(problem)!==sourceProblemId&&problem.fine_concept_ids.includes(row.conceptId))
           .map(canonicalPastExamProblemId).slice(0,3);
-        candidates.push({sessionId:session.id,sourceProblemId,conceptId:row.conceptId,conceptLabel:row.displayName,
-          whitebookProblemIds:(linksByPast.get(sourceProblemId)||[]).slice(0,3),transferProblemIds:transfer,
-          reason:`過去問答案の${errorValues(attempt).join("/")}と概念証拠を照合した確認候補`,
+        candidates.push({sessionId:session.id,sourceAttemptId:attempt.id,sourceProblemId,sourceFindingId,
+          conceptId:row.conceptId,conceptLabel:row.displayName,materiality,recurrence,
+          examImpact:materiality==="major"?"high":"low",required,
+          whitebookProblemIds:linkedWhitebook,transferProblemIds:transfer,
+          matchReason:linkedWhitebook.length?`fine concept「${row.displayName}」と検証済みlinkが一致`:
+            `fine concept「${row.displayName}」に一致する白本linkなし`,
+          reason:required?`過去問 ${sourceProblemId} の本番得点を変える${errors.join("/")}を最小補修`:
+            `単発の${errors.join("/")}は必須化せず任意確認`,
           requiresUserConfirmation:true});
       }
     }

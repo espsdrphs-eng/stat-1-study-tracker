@@ -121,6 +121,9 @@ export function reviewPlanningDecision(args:{
   const graduated=!!source&&resolvePersistedAttemptLifecycle(source).graduated;
   const sourceMajor=errorTypes(source).size>0||source?.review_outcome==="failed"||
     !!source?.observed_out_of_scope_findings?.some(row=>row.materiality==="major"&&row.confidence!=="low");
+  const sourceErrors=errorTypes(source);
+  const isolatedMinorC=sourceErrors.size===1&&sourceErrors.has("C")&&source?.review_outcome!=="failed"&&
+    !recurrence&&!source?.observed_out_of_scope_findings?.some(row=>row.materiality==="major"&&row.confidence!=="low");
   const pastExamOrigin=!!review.generated_from_past_session_id||!!review.parent_past_session_id||
     !!source?.parent_past_session_id||problem?.source_type==="past_exam";
   const activeTargets=review.grading_contract?.gradedParts?.length||review.graded_part_ids?.length||review.targeted_parts?.length||0;
@@ -135,6 +138,8 @@ export function reviewPlanningDecision(args:{
     reason:"別問題・本番形式の参照なし成功をmaintenance代替証拠として採用"};
   if(graduated&&purpose!=="error_repair")return {tier:"deferred_maintenance",scheduleAsRequired:false,
     reason:"保持済みでcurrent major targetがなく、経過日数だけでは必須化しない"};
+  if(purpose==="error_repair"&&isolatedMinorC)return {tier:"deferred_maintenance",scheduleAsRequired:false,
+    reason:"単発の表記・記号Cは本番得点を変える再発証拠がないため任意の短時間確認へ送る"};
   if(purpose==="error_repair")return {tier:"high_value_repair",scheduleAsRequired:true,
     reason:"未解決targetの局所補修"};
   if(retentionPending)return {tier:"high_value_repair",scheduleAsRequired:true,

@@ -121,7 +121,8 @@ test("D79はcalendar bucketで2019へ飛ばずclean年度を古い順に使い65
   assert.equal(concrete.some(task=>task.label.startsWith("2019年")),false);
   const timed=concrete.find(task=>task.kind==="timed");
   assert.equal(timed.minutes,90);assert.equal(timed.pastExamTaskType,"timed_three_question_session");
-  assert.equal(timed.sessionProblemIds.length,5);assert.match(timed.label,/3問timed/);
+  assert.equal(timed.sessionProblemIds.length,5);assert.equal(timed.label,"2016年 本番型session");
+  assert.match(timed.sessionWorkflow,/3問答案/);
   const share=rollingPastExamShare(week);
   assert.ok(share>=.65&&share<=.7,`D79 share=${share}`);
 });
@@ -139,6 +140,28 @@ test("D80で2016露出・2017部分露出・2018未露出なら2018 clean sessio
   assert.equal(plan.plan14.plan.flatMap(day=>day.tasks).some(task=>task.minutes===90&&task.pastExamTaskType!=="timed_three_question_session"),false);
   const share=rollingPastExamShare(plan.plan14.plan.slice(0,7));
   assert.ok(share>=.65&&share<=.7,`D80 share=${share}`);
+});
+
+test("未実施の本番型sessionはreplanだけで年度・identityを変更しない",()=>{
+  const rows=[2018,2019].flatMap(year=>Array.from({length:5},(_,index)=>pastProblem(year,index+1)));
+  const source=record({data:{...baseRecord.data,pastExamProblems:rows}});
+  const fresh=buildPastExamCatalog({record:source,sessions:[],attempts:[],exposureOverrides:{}});
+  const first=buildAdaptivePlannerShadow({record:source,catalog:fresh,weaknesses:[repairWeakness],problems:repairWhitebook,
+    attempts:[],reviews:[],pastSessions:[],currentTasks:[],today:"2026-08-30",examDate:"2026-11-15",targetMinutes:150});
+  const session=first.plan14.plan[0].tasks.find(task=>task.pastExamTaskType==="timed_three_question_session");
+  assert.equal(session.pastExamYear,2018);
+  assert.ok(session.stableSessionKey);
+  const saved={problem_id:session.problemId,title:session.label,kind:"得点形成",reason:session.reason,mode:"full",
+    minutes:90,load:0,triage:"must",past_exam_task_type:session.pastExamTaskType,past_exam_year:session.pastExamYear,
+    session_problem_ids:session.sessionProblemIds,stable_session_key:session.stableSessionKey,past_exam_session_state:"planned"};
+  const changedCatalog=fresh.map(row=>row.year===2018?{...row,exposure:"prompt_scanned"}:row);
+  const rerun=buildAdaptivePlannerShadow({record:source,catalog:changedCatalog,weaknesses:[repairWeakness],problems:repairWhitebook,
+    attempts:[],reviews:[],pastSessions:[],currentTasks:[saved],today:"2026-08-30",examDate:"2026-11-15",targetMinutes:150});
+  const retained=rerun.plan14.plan[0].tasks.find(task=>task.pastExamTaskType==="timed_three_question_session");
+  assert.equal(retained.pastExamYear,2018);
+  assert.equal(retained.stableSessionKey,session.stableSessionKey);
+  assert.equal(retained.label,"2018年 本番型session");
+  assert.match(retained.sessionWorkflow,/5問scan.*3問選択.*3問答案.*採点/);
 });
 
 test("eligible過去問0件では学習時間に数えないwarningを1件だけ出す",()=>{

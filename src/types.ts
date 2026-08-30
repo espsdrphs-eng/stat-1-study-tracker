@@ -329,6 +329,10 @@ export type Task = {
   correction_provided?:boolean;retention_pending?:boolean;
   past_exam_task_type?:"clean_scan5"|"practice_scan5"|"individual_full"|"timed_three_question_session"|"simulation";
   past_exam_year?:number;session_problem_ids?:string[];clean_selection_evidence?:boolean;
+  stable_session_key?:string;
+  past_exam_session_state?:"planned"|"scan_started"|"selection_committed"|"answers_in_progress"|"grading_pending"|"completed"|"deferred";
+  session_workflow?:string;
+  repair_lineage?:RepairLineageProjection;
   today_category?:"exam_practice"|"repair";why_today?:string;
   action_class?:"exam_practice"|"targeted_repair"|"maintenance";
   review_due_state?:"upcoming"|"due_window"|"hard_overdue";
@@ -402,6 +406,10 @@ export type AdaptivePlanTask = {
   reviewScheduleStatus?:"within_window"|"overdue_recovery";
   pastExamTaskType?:"clean_scan5"|"practice_scan5"|"individual_full"|"timed_three_question_session"|"simulation";
   pastExamYear?:number;sessionProblemIds?:string[];cleanSelectionEvidence?:boolean;
+  stableSessionKey?:string;
+  pastExamSessionState?:"planned"|"scan_started"|"selection_committed"|"answers_in_progress"|"grading_pending"|"completed"|"deferred";
+  sessionWorkflow?:string;
+  repairLineage?:RepairLineageProjection;
   todayCategory?:"exam_practice"|"repair";whyToday?:string;
   actionClass?:"exam_practice"|"targeted_repair"|"maintenance";
   reviewPlanningTier?:"high_value_repair"|"exceptional_maintenance"|"deferred_maintenance";
@@ -440,9 +448,22 @@ export type AdditionalStudyCandidate = {
   purposeLabel:string;reason:string;minutes:number;task:Task;
 };
 export type PastExamRepairCandidate = {
-  sessionId:number;sourceProblemId:string;conceptId:string;conceptLabel:string;
+  sessionId:number;sourceAttemptId:number;sourceProblemId:string;sourceFindingId:string;
+  conceptId:string;conceptLabel:string;materiality:"minor"|"major";recurrence:number;
+  examImpact:"low"|"medium"|"high";required:boolean;matchReason:string;
   whitebookProblemIds:string[];transferProblemIds:string[];reason:string;
   requiresUserConfirmation:true;
+};
+export type RepairLineageProjection = {
+  sourceAttemptId:number;sourceProblemId:string;sourceFindingId:string;
+  rootConceptId:string;materiality:"minor"|"major";recurrence:number;
+  examImpact:"low"|"medium"|"high";repairProblemId:string;matchReason:string;
+};
+export type CanonicalStudyPlan = {
+  primaryAction:Task|null;examPractice:Task[];requiredRepairs:Task[];
+  optionalMaintenance:Task[];optionalExtras:Task[];
+  rollingAllocation:{examPracticeMinutes:number;requiredRepairMinutes:number;optionalMinutes:number;examPracticeShare:number|null};
+  reasons:string[];generatedAt:string;sourceStateVersion:string;
 };
 export type AdaptiveLearning = {
   referencePack:ExamReferencePackStatus;
@@ -529,6 +550,7 @@ export type Bootstrap = {
     counts:{attempts:number;evaluations:number;reviewPlans:number};
   };
   today:{tasks:Task[];currentTask?:Task;totalLoad:number;plannedMinutes:number;remainingMinutes:number;actualMinutes:number;
+    canonicalStudyPlan:CanonicalStudyPlan;
     targetMinutes:number;capacityPercent:number;warning:string;guidance:string;
     triageMinutes?:{must:number;if_time:number;tomorrow:number};
     planned_minutes_total:number;completed_minutes_today:number;remaining_minutes_today:number;

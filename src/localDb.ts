@@ -62,6 +62,8 @@ import {classifyFailureStrength,examHorizonPolicy,learningEventKind,masteryLevel
 import {parseWholeAnswerRediagnosis,WHOLE_ANSWER_DIAGNOSTIC_VERSION,wholeAnswerDiagnosticFingerprint} from "./wholeAnswerDiagnostic.ts";
 import {deriveDashboardKpis} from "./dashboardKpi.ts";
 import {reviewDueState} from "./todayLearningPolicy.ts";
+import {deriveCanonicalStudyPlan} from "./canonicalStudyPlan.ts";
+import {derivePastExamSessionState} from "./pastExamPlanning.ts";
 
 const PLANNER_RUNTIME_MODE_META_KEY="planner-runtime-mode";
 
@@ -540,7 +542,8 @@ const repairRules:[string,string[],string[]][] = [
 
 const loadFor=(mode:string)=>({check:.2,skeleton:.5,main_calc:.8,full:1.2,scan:.6,exam_90min:3}[mode]??.5);
 const todayString=()=>new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Tokyo",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
-const taskSnapshotId=(task:Task)=>task.id&&task.review_type?`review:${task.id}`:`task:${task.problem_id}:${task.kind}`;
+const taskSnapshotId=(task:Task)=>task.id&&task.review_type?`review:${task.id}`:
+  task.stable_session_key?`session:${task.stable_session_key}`:`task:${task.problem_id}:${task.kind}`;
 const addDays=addCalendarDays;
 async function reviewDueDate(date:string,days:number){
   return addCalendarDays(date,days);
@@ -2864,12 +2867,18 @@ async function bootstrap():Promise<Bootstrap>{
   });
   const plannerMode=metaEntries.find(entry=>entry.key===PLANNER_RUNTIME_MODE_META_KEY)?.value==="legacy"
     ?"legacy" as const:"adaptive" as const;
+  const snapshotKey=`today-plan-snapshot:${today}`;
+  let snapshot:TodayPlanSnapshot|null=null;
+  const storedSnapshot=metaEntries.find(entry=>entry.key===snapshotKey)?.value;
+  if(storedSnapshot) try{snapshot=JSON.parse(storedSnapshot) as TodayPlanSnapshot}catch{snapshot=null}
   const conceptWeaknesses=analyzeConceptWeaknesses({record:referenceRecord,problems,attempts:activeAttempts,
     reviews,weakNotes,today});
+  const pastExamRepairCandidates=buildPastExamRepairCandidates({record:referenceRecord,sessions:pastSessions,
+    attempts:activeAttempts,conceptWeaknesses,problems});
   const plannerShadow=buildAdaptivePlannerShadow({record:referenceRecord,catalog:pastExamCatalog,
     weaknesses:conceptWeaknesses,problems,attempts:activeAttempts,reviews,pastSessions,
-    currentTasks:plannerMode==="legacy"?baseTasks:[],today,examDate:settings.exam_date,
-    targetMinutes:settings.daily_study_minutes});
+    currentTasks:plannerMode==="legacy"?baseTasks:(snapshot?.tasks||[]),today,examDate:settings.exam_date,
+    targetMinutes:settings.daily_study_minutes,repairCandidates:pastExamRepairCandidates});
   const adaptiveTodayTasks=adaptivePlanDayToTasks({
     day:plannerShadow.plan14.plan.find(day=>day.date===today),problems,reviews,today
   });
@@ -2878,10 +2887,6 @@ async function bootstrap():Promise<Bootstrap>{
   const generatedTriage=plannerMode==="legacy"
     ?triageTodayTasks(baseTasks,settings.daily_study_minutes,problems,today)
     :{tasks:adaptiveTodayTasks};
-  const snapshotKey=`today-plan-snapshot:${today}`;
-  let snapshot:TodayPlanSnapshot|null=null;
-  const storedSnapshot=metaEntries.find(entry=>entry.key===snapshotKey)?.value;
-  if(storedSnapshot) try{snapshot=JSON.parse(storedSnapshot) as TodayPlanSnapshot}catch{snapshot=null}
   if(!snapshot){
     const snapshotTasks=generatedTriage.tasks.map(task=>({...task,checked:false}));
     snapshot={
@@ -2918,9 +2923,11 @@ async function bootstrap():Promise<Bootstrap>{
     const forcedMust=review?.triage_override==="must"||record?.triage_override==="must";
     const contract=review?.grading_contract||saved.grading_contract||current?.grading_contract;
     const contractFields=contract?taskFieldsFromContract(contract):{};
+    const matchingPastSession=saved.past_exam_year?pastSessions.filter(session=>session.year===saved.past_exam_year&&session.date===today)
+      .sort((a,b)=>b.id-a.id)[0]:undefined;
     const projected={...current,...saved,...(review||{}),...contractFields,
       kind:saved.kind,reason:review&&review.id!==saved.id?"最新の復習状態へ同期":saved.reason,
-      title:pmap.get(saved.problem_id)?.display_label||pmap.get(saved.problem_id)?.title||saved.title,
+      title:saved.stable_session_key?saved.title:(pmap.get(saved.problem_id)?.display_label||pmap.get(saved.problem_id)?.title||saved.title),
       theme:pmap.get(saved.problem_id)?.theme||saved.theme,
       canonical_problem_type:pmap.get(saved.problem_id)?.canonical_problem_type||saved.canonical_problem_type,
       canonical_keywords:[...(pmap.get(saved.problem_id)?.canonical_keywords||[]),...(answer?.canonical_keywords||saved.canonical_keywords||[])],
@@ -2936,6 +2943,7 @@ async function bootstrap():Promise<Bootstrap>{
       // Snapshot selection/order/triage/minutes stay fixed. Current Review content is a read-only overlay.
       minutes:Number(snapshot!.initial_estimated_minutes[key]??saved.minutes),
       triage:forcedMust?"must":snapshot!.initial_bucket[key]||saved.triage||"tomorrow",
+      past_exam_session_state:saved.past_exam_year?derivePastExamSessionState(matchingPastSession):saved.past_exam_session_state,
     } as Task;
     return projected;
   };
@@ -2952,6 +2960,7 @@ async function bootstrap():Promise<Bootstrap>{
     },
     manuallyChecked:task=>checkedKeys.has(`today-check:${today}:${task.problem_id}:${task.kind}`),
     completedMinutes:actualMinutes,targetMinutes:settings.daily_study_minutes});
+  const canonicalStudyPlan=deriveCanonicalStudyPlan({tasks:currentToday.tasks,today});
   const tasks=currentToday.tasks,timeSummary=currentToday.timeSummary;
   const totalLoad=Math.round(tasks.filter(task=>!task.checked&&task.triage!=="tomorrow").reduce((sum,x)=>sum+x.load,0)*10)/10;
   const activeRemainingMinutes=timeSummary.activeRemainingMinutes;
@@ -2993,7 +3002,7 @@ async function bootstrap():Promise<Bootstrap>{
   });
   const integrityHealth=runIntegrityAudit({
     attempts,reviews:rawReviews,problems,aliases:problemAliases,today,todayPlanSnapshots:[snapshot],validCrossTargetReviewIds,
-    currentTodayTasks:tasks,currentNextTask:currentToday.currentTask,currentPlanSummary:plannerShadow.plan14,
+    currentTodayTasks:tasks,currentNextTask:canonicalStudyPlan.primaryAction||undefined,currentPlanSummary:plannerShadow.plan14,
     additionalCandidates:additionalStudy.candidates,eligibleTodayTasks:generatedTriage.tasks,
     examDate:settings.exam_date||"2026-11-15",pastExamCatalog,
   });
@@ -3020,8 +3029,6 @@ async function bootstrap():Promise<Bootstrap>{
         catch{return {}}})()
     }
   };
-  const pastExamRepairCandidates=buildPastExamRepairCandidates({record:referenceRecord,sessions:pastSessions,
-    attempts:activeAttempts,conceptWeaknesses});
   const adaptiveLearning={referencePack:buildReferencePackStatus(referenceRecord),pastExamCatalog,
     conceptWeaknesses,pastExamRepairCandidates,plannerShadow,plannerMode,weaknessModel:"concept_evidence_v1" as const};
   let coachHistory:CoachDiagnosis[]=[];
@@ -3030,7 +3037,7 @@ async function bootstrap():Promise<Bootstrap>{
     dashboard,reviews,problems,planner:plannerShadow,today});
   const horizon=examHorizonPolicy(plannerShadow.daysRemaining);
   const dashboardWithKpis={...dashboard,kpis:deriveDashboardKpis({today,updatedAt:new Date().toISOString(),coach,
-    readiness:dashboard.readiness,concepts:conceptWeaknesses,currentTask:currentToday.currentTask,
+    readiness:dashboard.readiness,concepts:conceptWeaknesses,currentTask:canonicalStudyPlan.primaryAction||undefined,
     daysRemaining:plannerShadow.daysRemaining,phaseLabel:dashboard.pace.phaseLabel,
     pastExamShare:rollingPastExamShare(plannerShadow.plan14.plan.slice(0,7)),
     pastExamShareTarget:`${Math.round(horizon.pastExamShareMin*100)}〜${Math.round(horizon.pastExamShareMax*100)}%`,
@@ -3038,7 +3045,7 @@ async function bootstrap():Promise<Bootstrap>{
   const masteryByProblem=deriveMasteryByProblem({problemIds:problems.map(problem=>problem.problem_id),attempts:activeAttempts,reviews});
   return {problems:problems.sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.category.localeCompare(b.category)||a.problem_number-b.problem_number),attempts,reviews,roadmap,weakNotes,pastSessions,answerIndex,problemAliases,dashboard:dashboardWithKpis,settings,masterStatus,databaseStatus,adaptiveLearning,
     coach,masteryByProblem,
-    today:{tasks,currentTask:currentToday.currentTask,totalLoad,plannedMinutes:plannedTotal,remainingMinutes,actualMinutes,targetMinutes:settings.daily_study_minutes,capacityPercent,warning,guidance,
+    today:{tasks,currentTask:canonicalStudyPlan.primaryAction||undefined,canonicalStudyPlan,totalLoad,plannedMinutes:plannedTotal,remainingMinutes,actualMinutes,targetMinutes:settings.daily_study_minutes,capacityPercent,warning,guidance,
       planned_minutes_total:plannedTotal,completed_minutes_today:actualMinutes,remaining_minutes_today:remainingMinutes,
       postponed_minutes_today:postponedMinutes,target_minutes_today:settings.daily_study_minutes,
       start_of_day_planned_minutes:snapshot.start_of_day_planned_minutes,active_remaining_minutes:activeRemainingMinutes,

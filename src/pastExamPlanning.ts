@@ -1,6 +1,21 @@
 import type {Attempt,ConceptWeaknessInsight,ExamReferenceCatalogItem,PastSession} from "./types.ts";
 
 export type PastExamTaskType="clean_scan5"|"practice_scan5"|"individual_full"|"timed_three_question_session"|"simulation";
+export type PastExamSessionState="planned"|"scan_started"|"selection_committed"|"answers_in_progress"|"grading_pending"|"completed"|"deferred";
+
+/** Derives workflow progress from immutable session facts; refresh never resets it. */
+export function derivePastExamSessionState(session?:Partial<PastSession>|null):PastExamSessionState{
+  if(!session)return "planned";
+  if(session.deferred===true)return "deferred";
+  if(session.simulation_completed_at||session.attempt_completed_at&&Number((session.questions||[]).filter(row=>row.completed).length)>=3)return "completed";
+  const selected=(session.final_selected_problem_ids||session.initial_selected_problem_ids||[]).filter(Boolean);
+  const solved=(session.questions||[]).filter(row=>row.completed);
+  if(solved.length&&solved.some(row=>row.actualScore==null))return "grading_pending";
+  if(solved.length||session.attempt_started_at)return "answers_in_progress";
+  if(selected.length>=3)return "selection_committed";
+  if(session.prompt_scanned_at||Number(session.scan_minutes||0)>0)return "scan_started";
+  return "planned";
+}
 
 export type PastExamYearCandidate={
   year:number;rows:ExamReferenceCatalogItem[];eligibleRows:ExamReferenceCatalogItem[];

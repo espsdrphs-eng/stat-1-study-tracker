@@ -61,3 +61,23 @@ test("scan_onlyから数学的補修候補を作らず、通常答案でも最�
   const one={...scan,id:2,session_kind:"scan_plus_one"};
   assert.ok(buildPastExamRepairCandidates({record:rec,sessions:[one],attempts:[attempt(1,"PY-2021-Q1","2026-07-01")],conceptWeaknesses:weaknesses}).length<=2);
 });
+
+test("過去問の単発Cは任意、major反復はsource lineage付きrequired repairになる",()=>{
+  const link={past_exam_problem_id:"PE-2021-Q01",whitebook_problem_id:"WB-4-A-01",relation_type:"remediation",
+    priority_rank:1,reason:"変数変換",confidence:"verified",requires_user_confirmation_before_task_creation:true,
+    requires_live_problem_master_reconciliation:true,resolved_whitebook_problem_id:"WB-4-A-01",reconciliation_status:"exact"};
+  const rec=record({data:{...record().data,whitebookLinks:[link]}});
+  const session={id:2,date:"2026-08-29",session_kind:"scan_plus_one",session_type:"scan5",stage:"calibration",
+    scan_set_source:"past_exam_year",questions:[],linked_attempt_ids:[1]};
+  const wb={...problem("WB-4-A-01"),fine_concept_ids:["c1"]};
+  const minor=attempt(1,"PY-2021-Q1","2026-08-29",{error_type:"C",error_types:["C"],score_numeric:82,review_outcome:"partial"});
+  const minorWeakness=[{...analyzeConceptWeaknesses({record:rec,problems,attempts:[minor],reviews:[],weakNotes:[],today:"2026-08-30"})[0],
+    recurrenceCount:0,pastExamFailureCount:1}];
+  const minorRows=buildPastExamRepairCandidates({record:rec,sessions:[session],attempts:[minor],conceptWeaknesses:minorWeakness,problems:[wb]});
+  assert.equal(minorRows[0].required,false);assert.equal(minorRows[0].materiality,"minor");
+  const major=attempt(1,"PY-2021-Q1","2026-08-29",{error_type:"W",error_types:["W"],score_numeric:55,review_outcome:"failed"});
+  const majorWeakness=[{...minorWeakness[0],recurrenceCount:2,strongFailures:2}];
+  const majorRows=buildPastExamRepairCandidates({record:rec,sessions:[session],attempts:[major],conceptWeaknesses:majorWeakness,problems:[wb]});
+  assert.equal(majorRows[0].required,true);assert.equal(majorRows[0].whitebookProblemIds.length,1);
+  assert.equal(majorRows[0].sourceAttemptId,1);assert.match(majorRows[0].matchReason,/fine concept/);
+});

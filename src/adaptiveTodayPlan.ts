@@ -54,6 +54,7 @@ export function adaptivePlanDayToTasks(args:{
         plan_origin:"adaptive_planner",
         purpose_label:item.slot==="repair"?"補修・再発防止":"追加の維持確認",
         review_planning_tier:item.reviewPlanningTier,
+        repair_lineage:item.repairLineage,
         action_class:item.actionClass,
         today_category:item.todayCategory||"repair",
         why_today:item.whyToday||item.reason,
@@ -64,10 +65,12 @@ export function adaptivePlanDayToTasks(args:{
     if(!item.problemId)continue;
     const problem=problemMap.get(item.problemId);
     if(!problem)continue;
-    const mode=item.mode||taskMode(item.kind);
+    const sessionTask=!!item.stableSessionKey||item.pastExamTaskType==="timed_three_question_session"||
+      item.pastExamTaskType==="simulation";
+    const mode=sessionTask?"exam_90min":(item.mode||taskMode(item.kind));
     const projected={
       problem_id:item.problemId,
-      title:problem.display_label||problem.title||item.label,
+      title:sessionTask?item.label:(problem.display_label||problem.title||item.label),
       theme:problem.theme,
       canonical_problem_type:problem.canonical_problem_type||problem.theme,
       canonical_keywords:problem.canonical_keywords||[],
@@ -85,6 +88,10 @@ export function adaptivePlanDayToTasks(args:{
       past_exam_year:item.pastExamYear,
       session_problem_ids:item.sessionProblemIds,
       clean_selection_evidence:item.cleanSelectionEvidence,
+      stable_session_key:item.stableSessionKey,
+      past_exam_session_state:item.pastExamSessionState,
+      session_workflow:item.sessionWorkflow,
+      repair_lineage:item.repairLineage,
       today_category:item.todayCategory,
       why_today:item.whyToday,
     } as Task;

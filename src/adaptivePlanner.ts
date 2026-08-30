@@ -1,6 +1,6 @@
 import type {
   AdaptivePlanDay, AdaptivePlanSummary, AdaptivePlannerShadow, Attempt, ConceptWeaknessInsight,
-  ExamReferenceCatalogItem, PastSession, Problem, Review, Task
+  ExamReferenceCatalogItem, PastExamRepairCandidate, PastSession, Problem, Review, Task
 } from "./types.ts";
 import type { StoredExamReferencePack } from "./examReferencePack.ts";
 import { canonicalPastExamProblemId } from "./examReferencePack.ts";
@@ -116,7 +116,11 @@ function choosePastExam(args:{
 }
 
 function task(args:Omit<SlotTask,"taskKey">):SlotTask{
-  return {...args,taskKey:[args.date,args.slot,args.kind,args.problemId||args.referenceProblemId||args.conceptId||args.label].join("|")};
+  return {...args,taskKey:args.stableSessionKey||[args.date,args.slot,args.kind,args.problemId||args.referenceProblemId||args.conceptId||args.label].join("|")};
+}
+
+export function stablePastExamSessionKey(args:{year:number;taskType:string;exposureClass?:string;plannedDate:string}){
+  return ["past_exam_session",args.year,args.taskType,args.exposureClass||"unknown",args.plannedDate].join(":");
 }
 
 function planSummary(days:AdaptivePlanDay[],reviewSchedule?:ReturnType<typeof scheduleActiveReviews>):AdaptivePlanSummary{
@@ -174,7 +178,7 @@ function validateMinimums(summary:AdaptivePlanSummary,daysRemaining:number,targe
 function planDays(args:{
   startDate:string;days:number;daysRemaining:number;targetMinutes:number;record?:StoredExamReferencePack|null;
   catalog:ExamReferenceCatalogItem[];problems:Problem[];attempts:Attempt[];reviews:Review[];pastSessions:PastSession[];
-  weaknesses:ConceptWeaknessInsight[];
+  weaknesses:ConceptWeaknessInsight[];currentTasks:Task[];repairCandidates?:PastExamRepairCandidate[];
 }){
   const result:AdaptivePlanDay[]=[],usedProblems=new Map<string,string>(),usedPast=new Map<string,string>(),usedSessionYears=new Set<number>();
   const usedDeferredReviewIds=new Set<number>();
@@ -227,8 +231,34 @@ function planDays(args:{
         "過去問・答案証拠で確認された弱点だけを補修するため":
         "初見の得点形成と時間内の答案化を測るため"}):null;
   };
+  const makeTargetedRepair=(date:string)=>{
+    const candidate=args.repairCandidates?.find(row=>row.required&&row.whitebookProblemIds.some(id=>!usedProblems.has(id)));
+    if(!candidate)return args.repairCandidates?null:makeWhitebook(date,[2,4,5,6,7,8],"skeleton",
+      "過去問で確認された高価値targetだけを局所補修","score_building",true);
+    const repairProblemId=candidate.whitebookProblemIds.find(id=>!usedProblems.has(id));
+    const problem=args.problems.find(row=>row.problem_id===repairProblemId);
+    if(!problem||!repairProblemId)return null;
+    usedProblems.set(repairProblemId,date);
+    return task({date,slot:"score_building",kind:"whitebook",label:problem.display_label||problem.title,
+      problemId:repairProblemId,conceptId:candidate.conceptId,minutes:modeMinutes("skeleton"),mode:"skeleton",
+      reason:`${candidate.sourceProblemId}で${candidate.conceptLabel}のmajor失点が確認されたため`,
+      requiresUserSelection:false,todayCategory:"repair",actionClass:"targeted_repair",
+      whyToday:`${candidate.sourceProblemId}の失点原因「${candidate.conceptLabel}」だけを補修するため`,
+      repairLineage:{sourceAttemptId:candidate.sourceAttemptId,sourceProblemId:candidate.sourceProblemId,
+        sourceFindingId:candidate.sourceFindingId,rootConceptId:candidate.conceptId,materiality:candidate.materiality,
+        recurrence:candidate.recurrence,examImpact:candidate.examImpact,repairProblemId,matchReason:candidate.matchReason}});
+  };
   const makePast=(date:string,kind:"past_exam"|"scan5"|"timed",minutes:number,reason:string)=>{
-    const selected=choosePastExam({catalog:args.catalog,daysRemaining:args.daysRemaining,used:usedPast,date,
+    const requestedType=kind==="timed"?"timed_three_question_session":kind==="scan5"?"clean_scan5":"individual_full";
+    const sticky=date===args.startDate?args.currentTasks.find(current=>!current.checked&&current.past_exam_year&&
+      current.past_exam_session_state!=="completed"&&current.past_exam_session_state!=="deferred"&&
+      (current.past_exam_task_type===requestedType||kind==="scan5"&&current.past_exam_task_type==="practice_scan5")):undefined;
+    const stickyRows=sticky?args.catalog.filter(row=>row.year===sticky.past_exam_year&&row.schedulable&&row.gradable&&
+      (!row.simulationProtected||args.daysRemaining<=30)):[];
+    const stickyAnchor=stickyRows.find(row=>row.canonicalProblemId===sticky?.problem_id)||stickyRows[0];
+    const selected=stickyAnchor?{...stickyAnchor,planningTaskType:sticky!.past_exam_task_type!,
+      sessionProblemIds:sticky!.session_problem_ids?.length?sticky!.session_problem_ids:stickyRows.sort((a,b)=>a.questionNumber-b.questionNumber)
+        .map(row=>row.canonicalProblemId),cleanSelectionEvidence:!!sticky!.clean_selection_evidence}:choosePastExam({catalog:args.catalog,daysRemaining:args.daysRemaining,used:usedPast,date,
       attempts:args.attempts,weaknesses:args.weaknesses,avoidProblemIds:activeReviewProblemIds,
       pastSessions:args.pastSessions,kind,usedSessionYears});
     if(!selected)return task({date,slot:"maintenance_selection",kind:"exposure_confirmation",label:"過去問素材の露出状態を確認",
@@ -245,15 +275,20 @@ function planDays(args:{
     const purposeLabel=purpose==="selection_scan"?"5問scan・3問選択":purpose==="timed_reconfirmation"?"時間制限再確認":
       purpose==="initial_diagnosis"?"初回診断":purpose==="first_answer"?"初回答案":"補修後の遅延再挑戦";
     const basis=`露出状態：${selected.exposure}${latest?`／前回Attempt：${latest.date}`:"／対象問題のAttemptなし"}`;
-    const sessionLabel=selected.planningTaskType==="timed_three_question_session"?`${selected.year}年 5問scan→3問選択→3問timed`:
+    const sessionLabel=selected.planningTaskType==="timed_three_question_session"?`${selected.year}年 本番型session`:
       selected.planningTaskType==="simulation"?`${selected.year}年 本番simulation（5問scan・3問90分）`:
       kind==="scan5"?`${selected.year}年 ${selected.cleanSelectionEvidence?"clean":"practice"} scan5・3問選択`:`${selected.year}年問${selected.questionNumber}`;
+    const sessionWorkflow=selected.planningTaskType==="timed_three_question_session"||selected.planningTaskType==="simulation"?
+      "5問scan → 3問選択 → 3問答案 → 採点":kind==="scan5"?"5問scan → 3問選択":"1問答案 → 採点";
+    const stableSessionKey=sticky?.stable_session_key||stablePastExamSessionKey({year:selected.year,
+      taskType:selected.planningTaskType,exposureClass:selected.cleanSelectionEvidence?"clean":"practice",plannedDate:date});
     return task({date,slot:"score_building",kind,label:sessionLabel,
       referenceProblemId:selected.referenceProblemId,problemId:selected.canonicalProblemId,minutes,
       reason:`${reason}・${purposeLabel}`,purpose,purposeLabel,basis,exposure:selected.exposure,
       previousEventDate:latest?.date,simulationProtected:selected.simulationProtected,requiresUserSelection:false,
       pastExamTaskType:selected.planningTaskType,pastExamYear:selected.year,
       sessionProblemIds:selected.sessionProblemIds,cleanSelectionEvidence:selected.cleanSelectionEvidence,
+      stableSessionKey,pastExamSessionState:sticky?.past_exam_session_state||"planned",sessionWorkflow,
       todayCategory:"exam_practice",whyToday:"初見・選題・時間内完遂・別問題への転移を測るため"});
   };
   let materialConfirmationPlanned=false;
@@ -282,19 +317,34 @@ function planDays(args:{
       if(weekday===0)score=makePast(date,"timed",90,"5問scan・3問選択・3問答案を一つの本番型sessionで実施");
       else if([2,4].includes(weekday))score=makePast(date,"past_exam",35,"未見・過去問で得点形成とtransferを測定");
       else if(weekday===6)score=makePast(date,"scan5",10,"clean selection evidenceを確保");
-      else score=makeWhitebook(date,[2,4,5,6,7,8],"skeleton","過去問で確認された高価値targetだけを局所補修","score_building",true);
+      else score=makeTargetedRepair(date);
     }else{
       score=makePast(date,weekday===0||weekday===4?"timed":weekday===2?"scan5":"past_exam",
         weekday===0||weekday===4?90:weekday===2?10:35,"本番形式・3題選択・確認済み弱点を主軸に固定");
     }
-    const tasks:SlotTask[]=(reviewsByDate.get(date)||[]).map(placement=>task({date,slot:"repair",kind:"review",
-      label:`${placement.review.problem_id} 局所補修`,problemId:placement.review.problem_id,reviewId:placement.review.id,
-      mode:placement.review.grading_contract?.mode||placement.review.effective_mode||placement.review.inferred_mode||"check",
-      minutes:placement.minutes,reason:placement.status==="overdue_recovery"?"期限超過Reviewを最優先で回収":"復習ウィンドウ内に配置",
-      requiresUserSelection:false,todayCategory:"repair",whyToday:reviewDecisions.get(placement.review.id)?.reason,
-      reviewPlanningTier:reviewDecisions.get(placement.review.id)?.tier,
-      reviewEarliestDate:placement.earliestDate,reviewPreferredDate:placement.preferredDate,
-      reviewLatestDate:placement.latestDate,reviewScheduleStatus:placement.status}));
+    const tasks:SlotTask[]=(reviewsByDate.get(date)||[]).map(placement=>{
+      const sourceId=Number(placement.review.grading_contract?.sourceAttemptId||placement.review.source_attempt_id||
+        placement.review.generated_from_attempt_id||0);
+      const source=args.attempts.find(attempt=>attempt.id===sourceId);
+      const part=placement.review.grading_contract?.gradedParts[0];
+      const concept=(args.problems.find(problem=>problem.problem_id===placement.review.problem_id)?.fine_concept_ids||[])[0]||"review-target";
+      const errors=new Set([...(source?.error_types||[]),source?.primary_error_type||source?.error_type||""].filter(Boolean));
+      const major=reviewDecisions.get(placement.review.id)?.tier==="high_value_repair"||
+        [...errors].some(error=>["K","W","N"].includes(error))||source?.review_outcome==="failed";
+      const repairLineage=source?{sourceAttemptId:source.id,sourceProblemId:source.problem_id,
+        sourceFindingId:part?.stableTargetKey||part?.stable_target_key||part?.id||`attempt:${source.id}`,
+        rootConceptId:concept,materiality:major?"major" as const:"minor" as const,recurrence:0,
+        examImpact:major?"high" as const:"low" as const,repairProblemId:placement.review.problem_id,
+        matchReason:part?"current stable targetを直接補修":"source Attemptの未解決targetを補修"}:undefined;
+      return task({date,slot:"repair",kind:"review",
+        label:`${placement.review.problem_id} 局所補修`,problemId:placement.review.problem_id,reviewId:placement.review.id,
+        mode:placement.review.grading_contract?.mode||placement.review.effective_mode||placement.review.inferred_mode||"check",
+        minutes:placement.minutes,reason:placement.status==="overdue_recovery"?"期限超過Reviewを最優先で回収":"復習ウィンドウ内に配置",
+        requiresUserSelection:false,todayCategory:"repair",whyToday:reviewDecisions.get(placement.review.id)?.reason,
+        reviewPlanningTier:reviewDecisions.get(placement.review.id)?.tier,repairLineage,
+        reviewEarliestDate:placement.earliestDate,reviewPreferredDate:placement.preferredDate,
+        reviewLatestDate:placement.latestDate,reviewScheduleStatus:placement.status});
+    });
     if(score?.kind==="exposure_confirmation"){
       if(!materialConfirmationPlanned)tasks.push(score);
       materialConfirmationPlanned=true;
@@ -363,6 +413,7 @@ export function buildAdaptivePlannerShadow(args:{
   record?:StoredExamReferencePack|null;catalog:ExamReferenceCatalogItem[];weaknesses:ConceptWeaknessInsight[];
   problems:Problem[];attempts:Attempt[];reviews:Review[];pastSessions:PastSession[];
   currentTasks:Task[];today:string;examDate:string;targetMinutes:number;
+  repairCandidates?:PastExamRepairCandidate[];
 }):AdaptivePlannerShadow{
   const daysRemaining=daysUntilExam(args.today,args.examDate),phase=phaseName(daysRemaining),generatedAt=new Date().toISOString();
   const empty=validateMinimums(planSummary([]),daysRemaining,args.targetMinutes);

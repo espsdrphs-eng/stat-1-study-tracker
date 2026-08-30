@@ -104,7 +104,7 @@ export function deriveDashboardKpis(input:DashboardKpiInput):DashboardKpiProject
   const bottleneck:DashboardKpiValue={value:bottleneckValue,detail:bottleneckDetail,source:bottleneckSource,evidenceCount:bottleneckCount,
     freshness:"current",confidence:bottleneckConfidence,updatedAt:input.updatedAt};
   const task=input.currentTask;
-  const nextAction={value:task?`${task.problem_id}｜${task.title}`:"本日の確定課題は完了",detail:task?`${task.reason}・${task.minutes}分`:"次の計画を確認してください",
+  const nextAction={value:task?(task.stable_session_key?task.title:`${task.problem_id}｜${task.title}`):"本日の確定課題は完了",detail:task?`${task.reason}・${task.minutes}分`:"次の計画を確認してください",
     source:"current_today",evidenceCount:task?1:0,freshness:"current" as const,confidence:"high" as const,updatedAt:input.updatedAt,
     ...(task?{problemId:task.problem_id,minutes:task.minutes}:{})};
   return {examReadiness,passZone,bottleneck,nextAction,support:{daysRemaining:input.daysRemaining,phaseLabel:input.phaseLabel,

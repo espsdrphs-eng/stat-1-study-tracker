@@ -13,6 +13,7 @@ import {resolvePersistedAttemptLifecycle} from "./reviewTransition.ts";
 import {canonicalAttemptId,logicalReviewKey,reviewExecutionMessage,reviewExecutionState,type ReviewExecutionState} from "./reviewCurrentState.ts";
 import {resolveSemanticReviewGeneration} from "./reviewGeneration.ts";
 import {WHOLE_ANSWER_DIAGNOSTIC_VERSION,wholeAnswerDiagnosticIssues} from "./wholeAnswerDiagnostic.ts";
+import {reviewDueState} from "./todayLearningPolicy.ts";
 
 export const ACTIVE_REVIEW_STATUSES = new Set(["pending", "overdue"]);
 
@@ -143,6 +144,11 @@ export type IntegrityCategory =
   | "current_plan_zero_past_exam_when_phase_requires" | "protected_past_exam_scheduled_without_release"
   | "single_problem_ninety_minute_session" | "past_exam_session_shape_mismatch" | "clean_scan_year_skipped"
   | "generic_whitebook_in_past_exam_main"
+  | "canonical_action_mismatch" | "unexecuted_past_session_replaced" | "past_exam_single_problem_90min"
+  | "past_exam_session_identity_mismatch" | "minor_issue_promoted_to_required_repair"
+  | "repair_without_source_lineage" | "whitebook_repair_low_match" | "repair_to_retrieval_without_success"
+  | "preferred_date_marked_hard_overdue" | "maintenance_suppressing_exam_practice"
+  | "duplicate_past_exam_session" | "past_exam_share_below_target_due_to_low_value_review"
   | "coach_update_parse_failed" | "coach_update_schema_invalid" | "coach_diff_generated_from_invalid_update";
 
 export type IntegrityIssue = {
@@ -245,6 +251,29 @@ export function runIntegrityAudit(args: {
       category:"current_action_identity_mismatch",severity:"active",
       detail:"Dashboard current action fingerprint differs from the canonical Current Today action",repairable:false,
     });
+    const canonicalFirst=currentTodayTasks.find(task=>!task.checked&&task.triage!=="tomorrow");
+    if(canonicalFirst&&currentActionFingerprint(canonicalFirst,canonicalFirst.id&&canonicalFirst.review_type?reviewsById.get(canonicalFirst.id):undefined)!==
+      currentActionFingerprint(currentNextTask,currentNextTask.id&&currentNextTask.review_type?reviewsById.get(currentNextTask.id):undefined))issues.push({
+      category:"canonical_action_mismatch",severity:"active",detail:"Dashboard and Today do not consume the same canonical primaryAction",repairable:false});
+  }
+
+  if(currentTodayTasks){
+    const open=currentTodayTasks.filter(task=>!task.checked);
+    const firstRequired=open.find(task=>task.triage!=="tomorrow");
+    const exam=open.find(task=>task.action_class==="exam_practice"||!!task.past_exam_task_type);
+    if(firstRequired?.action_class==="maintenance"&&exam)issues.push({category:"maintenance_suppressing_exam_practice",severity:"active",
+      detail:`maintenance ${firstRequired.problem_id} precedes eligible exam practice`,repairable:false});
+    for(const task of open){
+      if(task.repair_lineage?.materiality==="minor"&&task.triage!=="tomorrow")issues.push({category:"minor_issue_promoted_to_required_repair",
+        severity:"active",detail:`${task.problem_id} minor repair is required Today work`,repairable:false});
+      if(task.kind==="得点形成"&&task.today_category==="repair"&&!task.id&&!task.repair_lineage)issues.push({category:"repair_without_source_lineage",
+        severity:"active",detail:`${task.problem_id} whitebook repair has no source Attempt/finding lineage`,repairable:false});
+      if(task.repair_lineage?.matchReason.includes("なし"))issues.push({category:"whitebook_repair_low_match",severity:"active",
+        detail:`${task.problem_id} was selected without a verified skill/fine-concept match`,repairable:false});
+      if(task.review_due_state==="hard_overdue"&&reviewDueState(task,today)!=="hard_overdue")issues.push({
+        category:"preferred_date_marked_hard_overdue",severity:"active",reviewIds:task.id?[task.id]:undefined,
+        detail:`${task.problem_id} is marked overdue before latest_date`,repairable:false});
+    }
   }
 
   if(currentPlanSummary&&currentPlanSummary.plan.length>=7){
@@ -283,10 +312,19 @@ export function runIntegrityAudit(args: {
     const badNinety=tasks.filter(row=>row.minutes===90&&!["timed_three_question_session","simulation"].includes(String(row.pastExamTaskType||"")));
     if(badNinety.length)issues.push({category:"single_problem_ninety_minute_session",severity:"active",
       detail:`${badNinety.length} 90-minute tasks are not three-question sessions`,repairable:false});
+    if(badNinety.length)issues.push({category:"past_exam_single_problem_90min",severity:"active",
+      detail:`${badNinety.length} single-problem tasks incorrectly consume a 90-minute session`,repairable:false});
     const malformedSessions=tasks.filter(row=>["timed_three_question_session","simulation"].includes(String(row.pastExamTaskType||""))&&
       Number(row.sessionProblemIds?.length||0)!==5);
     if(malformedSessions.length)issues.push({category:"past_exam_session_shape_mismatch",severity:"active",
       detail:`${malformedSessions.length} exam sessions do not carry a five-question scan set`,repairable:false});
+    const sessions=tasks.filter(row=>["timed_three_question_session","simulation"].includes(String(row.pastExamTaskType||"")));
+    const missingSessionIdentity=sessions.filter(row=>!row.stableSessionKey||!/本番型session|simulation/.test(row.label));
+    if(missingSessionIdentity.length)issues.push({category:"past_exam_session_identity_mismatch",severity:"active",
+      detail:`${missingSessionIdentity.length} exam sessions expose an anchor problem or lack stable identity`,repairable:false});
+    const sessionKeys=sessions.map(row=>row.stableSessionKey).filter(Boolean);
+    if(new Set(sessionKeys).size!==sessionKeys.length)issues.push({category:"duplicate_past_exam_session",severity:"active",
+      detail:"rolling plan contains duplicate stable PastExamSession identities",repairable:false});
     const cleanYears=[...new Set((args.pastExamCatalog||[]).filter(row=>!row.simulationProtected&&row.exposure==="unseen")
       .map(row=>row.year))].filter(year=>(args.pastExamCatalog||[]).filter(row=>row.year===year&&row.exposure==="unseen").length>=5).sort((a,b)=>a-b);
     const firstSession=tasks.find(row=>["clean_scan5","timed_three_question_session"].includes(String(row.pastExamTaskType||"")));
@@ -295,6 +333,19 @@ export function runIntegrityAudit(args: {
     const genericWhitebook=tasks.filter(row=>horizon.pastExamIsPrimary&&row.kind==="whitebook"&&!row.conceptId);
     if(genericWhitebook.length)issues.push({category:"generic_whitebook_in_past_exam_main",severity:"active",
       detail:`${genericWhitebook.length} whitebook tasks lack past-exam/concept repair evidence`,repairable:false});
+    const lowValueReviewMinutes=tasks.filter(row=>row.kind==="review"&&row.reviewPlanningTier==="deferred_maintenance")
+      .reduce((sum,row)=>sum+row.minutes,0);
+    if(share<horizon.pastExamShareMin&&lowValueReviewMinutes>0)issues.push({category:"past_exam_share_below_target_due_to_low_value_review",
+      severity:"active",detail:`${lowValueReviewMinutes} low-value Review minutes suppress the exam-practice floor`,repairable:false});
+  }
+
+  for(const review of active.filter(row=>(row.grading_contract?.learningPurpose||row.learning_purpose)==="retrieval_check")){
+    const source=attemptsById.get(Number(review.source_attempt_id||review.generated_from_attempt_id||0));
+    const explicit=!!review.lifecycle_success_evidence_id||!!review.correction_provided||!!review.lifecycle_transition_provenance;
+    const sourceSuccess=!!source&&source.is_review_attempt&&resolvePersistedAttemptLifecycle(source).reviewOutcome==="success";
+    if(!explicit&&!sourceSuccess&&review.grading_contract?.learningStage==="maintenance"&&review.retention_pending)issues.push({
+      category:"repair_to_retrieval_without_success",severity:"active",reviewIds:[review.id],
+      detail:`Review ${review.id} entered retrieval without explicit repair success provenance`,repairable:true});
   }
 
   for(const state of reconciliation.problems.filter(row=>row.graduated&&row.graduationAttemptId)){
@@ -524,6 +575,17 @@ export function runIntegrityAudit(args: {
   }
 
   if(currentPlanSummary&&currentTodayTasks){
+    const snapshot=todayPlanSnapshots.find(row=>row.date===today);
+    const savedSession=snapshot?.tasks.find(task=>!task.checked&&task.past_exam_task_type&&task.past_exam_task_type!=="individual_full");
+    const currentSession=currentPlanSummary.plan.find(day=>day.date===today)?.tasks.find(task=>
+      task.pastExamTaskType&&task.pastExamTaskType!=="individual_full");
+    const savedSessionIdentity=savedSession?.stable_session_key||(savedSession?
+      `${savedSession.past_exam_year}|${savedSession.past_exam_task_type}|${snapshot?.date}`:"");
+    const currentSessionIdentity=savedSession?.stable_session_key?currentSession?.stableSessionKey||"":currentSession?
+      `${currentSession.pastExamYear}|${currentSession.pastExamTaskType}|${today}`:"";
+    if(savedSessionIdentity&&currentSessionIdentity&&savedSessionIdentity!==currentSessionIdentity)issues.push({
+      category:"unexecuted_past_session_replaced",severity:"active",
+      detail:`unexecuted session ${savedSessionIdentity} was replaced by ${currentSessionIdentity}`,repairable:false});
     const todayPlacements=currentPlanSummary.reviewSchedule.placements.filter(row=>row.date===today);
     const currentReviewIds=new Set(currentTodayTasks.filter(task=>!task.checked&&task.review_type&&task.id).map(task=>task.id as number));
     for(const placement of currentPlanSummary.reviewSchedule.placements){
@@ -649,6 +711,10 @@ export function runIntegrityAudit(args: {
     "current_plan_zero_past_exam_when_phase_requires", "protected_past_exam_scheduled_without_release",
     "single_problem_ninety_minute_session", "past_exam_session_shape_mismatch", "clean_scan_year_skipped",
     "generic_whitebook_in_past_exam_main",
+    "canonical_action_mismatch", "unexecuted_past_session_replaced", "past_exam_single_problem_90min",
+    "past_exam_session_identity_mismatch", "minor_issue_promoted_to_required_repair", "repair_without_source_lineage",
+    "whitebook_repair_low_match", "repair_to_retrieval_without_success", "preferred_date_marked_hard_overdue",
+    "maintenance_suppressing_exam_practice", "duplicate_past_exam_session", "past_exam_share_below_target_due_to_low_value_review",
     "coach_update_parse_failed", "coach_update_schema_invalid", "coach_diff_generated_from_invalid_update",
   ];
   const counts = Object.fromEntries(categories.map((category) =>

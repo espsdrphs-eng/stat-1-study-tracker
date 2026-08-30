@@ -51,6 +51,20 @@ test("選択確認と同一論理課題は確定計画へ重複投入しない",
   assert.equal(tasks[0].problem_id,"WB-4-A-01");
 });
 
+test("90分PastExamSessionはanchor problemではなくsession identityで表示する",()=>{
+  const day={date:"2026-08-30",totalMinutes:90,tasks:[{
+    taskKey:"session",date:"2026-08-30",slot:"score_building",kind:"timed",label:"2018年 本番型session",
+    problemId:"PY-2018-Q1",referenceProblemId:"PE-2018-Q01",minutes:90,reason:"本番型",requiresUserSelection:false,
+    pastExamTaskType:"timed_three_question_session",pastExamYear:2018,
+    sessionProblemIds:[1,2,3,4,5].map(n=>`PY-2018-Q${n}`),stableSessionKey:"past_exam_session:2018:timed:2026-08-30",
+    sessionWorkflow:"5問scan → 3問選択 → 3問答案 → 採点",todayCategory:"exam_practice"
+  }]};
+  const tasks=adaptivePlanDayToTasks({day,problems:[problem("PY-2018-Q1")],reviews:[],today:"2026-08-30"});
+  assert.equal(tasks[0].title,"2018年 本番型session");
+  assert.equal(tasks[0].stable_session_key,"past_exam_session:2018:timed:2026-08-30");
+  assert.equal(tasks[0].session_workflow,"5問scan → 3問選択 → 3問答案 → 採点");
+});
+
 test("stale morning generic task is replaced by current eligible plan without mutating snapshot",()=>{
   const saved={problem_id:"WB-7-A-07",title:"old",kind:"score",reason:"old",mode:"skeleton",minutes:25,load:1,
     triage:"must",plan_origin:"adaptive_planner"};

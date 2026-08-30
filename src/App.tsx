@@ -215,7 +215,7 @@ function DashboardView({data,go,select}:{data:Bootstrap;go:(p:Page)=>void;select
   const pmap=Object.fromEntries(data.problems.map(problem=>[problem.problem_id,problem]));
   const next=nextQueueTask(data);
   const nextTask=next.task;
-  const nextProblem=nextTask?pmap[nextTask.problem_id]:undefined;
+  const nextProblem=nextTask&&!nextTask.stable_session_key?pmap[nextTask.problem_id]:undefined;
   const k=d.kpis!;
   const confidence=(value:string)=>value==="high"?"高":value==="medium"?"中":"低";
   return <>
@@ -556,7 +556,7 @@ function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a
   const allGroups=[
     {key:"exam_practice",label:"今日の本番演習",description:"初見・選題・時間内完遂・別問題への転移を測る",tasks:activeTodayTasks.filter(task=>deriveCurrentActionClass(task)==="exam_practice")},
     {key:"repair",label:"今日の補修",description:"過去問・答案で確認されたmajor weaknessだけを局所補修する",tasks:activeTodayTasks.filter(task=>deriveCurrentActionClass(task)==="targeted_repair")},
-    {key:"maintenance",label:"任意の維持確認",description:"本番演習と重要補修を終え、余力がある場合だけ行う",tasks:maintenanceTasks},
+    {key:"maintenance",label:"任意の追加学習",description:"本番演習と重要補修を終え、余力がある場合だけ行う維持確認",tasks:maintenanceTasks},
     {key:"optional",label:"追加候補・先送り",description:"本番演習と高価値補修の後にだけ行う",tasks:data.today.tasks.filter(task=>task.triage==="tomorrow"&&!task.checked&&deriveCurrentActionClass(task)!=="maintenance")}
   ];
   const triageGroups=allGroups.filter(group=>todayFilter==="all"?
@@ -607,7 +607,7 @@ function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a
       </section>}
     <section className="panel">
       <div className="table-wrap"><table><thead><tr><th>種類</th><th>問題</th><th>推奨モード</th><th>予定時間</th><th>理由</th><th/></tr></thead>
-      {triageGroups.map(group=><tbody key={group.key} className={`triage-group ${group.key}`}><tr className="triage-heading"><td colSpan={6}><strong>{group.label}</strong>{group.description&&<span>{group.description}</span>}</td></tr>{group.tasks.map((t,i)=><TodayTaskRows key={`${t.problem_id}-${i}`} task={t} problem={pmap[t.problem_id]} data={data} busy={busy} run={run} date={data.dashboard.today} onReview={setReviewTask} onOpenProblem={problem=>select(problem)} onPostpone={(item,initial)=>setPostponeTask({item,initial})} examPhase={examPhase}/>)}</tbody>)}</table></div>
+      {triageGroups.map(group=><tbody key={group.key} className={`triage-group ${group.key}`}><tr className="triage-heading"><td colSpan={6}><strong>{group.label}</strong>{group.description&&<span>{group.description}</span>}</td></tr>{group.tasks.map((t,i)=><TodayTaskRows key={t.stable_session_key||`${t.problem_id}-${i}`} task={t} problem={pmap[t.problem_id]} data={data} busy={busy} run={run} date={data.dashboard.today} onReview={setReviewTask} onOpenProblem={problem=>select(problem)} onOpenPastExam={()=>go("past")} onPostpone={(item,initial)=>setPostponeTask({item,initial})} examPhase={examPhase}/>)}</tbody>)}</table></div>
       {todayFilter==="completed"&&<div className="completed-task-list">{data.today.completedTasks.map((task,index)=><div key={`${task.problem_id}-${index}`}><Check size={16}/><strong>{task.title}</strong><span>{task.minutes}分・{task.reason}</span></div>)}{!data.today.completedTasks.length&&<Empty>今日の完了記録はまだありません</Empty>}</div>}
       {todayFilter!=="completed"&&!triageGroups.length&&<Empty>この区分の課題はありません</Empty>}
     </section>
@@ -671,23 +671,24 @@ function resolveCanonicalProblemId(problemId:string,aliases:ProblemAlias[]):stri
 function originLabel(origin:string){
   return origin==="review_attempt"?"復習":origin==="first_attempt"?"初回":origin==="linked_s_check"?"関連確認":origin==="related_drill"?"関連補修":origin==="past_exam_followup"?"過去問補修":origin||"未設定";
 }
-function TodayTaskDetails({task,problem,onOpenProblem,problemAliases,examPhase,resolved}:{task:Task;problem?:Problem;onOpenProblem:(problem:Problem)=>void;problemAliases:ProblemAlias[];examPhase:ExamPhase;resolved?:ResolvedReviewCard}) {
+function TodayTaskDetails({task,problem,onOpenProblem,onOpenPastExam,problemAliases,examPhase,resolved}:{task:Task;problem?:Problem;onOpenProblem:(problem:Problem)=>void;onOpenPastExam:()=>void;problemAliases:ProblemAlias[];examPhase:ExamPhase;resolved?:ResolvedReviewCard}) {
   const template=reviewTemplate(task);
   const origin=resolved?.taskOrigin||task.task_origin||((task.id||task.review_method)?"review_attempt":"first_attempt");
   const hasPrevious=resolved?!!resolved.targetAttempt:task.attempt_exists!==false&&!!(task.previous_date||task.previous_error_point);
   const canonicalId=resolved?.canonicalProblemId||resolveCanonicalProblemId(task.problem_id,problemAliases);
-  const displayLabel=resolved?.displayLabel||problem?.display_label||problem?.title||task.title||task.problem_id;
+  const isPastSession=!!task.stable_session_key||task.past_exam_task_type==="timed_three_question_session"||task.past_exam_task_type==="simulation";
+  const displayLabel=isPastSession?task.title:(resolved?.displayLabel||problem?.display_label||problem?.title||task.title||task.problem_id);
   const theme=resolved?.theme||problem?.theme||task.theme||"未設定";
   const type=resolved?.canonicalProblemType||problem?.canonical_problem_type||task.canonical_problem_type||"未設定";
   const questionExcerpt=(problem as Problem&{question_excerpt?:string})?.question_excerpt;
   return <div className="today-task-detail">
     <div className="task-detail-head">
-      <div><small className="problem-id">{canonicalId!==task.problem_id?`${task.problem_id} → ${canonicalId}`:task.problem_id}</small><h3>{displayLabel}</h3><p>{theme}</p></div>
+      <div>{!isPastSession&&<small className="problem-id">{canonicalId!==task.problem_id?`${task.problem_id} → ${canonicalId}`:task.problem_id}</small>}<h3>{displayLabel}</h3><p>{isPastSession?task.session_workflow:theme}</p></div>
       <div className="task-meta-line"><span>{originLabel(origin)}</span><span>{modes[resolved?.effectiveMode||task.mode]||resolved?.effectiveMode||task.mode}</span><span>{resolved?.sheetLabel||template.sheetLabel}</span><span>{task.minutes}分</span></div>
     </div>
     <div className="task-detail-grid">
-      <div><span>出題型</span><strong>{type}</strong></div>
-      <div><span>問題文・概要</span><strong>{questionExcerpt||"問題文と模範解答は、書籍またはGoodNotesで確認してください。"}</strong></div>
+      <div><span>{isPastSession?"session":"出題型"}</span><strong>{isPastSession?"5問から3問を選ぶ本番型演習":type}</strong></div>
+      <div><span>{isPastSession?"実行順":"問題文・概要"}</span><strong>{isPastSession?task.session_workflow:(questionExcerpt||"問題文と模範解答は、書籍またはGoodNotesで確認してください。")}</strong></div>
     </div>
     {origin==="first_attempt"&&<div className="first-attempt-note"><Badge tone="green">初回</Badge><div><strong>この問題は初回です</strong><span>{task.mode==="full"?"まずフル答案として、方針・出発式・主要計算・結論まで書いてください。":"指定モードで、方針・出発式・今回見る量を明確にしてから解いてください。"}</span></div></div>}
     {origin==="review_attempt"&&<div className="first-attempt-note review"><Badge tone="orange">復習</Badge><div><strong>前回記録：{hasPrevious?"あり":"なし"}</strong><span>{hasPrevious?`前回：${task.previous_score||task.previous_date}`:"前回ミスの詳細はありません。通常確認として扱います。"}</span></div></div>}
@@ -695,21 +696,23 @@ function TodayTaskDetails({task,problem,onOpenProblem,problemAliases,examPhase,r
     {resolved?.reviewNeeded&&<div className="review-consistency-warning"><AlertTriangle size={18}/><div><strong>要確認</strong><span>問題情報または復習履歴の不整合により、具体的な復習指示を一時的に非表示にしています。</span></div></div>}
     <div className="today-specific-guide">
       <div><span>今日やる理由</span><strong>{task.reason}</strong></div>
+      {task.repair_lineage&&<div><span>補修元</span><strong>{task.repair_lineage.sourceProblemId} の失点 → {task.repair_lineage.matchReason}</strong></div>}
       <div><span>今回見るポイント／直す点</span><strong>{resolved?.correctionTheme.value||correctionTheme({...task,theme,canonical_problem_type:type})}</strong></div>
       <div><span>最初に書くもの</span><strong>{resolved?.entryHint.value||referenceEntryPoint({...task,theme,canonical_problem_type:type})}</strong></div>
       <div><span>1行ヒント</span><strong>{resolved?.oneLineHint.value||oneLineHint({...task,theme,canonical_problem_type:type})}</strong></div>
       <div><span>この時期のシート運用</span><strong>{sheetUsageForPhase(resolved?.effectiveMode||task.mode,examPhase)}</strong></div>
     </div>
     <div className="today-card-actions">
-      {problem&&<button type="button" className="ghost small" onClick={()=>onOpenProblem(problem)}><BookOpen size={14}/>問題詳細</button>}
+      {isPastSession?<button type="button" className="primary small" onClick={onOpenPastExam}><Play size={14}/>過去問演習を開く</button>:
+        problem&&<button type="button" className="ghost small" onClick={()=>onOpenProblem(problem)}><BookOpen size={14}/>問題詳細</button>}
       <SheetLink href={sheetHref(resolved?.effectiveMode||task.mode)} label="解答シート"/>
-      <StudyPromptButtons resolved={resolved} item={{...task,problem_id:canonicalId,title:displayLabel,theme,canonical_problem_type:type,mode:resolved?.effectiveMode||task.mode,
+      {!isPastSession&&<StudyPromptButtons resolved={resolved} item={{...task,problem_id:canonicalId,title:displayLabel,theme,canonical_problem_type:type,mode:resolved?.effectiveMode||task.mode,
         previous_date:resolved?.targetAttempt?.date||task.previous_date,previous_errors:resolved?.errorTypes||task.previous_errors,
-        previous_error_point:resolved?.targetAttempt?.error_point||task.previous_error_point,previous_next_action:resolved?.targetAttempt?.next_action||task.previous_next_action}}/>
+        previous_error_point:resolved?.targetAttempt?.error_point||task.previous_error_point,previous_next_action:resolved?.targetAttempt?.next_action||task.previous_next_action}}/>}
     </div>
   </div>;
 }
-function TodayTaskRows({task:t,problem,data,busy,run,date,onReview,onOpenProblem,onPostpone,examPhase}:{task:Task;problem?:Problem;data:Bootstrap;busy:boolean;run:(a:()=>Promise<unknown>,s:string)=>void;date:string;onReview:(task:Task)=>void;onOpenProblem:(problem:Problem)=>void;onPostpone:(task:Task,action:ScheduleAction)=>void;examPhase:ExamPhase}) {
+function TodayTaskRows({task:t,problem,data,busy,run,date,onReview,onOpenProblem,onOpenPastExam,onPostpone,examPhase}:{task:Task;problem?:Problem;data:Bootstrap;busy:boolean;run:(a:()=>Promise<unknown>,s:string)=>void;date:string;onReview:(task:Task)=>void;onOpenProblem:(problem:Problem)=>void;onOpenPastExam:()=>void;onPostpone:(task:Task,action:ScheduleAction)=>void;examPhase:ExamPhase}) {
   const resolved=resolveReviewCard({item:t,problems:data.problems,attempts:data.attempts,aliases:data.problemAliases,answers:data.answerIndex,today:data.dashboard.today,examDate:data.settings.exam_date});
   const isReview=!!t.id&&!!t.review_type;
   const persistedReview=isReview?data.reviews.find(review=>review.id===t.id):undefined;
@@ -720,8 +723,9 @@ function TodayTaskRows({task:t,problem,data,busy,run,date,onReview,onOpenProblem
   if(isReview&&executionState!=="actionable")return <tr className="inactive-today-task"><td colSpan={6}>
     {persistedReview?<InactiveReviewNotice review={persistedReview} state={executionState}/>:<div className="inactive-review-notice"><AlertTriangle size={18}/><div><strong>見つかりません</strong><span>この復習課題は現在のデータに存在しません。</span></div></div>}
   </td></tr>;
-  return <><tr className={t.checked?"task-checked":""}><td><Badge tone={t.kind==="S確認"?"blue":t.error_type==="K"?"red":""}>{t.kind}</Badge></td><td><strong>{t.problem_id}</strong><small>{t.title}{t.checked&&<em className="grading-wait">採点待ち</em>}</small></td><td>{modes[t.mode]||t.mode}</td><td>{t.minutes}分</td><td><strong className="why-today">なぜ今日：{t.why_today||t.reason}</strong>{t.reason!==t.why_today&&<small>{t.reason}</small>}{t.postpone_count?` ・ 先送り${t.postpone_count}回（${t.postpone_reason}）`:""}</td><td><div className="task-actions"><SheetLink href={sheetHref(t.mode)} label="シート"/><label className="task-check"><input type="checkbox" checked={!!t.checked} disabled={busy} onChange={toggle}/><span>{isReview?"復習結果を記録":"解答済み"}</span></label></div><ScheduleQuickButtons item={t} busy={busy} select={action=>onPostpone(t,action)}/></td></tr>
-    <tr className="task-plan-row"><td colSpan={6}><TodayTaskDetails task={t} problem={problem} onOpenProblem={onOpenProblem} problemAliases={data.problemAliases} examPhase={examPhase} resolved={resolved}/>{(t.review_method||t.review_reason)&&<ReviewPlanDetails item={t} compact resolved={resolved}/>}</td></tr></>;
+  const isPastSession=!!t.stable_session_key||t.past_exam_task_type==="timed_three_question_session"||t.past_exam_task_type==="simulation";
+  return <><tr className={t.checked?"task-checked":""}><td><Badge tone={t.kind==="S確認"?"blue":t.error_type==="K"?"red":""}>{t.kind}</Badge></td><td>{!isPastSession&&<strong>{t.problem_id}</strong>}<small>{t.title}{t.checked&&<em className="grading-wait">採点待ち</em>}</small>{isPastSession&&<small>{t.session_workflow}</small>}</td><td>{modes[t.mode]||t.mode}</td><td>{t.minutes}分</td><td><strong className="why-today">なぜ今日：{t.why_today||t.reason}</strong>{t.reason!==t.why_today&&<small>{t.reason}</small>}{t.repair_lineage&&<small>補修元：{t.repair_lineage.sourceProblemId}／{t.repair_lineage.matchReason}</small>}{t.postpone_count?` ・ 先送り${t.postpone_count}回（${t.postpone_reason}）`:""}</td><td><div className="task-actions"><SheetLink href={sheetHref(t.mode)} label="シート"/><label className="task-check"><input type="checkbox" checked={!!t.checked} disabled={busy} onChange={toggle}/><span>{isReview?"復習結果を記録":"解答済み"}</span></label></div><ScheduleQuickButtons item={t} busy={busy} select={action=>onPostpone(t,action)}/></td></tr>
+    <tr className="task-plan-row"><td colSpan={6}><TodayTaskDetails task={t} problem={problem} onOpenProblem={onOpenProblem} onOpenPastExam={onOpenPastExam} problemAliases={data.problemAliases} examPhase={examPhase} resolved={resolved}/>{(t.review_method||t.review_reason)&&<ReviewPlanDetails item={t} compact resolved={resolved}/>}</td></tr></>;
 }
 
 function ProblemChip({problem,latest,rank,select}:{problem:Problem;latest?:Attempt;rank:string;select:(problem:Problem)=>void}){
@@ -1330,7 +1334,8 @@ function PastView({data,go,run,busy}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()
       <div className="panel-title"><div><span className="eyebrow">CANDIDATE ONLY</span><h3>conceptから照合した補修候補</h3></div><Badge>1セッション最大2件</Badge></div>
       <p>候補は自動でReviewへ追加しません。白本IDはlive masterで照合済みの候補だけを表示します。</p>
       <div>{data.adaptiveLearning.pastExamRepairCandidates.map(row=><article key={`${row.sessionId}-${row.conceptId}`}>
-        <strong>{row.conceptLabel}</strong><span>{row.reason}</span>
+        <strong>{row.conceptLabel}・{row.required?"必須補修候補":"任意確認"}</strong><span>{row.reason}</span>
+        <small>根拠：Attempt #{row.sourceAttemptId} / {row.sourceProblemId}・{row.matchReason}</small>
         <small>白本候補：{row.whitebookProblemIds.join("、")||"未解決"}／転移候補：{row.transferProblemIds.join("、")||"未設定"}</small>
       </article>)}</div>
     </section>}
