@@ -303,3 +303,44 @@ test("canonical plan audit catches unstable session identity and low-value requi
   assert.equal(audit.counts.unexecuted_past_session_replaced,1);
   assert.equal(audit.counts.minor_issue_promoted_to_required_repair,1);
 });
+
+test("current audit detects duplicate clean session and feedback-only major lifecycle",()=>{
+  const attempt={id:223,problem_id:"PY-2017-Q3",date:"2026-08-29",mode:"full",score_numeric:58,
+    mark:"△",score_label:"C",error_type:"W",error_types:["W","N"],error_point:"主要計算と結論が未完",
+    next_action:"局所補修",memo:"",review_outcome:"partial",target_issue_resolved:false,
+    grading_contract:{gradedParts:[{id:"calc",label:"主要計算",stableTargetKey:"target:PY-2017-Q3:calc",rootCauseKey:"poisson"}]},
+    graded_findings:[{graded_part_id:"calc",error_type:"W",evidence:"計算停止",resolved:false}]};
+  const baseReview=review(437,223,{problem_id:"PY-2017-Q3",due_date:"2026-08-30",preferred_date:"2026-08-30",
+    latest_date:"2026-09-02",review_reason:"訂正提示後の確認",correction_provided:true,retention_pending:true});
+  const part=baseReview.grading_contract.gradedParts[0];
+  const currentReview={...baseReview,grading_contract:{...baseReview.grading_contract,problemId:"PY-2017-Q3",sourceAttemptId:223,
+      gradedParts:[
+        {...part,id:"calc-a",label:"計算",stableTargetKey:"target:PY-2017-Q3:calc-a",rootCauseKey:"poisson"},
+        {...part,id:"calc-b",label:"結論",stableTargetKey:"target:PY-2017-Q3:calc-b",rootCauseKey:"poisson"},
+      ]}};
+  const base={date:"2026-08-30",year:2018,session_kind:"scan_only",session_purpose:"clean_scan5",
+    session_ordinal:1,stage:"calibration",scan_set_source:"past_exam_year",scan_minutes:10,questions:[]};
+  const sessions=[
+    {...base,id:1,stable_session_key:"wrong",scan_evidence_kind:"clean",
+      exposure_snapshot_at_start:{classification:"clean",exposed_problem_ids:[],total_problem_count:5,captured_at:"2026-08-30T00:00:00Z"}},
+    {...base,id:2,stable_session_key:"wrong-2",scan_evidence_kind:"practice",
+      exposure_snapshot_at_start:{classification:"clean",exposed_problem_ids:[],total_problem_count:5,captured_at:"2026-08-30T00:00:00Z"}},
+  ];
+  const audit=runIntegrityAudit({attempts:[attempt],reviews:[currentReview],today:"2026-08-30",pastSessions:sessions});
+  assert.equal(audit.counts.duplicate_active_past_session,1);
+  assert.equal(audit.counts.session_clean_kind_mutated,1);
+  assert.equal(audit.counts.past_exam_major_failure_in_maintenance,1);
+  assert.equal(audit.counts.correction_mistaken_for_success,1);
+  assert.equal(audit.counts.duplicate_root_weakness_targets,1);
+});
+
+test("required Whitebook candidates require root lineage and high-confidence matching",()=>{
+  const audit=runIntegrityAudit({attempts:[],reviews:[],today:"2026-08-30",repairCandidates:[{
+    sessionId:1,sourceAttemptId:9,sourceProblemId:"PY-2019-Q4",sourceFindingId:"f1",conceptId:"lr-test",
+    conceptLabel:"尤度比",materiality:"major",recurrence:0,examImpact:"high",required:true,
+    matchReason:"章だけ一致",whitebookProblemIds:["WB-7-A-01"],transferProblemIds:[],reason:"repair",requiresUserConfirmation:true,
+    repairKind:"whitebook",matchConfidence:"low"
+  }]});
+  assert.equal(audit.counts.required_whitebook_without_lineage,1);
+  assert.equal(audit.counts.whitebook_match_low_confidence_required,1);
+});

@@ -116,6 +116,16 @@ test("a delayed check sourced from an unresolved Attempt is stale",()=>{
   assert.equal(plan.replacementRequired,true);
 });
 
+test("past exam major W/N with correction feedback remains error_repair until success evidence",()=>{
+  const failed=attempt(223,"2026-08-29",[finding("major-calculation","W",false),finding("answer-conclusion","N",false)],{
+    problem_id:"PY-2017-Q3",score_numeric:58,review_outcome:"partial",saved_gpt_feedback:true,
+    learning_event_kind:"assessment",next_action:"訂正方法を確認した",parent_past_session_id:18,
+    grading_contract:{...contract(["major-calculation","answer-conclusion"]),problemId:"PY-2017-Q3",sourceAttemptId:223},
+  });
+  const plan=analyzeReviewReconciliation({attempts:[failed],reviews:[],today:"2026-08-30"}).problems[0];
+  assert.equal(plan.desiredReviewPurpose,"error_repair");
+});
+
 test("feedback alone does not supersede an existing repair with delayed retrieval",()=>{
   const stableTargetKey="target:WB-4-A-29:root:00000000-0000-4000-8000-000000000055";
   const stablePart={...part("A"),stableTargetKey,currentLabel:"A-evidence",currentEvidence:"A-evidence",

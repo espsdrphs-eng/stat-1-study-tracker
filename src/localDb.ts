@@ -63,7 +63,7 @@ import {parseWholeAnswerRediagnosis,WHOLE_ANSWER_DIAGNOSTIC_VERSION,wholeAnswerD
 import {deriveDashboardKpis} from "./dashboardKpi.ts";
 import {reviewDueState} from "./todayLearningPolicy.ts";
 import {deriveCanonicalStudyPlan} from "./canonicalStudyPlan.ts";
-import {derivePastExamSessionState} from "./pastExamPlanning.ts";
+import {canonicalizePastExamSessions,derivePastExamSessionState,pastExamSessionKey,pastExamSessionPurpose,stablePastExamSessionKey} from "./pastExamPlanning.ts";
 
 const PLANNER_RUNTIME_MODE_META_KEY="planner-runtime-mode";
 
@@ -2591,11 +2591,12 @@ async function bootstrap():Promise<Bootstrap>{
   await initialize();
   await ensureBuiltInCanonical();
   await ensureBuiltInExamReferencePack();
-  const [problems,attempts,rawReviews,roadmap,weakNotes,pastSessions,sMemory,metaEntries,answerIndex,answerPdfs,problemAliases]=await Promise.all([
+  const [problems,attempts,rawReviews,roadmap,weakNotes,rawPastSessions,sMemory,metaEntries,answerIndex,answerPdfs,problemAliases]=await Promise.all([
     db.problems.toArray(),db.attempts.orderBy("id").reverse().toArray(),db.reviews.orderBy("due_date").toArray(),db.roadmap.orderBy("order_index").toArray(),
     db.weakNotes.orderBy("id").reverse().toArray(),db.pastSessions.orderBy("id").reverse().toArray(),db.sMemory.toArray(),db.meta.toArray(),
     db.answerIndex.toArray(),db.answerPdfs.toArray(),db.problemAliases.toArray()
   ]);
+  const pastSessions=canonicalizePastExamSessions(rawPastSessions).current;
   const today=todayString(),week=addDays(today,-6),fortnight=addDays(today,-13);
   const pmap=new Map(problems.map(p=>[resolveCanonicalProblemId(p.problem_id,problemAliases),p]));
   const problemForId=(problemId:string)=>pmap.get(resolveCanonicalProblemId(problemId,problemAliases));
@@ -2923,8 +2924,8 @@ async function bootstrap():Promise<Bootstrap>{
     const forcedMust=review?.triage_override==="must"||record?.triage_override==="must";
     const contract=review?.grading_contract||saved.grading_contract||current?.grading_contract;
     const contractFields=contract?taskFieldsFromContract(contract):{};
-    const matchingPastSession=saved.past_exam_year?pastSessions.filter(session=>session.year===saved.past_exam_year&&session.date===today)
-      .sort((a,b)=>b.id-a.id)[0]:undefined;
+    const matchingPastSession=saved.past_exam_year?pastSessions.find(session=>saved.stable_session_key?
+      pastExamSessionKey(session)===saved.stable_session_key:session.year===saved.past_exam_year&&session.date===today):undefined;
     const projected={...current,...saved,...(review||{}),...contractFields,
       kind:saved.kind,reason:review&&review.id!==saved.id?"最新の復習状態へ同期":saved.reason,
       title:saved.stable_session_key?saved.title:(pmap.get(saved.problem_id)?.display_label||pmap.get(saved.problem_id)?.title||saved.title),
@@ -3004,7 +3005,8 @@ async function bootstrap():Promise<Bootstrap>{
     attempts,reviews:rawReviews,problems,aliases:problemAliases,today,todayPlanSnapshots:[snapshot],validCrossTargetReviewIds,
     currentTodayTasks:tasks,currentNextTask:canonicalStudyPlan.primaryAction||undefined,currentPlanSummary:plannerShadow.plan14,
     additionalCandidates:additionalStudy.candidates,eligibleTodayTasks:generatedTriage.tasks,
-    examDate:settings.exam_date||"2026-11-15",pastExamCatalog,
+    examDate:settings.exam_date||"2026-11-15",pastExamCatalog,pastSessions:rawPastSessions,
+    repairCandidates:pastExamRepairCandidates,
   });
   const systemHealth=deriveSystemHealth(integrityHealth);
   const masterStatus={
@@ -3075,11 +3077,48 @@ export async function localGet<T>(path:string):Promise<T>{
   throw new Error(`未対応の読み取りです: ${path}`);
 }
 
+async function reconcilePastExamSessionGenerations(preview=false){
+  const rows=await db.pastSessions.toArray(),projection=canonicalizePastExamSessions(rows);
+  let normalized=0;
+  for(const current of projection.current){
+    const stored=rows.find(row=>row.id===current.id);
+    if(stored&&(stored.stable_session_key!==current.stable_session_key||stored.scan_evidence_kind!==current.scan_evidence_kind||
+      stored.session_purpose!==current.session_purpose||!stored.exposure_snapshot_at_start||stored.session_state!==current.session_state))normalized++;
+  }
+  if(!preview){
+    for(const current of projection.current){
+      const stored=rows.find(row=>row.id===current.id);
+      if(stored&&(stored.stable_session_key!==current.stable_session_key||stored.scan_evidence_kind!==current.scan_evidence_kind||
+        stored.session_purpose!==current.session_purpose||!stored.exposure_snapshot_at_start||stored.session_state!==current.session_state))
+        await db.pastSessions.update(current.id,{stable_session_key:current.stable_session_key,session_purpose:current.session_purpose,
+          session_ordinal:current.session_ordinal,session_state:current.session_state,
+          scan_evidence_kind:current.scan_evidence_kind,exposure_snapshot_at_start:current.exposure_snapshot_at_start});
+    }
+    for(const row of projection.superseded)await db.pastSessions.update(row.sessionId,{superseded_by_session_id:row.canonicalSessionId,
+      superseded_reason:row.reason});
+  }
+  return {changes:projection.superseded.length+normalized,currentCount:projection.current.length,details:projection.superseded};
+}
+
 async function savePastExamSession(body:Record<string,unknown>,existingId?:number){
   return await db.transaction("rw",[db.pastSessions,db.reviews,db.meta,db.problems,db.attempts,db.problemAliases,db.answerIndex,db.weakNotes,db.sMemory],async()=>{
+    const preliminary=normalizePastExamSession({...body,id:existingId||0});
+    const identity=stablePastExamSessionKey({date:preliminary.date,year:preliminary.year,
+      purpose:pastExamSessionPurpose(preliminary),ordinal:Number(preliminary.session_ordinal||1)});
+    const all=await db.pastSessions.toArray();
+    const current=canonicalizePastExamSessions(all).current.find(row=>pastExamSessionKey(row)===identity);
+    existingId=existingId||current?.id;
     const previous=existingId?await db.pastSessions.get(existingId):undefined;
     if(existingId&&!previous)throw new Error("過去問セッションが見つかりません");
-    const normalized=normalizePastExamSession({...previous,...body,id:existingId||0}),validation=validatePastExamSession(normalized);
+    const suppliedSnapshot=body.exposure_snapshot_at_start as PastSession["exposure_snapshot_at_start"]|undefined;
+    const snapshot=previous?.exposure_snapshot_at_start||suppliedSnapshot||{
+      classification:(previous?.scan_evidence_kind||body.scan_evidence_kind)==="clean"?"clean" as const:"practice" as const,
+      exposed_problem_ids:[],total_problem_count:5,captured_at:new Date().toISOString(),
+    };
+    const stablePurpose=previous?.session_purpose||pastExamSessionPurpose(preliminary);
+    const normalized=normalizePastExamSession({...previous,...body,id:existingId||0,stable_session_key:identity,
+      session_purpose:stablePurpose,session_ordinal:Number(preliminary.session_ordinal||1),
+      exposure_snapshot_at_start:snapshot,scan_evidence_kind:snapshot.classification}),validation=validatePastExamSession(normalized);
     if(!validation.valid)throw new Error(validation.errors.join(" "));
     const now=new Date().toISOString(),hasSolved=validation.solvedQuestions.length>0;
     const session={...previous,...normalized,exam_score_eligible:validation.examScoreEligible,
@@ -3087,9 +3126,15 @@ async function savePastExamSession(body:Record<string,unknown>,existingId?:numbe
       attempt_started_at:hasSolved?(previous?.attempt_started_at||now):previous?.attempt_started_at,
       attempt_completed_at:hasSolved?now:previous?.attempt_completed_at,
       answer_viewed_at:previous?.answer_viewed_at||normalized.answer_viewed_at||(normalized.answer_exposure?now:undefined),
-      simulation_completed_at:normalized.session_kind==="selected_three_timed"&&validation.solvedQuestions.length===3?now:previous?.simulation_completed_at};
+      simulation_completed_at:normalized.session_kind==="selected_three_timed"&&validation.solvedQuestions.length===3?now:previous?.simulation_completed_at,
+      session_state:derivePastExamSessionState({...previous,...normalized,attempt_completed_at:hasSolved?now:previous?.attempt_completed_at}),
+      stable_session_key:identity,session_purpose:pastExamSessionPurpose(normalized),exposure_snapshot_at_start:snapshot,
+      scan_evidence_kind:snapshot.classification};
     const sessionId=existingId||Number(await db.pastSessions.add({...session,id:undefined as unknown as number} as PastSession));
     if(existingId)await db.pastSessions.put({...session,id:sessionId} as PastSession);
+    for(const duplicate of all.filter(row=>row.id!==sessionId&&!row.superseded_by_session_id&&pastExamSessionKey(row)===identity))
+      await db.pastSessions.update(duplicate.id,{superseded_by_session_id:sessionId,
+        superseded_reason:`同一logical PastExamSession ${identity} をSession ${sessionId}へ統合`});
     const allowedSolved=new Set(validation.solvedQuestions.map(row=>row.problemId).filter(Boolean));
     const attemptUpdates=(Array.isArray(body.attempt_updates)?body.attempt_updates:[]) as Array<StudyUpdate&Record<string,unknown>>;
     const aliases=await db.problemAliases.toArray(),linkedIds=[...(previous?.linked_attempt_ids||[])];
@@ -3152,9 +3197,9 @@ async function replaceTodayWithAdaptivePlan(preview:boolean){
 }
 
 async function integrityAudit():Promise<IntegrityAudit>{
-  const [attempts,reviews,aliases,snapshots,problems,relations]=await Promise.all([
+  const [attempts,reviews,aliases,snapshots,problems,relations,pastSessions]=await Promise.all([
     db.attempts.toArray(),db.reviews.toArray(),db.problemAliases.toArray(),currentTodaySnapshots(),
-    db.problems.toArray(),storedProblemRelations()
+    db.problems.toArray(),storedProblemRelations(),db.pastSessions.toArray()
   ]);
   const validCrossTargetReviewIds=reviews.filter(review=>{
     const source=attempts.find(row=>row.id===Number(review.source_attempt_id||review.generated_from_attempt_id));
@@ -3168,6 +3213,7 @@ async function integrityAudit():Promise<IntegrityAudit>{
     currentTodayTasks:current.today.tasks,currentNextTask:current.today.currentTask,
     currentPlanSummary:current.adaptiveLearning.plannerShadow.plan14,
     examDate:current.settings.exam_date||"2026-11-15",pastExamCatalog:current.adaptiveLearning.pastExamCatalog,
+    pastSessions,repairCandidates:current.adaptiveLearning.pastExamRepairCandidates,
     additionalCandidates:current.today.additionalCandidates,
     eligibleTodayTasks:adaptivePlanDayToTasks({day:current.adaptiveLearning.plannerShadow.plan14.plan.find(day=>day.date===todayString()),
       problems:current.problems,reviews:current.reviews,today:todayString()})});
@@ -3176,6 +3222,7 @@ async function integrityAudit():Promise<IntegrityAudit>{
 async function repairIntegrity(preview=false){
   const before=await integrityAudit();
   const reconciliationPreview=await reconcileProblemLearningState(undefined,true);
+  const sessionPreview=await reconcilePastExamSessionGenerations(true);
   if(preview)return {preview:true,before,after:before,reconciliation:reconciliationPreview.audit,details:reconciliationPreview.details,changes:{
     duplicateAttempts:before.counts.exact_duplicate_attempt,
     reviewsSuperseded:before.counts.inactive_pending+before.counts.expired_same_session+
@@ -3187,14 +3234,15 @@ async function repairIntegrity(preview=false){
     todayActionsUpdated:reconciliationPreview.todayActionsUpdated,
     ambiguousProblems:reconciliationPreview.ambiguousProblems,
     lifecycleAttemptsCorrected:reconciliationPreview.lifecycleAttemptsCorrected,
-    problemStatusesCorrected:reconciliationPreview.problemStatusesCorrected,
+    problemStatusesCorrected:reconciliationPreview.problemStatusesCorrected,pastSessionsSuperseded:sessionPreview.changes,
   },stableIdentity:{stableTargetsResolved:reconciliationPreview.stableTargetsResolved,
     stableGenerationsUnified:reconciliationPreview.stableGenerationsUnified,
     duplicateStableTargets:reconciliationPreview.duplicateStableTargets}};
   const now=new Date().toISOString(),today=todayString();
+  const sessionReconciliation=await reconcilePastExamSessionGenerations(false);
   const changes={duplicateAttempts:0,reviewsSuperseded:0,contractsRebound:0,datesCorrected:0,
     staleReviewsSuperseded:0,reviewsReplaced:0,todayActionsUpdated:0,ambiguousProblems:0,
-    lifecycleAttemptsCorrected:0,problemStatusesCorrected:0};
+    lifecycleAttemptsCorrected:0,problemStatusesCorrected:0,pastSessionsSuperseded:sessionReconciliation.changes};
   await db.transaction("rw",[db.attempts,db.reviews,db.problemAliases,db.problems,db.meta],async()=>{
     const [attempts,reviews,aliases,problems,relations]=await Promise.all([
       db.attempts.toArray(),db.reviews.toArray(),db.problemAliases.toArray(),db.problems.toArray(),storedProblemRelations()
@@ -3696,6 +3744,7 @@ export async function restoreBackup(data:any){
   // the same reconciler used by every normal Attempt path; history is retained.
   await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.problemAliases,db.meta],
     ()=>reconcileProblemLearningState());
+  await reconcilePastExamSessionGenerations(false);
   notifyStudyDataChanged({operation:"restore-backup"});
 }
 

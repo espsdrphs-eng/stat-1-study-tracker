@@ -81,3 +81,25 @@ test("過去問の単発Cは任意、major反復はsource lineage付きrequired 
   assert.equal(majorRows[0].required,true);assert.equal(majorRows[0].whitebookProblemIds.length,1);
   assert.equal(majorRows[0].sourceAttemptId,1);assert.match(majorRows[0].matchReason,/fine concept/);
 });
+
+test("root skillを特定できない複数concept問題では章一致Whitebookを必須化せずmini repairへ落とす",()=>{
+  const c2={...record().data.concepts[0],concept_id:"c2",display_name:"別の操作"};
+  const link={past_exam_problem_id:"PE-2021-Q01",whitebook_problem_id:"WB-4-A-01",relation_type:"remediation",
+    priority_rank:1,reason:"章一致",confidence:"verified",requires_user_confirmation_before_task_creation:true,
+    requires_live_problem_master_reconciliation:true,resolved_whitebook_problem_id:"WB-4-A-01",reconciliation_status:"exact"};
+  const rec=record({data:{...record().data,concepts:[record().data.concepts[0],c2],
+    pastExamProblems:[pastProblem(2021,1,["c1","c2"]),pastProblem(2022,1,["c1","c2"])],whitebookLinks:[link]}});
+  const source=attempt(11,"PY-2021-Q1","2026-08-29",{score_numeric:55,review_outcome:"failed",
+    grading_contract:{gradedParts:[{id:"calc",label:"主要計算",rootCauseKey:"unmapped-operation"}]},
+    graded_findings:[{graded_part_id:"calc",error_type:"W",evidence:"主要計算停止",resolved:false}]});
+  const weaknesses=analyzeConceptWeaknesses({record:rec,problems,attempts:[source],reviews:[],weakNotes:[],today:"2026-08-30"});
+  const session={id:9,date:"2026-08-29",session_kind:"scan_plus_one",session_type:"scan5",stage:"calibration",
+    scan_set_source:"past_exam_year",questions:[],linked_attempt_ids:[11]};
+  const rows=buildPastExamRepairCandidates({record:rec,sessions:[session],attempts:[source],conceptWeaknesses:weaknesses,
+    problems:[{...problem("WB-4-A-01"),fine_concept_ids:["c1"]}]});
+  assert.equal(rows.length,1);
+  assert.equal(rows[0].repairKind,"concept_mini");
+  assert.equal(rows[0].matchConfidence,"low");
+  assert.deepEqual(rows[0].whitebookProblemIds,[]);
+  assert.match(rows[0].matchReason,/局所補修/);
+});

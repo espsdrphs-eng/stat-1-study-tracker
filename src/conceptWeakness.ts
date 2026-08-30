@@ -6,6 +6,7 @@ import type { StoredExamReferencePack } from "./examReferencePack.ts";
 import { canonicalPastExamProblemId } from "./examReferencePack.ts";
 import { excludeLegacyKFromPlanning } from "./legacyKPolicy.ts";
 import { reviewExecutionState } from "./integrityEngine.ts";
+import {deriveFailureEpisode} from "./failureEpisode.ts";
 
 type ConceptMapping={conceptIds:string[];confidence:"verified"|"candidate"};
 type EvidenceEvent={
@@ -196,39 +197,40 @@ export function buildPastExamRepairCandidates(args:{
       const ranked=reference.fine_concept_ids.map(conceptId=>weakness.get(conceptId))
         .filter((row):row is ConceptWeaknessInsight=>!!row)
         .sort((a,b)=>b.priorityScore-a.priorityScore).slice(0,2);
-      for(const row of ranked){
-        const errors=errorValues(attempt),observedMajor=attempt.observed_out_of_scope_findings?.find(finding=>
-          finding.materiality==="major"&&finding.confidence!=="low"&&
-          (!finding.root_cause_key||finding.root_cause_key===row.conceptId));
-        const unresolvedFinding=attempt.graded_findings?.find(finding=>!finding.resolved);
-        const recurrence=Number(row.recurrenceCount||0);
-        const materiality:PastExamRepairCandidate["materiality"]=observedMajor||errors.some(error=>["K","W"].includes(error))||
-          attempt.review_outcome==="failed"||errors.includes("N")&&Number(attempt.score_numeric||0)<70||recurrence>0?"major":"minor";
-        const required=materiality==="major"&&(recurrence>0||row.pastExamFailureCount>0||attempt.review_outcome==="failed");
-        const sourceFindingId=observedMajor?.finding_id||observedMajor?.stable_target_key||unresolvedFinding?.graded_part_id||
-          `attempt:${attempt.id}:error:${errors.sort().join("-")}`;
-        const linkedWhitebook=(linksByPast.get(sourceProblemId)||[]).filter(problemId=>{
+      const recurrence=Math.max(0,...ranked.map(row=>row.recurrenceCount));
+      const episode=deriveFailureEpisode(attempt,{recurrenceByRoot:Object.fromEntries(
+        (attempt.grading_contract?.gradedParts||[]).map(part=>[part.rootCauseKey||part.stableTargetKey||part.id,recurrence]))});
+      for(const root of episode.rootWeaknesses.slice(0,2)){
+        const explicitRow=ranked.find(candidate=>root.skillIds.includes(candidate.conceptId));
+        const row=explicitRow||(ranked.length===1?ranked[0]:undefined);
+        const conceptId=row?.conceptId||root.skillIds[0]||root.rootWeaknessId;
+        const linkedWhitebook=(row?linksByPast.get(sourceProblemId)||[]:[]).filter(problemId=>{
           const problem=args.problems?.find(item=>item.problem_id===problemId);
-          return !!problem?.fine_concept_ids?.includes(row.conceptId);
+          return !!problem?.fine_concept_ids?.includes(row!.conceptId);
         }).slice(0,2);
-        const transfer=args.record.data.pastExamProblems.filter(problem=>problem.schedulable&&
+        const matchConfidence:PastExamRepairCandidate["matchConfidence"]=linkedWhitebook.length?"high":"low";
+        const required=root.requiredRepair;
+        const transfer=row?args.record.data.pastExamProblems.filter(problem=>problem.schedulable&&
           canonicalPastExamProblemId(problem)!==sourceProblemId&&problem.fine_concept_ids.includes(row.conceptId))
-          .map(canonicalPastExamProblemId).slice(0,3);
-        candidates.push({sessionId:session.id,sourceAttemptId:attempt.id,sourceProblemId,sourceFindingId,
-          conceptId:row.conceptId,conceptLabel:row.displayName,materiality,recurrence,
-          examImpact:materiality==="major"?"high":"low",required,
+          .map(canonicalPastExamProblemId).slice(0,3):[];
+        candidates.push({sessionId:session.id,sourceAttemptId:attempt.id,sourceProblemId,
+          sourceFindingId:root.sourceFindingIds[0],sourceFindingIds:root.sourceFindingIds,
+          rootWeaknessId:root.rootWeaknessId,conceptId,conceptLabel:root.title,
+          materiality:root.materiality,recurrence:root.recurrence,examImpact:root.examImpact,required,
           whitebookProblemIds:linkedWhitebook,transferProblemIds:transfer,
-          matchReason:linkedWhitebook.length?`fine concept「${row.displayName}」と検証済みlinkが一致`:
-            `fine concept「${row.displayName}」に一致する白本linkなし`,
-          reason:required?`過去問 ${sourceProblemId} の本番得点を変える${errors.join("/")}を最小補修`:
-            `単発の${errors.join("/")}は必須化せず任意確認`,
+          weaknessSkillIds:unique([...root.skillIds,...(row?[row.conceptId]:[])]),matchedSkillIds:linkedWhitebook.length&&row?[row.conceptId]:[],
+          matchScore:linkedWhitebook.length?100:0,matchConfidence,repairKind:linkedWhitebook.length?"whitebook":"concept_mini",
+          matchReason:linkedWhitebook.length?`fine concept「${row!.displayName}」と検証済みsolution linkが一致`:
+            `exact skill/operation一致の白本がないため、${sourceProblemId}の該当部分を局所補修`,
+          reason:root.requiredRepair?`過去問 ${sourceProblemId} の本番得点を変える${root.errorTypes.join("/")} rootを最小補修`:
+            `単発の${root.errorTypes.join("/")}は必須化せず任意確認`,
           requiresUserConfirmation:true});
       }
     }
   }
   const dedup=new Map<string,PastExamRepairCandidate>();
   for(const row of candidates){
-    const key=`${row.sessionId}|${row.sourceProblemId}|${row.conceptId}`;
+    const key=`${row.sessionId}|${row.sourceProblemId}|${row.rootWeaknessId||row.conceptId}`;
     if(!dedup.has(key)&&[...dedup.values()].filter(item=>item.sessionId===row.sessionId).length<2)dedup.set(key,row);
   }
   return [...dedup.values()];

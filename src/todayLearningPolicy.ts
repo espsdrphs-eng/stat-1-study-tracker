@@ -127,8 +127,8 @@ export function reviewPlanningDecision(args:{
   const pastExamOrigin=!!review.generated_from_past_session_id||!!review.parent_past_session_id||
     !!source?.parent_past_session_id||problem?.source_type==="past_exam";
   const activeTargets=review.grading_contract?.gradedParts?.length||review.graded_part_ids?.length||review.targeted_parts?.length||0;
-  const explicitRetentionEvidence=review.retention_pending===true||review.correction_provided===true||
-    !!review.lifecycle_success_evidence_id;
+  const explicitRetentionEvidence=!!review.lifecycle_success_evidence_id||
+    /success|transfer|reproduction/.test(String(review.lifecycle_transition_provenance||""));
   const retentionPending=purpose==="retrieval_check"&&activeTargets>0&&
     (explicitRetentionEvidence||sourceMajor);
 

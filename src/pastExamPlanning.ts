@@ -1,11 +1,31 @@
-import type {Attempt,ConceptWeaknessInsight,ExamReferenceCatalogItem,PastSession} from "./types.ts";
+import type {Attempt,ConceptWeaknessInsight,ExamReferenceCatalogItem,PastExamSessionPurpose,PastExamSessionState,PastSession} from "./types.ts";
 
 export type PastExamTaskType="clean_scan5"|"practice_scan5"|"individual_full"|"timed_three_question_session"|"simulation";
-export type PastExamSessionState="planned"|"scan_started"|"selection_committed"|"answers_in_progress"|"grading_pending"|"completed"|"deferred";
+export type {PastExamSessionState} from "./types.ts";
+
+export function pastExamSessionPurpose(session:Partial<PastSession>):PastExamSessionPurpose{
+  if(session.session_purpose)return session.session_purpose;
+  if(session.simulation===true)return "simulation";
+  if(session.session_kind==="selected_three_timed")return "timed_three_question_session";
+  if(session.session_kind==="scan_only")return session.scan_evidence_kind==="practice"?"practice_scan5":"clean_scan5";
+  if(session.session_kind==="scan_plus_one")return "individual_full";
+  return "individual_full";
+}
+
+export function stablePastExamSessionKey(args:{date:string;year:number;purpose:string;ordinal?:number}){
+  const logicalPurpose=["clean_scan5","practice_scan5"].includes(args.purpose)?"scan5":args.purpose;
+  return `past_exam_session:${args.date}:${args.year}:${logicalPurpose}:${Math.max(1,Number(args.ordinal||1))}`;
+}
+
+export function pastExamSessionKey(session:Partial<PastSession>){
+  return stablePastExamSessionKey({date:String(session.date||""),year:Number(session.year||0),
+    purpose:pastExamSessionPurpose(session),ordinal:Number(session.session_ordinal||1)});
+}
 
 /** Derives workflow progress from immutable session facts; refresh never resets it. */
 export function derivePastExamSessionState(session?:Partial<PastSession>|null):PastExamSessionState{
   if(!session)return "planned";
+  if(session.cancelled===true||session.session_state==="cancelled")return "cancelled";
   if(session.deferred===true)return "deferred";
   if(session.simulation_completed_at||session.attempt_completed_at&&Number((session.questions||[]).filter(row=>row.completed).length)>=3)return "completed";
   const selected=(session.final_selected_problem_ids||session.initial_selected_problem_ids||[]).filter(Boolean);
@@ -17,10 +37,46 @@ export function derivePastExamSessionState(session?:Partial<PastSession>|null):P
   return "planned";
 }
 
+const stateRank:Record<PastExamSessionState,number>={planned:0,scan_started:1,selection_committed:2,
+  answers_in_progress:3,grading_pending:4,completed:5,deferred:-1,cancelled:-2};
+const inputScore=(session:PastSession)=>Number(session.scan_minutes||0)+Number(session.actual_total_minutes||0)+
+  (session.questions||[]).filter(row=>row.predictedType||row.firstStep||row.selectionReason||row.completed).length*10+
+  (session.linked_attempt_ids||[]).length*20+(session.analysis?10:0);
+
+/** Read-only current projection. Duplicate raw rows stay as history. */
+export function canonicalizePastExamSessions(sessions:PastSession[]){
+  const groups=new Map<string,PastSession[]>();
+  for(const session of sessions){
+    if(session.superseded_by_session_id)continue;
+    const key=pastExamSessionKey(session);groups.set(key,[...(groups.get(key)||[]),session]);
+  }
+  const current:PastSession[]=[],superseded:Array<{sessionId:number;canonicalSessionId:number;reason:string}>=[];
+  for(const [key,rows] of groups){
+    const ranked=[...rows].sort((a,b)=>stateRank[derivePastExamSessionState(b)]-stateRank[derivePastExamSessionState(a)]||
+      inputScore(b)-inputScore(a)||Number(b.id)-Number(a.id));
+    const winner=ranked[0];
+    const snapshot=rows.map(row=>row.exposure_snapshot_at_start).find(value=>value?.classification==="clean")||
+      winner.exposure_snapshot_at_start||{
+        classification:rows.some(row=>row.scan_evidence_kind==="clean")?"clean" as const:"practice" as const,
+        exposed_problem_ids:[],total_problem_count:5,captured_at:String(winner.prompt_scanned_at||winner.date),
+      };
+    const rawPurpose=pastExamSessionPurpose(winner);
+    const sessionPurpose=["clean_scan5","practice_scan5"].includes(rawPurpose)?
+      (snapshot.classification==="clean"?"clean_scan5" as const:"practice_scan5" as const):rawPurpose;
+    current.push({...winner,stable_session_key:key,session_purpose:sessionPurpose,
+      session_ordinal:Number(winner.session_ordinal||1),session_state:derivePastExamSessionState(winner),
+      exposure_snapshot_at_start:snapshot,scan_evidence_kind:snapshot.classification});
+    for(const row of ranked.slice(1))superseded.push({sessionId:row.id,canonicalSessionId:winner.id,
+      reason:`同一logical PastExamSession ${key} のcurrent generationへ統合`});
+  }
+  return {current:current.sort((a,b)=>String(b.date).localeCompare(String(a.date))||b.id-a.id),superseded};
+}
+
 export type PastExamYearCandidate={
   year:number;rows:ExamReferenceCatalogItem[];eligibleRows:ExamReferenceCatalogItem[];
   exposure:"clean"|"nearly_clean"|"partial"|"used";cleanScanEligible:boolean;
   attemptedCount:number;recentlyUsed:boolean;transferValue:number;simulationProtected:boolean;
+  exposedCount:number;
 };
 
 const canonicalYear=(id:string)=>Number(String(id).match(/(?:PY-|PE-)(\d{4})/i)?.[1]||0);
@@ -55,8 +111,8 @@ export function buildPastExamYearCandidates(args:{
     const explicitUnseen=eligibleRows.filter(row=>row.exposure==="unseen").length;
     const untouched=eligibleRows.filter(row=>["unseen","unknown"].includes(row.exposure)).length;
     const attempted=(attemptsByYear.get(year)||[]).filter(row=>!row.exclude_from_planning);
-    const sessionRows=sessionsByYear.get(year)||[];
-    const exposedBySession=sessionRows.some(row=>Number(row.scan_minutes||0)>0||!!row.session_kind);
+    const sessionRows=(sessionsByYear.get(year)||[]).filter(row=>!row.superseded_by_session_id);
+    const exposedBySession=sessionRows.some(row=>!["planned","deferred","cancelled"].includes(derivePastExamSessionState(row)));
     const cleanScanEligible=eligibleRows.length>=5&&explicitUnseen===eligibleRows.length&&!attempted.length&&!exposedBySession;
     const exposure:PastExamYearCandidate["exposure"]=cleanScanEligible?"clean":
       eligibleRows.length>=5&&untouched>=eligibleRows.length-1&&!attempted.length&&!exposedBySession?"nearly_clean":
@@ -67,7 +123,8 @@ export function buildPastExamYearCandidates(args:{
     const transferValue=Math.max(0,...eligibleRows.flatMap(row=>row.fineConceptIds.map(id=>{
       const value=weakness.get(id);return value?value.priorityScore+(value.pastExamFailureCount?1000:0):0;
     })));
-    return {year,rows,eligibleRows,exposure,cleanScanEligible,attemptedCount:attempted.length,recentlyUsed,transferValue,
+    const exposedCount=eligibleRows.filter(row=>!["unseen","unknown"].includes(row.exposure)).length;
+    return {year,rows,eligibleRows,exposure,cleanScanEligible,attemptedCount:attempted.length,recentlyUsed,transferValue,exposedCount,
       simulationProtected:eligibleRows.some(row=>row.simulationProtected)};
   }).filter((row):row is PastExamYearCandidate=>!!row);
 }
@@ -102,13 +159,27 @@ export function derivePastExamWorkspace(args:{
   catalog:ExamReferenceCatalogItem[];attempts:Attempt[];pastSessions:PastSession[];
   weaknesses?:ConceptWeaknessInsight[];today:string;daysRemaining:number;
 }){
-  const candidates=buildPastExamYearCandidates(args);
+  const canonicalSessions=canonicalizePastExamSessions(args.pastSessions).current;
+  const candidates=buildPastExamYearCandidates({...args,pastSessions:canonicalSessions});
   const taskType:PastExamTaskType=args.daysRemaining<=30?"simulation":args.daysRemaining<=80?"timed_three_question_session":"clean_scan5";
-  const year=selectPastExamYear({candidates,taskType});
-  if(!year)return {recommended:null,candidates,warning:"利用可能な過去問がありません"};
+  const active=canonicalSessions.find(session=>!["completed","deferred","cancelled"].includes(derivePastExamSessionState(session))&&
+    ["clean_scan5","practice_scan5","timed_three_question_session","simulation"].includes(pastExamSessionPurpose(session)));
+  const year=active?candidates.find(row=>row.year===active.year):selectPastExamYear({candidates,taskType});
+  const unseenIndividualPool=candidates.flatMap(candidate=>candidate.eligibleRows.filter(row=>
+    ["unseen","unknown"].includes(row.exposure)&&!args.attempts.some(attempt=>canonicalYear(attempt.problem_id)===candidate.year&&
+      attempt.problem_id===row.canonicalProblemId)));
+  if(!year)return {recommended:null,candidates,unseenIndividualPool,warning:"利用可能な過去問がありません"};
   const effectiveType:PastExamTaskType=taskType==="clean_scan5"&&!year.cleanScanEligible?"practice_scan5":taskType;
-  return {recommended:{year:year.year,taskType:effectiveType,clean:year.cleanScanEligible,
-    label:year.cleanScanEligible?"完全未見":"一部露出済み",
-    workflow:["timed_three_question_session","simulation"].includes(effectiveType)?
-      "5問scan → 3問選択 → 3問答案 → 採点":"5問scan → 3問選択"},candidates,warning:null};
+  const chosenType=active?pastExamSessionPurpose(active):effectiveType;
+  const prior=candidates.filter(row=>row.year<year.year&&row.exposedCount>0).sort((a,b)=>b.year-a.year)[0];
+  const selectedYearReason=active?.selected_year_reason||[
+    prior?`${prior.year}年は${prior.exposedCount}/${prior.eligibleRows.length}問が既露出のためclean選題測定には使わない`:"より古い利用可能年度にclean候補なし",
+    `${year.year}年は${year.exposedCount}/${year.eligibleRows.length}問露出で、clean選題証拠を取得できるため`,
+    "2024/2025はsimulation保護を維持",
+  ].join("。 ");
+  const clean=active?.exposure_snapshot_at_start?.classification==="clean"||!active&&year.cleanScanEligible;
+  return {recommended:{year:year.year,taskType:chosenType,clean,
+    label:clean?"完全未見":"一部露出済み",selectedYearReason,stableSessionKey:active?pastExamSessionKey(active):undefined,
+    workflow:["timed_three_question_session","simulation"].includes(chosenType)?
+      "5問scan → 3問選択 → 3問答案 → 採点":"5問scan → 3問選択"},candidates,unseenIndividualPool,warning:null};
 }

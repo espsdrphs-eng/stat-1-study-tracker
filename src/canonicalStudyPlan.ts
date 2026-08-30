@@ -15,7 +15,8 @@ export function deriveCanonicalStudyPlan(args:{tasks:Task[];today:string;generat
   const requiredRepairs=open.filter(task=>deriveCurrentActionClass(task)==="targeted_repair"&&task.triage!=="tomorrow");
   const optionalMaintenance=open.filter(task=>deriveCurrentActionClass(task)==="maintenance");
   const optionalExtras=open.filter(task=>task.triage==="tomorrow"&&deriveCurrentActionClass(task)!=="maintenance");
-  const primaryAction=open.find(task=>task.triage!=="tomorrow")||null;
+  const required=[...examPractice,...requiredRepairs].sort((a,b)=>tasks.indexOf(a)-tasks.indexOf(b));
+  const primaryAction=required[0]||null;
   const examPracticeMinutes=examPractice.reduce((sum,task)=>sum+Number(task.minutes||0),0);
   const requiredRepairMinutes=requiredRepairs.reduce((sum,task)=>sum+Number(task.minutes||0),0);
   const optionalMinutes=[...optionalMaintenance,...optionalExtras].reduce((sum,task)=>sum+Number(task.minutes||0),0);
@@ -23,9 +24,14 @@ export function deriveCanonicalStudyPlan(args:{tasks:Task[];today:string;generat
   const sourceStateVersion=stableHash(tasks.map(task=>[
     currentActionFingerprint(task,task.id&&task.review_type?task:undefined),task.checked?1:0,task.triage||""
   ].join(":")).join("|"));
+  const optionalTasks=[...optionalMaintenance.filter(task=>task.triage!=="tomorrow"),...optionalExtras];
+  const deferredTasks=open.filter(task=>task.triage==="tomorrow"||deriveCurrentActionClass(task)==="maintenance");
+  const reasons=[primaryAction?String(primaryAction.why_today||primaryAction.reason||""):"現在の必須課題はありません"];
   return {primaryAction,examPractice,requiredRepairs,optionalMaintenance,optionalExtras,
+    examPracticeTasks:examPractice,requiredRepairTasks:requiredRepairs,optionalTasks,deferredTasks,
+    pastExamSession:examPractice.find(task=>!!task.stable_session_key)||null,
     rollingAllocation:{examPracticeMinutes,requiredRepairMinutes,optionalMinutes,
       examPracticeShare:requiredTotal?examPracticeMinutes/requiredTotal:null},
-    reasons:[primaryAction?String(primaryAction.why_today||primaryAction.reason||""):"現在の必須課題はありません"],
+    reasons,decisionReasons:reasons,
     generatedAt:args.generatedAt||new Date().toISOString(),sourceStateVersion};
 }

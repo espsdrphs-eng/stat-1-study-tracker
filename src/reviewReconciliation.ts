@@ -259,6 +259,12 @@ export function analyzeReviewReconciliation(args:{
       const source=attemptMap.get(event.attemptId);
       return event.observedOutOfScope||!!source&&source.learning_event_kind==="assessment"&&correctiveFeedbackAvailable(source);
     });
+    const majorInScopeFailure=desiredRows.some(event=>{
+      if(event.observedOutOfScope)return false;
+      const source=attemptMap.get(event.attemptId),errors=source?errorsFor(source):[];
+      return !!source&&(errors.some(error=>["K","W"].includes(error))||source.review_outcome==="failed"||
+        source.conclusion_reached===false||errors.includes("N")&&Number(source.score_numeric??100)<70);
+    });
     const lineageKeys=(review:Review)=>new Set(partsFromContract(review).map(part=>
       part.stableTargetKey||part.stable_target_key||part.id));
     const explicitRepairSuccess=(repair:Review)=>{
@@ -273,12 +279,11 @@ export function analyzeReviewReconciliation(args:{
         Number(repair.source_attempt_id||repair.generated_from_attempt_id||0)===checkSource&&
         [...lineageKeys(repair)].some(key=>checkKeys.has(key))&&!explicitRepairSuccess(repair));
     });
-    // Once an explicit repair Review exists it can only advance after graded
-    // success. Merely generating/showing feedback is not transition evidence.
-    // A new assessment without an existing repair may still schedule its first
-    // delayed check directly under the immediate-correction policy.
+    // Corrective text is not reproduction evidence. A major in-scope failure
+    // remains repair; a successful contract with a newly observed outside-scope
+    // target can still skip same-session retesting and use a future check.
     const desiredReviewPurpose:"error_repair"|"retrieval_check"=
-      repairs.length>0||unprovenRepairPromotion?"error_repair":feedbackBacked?"retrieval_check":"error_repair";
+      repairs.length||unprovenRepairPromotion||majorInScopeFailure?"error_repair":feedbackBacked?"retrieval_check":"error_repair";
     const latestGraduation=[...problemAttempts].filter(objectiveGraduation).sort(attemptOrder).at(-1);
     const latestAttempt=problemAttempts.at(-1);
     const latestAttemptHasUnresolved=!!latestAttempt&&events.some(event=>event.attemptId===latestAttempt.id&&!event.resolved);

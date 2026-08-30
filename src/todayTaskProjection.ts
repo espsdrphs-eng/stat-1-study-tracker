@@ -2,6 +2,7 @@ import type {Attempt,PastSession,ProblemAlias,Task,TodayPlanSnapshot} from "./ty
 import {resolveCanonicalProblemId} from "./examReadiness.ts";
 import {summarizeTodayTime} from "./todayPlan.ts";
 import {prioritizeCurrentTodayTasks} from "./todayLearningPolicy.ts";
+import {pastExamSessionKey} from "./pastExamPlanning.ts";
 
 const scanModes=new Set(["scan","scan5","scan_only"]);
 
@@ -53,7 +54,8 @@ export function qualifyingAttemptForTodayTask(args:{
 export function qualifyingPastSessionForTodayTask(args:{task:Task;pastSessions?:PastSession[];snapshot:TodayPlanSnapshot}){
   if(!args.task.past_exam_task_type)return undefined;
   const matching=(args.pastSessions||[]).filter(session=>session.date===args.snapshot.date&&
-    Number(session.year||0)===Number(args.task.past_exam_year||0));
+    Number(session.year||0)===Number(args.task.past_exam_year||0)&&
+    (!args.task.stable_session_key||pastExamSessionKey(session)===args.task.stable_session_key));
   if(args.task.past_exam_task_type==="clean_scan5"||args.task.past_exam_task_type==="practice_scan5")
     return matching.find(session=>Number(session.scan_minutes||0)>0);
   if(args.task.past_exam_task_type==="timed_three_question_session"||args.task.past_exam_task_type==="simulation")

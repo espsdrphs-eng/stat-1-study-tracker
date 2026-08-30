@@ -37,6 +37,19 @@ test("workspaceはD80でscan・選択・3問答案・採点を一つの推奨ses
   assert.match(workspace.recommended.workflow,/5問scan.+3問選択.+3問答案.+採点/);
 });
 
+test("clean年度の選択理由と前年度の未見individual poolを同時に返す",()=>{
+  const attempts=[
+    ...[1,2,3,4,5].map(n=>({id:n,problem_id:`PY-2016-Q${n}`,date:`2026-07-${10+n}`})),
+    ...[1,2,3].map((n,index)=>({id:10+n,problem_id:`PY-2017-Q${index+1}`,date:`2026-08-0${n}`})),
+  ];
+  const catalog=buildPastExamCatalog({record:source,sessions:[],attempts,exposureOverrides:{}});
+  const workspace=derivePastExamWorkspace({catalog,attempts,pastSessions:[],today:"2026-08-30",daysRemaining:77});
+  assert.equal(workspace.recommended.year,2018);
+  assert.match(workspace.recommended.selectedYearReason,/2017.*3\/5.*2018.*0\/5/);
+  assert.deepEqual(workspace.unseenIndividualPool.filter(row=>row.year===2017).map(row=>row.canonicalProblemId),
+    ["PY-2017-Q4","PY-2017-Q5"]);
+});
+
 test("PastExamSession progressはscan・選択・答案・採点の事実から導出する",()=>{
   assert.equal(derivePastExamSessionState(null),"planned");
   assert.equal(derivePastExamSessionState({prompt_scanned_at:"2026-08-30T00:00:00Z"}),"scan_started");

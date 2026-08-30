@@ -724,7 +724,7 @@ function TodayTaskRows({task:t,problem,data,busy,run,date,onReview,onOpenProblem
     {persistedReview?<InactiveReviewNotice review={persistedReview} state={executionState}/>:<div className="inactive-review-notice"><AlertTriangle size={18}/><div><strong>見つかりません</strong><span>この復習課題は現在のデータに存在しません。</span></div></div>}
   </td></tr>;
   const isPastSession=!!t.stable_session_key||t.past_exam_task_type==="timed_three_question_session"||t.past_exam_task_type==="simulation";
-  return <><tr className={t.checked?"task-checked":""}><td><Badge tone={t.kind==="S確認"?"blue":t.error_type==="K"?"red":""}>{t.kind}</Badge></td><td>{!isPastSession&&<strong>{t.problem_id}</strong>}<small>{t.title}{t.checked&&<em className="grading-wait">採点待ち</em>}</small>{isPastSession&&<small>{t.session_workflow}</small>}</td><td>{modes[t.mode]||t.mode}</td><td>{t.minutes}分</td><td><strong className="why-today">なぜ今日：{t.why_today||t.reason}</strong>{t.reason!==t.why_today&&<small>{t.reason}</small>}{t.repair_lineage&&<small>補修元：{t.repair_lineage.sourceProblemId}／{t.repair_lineage.matchReason}</small>}{t.postpone_count?` ・ 先送り${t.postpone_count}回（${t.postpone_reason}）`:""}</td><td><div className="task-actions"><SheetLink href={sheetHref(t.mode)} label="シート"/><label className="task-check"><input type="checkbox" checked={!!t.checked} disabled={busy} onChange={toggle}/><span>{isReview?"復習結果を記録":"解答済み"}</span></label></div><ScheduleQuickButtons item={t} busy={busy} select={action=>onPostpone(t,action)}/></td></tr>
+  return <><tr className={t.checked?"task-checked":""}><td><Badge tone={t.kind==="S確認"?"blue":t.error_type==="K"?"red":""}>{t.kind}</Badge></td><td>{!isPastSession&&<strong>{t.problem_id}</strong>}<small>{t.title}{t.checked&&<em className="grading-wait">採点待ち</em>}</small>{isPastSession&&<small>{t.session_workflow}</small>}</td><td>{modes[t.mode]||t.mode}</td><td>{t.minutes}分</td><td><strong className="why-today">なぜ今日：{t.why_today||t.reason}</strong>{t.selected_year_reason&&<small>なぜこの年度：{t.selected_year_reason}</small>}{t.reason!==t.why_today&&<small>{t.reason}</small>}{t.repair_lineage&&<small>補修元：{t.repair_lineage.sourceProblemId}／{t.repair_lineage.matchReason}{t.repair_lineage.matchConfidence?`（一致 ${t.repair_lineage.matchConfidence}）`:""}</small>}{t.postpone_count?` ・ 先送り${t.postpone_count}回（${t.postpone_reason}）`:""}</td><td><div className="task-actions"><SheetLink href={sheetHref(t.mode)} label="シート"/><label className="task-check"><input type="checkbox" checked={!!t.checked} disabled={busy} onChange={toggle}/><span>{isReview?"復習結果を記録":"解答済み"}</span></label></div><ScheduleQuickButtons item={t} busy={busy} select={action=>onPostpone(t,action)}/></td></tr>
     <tr className="task-plan-row"><td colSpan={6}><TodayTaskDetails task={t} problem={problem} onOpenProblem={onOpenProblem} onOpenPastExam={onOpenPastExam} problemAliases={data.problemAliases} examPhase={examPhase} resolved={resolved}/>{(t.review_method||t.review_reason)&&<ReviewPlanDetails item={t} compact resolved={resolved}/>}</td></tr></>;
 }
 
@@ -1263,8 +1263,19 @@ function PastView({data,go,run,busy}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()
     run(()=>post("/api/exam-reference-pack/exposure",{problemId,exposure}),"過去問の露出状態を保存しました");
   const submitSession=async()=>{
     const selectedProblemIds=session.questions.filter(row=>row.selected).map(row=>row.problemId||row.questionLabel);
+    const yearCandidate=workspace.candidates.find(row=>row.year===Number(session.year));
+    const classification=yearCandidate?.cleanScanEligible?"clean":"practice";
+    const sessionPurpose=session.session_kind==="selected_three_timed"?"timed_three_question_session":
+      session.session_kind==="scan_only"?(classification==="clean"?"clean_scan5":"practice_scan5"):"individual_full";
+    const selectedYearReason=workspace.recommended?.year===Number(session.year)?workspace.recommended.selectedYearReason:
+      `${session.year}年は${yearCandidate?.exposedCount||0}/${yearCandidate?.eligibleRows.length||5}問露出。現在選択した演習形式に利用。`;
     const payload={...session,year:Number(session.year),stage:stageForDays(days),scan_minutes:Number(session.scan_minutes||0),actual_total_minutes:Number(session.actual_total_minutes||0),
-      scan_evidence_kind:workspace.candidates.find(row=>row.year===Number(session.year))?.cleanScanEligible?"clean":"practice",
+      session_purpose:sessionPurpose,session_ordinal:1,scan_evidence_kind:classification,
+      stable_session_key:workspace.recommended?.year===Number(session.year)&&workspace.recommended.stableSessionKey?
+        workspace.recommended.stableSessionKey:undefined,selected_year_reason:selectedYearReason,
+      exposure_snapshot_at_start:{classification,
+        exposed_problem_ids:(yearCandidate?.eligibleRows||[]).filter(row=>!["unseen","unknown"].includes(row.exposure)).map(row=>row.canonicalProblemId),
+        total_problem_count:yearCandidate?.eligibleRows.length||5,captured_at:new Date().toISOString()},
       initial_selected_problem_ids:editingSessionId?session.initial_selected_problem_ids:selectedProblemIds,
       final_selected_problem_ids:editingSessionId?selectedProblemIds:[],
       solve_order:session.questions.filter(row=>row.selected).sort((a,b)=>Number(a.plannedOrder||99)-Number(b.plannedOrder||99)).map(row=>row.problemId||row.questionLabel)};
@@ -1280,7 +1291,7 @@ function PastView({data,go,run,busy}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()
     window.scrollTo({top:0,behavior:"smooth"});
   };
   return <>
-    <section className="panel past-workspace-next"><div><span className="eyebrow">NEXT PAST-EXAM SESSION</span><h2>次の推奨過去問session</h2>{workspace.recommended?<><strong>{workspace.recommended.year}年・{workspace.recommended.label}</strong><p>{workspace.recommended.workflow}</p><small>{workspace.recommended.clean?"clean selection evidenceとして記録できます":"practice scanとして扱い、clean指標とは分離します"}</small></>:<p>{workspace.warning}</p>}</div>{workspace.recommended&&<button className="primary" onClick={()=>{setSession({...session,year:String(workspace.recommended!.year),session_kind:workspace.recommended!.taskType==="timed_three_question_session"||workspace.recommended!.taskType==="simulation"?"selected_three_timed":"scan_only",questions:blankQuestions()});document.getElementById("past-session-form")?.scrollIntoView({behavior:"smooth"})}}><Play size={17}/>開始</button>}</section>
+    <section className="panel past-workspace-next"><div><span className="eyebrow">NEXT PAST-EXAM SESSION</span><h2>次の推奨過去問session</h2>{workspace.recommended?<><strong>{workspace.recommended.year}年・{workspace.recommended.label}</strong><p>{workspace.recommended.workflow}</p><small>{workspace.recommended.clean?"clean selection evidenceとして記録できます":"practice scanとして扱い、clean指標とは分離します"}</small><p><b>なぜこの年度：</b>{workspace.recommended.selectedYearReason}</p>{workspace.unseenIndividualPool.length>0&&<small>前年度などの未見残問は個別演習poolに保持：{workspace.unseenIndividualPool.slice(0,5).map(row=>row.canonicalProblemId).join("、")}</small>}</>:<p>{workspace.warning}</p>}</div>{workspace.recommended&&<button className="primary" onClick={()=>{setSession({...session,year:String(workspace.recommended!.year),session_kind:workspace.recommended!.taskType==="timed_three_question_session"||workspace.recommended!.taskType==="simulation"?"selected_three_timed":"scan_only",questions:blankQuestions()});document.getElementById("past-session-form")?.scrollIntoView({behavior:"smooth"})}}><Play size={17}/>開始</button>}</section>
     <section className="past-analysis-intro">
       <div><span className="eyebrow">PAST EXAM WORKSPACE</span><h2>過去問演習</h2><p>scan5 → 3問選択 → 答案 → 採点を一つの本番型workflowとして記録します。未解答問題は0点にしません。</p></div>
       <button className="primary" onClick={()=>go("import")}><ClipboardPaste size={17}/>解いた問題をGPT採点</button>
@@ -1336,7 +1347,7 @@ function PastView({data,go,run,busy}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()
       <div>{data.adaptiveLearning.pastExamRepairCandidates.map(row=><article key={`${row.sessionId}-${row.conceptId}`}>
         <strong>{row.conceptLabel}・{row.required?"必須補修候補":"任意確認"}</strong><span>{row.reason}</span>
         <small>根拠：Attempt #{row.sourceAttemptId} / {row.sourceProblemId}・{row.matchReason}</small>
-        <small>白本候補：{row.whitebookProblemIds.join("、")||"未解決"}／転移候補：{row.transferProblemIds.join("、")||"未設定"}</small>
+        <small>一致信頼度：{row.matchConfidence||"未評価"}／{row.repairKind==="concept_mini"?"Whitebook対応なし：元問題の該当部分を局所補修":`白本候補：${row.whitebookProblemIds.join("、")||"未解決"}`}／転移候補：{row.transferProblemIds.join("、")||"未設定"}</small>
       </article>)}</div>
     </section>}
     <div className="past-result-list">{errorAttempts.map(attempt=>{

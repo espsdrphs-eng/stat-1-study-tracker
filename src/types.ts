@@ -56,6 +56,8 @@ export type ProblemRelation = {
 };
 export type ReviewOrigin="direct_attempt"|"verified_linked_problem"|"integration_schedule"|"transfer_schedule"|"past_exam_attempt"|"historical_completed";
 export type PastExamSessionKind="scan_only"|"scan_plus_one"|"selected_three_timed"|"retrospective_review";
+export type PastExamSessionPurpose="clean_scan5"|"practice_scan5"|"individual_full"|"timed_three_question_session"|"simulation";
+export type PastExamSessionState="planned"|"scan_started"|"selection_committed"|"answers_in_progress"|"grading_pending"|"completed"|"deferred"|"cancelled";
 export type PastExamStage="discrimination"|"calibration"|"simulation";
 export type ScanSetSource="past_exam_year"|"mixed_a_problems"|"custom_set";
 export type PastExamExposure="unknown"|"unseen"|"prompt_scanned"|"partially_attempted"|"fully_attempted"|"answer_exposed"|"simulated";
@@ -287,6 +289,12 @@ export type PastSession = Record<string, unknown> & {
   answer_viewed_at?:string;simulation_completed_at?:string;linked_attempt_ids?:number[];
   analysis?:Record<string,unknown>;rubric_version?:string;
   scan_evidence_kind?:"clean"|"practice";
+  session_purpose?:PastExamSessionPurpose;session_ordinal?:number;stable_session_key?:string;
+  session_state?:PastExamSessionState;
+  exposure_snapshot_at_start?:{
+    classification:"clean"|"practice";exposed_problem_ids:string[];total_problem_count:number;captured_at:string;
+  };
+  selected_year_reason?:string;superseded_by_session_id?:number;superseded_reason?:string;
 };
 export type Task = {
   id?:number; problem_id:string; title:string; kind:string; reason:string; mode:string;
@@ -330,8 +338,9 @@ export type Task = {
   past_exam_task_type?:"clean_scan5"|"practice_scan5"|"individual_full"|"timed_three_question_session"|"simulation";
   past_exam_year?:number;session_problem_ids?:string[];clean_selection_evidence?:boolean;
   stable_session_key?:string;
-  past_exam_session_state?:"planned"|"scan_started"|"selection_committed"|"answers_in_progress"|"grading_pending"|"completed"|"deferred";
+  past_exam_session_state?:PastExamSessionState;
   session_workflow?:string;
+  selected_year_reason?:string;unseen_individual_problem_ids?:string[];
   repair_lineage?:RepairLineageProjection;
   today_category?:"exam_practice"|"repair";why_today?:string;
   action_class?:"exam_practice"|"targeted_repair"|"maintenance";
@@ -407,8 +416,9 @@ export type AdaptivePlanTask = {
   pastExamTaskType?:"clean_scan5"|"practice_scan5"|"individual_full"|"timed_three_question_session"|"simulation";
   pastExamYear?:number;sessionProblemIds?:string[];cleanSelectionEvidence?:boolean;
   stableSessionKey?:string;
-  pastExamSessionState?:"planned"|"scan_started"|"selection_committed"|"answers_in_progress"|"grading_pending"|"completed"|"deferred";
+  pastExamSessionState?:PastExamSessionState;
   sessionWorkflow?:string;
+  selectedYearReason?:string;unseenIndividualProblemIds?:string[];
   repairLineage?:RepairLineageProjection;
   todayCategory?:"exam_practice"|"repair";whyToday?:string;
   actionClass?:"exam_practice"|"targeted_repair"|"maintenance";
@@ -453,17 +463,33 @@ export type PastExamRepairCandidate = {
   examImpact:"low"|"medium"|"high";required:boolean;matchReason:string;
   whitebookProblemIds:string[];transferProblemIds:string[];reason:string;
   requiresUserConfirmation:true;
+  rootWeaknessId?:string;sourceFindingIds?:string[];weaknessSkillIds?:string[];
+  matchedSkillIds?:string[];matchScore?:number;matchConfidence?:"low"|"medium"|"high";
+  repairKind?:"whitebook"|"same_problem"|"concept_mini";
 };
 export type RepairLineageProjection = {
   sourceAttemptId:number;sourceProblemId:string;sourceFindingId:string;
   rootConceptId:string;materiality:"minor"|"major";recurrence:number;
   examImpact:"low"|"medium"|"high";repairProblemId:string;matchReason:string;
+  rootWeaknessId?:string;weaknessSkillIds?:string[];matchedSkillIds?:string[];
+  matchScore?:number;matchConfidence?:"low"|"medium"|"high";sourcePastExamProblemId?:string;
+};
+export type RootWeakness = {
+  rootWeaknessId:string;sourceAttemptId:number;sourceProblemId:string;sourceFindingIds:string[];
+  masteryLevel:1|2|3;errorTypes:GradingErrorType[];title:string;description:string;
+  materiality:"minor"|"major";examImpact:"low"|"medium"|"high";recurrence:number;
+  confidence:"low"|"medium"|"high";unresolved:boolean;requiredRepair:boolean;skillIds:string[];
+};
+export type FailureEpisode={
+  episodeId:string;sourceAttemptId:number;sourceProblemId:string;rootWeaknesses:RootWeakness[];
 };
 export type CanonicalStudyPlan = {
   primaryAction:Task|null;examPractice:Task[];requiredRepairs:Task[];
   optionalMaintenance:Task[];optionalExtras:Task[];
+  examPracticeTasks:Task[];requiredRepairTasks:Task[];optionalTasks:Task[];deferredTasks:Task[];
+  pastExamSession:Task|null;
   rollingAllocation:{examPracticeMinutes:number;requiredRepairMinutes:number;optionalMinutes:number;examPracticeShare:number|null};
-  reasons:string[];generatedAt:string;sourceStateVersion:string;
+  reasons:string[];decisionReasons:string[];generatedAt:string;sourceStateVersion:string;
 };
 export type AdaptiveLearning = {
   referencePack:ExamReferencePackStatus;

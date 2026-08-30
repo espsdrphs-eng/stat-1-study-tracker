@@ -21,6 +21,42 @@ test("selected_three_timed updates post-results on the same saved session",async
 
 const questions=Array.from({length:5},(_,i)=>({problemId:`PY-2024-Q${i+1}`,questionLabel:`問${i+1}`,predictedType:"尤度",firstStep:"尤度を書く",predictedScore:20,predictedMinutes:25,sinkRisk:"low",selected:i<3,selectionReason:"得点可能",plannedOrder:i<3?i+1:null,actualScore:null,actualMinutes:null,completed:false}));
 
+test("同日同年度同purposeのscan保存はcanonical sessionを更新しclean snapshotを維持する",async()=>{
+  await localGet("/api/bootstrap");
+  const date="2026-08-30",year=2018;
+  const ids=(await db.pastSessions.toArray()).filter(row=>row.date===date&&row.year===year).map(row=>row.id);
+  if(ids.length)await db.pastSessions.bulkDelete(ids);
+  const rows=questions.map((row,index)=>({...row,problemId:`PY-${year}-Q${index+1}`}));
+  const first=await localPost("/api/past-sessions",{session_kind:"selected_three_timed",session_purpose:"timed_three_question_session",
+    date,year,stage:"calibration",scan_set_source:"past_exam_year",scan_evidence_kind:"clean",scan_minutes:0,questions:rows,
+    exposure_snapshot_at_start:{classification:"clean",exposed_problem_ids:[],total_problem_count:5,captured_at:"2026-08-30T00:00:00Z"}});
+  const second=await localPost("/api/past-sessions",{session_kind:"selected_three_timed",session_purpose:"timed_three_question_session",
+    date,year,stage:"calibration",scan_set_source:"past_exam_year",scan_evidence_kind:"practice",scan_minutes:10,questions:rows});
+  assert.equal(second.sessionId,first.sessionId);
+  const active=(await db.pastSessions.toArray()).filter(row=>row.date===date&&row.year===year&&!row.superseded_by_session_id);
+  assert.equal(active.length,1);
+  assert.equal(active[0].scan_evidence_kind,"clean");
+  assert.equal(active[0].exposure_snapshot_at_start.classification,"clean");
+});
+
+test("clean/practiceはsession identityではなく開始時exposureでありscan入力で別sessionを作らない",async()=>{
+  await localGet("/api/bootstrap");
+  const date="2026-08-31",year=2018;
+  const ids=(await db.pastSessions.toArray()).filter(row=>row.date===date&&row.year===year).map(row=>row.id);
+  if(ids.length)await db.pastSessions.bulkDelete(ids);
+  const rows=questions.map((row,index)=>({...row,problemId:`PY-${year}-Q${index+1}`}));
+  const first=await localPost("/api/past-sessions",{session_kind:"scan_only",session_purpose:"clean_scan5",date,year,
+    stage:"calibration",scan_set_source:"past_exam_year",scan_evidence_kind:"clean",scan_minutes:0,questions:rows,
+    exposure_snapshot_at_start:{classification:"clean",exposed_problem_ids:[],total_problem_count:5,captured_at:"2026-08-31T00:00:00Z"}});
+  const second=await localPost("/api/past-sessions",{session_kind:"scan_only",session_purpose:"practice_scan5",date,year,
+    stage:"calibration",scan_set_source:"past_exam_year",scan_evidence_kind:"practice",scan_minutes:10,questions:rows});
+  assert.equal(second.sessionId,first.sessionId);
+  const active=(await db.pastSessions.toArray()).filter(row=>row.date===date&&row.year===year&&!row.superseded_by_session_id);
+  assert.equal(active.length,1);
+  assert.equal(active[0].scan_evidence_kind,"clean");
+  assert.equal(active[0].session_purpose,"clean_scan5");
+});
+
 test("scan_only保存はAttemptもReviewも作らず通常答案採点と混同しない",async()=>{
   await localGet("/api/bootstrap");
   const before={attempts:await db.attempts.count(),reviews:await db.reviews.count(),sessions:await db.pastSessions.count()};

@@ -91,6 +91,8 @@ export function adaptivePlanDayToTasks(args:{
       stable_session_key:item.stableSessionKey,
       past_exam_session_state:item.pastExamSessionState,
       session_workflow:item.sessionWorkflow,
+      selected_year_reason:item.selectedYearReason,
+      unseen_individual_problem_ids:item.unseenIndividualProblemIds,
       repair_lineage:item.repairLineage,
       today_category:item.todayCategory,
       why_today:item.whyToday,

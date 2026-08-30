@@ -1,4 +1,4 @@
-import type { AdditionalStudyCandidate, AdaptivePlanSummary, Attempt, ExamReferenceCatalogItem, GradingContractSnapshot, Problem, ProblemAlias, Review, StudyUpdate, Task, TodayPlanSnapshot } from "./types.ts";
+import type { AdditionalStudyCandidate, AdaptivePlanSummary, Attempt, ExamReferenceCatalogItem, GradingContractSnapshot, PastExamRepairCandidate, PastSession, Problem, ProblemAlias, Review, StudyUpdate, Task, TodayPlanSnapshot } from "./types.ts";
 import { resolveCanonicalProblemId } from "./examReadiness.ts";
 import { addCalendarDays, resolveReviewSchedule } from "./reviewSchedulePolicy.ts";
 import { validateGradingContract } from "./gradingContract.ts";
@@ -14,6 +14,8 @@ import {canonicalAttemptId,logicalReviewKey,reviewExecutionMessage,reviewExecuti
 import {resolveSemanticReviewGeneration} from "./reviewGeneration.ts";
 import {WHOLE_ANSWER_DIAGNOSTIC_VERSION,wholeAnswerDiagnosticIssues} from "./wholeAnswerDiagnostic.ts";
 import {reviewDueState} from "./todayLearningPolicy.ts";
+import {derivePastExamSessionState,pastExamSessionKey,pastExamSessionPurpose,stablePastExamSessionKey} from "./pastExamPlanning.ts";
+import {deriveFailureEpisode} from "./failureEpisode.ts";
 
 export const ACTIVE_REVIEW_STATUSES = new Set(["pending", "overdue"]);
 
@@ -149,6 +151,11 @@ export type IntegrityCategory =
   | "repair_without_source_lineage" | "whitebook_repair_low_match" | "repair_to_retrieval_without_success"
   | "preferred_date_marked_hard_overdue" | "maintenance_suppressing_exam_practice"
   | "duplicate_past_exam_session" | "past_exam_share_below_target_due_to_low_value_review"
+  | "duplicate_active_past_session" | "session_clean_kind_mutated" | "past_session_identity_mismatch"
+  | "past_exam_major_failure_in_maintenance" | "correction_mistaken_for_success"
+  | "minor_issue_promoted_to_required" | "required_whitebook_without_lineage"
+  | "whitebook_match_low_confidence_required" | "old_review_suppressing_past_exam"
+  | "dashboard_today_action_mismatch" | "duplicate_root_weakness_targets" | "year_selection_reason_missing"
   | "coach_update_parse_failed" | "coach_update_schema_invalid" | "coach_diff_generated_from_invalid_update";
 
 export type IntegrityIssue = {
@@ -195,9 +202,12 @@ export function runIntegrityAudit(args: {
   pendingImportUpdates?:StudyUpdate[];
   examDate?:string;
   pastExamCatalog?:ExamReferenceCatalogItem[];
+  pastSessions?:PastSession[];
+  repairCandidates?:PastExamRepairCandidate[];
 }): IntegrityAudit {
   const { attempts, reviews, problems = [], aliases = [], today, todayPlanSnapshots = [], validCrossTargetReviewIds = [],
-    currentTodayTasks, currentNextTask, currentPlanSummary, additionalCandidates=[],eligibleTodayTasks,pendingImportUpdates=[] } = args;
+    currentTodayTasks, currentNextTask, currentPlanSummary, additionalCandidates=[],eligibleTodayTasks,pendingImportUpdates=[],
+    pastSessions=[],repairCandidates=[] } = args;
   const validCrossTarget=new Set(validCrossTargetReviewIds);
   const issues: IntegrityIssue[] = [];
   const attemptsById = new Map(attempts.map((row) => [row.id, row]));
@@ -206,6 +216,24 @@ export function runIntegrityAudit(args: {
   const reconciliation=analyzeReviewReconciliation({attempts,reviews,aliases,today,todayPlanSnapshots});
   const stableTargets=buildStableTargetIndex({attempts,reviews,aliases});
   const problemById=new Map(problems.map(problem=>[resolveCanonicalProblemId(problem.problem_id,aliases),problem]));
+
+  const activeSessionGroups=new Map<string,PastSession[]>();
+  for(const session of pastSessions.filter(row=>!row.superseded_by_session_id&&
+    !["completed","deferred","cancelled"].includes(derivePastExamSessionState(row)))){
+    const key=pastExamSessionKey(session);
+    activeSessionGroups.set(key,[...(activeSessionGroups.get(key)||[]),session]);
+  }
+  for(const [key,rows] of activeSessionGroups)if(rows.length>1)issues.push({
+    category:"duplicate_active_past_session",severity:"active",detail:`${key} has ${rows.length} active generations`,repairable:true});
+  for(const session of pastSessions.filter(row=>!row.superseded_by_session_id&&
+    !["completed","deferred","cancelled"].includes(derivePastExamSessionState(row)))){
+    if(session.exposure_snapshot_at_start?.classification==="clean"&&session.scan_evidence_kind!=="clean")issues.push({
+      category:"session_clean_kind_mutated",severity:"active",detail:`Session ${session.id} changed its start-of-session clean evidence kind`,repairable:true});
+    const expected=stablePastExamSessionKey({date:session.date,year:session.year,
+      purpose:session.session_purpose||pastExamSessionPurpose(session),ordinal:Number(session.session_ordinal||1)});
+    if(session.stable_session_key!==expected)issues.push({category:"past_session_identity_mismatch",severity:"active",
+      detail:`Session ${session.id} identity ${session.stable_session_key||"missing"} does not match ${expected}`,repairable:true});
+  }
 
   for(const attempt of attempts.filter(row=>row.whole_answer_diagnostic_version===WHOLE_ANSWER_DIAGNOSTIC_VERSION)){
     const scan=attempt.whole_answer_scan,findings=attempt.observed_out_of_scope_findings||[],uncertainties=attempt.diagnostic_uncertainties||[];
@@ -247,10 +275,12 @@ export function runIntegrityAudit(args: {
   if(currentTodayTasks&&currentNextTask){
     const first=currentTodayTasks.find(task=>!task.checked);
     if(first&&currentActionFingerprint(first,first.id&&first.review_type?reviewsById.get(first.id):undefined)!==
-      currentActionFingerprint(currentNextTask,currentNextTask.id&&currentNextTask.review_type?reviewsById.get(currentNextTask.id):undefined))issues.push({
-      category:"current_action_identity_mismatch",severity:"active",
-      detail:"Dashboard current action fingerprint differs from the canonical Current Today action",repairable:false,
-    });
+      currentActionFingerprint(currentNextTask,currentNextTask.id&&currentNextTask.review_type?reviewsById.get(currentNextTask.id):undefined)){
+      issues.push({category:"current_action_identity_mismatch",severity:"active",
+        detail:"Dashboard current action fingerprint differs from the canonical Current Today action",repairable:false});
+      issues.push({category:"dashboard_today_action_mismatch",severity:"active",
+        detail:"Dashboard primaryAction differs from Today's first executable task",repairable:false});
+    }
     const canonicalFirst=currentTodayTasks.find(task=>!task.checked&&task.triage!=="tomorrow");
     if(canonicalFirst&&currentActionFingerprint(canonicalFirst,canonicalFirst.id&&canonicalFirst.review_type?reviewsById.get(canonicalFirst.id):undefined)!==
       currentActionFingerprint(currentNextTask,currentNextTask.id&&currentNextTask.review_type?reviewsById.get(currentNextTask.id):undefined))issues.push({
@@ -261,19 +291,47 @@ export function runIntegrityAudit(args: {
     const open=currentTodayTasks.filter(task=>!task.checked);
     const firstRequired=open.find(task=>task.triage!=="tomorrow");
     const exam=open.find(task=>task.action_class==="exam_practice"||!!task.past_exam_task_type);
-    if(firstRequired?.action_class==="maintenance"&&exam)issues.push({category:"maintenance_suppressing_exam_practice",severity:"active",
-      detail:`maintenance ${firstRequired.problem_id} precedes eligible exam practice`,repairable:false});
+    if(firstRequired?.action_class==="maintenance"&&exam){
+      issues.push({category:"maintenance_suppressing_exam_practice",severity:"active",
+        detail:`maintenance ${firstRequired.problem_id} precedes eligible exam practice`,repairable:false});
+      issues.push({category:"old_review_suppressing_past_exam",severity:"active",
+        detail:`low-value Review ${firstRequired.problem_id} suppresses current exam practice`,repairable:false});
+    }
     for(const task of open){
-      if(task.repair_lineage?.materiality==="minor"&&task.triage!=="tomorrow")issues.push({category:"minor_issue_promoted_to_required_repair",
-        severity:"active",detail:`${task.problem_id} minor repair is required Today work`,repairable:false});
-      if(task.kind==="得点形成"&&task.today_category==="repair"&&!task.id&&!task.repair_lineage)issues.push({category:"repair_without_source_lineage",
-        severity:"active",detail:`${task.problem_id} whitebook repair has no source Attempt/finding lineage`,repairable:false});
-      if(task.repair_lineage?.matchReason.includes("なし"))issues.push({category:"whitebook_repair_low_match",severity:"active",
-        detail:`${task.problem_id} was selected without a verified skill/fine-concept match`,repairable:false});
+      if(task.stable_session_key&&!task.selected_year_reason)issues.push({category:"year_selection_reason_missing",severity:"active",
+        detail:`${task.stable_session_key} does not explain why its year was selected`,repairable:false});
+      if(task.repair_lineage?.materiality==="minor"&&task.triage!=="tomorrow"){
+        issues.push({category:"minor_issue_promoted_to_required_repair",severity:"active",
+          detail:`${task.problem_id} minor repair is required Today work`,repairable:false});
+        issues.push({category:"minor_issue_promoted_to_required",severity:"active",
+          detail:`${task.problem_id} minor finding was promoted into canonical required repair`,repairable:false});
+      }
+      const isWhitebookRepair=task.today_category==="repair"&&!task.id&&
+        problemById.get(resolveCanonicalProblemId(task.problem_id,aliases))?.source_type==="whitebook";
+      if(isWhitebookRepair&&!task.repair_lineage){
+        issues.push({category:"repair_without_source_lineage",severity:"active",
+          detail:`${task.problem_id} whitebook repair has no source Attempt/finding lineage`,repairable:false});
+        issues.push({category:"required_whitebook_without_lineage",severity:"active",
+          detail:`${task.problem_id} required Whitebook work cannot be traced to a failure episode`,repairable:false});
+      }
+      if(isWhitebookRepair&&task.repair_lineage?.matchConfidence==="low"){
+        issues.push({category:"whitebook_repair_low_match",severity:"active",
+          detail:`${task.problem_id} was selected without a verified skill/fine-concept match`,repairable:false});
+        issues.push({category:"whitebook_match_low_confidence_required",severity:"active",
+          detail:`${task.problem_id} low-confidence Whitebook match is required work`,repairable:false});
+      }
       if(task.review_due_state==="hard_overdue"&&reviewDueState(task,today)!=="hard_overdue")issues.push({
         category:"preferred_date_marked_hard_overdue",severity:"active",reviewIds:task.id?[task.id]:undefined,
         detail:`${task.problem_id} is marked overdue before latest_date`,repairable:false});
     }
+  }
+
+  for(const candidate of repairCandidates.filter(row=>row.required&&row.repairKind==="whitebook")){
+    if(!candidate.rootWeaknessId||!candidate.sourceAttemptId||!candidate.sourceProblemId)issues.push({
+      category:"required_whitebook_without_lineage",severity:"active",attemptIds:candidate.sourceAttemptId?[candidate.sourceAttemptId]:undefined,
+      detail:`Required Whitebook candidate ${candidate.conceptId} lacks root failure lineage`,repairable:false});
+    if(candidate.matchConfidence!=="high")issues.push({category:"whitebook_match_low_confidence_required",severity:"active",
+      attemptIds:[candidate.sourceAttemptId],detail:`Required Whitebook candidate ${candidate.conceptId} has ${candidate.matchConfidence||"unknown"} match confidence`,repairable:false});
   }
 
   if(currentPlanSummary&&currentPlanSummary.plan.length>=7){
@@ -341,12 +399,31 @@ export function runIntegrityAudit(args: {
 
   for(const review of active.filter(row=>(row.grading_contract?.learningPurpose||row.learning_purpose)==="retrieval_check")){
     const source=attemptsById.get(Number(review.source_attempt_id||review.generated_from_attempt_id||0));
-    const explicit=!!review.lifecycle_success_evidence_id||!!review.correction_provided||!!review.lifecycle_transition_provenance;
+    const explicit=!!review.lifecycle_success_evidence_id||
+      /success|transfer|reproduction/.test(String(review.lifecycle_transition_provenance||""));
     const sourceSuccess=!!source&&source.is_review_attempt&&resolvePersistedAttemptLifecycle(source).reviewOutcome==="success";
-    if(!explicit&&!sourceSuccess&&review.grading_contract?.learningStage==="maintenance"&&review.retention_pending)issues.push({
+    const sourceEpisode=source?deriveFailureEpisode(source):undefined;
+    const unresolvedMajor=!!sourceEpisode?.rootWeaknesses.some(root=>root.requiredRepair&&root.unresolved);
+    if(!explicit&&!sourceSuccess&&unresolvedMajor){
+      issues.push({category:"past_exam_major_failure_in_maintenance",severity:"active",reviewIds:[review.id],attemptIds:source?[source.id]:undefined,
+        detail:`Review ${review.id} classifies an unresolved major failure as retrieval/maintenance`,repairable:true});
+      if(review.correction_provided)issues.push({category:"correction_mistaken_for_success",severity:"active",reviewIds:[review.id],attemptIds:source?[source.id]:undefined,
+        detail:`Attempt ${source?.id||"unknown"} corrective feedback was mistaken for repair success`,repairable:true});
+    }
+    if(!explicit&&!sourceSuccess&&(review.grading_contract?.learningStage==="maintenance"||unresolvedMajor)&&review.retention_pending)issues.push({
       category:"repair_to_retrieval_without_success",severity:"active",reviewIds:[review.id],
       detail:`Review ${review.id} entered retrieval without explicit repair success provenance`,repairable:true});
   }
+
+  const rootTargetOwners=new Map<string,Set<string>>();
+  for(const review of active)for(const part of review.grading_contract?.gradedParts||[]){
+    const root=part.rootCauseKey;if(!root)continue;
+    const target=part.stableTargetKey||part.stable_target_key||part.id;
+    const key=`${resolveCanonicalProblemId(review.problem_id,aliases)}:${root}`;
+    rootTargetOwners.set(key,new Set([...(rootTargetOwners.get(key)||[]),target]));
+  }
+  for(const [root,targets] of rootTargetOwners)if(targets.size>1)issues.push({category:"duplicate_root_weakness_targets",severity:"active",
+    detail:`${root} is represented by ${targets.size} current stable targets`,repairable:true});
 
   for(const state of reconciliation.problems.filter(row=>row.graduated&&row.graduationAttemptId)){
     const attempt=attemptsById.get(state.graduationAttemptId!);
@@ -715,6 +792,10 @@ export function runIntegrityAudit(args: {
     "past_exam_session_identity_mismatch", "minor_issue_promoted_to_required_repair", "repair_without_source_lineage",
     "whitebook_repair_low_match", "repair_to_retrieval_without_success", "preferred_date_marked_hard_overdue",
     "maintenance_suppressing_exam_practice", "duplicate_past_exam_session", "past_exam_share_below_target_due_to_low_value_review",
+    "duplicate_active_past_session", "session_clean_kind_mutated", "past_session_identity_mismatch",
+    "past_exam_major_failure_in_maintenance", "correction_mistaken_for_success", "minor_issue_promoted_to_required",
+    "required_whitebook_without_lineage", "whitebook_match_low_confidence_required", "old_review_suppressing_past_exam",
+    "dashboard_today_action_mismatch", "duplicate_root_weakness_targets", "year_selection_reason_missing",
     "coach_update_parse_failed", "coach_update_schema_invalid", "coach_diff_generated_from_invalid_update",
   ];
   const counts = Object.fromEntries(categories.map((category) =>
