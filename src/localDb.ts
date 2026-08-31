@@ -21,7 +21,7 @@ import { examScoreEligibility, taskScoreForAttempt } from "./scoreEligibility.ts
 import { resolveCanonicalLearningLifecycle, resolvePersistedAttemptLifecycle } from "./reviewTransition.ts";
 import { projectStudyUpdateLifecycle } from "./studyUpdateLifecycle.ts";
 import { analyzeLegacyKReorganization } from "./legacyKRepair.ts";
-import { classifyKPolicyValidity, excludeLegacyKFromPlanning, planningErrorsForSource } from "./legacyKPolicy.ts";
+import { attemptPlanningEligible, classifyKPolicyValidity, excludeLegacyKFromPlanning, planningErrorsForSource } from "./legacyKPolicy.ts";
 import { analyzeSourceMismatchRepair, resolveReviewOrigin, REVIEW_ORIGIN_POLICY_VERSION } from "./reviewOrigin.ts";
 import { normalizePastExamSession, parseScan5Update, sessionStudyMinutes, validatePastExamSession } from "./pastExamWorkflow.ts";
 import { auditLegacyReviewContracts, buildGradingContractSnapshot, buildInitialGradingContract, buildProblemContextPack, computeContractHash, contractDifferences, prescriptionFromContract, repairTargets, taskFieldsFromContract } from "./gradingContract.ts";
@@ -1125,6 +1125,12 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
   const errors=input.error_types?.length?input.error_types:[primary];
   const effectiveErrors=(input.effective_error_types||[]).filter(error=>["K","W","N","C"].includes(String(error)));
   const kPolicyValidity=classifyKPolicyValidity(input);
+  const gradedFindings=(input.graded_findings||[]).map(finding=>finding.error_type==="K"&&kPolicyValidity==="invalid_legacy_k"?
+    {...finding,validity:"invalid_legacy_k" as const,planning_eligible:false,recurrence_eligible:false}:
+    {...finding,validity:finding.validity||"valid" as const,planning_eligible:finding.planning_eligible!==false,
+      recurrence_eligible:finding.recurrence_eligible!==false});
+  const hasEligibleFinding=gradedFindings.some(finding=>!finding.resolved&&finding.error_type!=="none"&&finding.planning_eligible!==false);
+  const excludeWholeAttempt=kPolicyValidity==="invalid_legacy_k"&&!hasEligibleFinding;
   const hasRealError=errors.some(error=>["K","W","N","C"].includes(String(error)));
   const localizedNextAction=japaneseizeMathText(input.next_action||"");
   const improvementGuidance=japaneseizeMathText(input.improvement_guidance||"");
@@ -1151,7 +1157,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     review_outcome:completionResult,
     is_review_attempt:!!input.generated_from_review_id,evaluation_scope:input.evaluation_scope||"",
     graded_parts:input.graded_parts||[],graded_part_ids:input.graded_part_ids||[],
-    graded_findings:input.graded_findings||[],assumed_correct_parts:input.assumed_correct_parts||[],
+    graded_findings:gradedFindings,assumed_correct_parts:input.assumed_correct_parts||[],
     observed_out_of_scope_findings:input.observed_out_of_scope_findings||[],
     whole_answer_scan:input.whole_answer_scan,
     diagnostic_uncertainties:input.diagnostic_uncertainties||[],
@@ -1177,9 +1183,9 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     ,conclusion_reached:input.conclusion_reached,incomplete_reason:input.incomplete_reason
     ,retention_eligible:assessmentTiming==="delayed_retrieval"
     ,problem_type_key:problem.metadata_status==="ok"?problem.canonical_problem_type:undefined
-    ,policy_validity:kPolicyValidity,exclude_from_planning:kPolicyValidity==="invalid_legacy_k"
-    ,exclude_from_recurrence_metrics:kPolicyValidity==="invalid_legacy_k"
-    ,superseded_by_policy_version:kPolicyValidity==="invalid_legacy_k"?LEARNING_POLICY_VERSION:undefined
+    ,policy_validity:kPolicyValidity,exclude_from_planning:excludeWholeAttempt
+    ,exclude_from_recurrence_metrics:excludeWholeAttempt
+    ,superseded_by_policy_version:excludeWholeAttempt?LEARNING_POLICY_VERSION:undefined
     ,parent_past_session_id:Number(input.parent_past_session_id||0)||undefined
      ,contract_id:input.contract_id,contract_version:input.contract_version,contract_hash:input.contract_hash
      ,semantic_rebind_from_review_id:input.semantic_rebind_from_review_id,semantic_rebind_message:input.semantic_rebind_message
@@ -2254,9 +2260,16 @@ async function reorganizeLegacyKTasks(){
   const snapshotsBefore=JSON.stringify(snapshotRows.map(row=>[row.key,row.value]));
   const result=analyzeLegacyKReorganization({attempts:attemptsBefore,reviews:reviewsBefore,problems});
   for(const row of result.classifications){
-    await db.attempts.update(row.attemptId,{policy_validity:row.validity,
-      exclude_from_planning:row.validity==="invalid_legacy_k",exclude_from_recurrence_metrics:row.validity==="invalid_legacy_k",
-      superseded_by_policy_version:row.validity==="invalid_legacy_k"?LEARNING_POLICY_VERSION:undefined});
+    const source=attemptsBefore.find(attempt=>attempt.id===row.attemptId);
+    const findings=(source?.graded_findings||[]).map(finding=>finding.error_type==="K"&&row.validity==="invalid_legacy_k"?
+      {...finding,validity:"invalid_legacy_k" as const,planning_eligible:false,recurrence_eligible:false}:
+      {...finding,validity:finding.validity||"valid" as const,planning_eligible:finding.planning_eligible!==false,
+        recurrence_eligible:finding.recurrence_eligible!==false});
+    const candidate={...source,policy_validity:row.validity,graded_findings:findings};
+    const eligible=attemptPlanningEligible(candidate);
+    await db.attempts.update(row.attemptId,{policy_validity:row.validity,graded_findings:findings,
+      exclude_from_planning:!eligible,exclude_from_recurrence_metrics:!eligible,
+      superseded_by_policy_version:!eligible?LEARNING_POLICY_VERSION:undefined});
   }
   for(const action of result.taskActions)await db.reviews.update(action.reviewId,action.patch);
   const summary={analyzed_at:new Date().toISOString(),invalid_legacy_k_count:result.invalidLegacyKCount,
@@ -2649,7 +2662,7 @@ async function bootstrap():Promise<Bootstrap>{
     ...review,status:"superseded",exclude_from_planning:true,
     superseded_reason:review.superseded_reason||"最新の答案証拠と現在の採点対象が一致しないため（read-only判定）",
   }:review);
-  const activeAttempts=attempts.filter(attempt=>!attempt.exclude_from_planning&&!attempt.exclude_from_metrics&&!attempt.duplicate_of_attempt_id);
+  const activeAttempts=attempts.filter(attempt=>attemptPlanningEligible(attempt));
   const reviewIsExecutable=(review:Review)=>reviewExecutionState(review,today)==="actionable"&&!staleReviewIds.has(review.id);
   const a14=new Set(activeAttempts.filter(a=>a.date>=fortnight&&pmap.get(a.problem_id)?.category==="A").map(a=>a.problem_id)).size;
   const skeleton=activeAttempts.filter(a=>a.date>=fortnight&&a.mode==="skeleton");
@@ -3002,8 +3015,10 @@ async function bootstrap():Promise<Bootstrap>{
     activeRemainingMinutes,currentTasks:tasks,shadow:plannerShadow,urgentReviewBlocked
   });
   const integrityHealth=runIntegrityAudit({
-    attempts,reviews:rawReviews,problems,aliases:problemAliases,today,todayPlanSnapshots:[snapshot],validCrossTargetReviewIds,
+    attempts,reviews:rawReviews,currentReviews:reviews,problems,aliases:problemAliases,today,todayPlanSnapshots:[snapshot],validCrossTargetReviewIds,
     currentTodayTasks:tasks,currentNextTask:canonicalStudyPlan.primaryAction||undefined,currentPlanSummary:plannerShadow.plan14,
+    futurePlanSummaries:[{label:"7-day",summary:plannerShadow.plan7},{label:"14-day",summary:plannerShadow.plan14},
+      {label:"30-day",summary:plannerShadow.plan30}],
     additionalCandidates:additionalStudy.candidates,eligibleTodayTasks:generatedTriage.tasks,
     examDate:settings.exam_date||"2026-11-15",pastExamCatalog,pastSessions:rawPastSessions,
     repairCandidates:pastExamRepairCandidates,
@@ -3026,6 +3041,9 @@ async function bootstrap():Promise<Bootstrap>{
     ,integrity_summary:{
       generatedAt:integrityHealth.generatedAt,activeIssueCount:integrityHealth.activeIssueCount,
       historyWarningCount:integrityHealth.historyWarningCount,informationalHistoryCount:integrityHealth.informationalHistoryCount,
+      blockingIntegrityIssueCount:integrityHealth.blockingIntegrityIssueCount,
+      plannerPolicyViolationCount:integrityHealth.plannerPolicyViolationCount,
+      learningAdvisoryCount:integrityHealth.learningAdvisoryCount,
       counts:integrityHealth.counts,activeCategories:systemHealth.activeCategories,
       ...(()=>{try{const saved=JSON.parse(metaEntries.find(entry=>entry.key==="integrity_audit_summary")?.value||"null");return saved?.repairedAt?{repairedAt:saved.repairedAt}:{}}
         catch{return {}}})()
@@ -3082,17 +3100,12 @@ async function reconcilePastExamSessionGenerations(preview=false){
   let normalized=0;
   for(const current of projection.current){
     const stored=rows.find(row=>row.id===current.id);
-    if(stored&&(stored.stable_session_key!==current.stable_session_key||stored.scan_evidence_kind!==current.scan_evidence_kind||
-      stored.session_purpose!==current.session_purpose||!stored.exposure_snapshot_at_start||stored.session_state!==current.session_state))normalized++;
+    if(stored&&JSON.stringify(stored)!==JSON.stringify(current))normalized++;
   }
   if(!preview){
     for(const current of projection.current){
       const stored=rows.find(row=>row.id===current.id);
-      if(stored&&(stored.stable_session_key!==current.stable_session_key||stored.scan_evidence_kind!==current.scan_evidence_kind||
-        stored.session_purpose!==current.session_purpose||!stored.exposure_snapshot_at_start||stored.session_state!==current.session_state))
-        await db.pastSessions.update(current.id,{stable_session_key:current.stable_session_key,session_purpose:current.session_purpose,
-          session_ordinal:current.session_ordinal,session_state:current.session_state,
-          scan_evidence_kind:current.scan_evidence_kind,exposure_snapshot_at_start:current.exposure_snapshot_at_start});
+      if(stored&&JSON.stringify(stored)!==JSON.stringify(current))await db.pastSessions.put(current);
     }
     for(const row of projection.superseded)await db.pastSessions.update(row.sessionId,{superseded_by_session_id:row.canonicalSessionId,
       superseded_reason:row.reason});
@@ -3102,11 +3115,20 @@ async function reconcilePastExamSessionGenerations(preview=false){
 
 async function savePastExamSession(body:Record<string,unknown>,existingId?:number){
   return await db.transaction("rw",[db.pastSessions,db.reviews,db.meta,db.problems,db.attempts,db.problemAliases,db.answerIndex,db.weakNotes,db.sMemory],async()=>{
-    const preliminary=normalizePastExamSession({...body,id:existingId||0});
-    const identity=stablePastExamSessionKey({date:preliminary.date,year:preliminary.year,
-      purpose:pastExamSessionPurpose(preliminary),ordinal:Number(preliminary.session_ordinal||1)});
     const all=await db.pastSessions.toArray();
-    const current=canonicalizePastExamSessions(all).current.find(row=>pastExamSessionKey(row)===identity);
+    const preliminary=normalizePastExamSession({...body,id:existingId||0});
+    const purpose=pastExamSessionPurpose(preliminary),logicalPurpose=["clean_scan5","practice_scan5"].includes(purpose)?"scan5":purpose;
+    const canonical=canonicalizePastExamSessions(all).current;
+    const active=canonical.find(row=>row.year===preliminary.year&&
+      (["clean_scan5","practice_scan5"].includes(pastExamSessionPurpose(row))?"scan5":pastExamSessionPurpose(row))===logicalPurpose&&
+      !["completed","deferred","cancelled","invalidated"].includes(derivePastExamSessionState(row)));
+    const ordinal=Number(active?.session_ordinal||preliminary.session_ordinal||
+      Math.max(0,...canonical.filter(row=>row.year===preliminary.year&&
+        (["clean_scan5","practice_scan5"].includes(pastExamSessionPurpose(row))?"scan5":pastExamSessionPurpose(row))===logicalPurpose)
+        .map(row=>Number(row.session_ordinal||0)))+1);
+    const sessionInstanceId=String(active?.session_instance_id||body.session_instance_id||`session-${ordinal}`);
+    const identity=stablePastExamSessionKey({year:preliminary.year,purpose,ordinal,sessionInstanceId});
+    const current=active||canonical.find(row=>pastExamSessionKey(row)===identity);
     existingId=existingId||current?.id;
     const previous=existingId?await db.pastSessions.get(existingId):undefined;
     if(existingId&&!previous)throw new Error("過去問セッションが見つかりません");
@@ -3117,7 +3139,7 @@ async function savePastExamSession(body:Record<string,unknown>,existingId?:numbe
     };
     const stablePurpose=previous?.session_purpose||pastExamSessionPurpose(preliminary);
     const normalized=normalizePastExamSession({...previous,...body,id:existingId||0,stable_session_key:identity,
-      session_purpose:stablePurpose,session_ordinal:Number(preliminary.session_ordinal||1),
+      session_instance_id:sessionInstanceId,session_purpose:stablePurpose,session_ordinal:ordinal,
       exposure_snapshot_at_start:snapshot,scan_evidence_kind:snapshot.classification}),validation=validatePastExamSession(normalized);
     if(!validation.valid)throw new Error(validation.errors.join(" "));
     const now=new Date().toISOString(),hasSolved=validation.solvedQuestions.length>0;
@@ -3128,7 +3150,7 @@ async function savePastExamSession(body:Record<string,unknown>,existingId?:numbe
       answer_viewed_at:previous?.answer_viewed_at||normalized.answer_viewed_at||(normalized.answer_exposure?now:undefined),
       simulation_completed_at:normalized.session_kind==="selected_three_timed"&&validation.solvedQuestions.length===3?now:previous?.simulation_completed_at,
       session_state:derivePastExamSessionState({...previous,...normalized,attempt_completed_at:hasSolved?now:previous?.attempt_completed_at}),
-      stable_session_key:identity,session_purpose:pastExamSessionPurpose(normalized),exposure_snapshot_at_start:snapshot,
+      stable_session_key:identity,session_instance_id:sessionInstanceId,session_purpose:pastExamSessionPurpose(normalized),exposure_snapshot_at_start:snapshot,
       scan_evidence_kind:snapshot.classification};
     const sessionId=existingId||Number(await db.pastSessions.add({...session,id:undefined as unknown as number} as PastSession));
     if(existingId)await db.pastSessions.put({...session,id:sessionId} as PastSession);
@@ -3209,9 +3231,12 @@ async function integrityAudit():Promise<IntegrityAudit>{
   // Bootstrap owns the canonical current projection. The persisted snapshot remains
   // immutable history and must not be audited as if its checked flags were current.
   const current=await bootstrap();
-  return runIntegrityAudit({attempts,reviews,problems,aliases,today:todayString(),todayPlanSnapshots:snapshots,validCrossTargetReviewIds,
+  return runIntegrityAudit({attempts,reviews,currentReviews:current.reviews,problems,aliases,today:todayString(),todayPlanSnapshots:snapshots,validCrossTargetReviewIds,
     currentTodayTasks:current.today.tasks,currentNextTask:current.today.currentTask,
     currentPlanSummary:current.adaptiveLearning.plannerShadow.plan14,
+    futurePlanSummaries:[{label:"7-day",summary:current.adaptiveLearning.plannerShadow.plan7},
+      {label:"14-day",summary:current.adaptiveLearning.plannerShadow.plan14},
+      {label:"30-day",summary:current.adaptiveLearning.plannerShadow.plan30}],
     examDate:current.settings.exam_date||"2026-11-15",pastExamCatalog:current.adaptiveLearning.pastExamCatalog,
     pastSessions,repairCandidates:current.adaptiveLearning.pastExamRepairCandidates,
     additionalCandidates:current.today.additionalCandidates,
@@ -3454,7 +3479,7 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
   } else if(path==="/api/coach/preview"){
     const diagnosis=parseCoachUpdate(String(body.text||body.yaml||""));
     const [attempts,problems,row]=await Promise.all([db.attempts.toArray(),db.problems.toArray(),db.meta.get(COACH_HISTORY_META_KEY)]);
-    const cutoff=Math.max(0,...attempts.filter(item=>!item.exclude_from_planning&&!item.exclude_from_metrics&&!item.duplicate_of_attempt_id).map(item=>item.id));
+    const cutoff=Math.max(0,...attempts.filter(item=>attemptPlanningEligible(item)).map(item=>item.id));
     if(diagnosis.evidenceCutoffAttemptId!==cutoff)
       throw new Error(`診断対象の採点が更新されています（GPT ${diagnosis.evidenceCutoffAttemptId}／現在 ${cutoff}）。新しいプロンプトで再レビューしてください。`);
     const known=new Set(problems.map(item=>item.problem_id));
@@ -3466,7 +3491,7 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
   } else if(path==="/api/coach/save"){
     const diagnosis=parseCoachUpdate(String(body.text||body.yaml||""));
     const [attempts,problems,row]=await Promise.all([db.attempts.toArray(),db.problems.toArray(),db.meta.get(COACH_HISTORY_META_KEY)]);
-    const cutoff=Math.max(0,...attempts.filter(item=>!item.exclude_from_planning&&!item.exclude_from_metrics&&!item.duplicate_of_attempt_id).map(item=>item.id));
+    const cutoff=Math.max(0,...attempts.filter(item=>attemptPlanningEligible(item)).map(item=>item.id));
     if(diagnosis.evidenceCutoffAttemptId!==cutoff)
       throw new Error(`診断対象の採点が更新されています（GPT ${diagnosis.evidenceCutoffAttemptId}／現在 ${cutoff}）。保存せず再レビューしてください。`);
     const known=new Set(problems.map(item=>item.problem_id));

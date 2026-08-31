@@ -7,7 +7,7 @@ import {buildStableTargetIndex,isValidStableTargetKey} from "./stableTargetIdent
 import {currentTargetDisplay,currentTargetLabels} from "./currentTargetPayload.ts";
 import {projectTodayTaskChecked,selectNextCurrentTodayTask} from "./todayTaskProjection.ts";
 import {buildReviewGradingPrompt} from "./gradingPrompt.ts";
-import {currentActionFingerprint,examHorizonPolicy,isSuccessfulTransferForProblem} from "./examOptimizationPolicy.ts";
+import {currentActionFingerprint,deriveLearningPolicy,examHorizonPolicy,isSuccessfulTransferForProblem} from "./examOptimizationPolicy.ts";
 import {daysUntilExam} from "./studyProgress.ts";
 import {resolvePersistedAttemptLifecycle} from "./reviewTransition.ts";
 import {canonicalAttemptId,logicalReviewKey,reviewExecutionMessage,reviewExecutionState,type ReviewExecutionState} from "./reviewCurrentState.ts";
@@ -156,6 +156,7 @@ export type IntegrityCategory =
   | "minor_issue_promoted_to_required" | "required_whitebook_without_lineage"
   | "whitebook_match_low_confidence_required" | "old_review_suppressing_past_exam"
   | "dashboard_today_action_mismatch" | "duplicate_root_weakness_targets" | "year_selection_reason_missing"
+  | "future_exam_practice_share_below_target" | "missing_timed_session"
   | "coach_update_parse_failed" | "coach_update_schema_invalid" | "coach_diff_generated_from_invalid_update";
 
 export type IntegrityIssue = {
@@ -174,6 +175,9 @@ export type IntegrityAudit = {
   activeIssueCount: number;
   historyWarningCount: number;
   informationalHistoryCount: number;
+  blockingIntegrityIssueCount:number;
+  plannerPolicyViolationCount:number;
+  learningAdvisoryCount:number;
   reconciliation: ReconciliationAudit;
 };
 
@@ -195,8 +199,10 @@ export function runIntegrityAudit(args: {
   validCrossTargetReviewIds?: number[];
   /** Current UI projection. Saved snapshots remain immutable history. */
   currentTodayTasks?: Task[];
+  /** Review rows after current-state reconciliation. Raw rows remain available in `reviews` for repair auditing. */
+  currentReviews?:Review[];
   currentNextTask?:Task;
-  currentPlanSummary?:AdaptivePlanSummary;
+  currentPlanSummary?:AdaptivePlanSummary;futurePlanSummaries?:Array<{label:string;summary:AdaptivePlanSummary}>;
   additionalCandidates?:AdditionalStudyCandidate[];
   eligibleTodayTasks?:Task[];
   pendingImportUpdates?:StudyUpdate[];
@@ -206,12 +212,14 @@ export function runIntegrityAudit(args: {
   repairCandidates?:PastExamRepairCandidate[];
 }): IntegrityAudit {
   const { attempts, reviews, problems = [], aliases = [], today, todayPlanSnapshots = [], validCrossTargetReviewIds = [],
-    currentTodayTasks, currentNextTask, currentPlanSummary, additionalCandidates=[],eligibleTodayTasks,pendingImportUpdates=[],
+    currentTodayTasks, currentReviews, currentNextTask, currentPlanSummary, futurePlanSummaries=[],additionalCandidates=[],eligibleTodayTasks,pendingImportUpdates=[],
     pastSessions=[],repairCandidates=[] } = args;
   const validCrossTarget=new Set(validCrossTargetReviewIds);
   const issues: IntegrityIssue[] = [];
   const attemptsById = new Map(attempts.map((row) => [row.id, row]));
   const reviewsById = new Map(reviews.map((row) => [row.id, row]));
+  const currentProjectionReviews=currentReviews||reviews;
+  const currentReviewsById=new Map(currentProjectionReviews.map(row=>[row.id,row]));
   const active = reviews.filter((row) => ACTIVE_REVIEW_STATUSES.has(row.status));
   const reconciliation=analyzeReviewReconciliation({attempts,reviews,aliases,today,todayPlanSnapshots});
   const stableTargets=buildStableTargetIndex({attempts,reviews,aliases});
@@ -395,6 +403,18 @@ export function runIntegrityAudit(args: {
       .reduce((sum,row)=>sum+row.minutes,0);
     if(share<horizon.pastExamShareMin&&lowValueReviewMinutes>0)issues.push({category:"past_exam_share_below_target_due_to_low_value_review",
       severity:"active",detail:`${lowValueReviewMinutes} low-value Review minutes suppress the exam-practice floor`,repairable:false});
+  }
+
+  for(const {label,summary} of futurePlanSummaries){
+    const tasks=summary.plan.flatMap(day=>day.tasks);
+    const generic=tasks.filter(task=>deriveLearningPolicy(daysUntilExam(task.date,args.examDate||"2026-11-15")).pastExamIsPrimary&&
+      task.kind==="whitebook"&&!task.repairLineage&&!task.conceptId);
+    if(generic.length)issues.push({category:"generic_whitebook_in_past_exam_main",severity:"active",
+      detail:`${label}: ${generic.length} generic Whitebook tasks`,repairable:false});
+    for(const violation of summary.weeklyMinimumViolations){
+      issues.push({category:/90分演習なし/.test(violation)?"missing_timed_session":"future_exam_practice_share_below_target",
+        severity:"active",detail:`${label}: ${violation}`,repairable:false});
+    }
   }
 
   for(const review of active.filter(row=>(row.grading_contract?.learningPurpose||row.learning_purpose)==="retrieval_check")){
@@ -631,7 +651,7 @@ export function runIntegrityAudit(args: {
         detail:`${task.problem_id} has a qualifying Attempt but its current Today task is incomplete`,repairable:false,
       });
       if(task.review_type&&task.id){
-        const state=reviewExecutionState(reviewsById.get(task.id),today);
+        const state=reviewExecutionState(currentReviewsById.get(task.id),today);
         if(state!=="actionable")issues.push({
           category:"inactive_review_current_task",severity:"active",reviewIds:[task.id],
           detail:`Current Today projection still contains ${state} Review ${task.id}`,repairable:false,
@@ -684,7 +704,7 @@ export function runIntegrityAudit(args: {
       detail:`Review ${conflict.reviewId} could not be placed before score-building/optional work (${conflict.reason})`,repairable:false});
     if(dueConflicts.length&&additionalCandidates.length)issues.push({category:"optional_extra_priority_violation",severity:"active",
       reviewIds:dueConflicts.map(row=>row.reviewId),detail:"Optional extra is visible while a due Review remains unplaced",repairable:false});
-    const activeReviewProblems=new Set(reviews.filter(review=>reviewExecutionState(review,today)==="actionable"&&
+    const activeReviewProblems=new Set(currentProjectionReviews.filter(review=>reviewExecutionState(review,today)==="actionable"&&
       String(review.earliest_date||review.due_date)<=today)
       .map(review=>resolveCanonicalProblemId(review.problem_id,aliases)));
     for(const task of currentTodayTasks.filter(row=>!row.checked&&!row.review_type&&activeReviewProblems.has(resolveCanonicalProblemId(row.problem_id,aliases))))
@@ -796,14 +816,26 @@ export function runIntegrityAudit(args: {
     "past_exam_major_failure_in_maintenance", "correction_mistaken_for_success", "minor_issue_promoted_to_required",
     "required_whitebook_without_lineage", "whitebook_match_low_confidence_required", "old_review_suppressing_past_exam",
     "dashboard_today_action_mismatch", "duplicate_root_weakness_targets", "year_selection_reason_missing",
+    "future_exam_practice_share_below_target", "missing_timed_session",
     "coach_update_parse_failed", "coach_update_schema_invalid", "coach_diff_generated_from_invalid_update",
   ];
   const counts = Object.fromEntries(categories.map((category) =>
     [category, issues.filter((issue) => issue.category === category).length])) as Record<IntegrityCategory, number>;
+  const plannerCategories=new Set<IntegrityCategory>([
+    "generic_whitebook_in_past_exam_main","future_exam_practice_share_below_target","missing_timed_session",
+    "whitebook_backlog_suppressing_past_exam","past_exam_share_below_target_due_to_low_value_review",
+    "unexecuted_past_session_replaced","duplicate_past_exam_session","required_whitebook_without_lineage",
+    "whitebook_match_low_confidence_required","year_selection_reason_missing"
+  ]);
+  const advisoryCategories=new Set<IntegrityCategory>(["past_exam_share_below_phase_target"]);
+  const activeIssues=issues.filter(issue=>issue.severity==="active");
   return {
     generatedAt: new Date().toISOString(), issues, counts,
-    activeIssueCount: issues.filter((issue) => issue.severity === "active").length,
+    activeIssueCount: activeIssues.filter(issue=>!advisoryCategories.has(issue.category)).length,
     historyWarningCount: issues.filter((issue) => issue.severity === "history").length,
-    informationalHistoryCount:issues.filter((issue)=>issue.severity==="informational").length,reconciliation,
+    informationalHistoryCount:issues.filter((issue)=>issue.severity==="informational").length,
+    blockingIntegrityIssueCount:activeIssues.filter(issue=>!plannerCategories.has(issue.category)&&!advisoryCategories.has(issue.category)).length,
+    plannerPolicyViolationCount:activeIssues.filter(issue=>plannerCategories.has(issue.category)).length,
+    learningAdvisoryCount:issues.filter(issue=>advisoryCategories.has(issue.category)).length,reconciliation,
   };
 }

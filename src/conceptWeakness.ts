@@ -4,7 +4,7 @@ import type {
 } from "./types.ts";
 import type { StoredExamReferencePack } from "./examReferencePack.ts";
 import { canonicalPastExamProblemId } from "./examReferencePack.ts";
-import { excludeLegacyKFromPlanning } from "./legacyKPolicy.ts";
+import { planningErrorsForSource } from "./legacyKPolicy.ts";
 import { reviewExecutionState } from "./integrityEngine.ts";
 import {deriveFailureEpisode} from "./failureEpisode.ts";
 
@@ -17,9 +17,7 @@ type EvidenceEvent={
 const unique=<T,>(values:T[])=>[...new Set(values)];
 const successMark=(attempt:Attempt)=>["◎","○"].includes(attempt.mark)||Number(attempt.score_numeric||0)>=60;
 const errorValues=(attempt:Attempt)=>{
-  const values=unique([...(attempt.effective_error_types||attempt.error_types||[]),attempt.primary_error_type||attempt.error_type||""]
-    .filter((value):value is string=>["K","W","N","C"].includes(value)));
-  return values.filter(value=>!(value==="K"&&excludeLegacyKFromPlanning(attempt))) as GradingErrorType[];
+  return planningErrorsForSource(attempt) as GradingErrorType[];
 };
 const attemptContext=(attempt:Attempt,problem?:Problem)=>{
   if(attempt.assessment_timing==="same_session_correction")return "same_session";
@@ -68,7 +66,7 @@ function evidenceEvents(args:{
     const failed=errors.length>0||["△","×"].includes(attempt.mark);
     const successful=!failed&&successMark(attempt);
     const timed=context==="timed"||context==="past_exam",strongContext=referenceFree&&
-      !["same_session","check"].includes(context)&&attempt.policy_validity!=="invalid_legacy_k";
+      !["same_session","check"].includes(context)&&(attempt.policy_validity!=="invalid_legacy_k"||errors.length>0);
     for(const conceptId of mapping.conceptIds){
       const key=[conceptId,attempt.date,canonicalId,context].join("|");
       const event:EvidenceEvent={conceptId,date:attempt.date,problemId:canonicalId,context,failed,successful,

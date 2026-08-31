@@ -9,16 +9,34 @@ export type ExamHorizonPolicy={
   allowNewWhitebook:boolean;pastExamIsPrimary:boolean;
 };
 
-/** The single exam-horizon policy used by planning, diagnostics and audits. */
+export type LearningPolicy=ExamHorizonPolicy&{
+  examPracticeTargetRange:{min:number;max:number};
+  requiredRepairPolicy:"evidence_linked_major_only";
+  maintenancePolicy:"required"|"optional_deferred";
+  sessionPolicy:"problem_drill"|"scan_plus_individual"|"past_exam_session"|"simulation";
+  holdoutPolicy:{years:number[];released:boolean};
+};
+
+/** Canonical learning policy used by Today, all forecasts, Dashboard and audit. */
+export function deriveLearningPolicy(daysRemaining:number,_evidence?:unknown):LearningPolicy{
+  const base=daysRemaining>=91?
+    {phase:"foundation_to_A" as const,min:.1,max:.3,allowNewWhitebook:true,pastExamIsPrimary:false,sessionPolicy:"problem_drill" as const}:
+    daysRemaining>=81?
+      {phase:"A_and_past_parallel" as const,min:.3,max:.4,allowNewWhitebook:true,pastExamIsPrimary:false,sessionPolicy:"scan_plus_individual" as const}:
+      daysRemaining>=31?
+        {phase:"past_exam_main" as const,min:.65,max:.7,allowNewWhitebook:false,pastExamIsPrimary:true,sessionPolicy:"past_exam_session" as const}:
+        {phase:"final_stabilization" as const,min:.7,max:.9,allowNewWhitebook:false,pastExamIsPrimary:true,sessionPolicy:"simulation" as const};
+  return {...base,pastExamShareMin:base.min,pastExamShareMax:base.max,
+    examPracticeTargetRange:{min:base.min,max:base.max},requiredRepairPolicy:"evidence_linked_major_only",
+    maintenancePolicy:base.pastExamIsPrimary?"optional_deferred":"required",
+    holdoutPolicy:{years:[2024,2025],released:daysRemaining<=30}};
+}
+
+/** Backward-compatible facade. There is still only one underlying policy. */
 export function examHorizonPolicy(daysRemaining:number):ExamHorizonPolicy{
-  if(daysRemaining>=91)return {phase:"foundation_to_A",pastExamShareMin:.1,pastExamShareMax:.3,
-    allowNewWhitebook:true,pastExamIsPrimary:false};
-  if(daysRemaining>=81)return {phase:"A_and_past_parallel",pastExamShareMin:.3,pastExamShareMax:.4,
-    allowNewWhitebook:true,pastExamIsPrimary:false};
-  if(daysRemaining>=31)return {phase:"past_exam_main",pastExamShareMin:.65,pastExamShareMax:.7,
-    allowNewWhitebook:true,pastExamIsPrimary:true};
-  return {phase:"final_stabilization",pastExamShareMin:.7,pastExamShareMax:.9,
-    allowNewWhitebook:false,pastExamIsPrimary:true};
+  const policy=deriveLearningPolicy(daysRemaining);
+  return {phase:policy.phase,pastExamShareMin:policy.pastExamShareMin,pastExamShareMax:policy.pastExamShareMax,
+    allowNewWhitebook:policy.allowNewWhitebook,pastExamIsPrimary:policy.pastExamIsPrimary};
 }
 
 export function classifyFailureStrength(args:{masteryLevel:1|2|3;unresolvedTargetCount:number;
@@ -66,8 +84,10 @@ export function correctiveFeedbackAvailable(attempt:Partial<Attempt>){
 
 /** Existing explicitly graded repair remains valid; automatic new failures skip same-session retesting. */
 export function reviewPurposeAfterCorrection(args:{attempt:Partial<Attempt>;explicitSameSessionRequested?:boolean}):LearningPurpose{
-  if(args.explicitSameSessionRequested)return "error_repair";
-  return correctiveFeedbackAvailable(args.attempt)?"retrieval_check":"error_repair";
+  void args;
+  // Feedback describes the correction; it is never proof that the learner
+  // reproduced it. A later explicit success event performs the transition.
+  return "error_repair";
 }
 
 export function isSuccessfulTransferForProblem(attempt:Attempt,problemId:string){

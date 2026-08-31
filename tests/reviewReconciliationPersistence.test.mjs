@@ -57,6 +57,9 @@ test("safe integrity repair replaces a partially stale repair and hydrates Today
   });
 
   const snapshotBefore=(await db.meta.get(`today-plan-snapshot:${today}`)).value;
+  const liveBefore=await localGet("/api/bootstrap");
+  assert.equal(liveBefore.masterStatus.integrity_summary.activeCategories.inactive_review_current_task||0,0);
+  assert.equal(liveBefore.masterStatus.integrity_summary.activeCategories.current_today_stale_review||0,0);
   const preview=await localPost("/api/integrity/preview",{});
   assert.equal(preview.changes.staleReviewsSuperseded,1);
   assert.equal(preview.changes.reviewsReplaced,1);

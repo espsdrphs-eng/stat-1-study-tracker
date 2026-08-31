@@ -2,6 +2,7 @@ import type {Attempt,ProblemAlias,Review,StudyUpdate} from "./types.ts";
 import {resolveCanonicalProblemId} from "./examReadiness.ts";
 import {contractDifferences} from "./gradingContract.ts";
 import {canonicalAttemptId,logicalReviewKey,reviewExecutionMessage,reviewExecutionState} from "./reviewCurrentState.ts";
+import {attemptPlanningEligible} from "./legacyKPolicy.ts";
 
 const stableParts=(review:Review)=>[...(review.grading_contract?.gradedParts||[])]
   .map(part=>part.stableTargetKey||part.stable_target_key||part.id).sort();
@@ -12,7 +13,7 @@ function hasNewGradingEvidence(args:{oldReview:Review;sourceAttempt:Attempt|unde
   const cutoff=Date.parse(String(args.oldReview.contract_locked_at||args.oldReview.grading_contract?.createdAt||args.oldReview.generated_at||""));
   const problemId=resolveCanonicalProblemId(args.oldReview.problem_id,args.aliases);
   return args.attempts.some(attempt=>{
-    if(attempt.id===args.sourceAttempt?.id||attempt.duplicate_of_attempt_id||attempt.exclude_from_planning)return false;
+    if(attempt.id===args.sourceAttempt?.id||!attemptPlanningEligible(attempt))return false;
     if(resolveCanonicalProblemId(attempt.problem_id,args.aliases)!==problemId)return false;
     const saved=Date.parse(String(attempt.saved_at||""));
     if(Number.isFinite(cutoff)&&Number.isFinite(saved))return saved>cutoff;

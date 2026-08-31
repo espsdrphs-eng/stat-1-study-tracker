@@ -9,7 +9,7 @@ test("corrective feedback and a delayed test are separate learning events",()=>{
   assert.equal(learningEventKind({purpose:"integration_check",timing:"independent_performance",isAssessment:true}),"assessment");
   assert.equal(learningEventKind({purpose:"error_repair",timing:"same_session_correction"}),"corrective_feedback");
   assert.equal(learningEventKind({purpose:"retrieval_check",timing:"delayed_retrieval"}),"delayed_retrieval");
-  assert.equal(reviewPurposeAfterCorrection({attempt:{next_action:"積分範囲を訂正する"}}),"retrieval_check");
+  assert.equal(reviewPurposeAfterCorrection({attempt:{next_action:"積分範囲を訂正する"}}),"error_repair");
   assert.equal(reviewPurposeAfterCorrection({attempt:{next_action:"積分範囲を訂正する"},explicitSameSessionRequested:true}),"error_repair");
 });
 

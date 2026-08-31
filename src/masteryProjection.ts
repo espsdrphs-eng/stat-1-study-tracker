@@ -1,5 +1,6 @@
 import type {Attempt,GradedPartContract,MasteryLevelState,ProblemMasteryState,Review} from "./types.ts";
 import {resolvePersistedAttemptLifecycle} from "./reviewTransition.ts";
+import {attemptPlanningEligible} from "./legacyKPolicy.ts";
 
 const LEVEL_TITLES={1:"骨格保持",2:"主要計算完遂",3:"転移"} as const;
 const STATUS_LABELS={
@@ -24,9 +25,9 @@ function state(level:1|2|3,status:MasteryLevelState["status"],activeTargetCount=
 }
 
 export function deriveProblemMasteryState(args:{problemId:string;attempts:Attempt[];reviews:Review[]}):ProblemMasteryState{
-  const attempts=args.attempts.filter(row=>row.problem_id===args.problemId&&!row.exclude_from_planning&&!row.duplicate_of_attempt_id);
+  const attempts=args.attempts.filter(row=>row.problem_id===args.problemId&&attemptPlanningEligible(row));
   const transferAttempts=args.attempts.filter(row=>row.source_problem_id===args.problemId&&row.transfer_evidence&&
-    !row.exclude_from_planning&&!row.duplicate_of_attempt_id);
+    attemptPlanningEligible(row));
   const reviews=args.reviews.filter(row=>row.problem_id===args.problemId);
   const current=reviews.filter(active).filter(row=>["error_repair","retrieval_check"].includes(String(row.grading_contract?.learningPurpose||row.learning_purpose||"")));
   const level1Collapse=current.some(review=>(review.grading_contract?.gradedParts||[]).some(part=>

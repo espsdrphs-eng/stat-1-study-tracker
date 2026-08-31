@@ -1,6 +1,7 @@
 import type {Attempt,ConceptWeaknessInsight,Problem,Review,Task} from "./types.ts";
 import {isSuccessfulTransferForProblem} from "./examOptimizationPolicy.ts";
 import {resolvePersistedAttemptLifecycle} from "./reviewTransition.ts";
+import {deriveFailureEpisode} from "./failureEpisode.ts";
 
 export type TodayLearningCategory="exam_practice"|"repair";
 export type CurrentActionClass="exam_practice"|"targeted_repair"|"maintenance";
@@ -119,7 +120,8 @@ export function reviewPlanningDecision(args:{
     (!source||attempt.date>=source.date)&&isSuccessfulTransferForProblem(attempt,review.problem_id)
   )||related.some(row=>row.state==="resolved"&&row.transferSuccesses>0);
   const graduated=!!source&&resolvePersistedAttemptLifecycle(source).graduated;
-  const sourceMajor=errorTypes(source).size>0||source?.review_outcome==="failed"||
+  const episode=source?deriveFailureEpisode(source):undefined;
+  const sourceMajor=!!episode?.rootWeaknesses.some(root=>root.requiredRepair&&root.unresolved)||
     !!source?.observed_out_of_scope_findings?.some(row=>row.materiality==="major"&&row.confidence!=="low");
   const sourceErrors=errorTypes(source);
   const isolatedMinorC=sourceErrors.size===1&&sourceErrors.has("C")&&source?.review_outcome!=="failed"&&
@@ -130,7 +132,7 @@ export function reviewPlanningDecision(args:{
   const explicitRetentionEvidence=!!review.lifecycle_success_evidence_id||
     /success|transfer|reproduction/.test(String(review.lifecycle_transition_provenance||""));
   const retentionPending=purpose==="retrieval_check"&&activeTargets>0&&
-    (explicitRetentionEvidence||sourceMajor);
+    explicitRetentionEvidence;
 
   if(review.triage_override==="must")return {tier:"high_value_repair",scheduleAsRequired:true,
     reason:"ユーザーが今日必須へ明示指定"};
@@ -138,13 +140,18 @@ export function reviewPlanningDecision(args:{
     reason:"別問題・本番形式の参照なし成功をmaintenance代替証拠として採用"};
   if(graduated&&purpose!=="error_repair")return {tier:"deferred_maintenance",scheduleAsRequired:false,
     reason:"保持済みでcurrent major targetがなく、経過日数だけでは必須化しない"};
-  if(purpose==="error_repair"&&isolatedMinorC)return {tier:"deferred_maintenance",scheduleAsRequired:false,
-    reason:"単発の表記・記号Cは本番得点を変える再発証拠がないため任意の短時間確認へ送る"};
-  if(purpose==="error_repair")return {tier:"high_value_repair",scheduleAsRequired:true,
-    reason:"未解決targetの局所補修"};
+  if(purpose==="error_repair"&&(isolatedMinorC||!sourceMajor))return {tier:"deferred_maintenance",scheduleAsRequired:false,
+    reason:isolatedMinorC?"単発の表記・記号Cは本番得点を変える再発証拠がないため任意の短時間確認へ送る":
+      "有効なmajor失点証拠がないため必須補修へ昇格しない"};
+  if(purpose==="error_repair"&&sourceMajor)return {tier:"high_value_repair",scheduleAsRequired:true,
+    reason:"有効なmajor root weaknessを局所補修"};
+  if(purpose==="retrieval_check"&&sourceMajor&&!explicitRetentionEvidence)return {
+    tier:"high_value_repair",scheduleAsRequired:true,
+    reason:`${pastExamOrigin?"過去問由来の":""}major root weaknessにrepair成功provenanceがないため、保持確認ではなく補修として扱う`
+  };
   if(retentionPending)return {tier:"high_value_repair",scheduleAsRequired:true,
     reason:pastExamOrigin?"過去問由来major targetの遅延保持を未確認":"major targetの修復後保持を未確認"};
-  if((recurrence||pastExamOrigin||highExamValue)&&activeTargets>0)return {
+  if((recurrence||pastExamOrigin||highExamValue)&&sourceMajor&&activeTargets>0)return {
     tier:"exceptional_maintenance",scheduleAsRequired:true,
     reason:recurrence?"独立問題で同じ弱点が再発":"本番関連度の高いcurrent targetを再確認"
   };

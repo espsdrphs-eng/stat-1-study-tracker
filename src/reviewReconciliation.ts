@@ -6,6 +6,7 @@ import {buildStableTargetIndex,type StableTargetIndex,withStableTargetKey} from 
 import {currentTargetPayloadMatches,withCurrentFindingPayload} from "./currentTargetPayload.ts";
 import {resolvePersistedAttemptLifecycle} from "./reviewTransition.ts";
 import {correctiveFeedbackAvailable,isSuccessfulTransferForProblem} from "./examOptimizationPolicy.ts";
+import {attemptPlanningEligible,findingPlanningEligible,planningErrorsForSource} from "./legacyKPolicy.ts";
 
 const ACTIVE_STATUSES=new Set(["pending","overdue"]);
 const STANDARD_PURPOSES=new Set(["error_repair","retrieval_check"]);
@@ -74,7 +75,7 @@ function activeReview(review:Review){
 
 function validAttempt(attempt:Attempt){
   const nonMathematical=new Set(["scan","scan5","scan_only"]);
-  return !attempt.duplicate_of_attempt_id&&!attempt.exclude_from_metrics&&
+  return attemptPlanningEligible(attempt)&&
     !nonMathematical.has(String(attempt.mode||""))&&!nonMathematical.has(String(attempt.evaluation_scope||""));
 }
 
@@ -91,8 +92,7 @@ function attemptAtOrAfter(attempt:Attempt,source:Attempt|undefined){
 }
 
 function errorsFor(attempt:Attempt){
-  return [...new Set((attempt.effective_error_types?.length?attempt.effective_error_types:
-    attempt.error_types?.length?attempt.error_types:[attempt.error_type]).filter(value=>["K","W","N","C"].includes(String(value))))] as GradingErrorType[];
+  return planningErrorsForSource(attempt) as GradingErrorType[];
 }
 
 function kIsUsable(attempt:Attempt){
@@ -141,7 +141,7 @@ function evidenceEvents(attempt:Attempt,catalog:Map<string,GradedPartContract>,s
   });
   const explicit=attempt.graded_findings||[];
   if(explicit.length)return [...explicit.flatMap(finding=>{
-    if(!finding.graded_part_id||finding.error_type==="K"&&!kIsUsable(attempt))return [];
+    if(!finding.graded_part_id||!findingPlanningEligible(attempt,finding)||finding.error_type==="K"&&!kIsUsable(attempt))return [];
     const resolution=stableIndex.attemptPart(attempt.id,finding.graded_part_id);
     if(!resolution?.identityKey)return [];
     const part=resolution.part||catalog.get(finding.graded_part_id)||{

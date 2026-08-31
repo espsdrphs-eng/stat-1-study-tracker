@@ -29,6 +29,7 @@ import { sheetUsageForPhase, type ExamPhase } from "./examReadiness";
 import { resolveReviewCard, type ResolvedReviewCard } from "./reviewCardResolver";
 import { buildScan5Prompt, deriveExposure, scanMetrics, stageForDays, defaultSessionKind } from "./pastExamWorkflow";
 import {derivePastExamWorkspace} from "./pastExamPlanning.ts";
+import {attemptPlanningEligible} from "./legacyKPolicy.ts";
 import {deriveCurrentActionClass,reviewDueState,todayLearningCategory} from "./todayLearningPolicy.ts";
 import { CHAPTER_META } from "./officialMaster";
 import { isProblemPack, masterDiff, parseAliasesPayload, parseIntegratedMasterPayload, parseProblemMasterPayload } from "./masterData";
@@ -815,7 +816,7 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport}:{problem:Problem;
   const canonicalId=resolveCanonicalProblemId(problem.problem_id,data.problemAliases);
   const attempts=data.attempts.filter(a=>resolveCanonicalProblemId(a.problem_id,data.problemAliases)===canonicalId);
   const validAttempts=attempts.filter(attempt=>attemptConsistentForDisplay(attempt,problem)&&
-    !attempt.exclude_from_planning&&!attempt.exclude_from_metrics&&!attempt.duplicate_of_attempt_id);
+    attemptPlanningEligible(attempt));
   const reviewSelection=selectCurrentReviewsForProblem({
     reviews:data.reviews,problemId:canonicalId,aliases:data.problemAliases,today:data.dashboard.today
   });

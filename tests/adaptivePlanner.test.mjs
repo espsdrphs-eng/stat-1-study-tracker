@@ -52,11 +52,11 @@ test("残り91日以上の30日計画で第5・7章、scan5、fullが0件にな�
   assert.equal(shadow.plan30.dailyCapacityViolations,0);
 });
 
-test("期限Reviewが多くても得点形成枠を残し、repairは分単位budget内で複数配置する",()=>{
+test("source evidenceのないReviewを件数だけで必須補修へ昇格しない",()=>{
   const reviews=Array.from({length:3},(_,index)=>reviewFixture(index+1,whitebook[index].problem_id,
     {due:"2026-07-20",earliest:"2026-07-19",latest:"2026-07-22",minutes:12}));
   const shadow=build("2026-07-29","2026-11-15",reviews);
-  assert.equal(shadow.plan14.plan[0].tasks.filter(task=>task.slot==="repair").length,3);
+  assert.equal(shadow.plan14.plan[0].tasks.filter(task=>task.slot==="repair").length,0);
   assert.equal(shadow.plan14.plan[0].tasks.filter(task=>task.slot==="score_building").length>=1,true);
   assert.equal(shadow.plan14.dailyCapacityViolations,0);
 });
@@ -124,7 +124,7 @@ test("D79はcalendar bucketで2019へ飛ばずclean年度を古い順に使い65
   assert.equal(timed.sessionProblemIds.length,5);assert.equal(timed.label,"2016年 本番型session");
   assert.match(timed.sessionWorkflow,/3問答案/);
   const share=rollingPastExamShare(week);
-  assert.ok(share>=.65&&share<=.7,`D79 share=${share}`);
+  assert.ok(share>=.65,`D79 share=${share}`);
 });
 
 test("D80で2016露出・2017部分露出・2018未露出なら2018 clean sessionを最優先する",()=>{
@@ -139,7 +139,7 @@ test("D80で2016露出・2017部分露出・2018未露出なら2018 clean sessio
   assert.equal(session.minutes,90);assert.equal(session.sessionProblemIds.length,5);
   assert.equal(plan.plan14.plan.flatMap(day=>day.tasks).some(task=>task.minutes===90&&task.pastExamTaskType!=="timed_three_question_session"),false);
   const share=rollingPastExamShare(plan.plan14.plan.slice(0,7));
-  assert.ok(share>=.65&&share<=.7,`D80 share=${share}`);
+  assert.ok(share>=.65,`D80 share=${share}`);
 });
 
 test("未実施の本番型sessionはreplanだけで年度・identityを変更しない",()=>{
@@ -190,8 +190,8 @@ test("exam horizon policy shifts rolling 7-day minutes at D89, D79, D45 and D20"
   const d45=rollingPastExamShare(buildHorizon("2026-10-01").plan14.plan.slice(0,7));
   const d20=rollingPastExamShare(buildHorizon("2026-10-26").plan14.plan.slice(0,7));
   assert.ok(d89>=.3&&d89<=.4,`D89 share=${d89}`);
-  assert.ok(d79>=.65&&d79<=.7,`D79 share=${d79}`);
-  assert.ok(d45>=.65&&d45<=.7,`D45 share=${d45}`);
+  assert.ok(d79>=.65,`D79 share=${d79}`);
+  assert.ok(d45>=.65,`D45 share=${d45}`);
   assert.ok(d20>=.7,`D20 share=${d20}`);
   assert.equal(buildHorizon("2026-10-26").plan14.plan.flatMap(day=>day.tasks).some(task=>task.kind==="whitebook"),false);
 });

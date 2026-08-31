@@ -5,6 +5,7 @@ import type {
 } from "./types.ts";
 import { resolveCanonicalProblemId } from "./examReadiness.ts";
 import { deriveExposure } from "./pastExamWorkflow.ts";
+import {attemptPlanningEligible} from "./legacyKPolicy.ts";
 
 export const EXAM_REFERENCE_PACK_NAME="stat1_exam_reference_pack_v1";
 export const EXAM_REFERENCE_PACK_META_KEY="exam-reference-pack:active";
@@ -300,7 +301,7 @@ export function buildPastExamCatalog(args:{
       (!(session.questions||[]).length||(session.questions||[]).some(question=>
         canonicalPastExamProblemId(question.problemId||"")===canonicalProblemId||
         questionNumberFromLabel(question.questionLabel)===reference.question_number)));
-    const relevantAttempts=(args.attempts||[]).filter(attempt=>!attempt.exclude_from_planning&&
+    const relevantAttempts=(args.attempts||[]).filter(attempt=>attemptPlanningEligible(attempt)&&
       canonicalPastExamProblemId(attempt.problem_id)===canonicalProblemId);
     const attemptExposure:PastExamExposure|undefined=relevantAttempts.length?
       (relevantAttempts.some(attempt=>["full","exam_90min","past_exam","timed_single"].includes(String(attempt.mode)))

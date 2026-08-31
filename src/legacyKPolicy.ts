@@ -18,6 +18,8 @@ export type KPolicySource={
   next_action?:string;
   policyValidity?:KPolicyValidity;
   policy_validity?:KPolicyValidity;
+  exclude_from_planning?:boolean;exclude_from_metrics?:boolean;duplicate_of_attempt_id?:number;
+  graded_findings?:Array<{error_type?:string;resolved?:boolean;validity?:KPolicyValidity;planning_eligible?:boolean;recurrence_eligible?:boolean}>;
 };
 
 const structuralFailurePatterns=[
@@ -86,6 +88,27 @@ export function planningErrorsForSource(source:KPolicySource){
   if(mathematicalPatch&&formalSkeleton&&withoutK.includes("C")&&!withoutK.includes("W"))return ["C"];
   if(mathematicalPatch&&withoutK.includes("W"))return withoutK.filter(error=>error!=="N");
   return withoutK;
+}
+
+/** Eligibility is attached to each finding; a legacy K flag cannot erase W/N/C evidence. */
+export function planningEligibleFindings<T extends KPolicySource>(source:T):NonNullable<T["graded_findings"]>{
+  return (source.graded_findings||[]).filter(finding=>{
+    if(finding.resolved||!["K","W","N","C"].includes(String(finding.error_type||"")))return false;
+    return findingPlanningEligible(source,finding);
+  }) as NonNullable<T["graded_findings"]>;
+}
+
+export function findingPlanningEligible(source:KPolicySource,finding:NonNullable<KPolicySource["graded_findings"]>[number]){
+    if(finding.planning_eligible===false||finding.validity==="invalid_legacy_k")return false;
+    return finding.error_type!=="K"||classifyKPolicyValidity(source)!=="invalid_legacy_k";
+}
+
+export function attemptPlanningEligible(source:KPolicySource){
+  if(source.exclude_from_metrics||source.duplicate_of_attempt_id)return false;
+  const structured=source.graded_findings||[];
+  if(structured.length)return planningEligibleFindings(source).length>0||
+    structured.every(row=>row.resolved||row.error_type==="none");
+  return !source.exclude_from_planning;
 }
 
 const skeletonCarryover=/^(方針|方針・入口|今見る量|使う道具|道具|ゴール|最後に示すこと|ここから先は計算|計算開始の境界|条件)$/;

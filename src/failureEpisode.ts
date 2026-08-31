@@ -1,4 +1,5 @@
 import type {Attempt,FailureEpisode,GradedFinding,GradingErrorType,RootWeakness} from "./types.ts";
+import {planningEligibleFindings,planningErrorsForSource} from "./legacyKPolicy.ts";
 
 const unique=<T,>(values:T[])=>[...new Set(values)];
 const stableHash=(value:string)=>[...value].reduce((hash,char)=>Math.imul(hash^char.charCodeAt(0),16777619)>>>0,2166136261).toString(16).padStart(8,"0");
@@ -10,7 +11,7 @@ type FindingEvidence={
 
 function findingEvidence(attempt:Attempt):FindingEvidence[]{
   const parts=new Map((attempt.grading_contract?.gradedParts||[]).map(part=>[part.id,part]));
-  const structured=(attempt.graded_findings||[]).filter(finding=>!finding.resolved&&finding.error_type!=="none").map((finding:GradedFinding)=>{
+  const structured=planningEligibleFindings(attempt).map((finding:GradedFinding)=>{
     const part=parts.get(finding.graded_part_id);
     const stable=part?.stableTargetKey||part?.stable_target_key;
     return {findingId:finding.graded_part_id,rootKey:part?.rootCauseKey||stable||finding.graded_part_id,
@@ -27,11 +28,11 @@ function findingEvidence(attempt:Attempt):FindingEvidence[]{
       explicitMajor:true,confidence:finding.confidence,skillIds:[finding.root_cause_key||""].filter(Boolean),
     }));
   if(structured.length||observed.length)return [...structured,...observed];
-  const errors=unique([...(attempt.effective_error_types||attempt.error_types||[]),attempt.primary_error_type||attempt.error_type||""]
-    .filter((value):value is GradingErrorType=>["K","W","N","C"].includes(value)));
-  if(!errors.length||!attempt.error_point)return [];
-  return [{findingId:`attempt:${attempt.id}:legacy`,rootKey:`legacy:${stableHash(attempt.error_point)}`,
-    errorType:errors[0],evidence:attempt.error_point,title:attempt.error_point,
+  const errors=planningErrorsForSource(attempt) as GradingErrorType[];
+  if(!errors.length)return [];
+  const description=String(attempt.error_point||attempt.result_summary||attempt.next_action||`${errors.join("/")} error`);
+  return [{findingId:`attempt:${attempt.id}:legacy`,rootKey:`legacy:${stableHash(description)}`,
+    errorType:errors[0],evidence:description,title:description,
     masteryLevel:errors.includes("K")?1:2,explicitMajor:false,confidence:"medium",skillIds:[]}];
 }
 
@@ -45,8 +46,10 @@ export function deriveFailureEpisode(attempt:Attempt,args:{recurrenceByRoot?:Rec
   const roots:RootWeakness[]=[...grouped].map(([rootKey,rows])=>{
     const errorTypes=unique(rows.map(row=>row.errorType));
     const recurrence=Number(args.recurrenceByRoot?.[rootKey]||0);
+    const isolatedC=errorTypes.length===1&&errorTypes[0]==="C"&&recurrence===0;
     const major=rows.some(row=>row.explicitMajor)||errorTypes.some(error=>["K","W"].includes(error))||
-      attempt.review_outcome==="failed"||attempt.conclusion_reached===false||
+      (!isolatedC&&attempt.review_outcome==="failed")||(!isolatedC&&attempt.conclusion_reached===false)||
+      (!isolatedC&&attempt.minimum_pass_condition_met===false)||
       (errorTypes.includes("N")&&Number(attempt.score_numeric??100)<70)||recurrence>0;
     const masteryLevel=Math.min(...rows.map(row=>row.masteryLevel)) as 1|2|3;
     const confidence=rows.every(row=>row.confidence==="high")?"high":rows.some(row=>row.confidence!=="low")?"medium":"low";

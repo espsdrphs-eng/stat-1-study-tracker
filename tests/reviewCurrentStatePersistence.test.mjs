@@ -53,7 +53,8 @@ test("snapshot, dashboard and GPT save share the persisted Review execution stat
   assert.deepEqual(bootstrap.today.tasks.filter(task=>task.id).map(task=>task.id),[active.id]);
   assert.equal(bootstrap.dashboard.pending,1);
   assert.equal(bootstrap.today.active_remaining_minutes,
-    bootstrap.today.tasks.filter(task=>!task.checked).reduce((sum,task)=>sum+Number(task.minutes||0),0));
+    bootstrap.today.tasks.filter(task=>!task.checked&&task.triage!=="tomorrow")
+      .reduce((sum,task)=>sum+Number(task.minutes||0),0));
   assert.ok(bootstrap.today.active_remaining_minutes>=5);
   assert.equal((await db.meta.get(key)).value,snapshotBefore);
 

@@ -57,7 +57,7 @@ export type ProblemRelation = {
 export type ReviewOrigin="direct_attempt"|"verified_linked_problem"|"integration_schedule"|"transfer_schedule"|"past_exam_attempt"|"historical_completed";
 export type PastExamSessionKind="scan_only"|"scan_plus_one"|"selected_three_timed"|"retrospective_review";
 export type PastExamSessionPurpose="clean_scan5"|"practice_scan5"|"individual_full"|"timed_three_question_session"|"simulation";
-export type PastExamSessionState="planned"|"scan_started"|"selection_committed"|"answers_in_progress"|"grading_pending"|"completed"|"deferred"|"cancelled";
+export type PastExamSessionState="planned"|"scan_started"|"selection_draft"|"selection_committed"|"answers_in_progress"|"grading_pending"|"completed"|"deferred"|"cancelled"|"invalidated";
 export type PastExamStage="discrimination"|"calibration"|"simulation";
 export type ScanSetSource="past_exam_year"|"mixed_a_problems"|"custom_set";
 export type PastExamExposure="unknown"|"unseen"|"prompt_scanned"|"partially_attempted"|"fully_attempted"|"answer_exposed"|"simulated";
@@ -87,6 +87,8 @@ export type GradedPartContract={
 };
 export type GradedFinding={
   graded_part_id:string;error_type:GradingErrorType;evidence:string;resolved:boolean;
+  /** Finding-level planning eligibility. An invalid legacy K must not hide valid W/N siblings. */
+  validity?:KPolicyValidity;planning_eligible?:boolean;recurrence_eligible?:boolean;
 };
 export type ObservedOutOfScopeFinding={
   mastery_level:1|2|3;finding:string;evidence:string;materiality:"minor"|"major";
@@ -289,6 +291,8 @@ export type PastSession = Record<string, unknown> & {
   answer_viewed_at?:string;simulation_completed_at?:string;linked_attempt_ids?:number[];
   analysis?:Record<string,unknown>;rubric_version?:string;
   scan_evidence_kind?:"clean"|"practice";
+  /** Persistent logical instance. Schedule dates are deliberately not identity. */
+  session_instance_id?:string;
   session_purpose?:PastExamSessionPurpose;session_ordinal?:number;stable_session_key?:string;
   session_state?:PastExamSessionState;
   exposure_snapshot_at_start?:{
@@ -437,7 +441,7 @@ export type AdaptivePlanSummary = {
 };
 export type AdaptivePlannerShadow = {
   available:boolean;mode:"unavailable"|"shadow"|"active";generatedAt:string;phase:string;daysRemaining:number;
-  targetMinutes:number;plan14:AdaptivePlanSummary;plan30:AdaptivePlanSummary;
+  targetMinutes:number;plan7:AdaptivePlanSummary;plan14:AdaptivePlanSummary;plan30:AdaptivePlanSummary;
   legacy30:{scan5:number;full:number;timed:number;totalTasks:number};
   comparisonReasons:string[];activationEligible:boolean;activationBlockers:string[];
   weeklyTarget:Record<string,string|number>;weeklyActual:Record<string,number>;
@@ -566,6 +570,7 @@ export type Bootstrap = {
     };
     integrity_summary?:{
       generatedAt:string;activeIssueCount:number;historyWarningCount:number;informationalHistoryCount:number;
+      blockingIntegrityIssueCount?:number;plannerPolicyViolationCount?:number;learningAdvisoryCount?:number;
       counts:Record<string,number>;activeCategories:string[];repairedAt?:string;
     };
   };
