@@ -66,6 +66,8 @@ import {deriveCanonicalStudyPlan} from "./canonicalStudyPlan.ts";
 import {canonicalizePastExamSessions,derivePastExamSessionState,pastExamSessionKey,pastExamSessionPurpose,reconcilePastExamSessionEvidence,stablePastExamSessionKey} from "./pastExamPlanning.ts";
 
 const PLANNER_RUNTIME_MODE_META_KEY="planner-runtime-mode";
+const CURRENT_PLAN_PROJECTION_META_KEY="current-plan-projection-version";
+const CURRENT_PLAN_PROJECTION_VERSION="past-session-attempt-evidence-v1";
 
 type SMemory = { problem_id:string; state:"stable"|"check"|"forgotten"|"collapsed"; last_touched?:string; k_trigger_count:number };
 type StoredAttempt = Attempt;
@@ -2602,6 +2604,15 @@ async function ensureBuiltInExamReferencePack(){
 
 async function bootstrap():Promise<Bootstrap>{
   await initialize();
+  const storedProjectionVersion=await db.meta.get(CURRENT_PLAN_PROJECTION_META_KEY);
+  if(storedProjectionVersion?.value!==CURRENT_PLAN_PROJECTION_VERSION){
+    await db.transaction("rw",db.meta,async()=>{
+      // A deployed projection upgrade must not keep today's plan from the old
+      // reducer. Historical snapshots remain immutable and available.
+      await db.meta.delete(`today-plan-snapshot:${todayString()}`);
+      await db.meta.put({key:CURRENT_PLAN_PROJECTION_META_KEY,value:CURRENT_PLAN_PROJECTION_VERSION});
+    });
+  }
   await ensureBuiltInCanonical();
   await ensureBuiltInExamReferencePack();
   const [problems,attempts,rawReviews,roadmap,weakNotes,rawPastSessions,sMemory,metaEntries,answerIndex,answerPdfs,problemAliases]=await Promise.all([

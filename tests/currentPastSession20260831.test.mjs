@@ -79,3 +79,25 @@ test("JSON restoreは当日のstale planだけを破棄してcurrent projection�
   await restoreBackup(backup);
   assert.equal(await db.meta.get(key),undefined);
 });
+
+test("旧buildの当日planはprojection upgrade時だけ破棄しreloadでは再生成結果を維持する",async()=>{
+  await localGet("/api/bootstrap");
+  const today=new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Tokyo",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
+  const key=`today-plan-snapshot:${today}`,versionKey="current-plan-projection-version";
+  await db.meta.put({key,value:JSON.stringify({date:today,task_ids:["stale-2018"],start_of_day_planned_minutes:90,
+    initial_bucket:{"stale-2018":"must"},initial_estimated_minutes:{"stale-2018":90},
+    tasks:[{problem_id:"PY-2018-Q1",title:"2018年 本番型session",kind:"本番演習",mode:"timed",minutes:90,load:3,
+      checked:false,past_exam_year:2018,stable_session_key:"stale-2018"}],created_at:"2026-08-31T00:00:00Z",
+    planner_source:"adaptive",planner_version:"adaptive-v1"})});
+  await db.meta.delete(versionKey);
+
+  const upgraded=await localGet("/api/bootstrap");
+  assert.equal((await db.meta.get(versionKey))?.value,"past-session-attempt-evidence-v1");
+  assert.equal(upgraded.today.tasks.some(task=>task.stable_session_key==="stale-2018"),false);
+  const regenerated=(await db.meta.get(key))?.value;
+  assert.ok(regenerated&&!regenerated.includes("stale-2018"));
+
+  const reloaded=await localGet("/api/bootstrap");
+  assert.equal((await db.meta.get(key))?.value,regenerated);
+  assert.equal(reloaded.today.canonicalStudyPlan.sourceStateVersion,upgraded.today.canonicalStudyPlan.sourceStateVersion);
+});
