@@ -75,6 +75,28 @@ test("latest-pack F9: isolated Cはconservativeにminor optional",()=>{
   assert.equal(root.materiality,"minor");assert.equal(root.requiredRepair,false);assert.equal(root.examImpact,"low");
 });
 
+test("WB-5-A-20 latest evidence: resolved Wを復活させず残る単発Cだけをoptionalにする",()=>{
+  const makePart=(id,key,label)=>({id,label,cueLabel:label,allowedErrorTypes:["W","C","none"],completionCriterionId:`c-${id}`,
+    stableTargetKey:key,masteryLevel:2});
+  const variance=makePart("variance","target:WB-5-A-20:slot:variance","分散分解"),notation=makePart("notation","target:WB-5-A-20:slot:notation","V^2の記号位置");
+  const baseContract={contractId:"c",contractVersion:"v",contractHash:"h",createdAt:"2026-08-01",problemId:"WB-5-A-20",
+    learningPurpose:"error_repair",learningStage:"repair",mode:"main_calc",reviewScope:"main_calc_target",targetedParts:[],
+    explicitlyOutOfScopePartIds:[],explicitlyOutOfScopeParts:[],completionCriteria:[],hiddenAnswerKey:[],completionConditions:[],
+    requiredEvidence:[],allowedErrorTypes:["W","C","none"],requiresKEvidence:false,allowedReferenceLevel:0,estimatedMinutes:7,sheetType:"main_calc_sheet"};
+  const old={id:206,problem_id:"WB-5-A-20",date:"2026-08-20",mode:"main_calc",score_numeric:55,mark:"×",score_label:"C",
+    error_type:"W",error_types:["W"],review_outcome:"failed",error_point:"分散分解",graded_findings:[{graded_part_id:"variance",error_type:"W",evidence:"旧W",resolved:false}],
+    grading_contract:{...baseContract,sourceAttemptId:206,gradedParts:[variance]}};
+  const latest={id:212,problem_id:"WB-5-A-20",date:"2026-08-30",mode:"main_calc",score_numeric:90,mark:"○",score_label:"A",
+    error_type:"C",error_types:["C"],review_outcome:"partial",error_point:"V^2を書く位置にE[V^2]と書いた",
+    graded_findings:[{graded_part_id:"variance",error_type:"none",evidence:"主要式を再現",resolved:true},
+      {graded_part_id:"notation",error_type:"C",evidence:"単発記号位置",resolved:false}],
+    grading_contract:{...baseContract,sourceAttemptId:212,gradedParts:[variance,notation]}};
+  const plan=analyzeReviewReconciliation({attempts:[old,latest],reviews:[],today:"2026-08-31"}).problems[0];
+  assert.deepEqual(plan.desiredRepairParts.map(row=>row.stableTargetKey),[notation.stableTargetKey]);
+  const root=deriveFailureEpisode(latest).rootWeaknesses[0];
+  assert.equal(root.materiality,"minor");assert.equal(root.requiredRepair,false);
+});
+
 test("latest-pack F14/F15/F16: current policyは65〜70%、30日forecastにgeneric Whitebookとpolicy violationを残さない",()=>{
   const policy=deriveLearningPolicy(76);
   assert.deepEqual(policy.examPracticeTargetRange,{min:.65,max:.7});

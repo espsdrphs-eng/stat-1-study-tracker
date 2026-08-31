@@ -28,7 +28,7 @@ import { EXAM_PHASES } from "./studyProgress";
 import { sheetUsageForPhase, type ExamPhase } from "./examReadiness";
 import { resolveReviewCard, type ResolvedReviewCard } from "./reviewCardResolver";
 import { buildScan5Prompt, deriveExposure, scanMetrics, stageForDays, defaultSessionKind } from "./pastExamWorkflow";
-import {derivePastExamWorkspace} from "./pastExamPlanning.ts";
+import {derivePastExamSessionState,derivePastExamWorkspace} from "./pastExamPlanning.ts";
 import {attemptPlanningEligible} from "./legacyKPolicy.ts";
 import {deriveCurrentActionClass,reviewDueState,todayLearningCategory} from "./todayLearningPolicy.ts";
 import { CHAPTER_META } from "./officialMaster";
@@ -1340,7 +1340,28 @@ function PastView({data,go,run,busy}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()
       <div className="form-actions"><button type="button" className="ghost" onClick={()=>{setEditingSessionId(null);setSession({...session,questions:blankQuestions()})}}>入力をリセット</button><button className="primary" disabled={busy}>{editingSessionId?"事後結果を保存":"事前判断を保存"}</button></div>
     </form></details>
     <section className="section-head"><div><span className="eyebrow">SCAN HISTORY</span><h2>過去問セッション</h2></div></section>
-    <div className="past-result-list">{data.pastSessions.map(saved=>{const metrics=scanMetrics(saved),exposure=deriveExposure(saved);return <article className="panel past-result-card" key={saved.id}><div className="past-result-head"><div><h3>{saved.year||saved.source_label||"カスタム"}・{saved.session_kind||saved.session_type}</h3><span>{saved.date} ・ 露出：{exposure}</span></div><Badge tone={saved.exam_score_eligible?"green":""}>{saved.exam_score_eligible?"本番得点対象":"学習指標"}</Badge></div><div className="past-result-body"><div><span>型判断</span><p>{metrics.typeIdentificationAccuracy==null?"未評価":`${metrics.typeIdentificationAccuracy}%`}</p></div><div><span>初手判断</span><p>{metrics.firstStepAccuracy==null?"未評価":`${metrics.firstStepAccuracy}%`}</p></div><div><span>選題成功率</span><p>{metrics.selectionSuccessRate==null?"未評価":`${metrics.selectionSuccessRate}%`}</p></div><div><span>解答済み</span><p>{metrics.solvedCount}問</p></div></div><div className="task-actions"><button className="secondary" onClick={()=>editPastSession(saved)}><Pencil size={15}/>事後結果を入力</button><button className="secondary" onClick={()=>navigator.clipboard.writeText(buildScan5Prompt(saved,days))}><Copy size={15}/>GPT分析プロンプト</button>{metrics.solvedCount>0&&<button className="secondary" onClick={()=>go("import")}><ClipboardPaste size={15}/>解いた問題を採点</button>}</div><details><summary>GPT分析結果を取り込む</summary><textarea value={analysisText[saved.id]||""} onChange={event=>setAnalysisText({...analysisText,[saved.id]:event.target.value})} placeholder="scan_update YAMLを貼り付け"/><button className="secondary" disabled={busy||!analysisText[saved.id]} onClick={()=>run(()=>post(`/api/past-sessions/${saved.id}/analysis`,{text:analysisText[saved.id]}),"scan5分析を保存しました")}>専用分析を保存</button></details></article>})}</div>
+    <div className="past-result-list">{data.pastSessions.map(saved=>{
+      const metrics=scanMetrics(saved),exposure=deriveExposure(saved),state=derivePastExamSessionState(saved);
+      const selected=(saved.final_selected_problem_ids?.length?saved.final_selected_problem_ids:saved.initial_selected_problem_ids)||[];
+      const selectedRows=(saved.questions||[]).filter(row=>selected.includes(row.problemId||row.questionLabel));
+      const calibrationRows=(saved.questions||[]).filter(row=>!selected.includes(row.problemId||row.questionLabel)&&row.actualScore!=null);
+      const typeCalibration=saved.analysis_status==="completed"&&saved.analysis?.primary_selection_error==="type_misclassification";
+      const sessionTitle=saved.session_kind==="selected_three_timed"?`${saved.year}年 本番型session`:`${saved.year||saved.source_label||"カスタム"}・${saved.session_kind||saved.session_type}`;
+      return <article className="panel past-result-card" key={saved.id}>
+        <div className="past-result-head"><div><h3>{sessionTitle}</h3><span>{saved.date} ・ 露出：{exposure} ・ {state==="completed"?"完了":"進行中"}</span></div><Badge tone={saved.exam_score_eligible?"green":""}>{saved.exam_score_eligible?"本番得点対象":"学習指標"}</Badge></div>
+        {saved.selected_year_reason&&<p className="past-session-reason"><b>なぜこの年度：</b>{saved.selected_year_reason}</p>}
+        {saved.session_kind==="selected_three_timed"&&<p className="past-session-flow">5問scan → 3問選択 → 3問答案 → 採点</p>}
+        <div className="past-result-body">
+          <div><span>型判断</span><p>{typeCalibration?"要較正":metrics.typeIdentificationAccuracy==null?(saved.analysis_status==="completed"?"分析済み":"分析待ち"):`${metrics.typeIdentificationAccuracy}%`}</p></div>
+          <div><span>選題結果</span><p>{metrics.selectionSuccessRate==null?"選択答案の採点待ち":`${saved.selection_success_count??Math.round(metrics.selectionSuccessRate/100*3)}/3 成功`}</p></div>
+          <div><span>選択答案</span><p>{saved.selected_answer_count??metrics.solvedCount}/3完了{selectedRows.some(row=>row.actualScore!=null)&&<><br/>{selectedRows.map(row=>`${row.questionLabel}=${row.actualScore}`).join(" / ")}</>}</p></div>
+          <div><span>本番時間</span><p>答案 {saved.selected_solve_minutes??0}分 / scan {saved.scan_minutes??0}分 / 合計 {saved.session_elapsed_minutes??saved.actual_total_minutes??0}分</p></div>
+        </div>
+        {!!calibrationRows.length&&<p className="past-calibration"><b>較正用追加採点：</b>{calibrationRows.map(row=>`${row.questionLabel}=${row.actualScore}`).join(" / ")}</p>}
+        {!!saved.score_calibration?.length&&<p className="past-calibration"><b>得点予測較正：</b>{saved.score_calibration.map(row=>`${row.problemId} ${row.error>0?"+":""}${row.error}`).join(" / ")}</p>}
+        <div className="task-actions"><button className="secondary" onClick={()=>editPastSession(saved)}><Pencil size={15}/>事後結果を入力</button><button className="secondary" onClick={()=>navigator.clipboard.writeText(buildScan5Prompt(saved,days))}><Copy size={15}/>GPT分析プロンプト</button>{metrics.solvedCount>0&&<button className="secondary" onClick={()=>go("import")}><ClipboardPaste size={15}/>解いた問題を採点</button>}</div>
+        <details><summary>GPT分析結果を取り込む（session完了とは別）</summary><textarea value={analysisText[saved.id]||""} onChange={event=>setAnalysisText({...analysisText,[saved.id]:event.target.value})} placeholder="scan_update YAMLを貼り付け"/><button className="secondary" disabled={busy||!analysisText[saved.id]} onClick={()=>run(()=>post(`/api/past-sessions/${saved.id}/analysis`,{text:analysisText[saved.id]}),"scan5分析を保存しました")}>専用分析を保存</button></details>
+      </article>})}</div>
     <section className="section-head"><div><span className="eyebrow">REPAIR TARGETS</span><h2>過去問で明らかになった要復習箇所</h2></div></section>
     {!!data.adaptiveLearning.pastExamRepairCandidates.length&&<section className="panel adaptive-repair-candidates">
       <div className="panel-title"><div><span className="eyebrow">CANDIDATE ONLY</span><h3>conceptから照合した補修候補</h3></div><Badge>1セッション最大2件</Badge></div>

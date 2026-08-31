@@ -63,7 +63,7 @@ import {parseWholeAnswerRediagnosis,WHOLE_ANSWER_DIAGNOSTIC_VERSION,wholeAnswerD
 import {deriveDashboardKpis} from "./dashboardKpi.ts";
 import {reviewDueState} from "./todayLearningPolicy.ts";
 import {deriveCanonicalStudyPlan} from "./canonicalStudyPlan.ts";
-import {canonicalizePastExamSessions,derivePastExamSessionState,pastExamSessionKey,pastExamSessionPurpose,stablePastExamSessionKey} from "./pastExamPlanning.ts";
+import {canonicalizePastExamSessions,derivePastExamSessionState,pastExamSessionKey,pastExamSessionPurpose,reconcilePastExamSessionEvidence,stablePastExamSessionKey} from "./pastExamPlanning.ts";
 
 const PLANNER_RUNTIME_MODE_META_KEY="planner-runtime-mode";
 
@@ -2609,7 +2609,8 @@ async function bootstrap():Promise<Bootstrap>{
     db.weakNotes.orderBy("id").reverse().toArray(),db.pastSessions.orderBy("id").reverse().toArray(),db.sMemory.toArray(),db.meta.toArray(),
     db.answerIndex.toArray(),db.answerPdfs.toArray(),db.problemAliases.toArray()
   ]);
-  const pastSessions=canonicalizePastExamSessions(rawPastSessions).current;
+  const canonicalPastSessions=canonicalizePastExamSessions(rawPastSessions).current;
+  const pastSessions=canonicalPastSessions.map(session=>reconcilePastExamSessionEvidence(session,attempts,session.session_alias_ids));
   const today=todayString(),week=addDays(today,-6),fortnight=addDays(today,-13);
   const pmap=new Map(problems.map(p=>[resolveCanonicalProblemId(p.problem_id,problemAliases),p]));
   const problemForId=(problemId:string)=>pmap.get(resolveCanonicalProblemId(problemId,problemAliases));
@@ -3096,7 +3097,9 @@ export async function localGet<T>(path:string):Promise<T>{
 }
 
 async function reconcilePastExamSessionGenerations(preview=false){
-  const rows=await db.pastSessions.toArray(),projection=canonicalizePastExamSessions(rows);
+  const [rows,attempts]=await Promise.all([db.pastSessions.toArray(),db.attempts.toArray()]);
+  const canonical=canonicalizePastExamSessions(rows),projection={...canonical,
+    current:canonical.current.map(session=>reconcilePastExamSessionEvidence(session,attempts,session.session_alias_ids))};
   let normalized=0;
   for(const current of projection.current){
     const stored=rows.find(row=>row.id===current.id);
@@ -3604,6 +3607,7 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
       else await saveAttempt(body,logs);
       if(logs.length)await db.correctionLogs.bulkAdd(logs as CorrectionLog[]);
     });
+    await reconcilePastExamSessionGenerations(false);
     notifyStudyDataChanged({operation:"save-attempt",reviewId:Number(body.generated_from_review_id||0)||undefined});
   } else if(path==="/api/import") {
     await assertDatabaseSchema("saveGptEvaluationBatch",GPT_SAVE_REQUIRED_STORES);
@@ -3616,6 +3620,7 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
       }
       if(logs.length)await db.correctionLogs.bulkAdd(logs as CorrectionLog[]);
     });
+    await reconcilePastExamSessionGenerations(false);
     notifyStudyDataChanged({operation:"save-gpt-import"});
   } else if(/^\/api\/attempts\/\d+\/replace$/.test(path)) {
     const id=Number(path.split("/")[3]),logs:PendingCorrectionLog[]=[];
@@ -3624,6 +3629,7 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
       if(logs.length)await db.correctionLogs.bulkAdd(logs as CorrectionLog[]);
       return value;
     });
+    await reconcilePastExamSessionGenerations(false);
     notifyStudyDataChanged({operation:"replace-attempt"});
     return result as T;
   } else if(/^\/api\/attempts\/\d+\/whole-diagnostic\/preview$/.test(path)) {
@@ -3636,10 +3642,12 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
   } else if(/^\/api\/attempts\/\d+\/update$/.test(path)) {
     await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.problemAliases],
       ()=>updateAttemptAnalysis(Number(path.split("/")[3]),body));
+    await reconcilePastExamSessionGenerations(false);
     notifyStudyDataChanged({operation:"update-attempt"});
   } else if(/^\/api\/attempts\/\d+\/delete$/.test(path)) {
     await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.problemAliases],
       ()=>deleteAttemptAnalysis(Number(path.split("/")[3])));
+    await reconcilePastExamSessionGenerations(false);
     notifyStudyDataChanged({operation:"delete-attempt"});
   } else if(/^\/api\/reviews\/\d+\/complete$/.test(path)) {
     await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.problemAliases],
@@ -3706,11 +3714,14 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
   } else if(/^\/api\/past-sessions\/\d+\/update$/.test(path)){
     return await savePastExamSession(body,Number(path.split("/")[3])) as T;
   } else if(/^\/api\/past-sessions\/\d+\/analysis$/.test(path)){
-    const id=Number(path.split("/")[3]),session=await db.pastSessions.get(id);
-    if(!session)throw new Error("対象の5問スキャンセッションが見つかりません");
+    const requestedId=Number(path.split("/")[3]),requested=await db.pastSessions.get(requestedId);
+    if(!requested)throw new Error("対象の5問スキャンセッションが見つかりません");
+    const id=Number(requested.superseded_by_session_id||requestedId),session=await db.pastSessions.get(id);
+    if(!session)throw new Error("統合後の5問スキャンセッションが見つかりません");
     const analysis=parseScan5Update(String(body.text||body.yaml||""));
     const normalizedSessionId=Number(String(analysis.session_id??"").trim());
-    if(!Number.isInteger(normalizedSessionId)||normalizedSessionId<=0||normalizedSessionId!==id)
+    const acceptedIds=new Set([id,requestedId,...(session.session_alias_ids||[])]);
+    if(!Number.isInteger(normalizedSessionId)||normalizedSessionId<=0||!acceptedIds.has(normalizedSessionId))
       throw new Error(`対象の5問スキャンセッションが見つかりません。受信したsession_id：${String(analysis.session_id??"（空）")}`);
     if(analysis.session_kind!=null&&String(analysis.session_kind)!==String(session.session_kind))
       throw new Error(`session_kindが既存セッションと一致しません。受信値：${String(analysis.session_kind)}／登録値：${String(session.session_kind)}`);
@@ -3733,8 +3744,8 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
       }
     }else analysis.candidate_review_problem_id=null;
     analysis.import_normalization_logs=importLogs;
-    await db.transaction("rw",db.pastSessions,()=>db.pastSessions.update(id,{analysis,rubric_version:String(analysis.rubric_version)}));
-    return {ok:true,analysis} as T;
+    await db.transaction("rw",db.pastSessions,()=>db.pastSessions.update(id,{analysis,rubric_version:String(analysis.rubric_version),analysis_status:"completed"}));
+    return {ok:true,analysis,canonicalSessionId:id} as T;
   } else throw new Error(`未対応の保存です: ${path}`);
   return {ok:true} as T;
 }

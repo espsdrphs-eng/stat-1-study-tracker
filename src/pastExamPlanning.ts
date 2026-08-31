@@ -90,7 +90,8 @@ export function canonicalizePastExamSessions(sessions:PastSession[]){
     current.push({...merged,stable_session_key:key,session_instance_id:winner.session_instance_id||`session-${Number(winner.session_ordinal||1)}`,
       session_purpose:sessionPurpose,
       session_ordinal:Number(winner.session_ordinal||1),session_state:derivePastExamSessionState(merged),
-      exposure_snapshot_at_start:snapshot,scan_evidence_kind:snapshot.classification});
+      exposure_snapshot_at_start:snapshot,scan_evidence_kind:snapshot.classification,
+      session_alias_ids:uniqueNumbers(rows.flatMap(row=>[row.id,...(row.session_alias_ids||[])])).sort((a,b)=>a-b)});
     for(const row of ranked.slice(1))superseded.push({sessionId:row.id,canonicalSessionId:winner.id,
       reason:`同一logical PastExamSession ${key} のcurrent generationへ統合`});
   }
@@ -98,6 +99,75 @@ export function canonicalizePastExamSessions(sessions:PastSession[]){
 }
 
 const uniqueNumbers=(values:number[])=>[...new Set(values)];
+
+const attemptIsUsable=(attempt:Attempt)=>!attempt.invalidated_at&&!attempt.superseded_by_attempt_id&&
+  !attempt.duplicate_of_attempt_id&&!attempt.exclude_from_metrics&&attempt.score_numeric!=null;
+const problemYear=(problemId:string)=>Number(String(problemId).match(/(?:PY-|PE-)(\d{4})/i)?.[1]||0);
+const selectedProblemIds=(session:PastSession)=>{
+  const explicit=(session.final_selected_problem_ids?.length?session.final_selected_problem_ids:session.initial_selected_problem_ids)||[];
+  return [...new Set((explicit.length?explicit:(session.questions||[]).filter(row=>row.selected).map(row=>row.problemId||"")).filter(Boolean))];
+};
+
+/**
+ * Links a saved session to the first graded evidence produced after it started.
+ * Dates are scheduling metadata: a next-day Attempt still belongs to the same
+ * persistent session. Once IDs are linked they are stable and later Attempts do
+ * not rewrite the historical session.
+ */
+export function reconcilePastExamSessionEvidence(session:PastSession,attempts:Attempt[],aliasSessionIds:number[]=[]):PastSession{
+  if(session.session_kind!=="selected_three_timed")return {...session,analysis_status:session.analysis?"completed":session.analysis_status||"not_started"};
+  const aliases=new Set([session.id,...(session.session_alias_ids||[]),...aliasSessionIds].filter(Boolean));
+  const questionIds=new Set((session.questions||[]).map(row=>row.problemId).filter(Boolean) as string[]);
+  const selected=selectedProblemIds(session),selectedSet=new Set(selected);
+  const existingIds=new Set([...(session.selected_timed_attempt_ids||[]),...(session.counterfactual_calibration_attempt_ids||[]),...(session.linked_attempt_ids||[])]);
+  const candidates=attempts.filter(attempt=>attemptIsUsable(attempt)&&questionIds.has(attempt.problem_id)&&
+    (existingIds.has(attempt.id)||aliases.has(Number(attempt.parent_past_session_id||0))||
+      (problemYear(attempt.problem_id)===Number(session.year)&&String(attempt.date)>=String(session.date))))
+    .sort((a,b)=>String(a.date).localeCompare(String(b.date))||a.id-b.id);
+  const byProblem=new Map<string,Attempt>();
+  for(const attempt of candidates){
+    const current=byProblem.get(attempt.problem_id);
+    if(!current||existingIds.has(attempt.id)&&!existingIds.has(current.id))byProblem.set(attempt.problem_id,attempt);
+  }
+  const selectedAttempts=selected.map(id=>byProblem.get(id)).filter((row):row is Attempt=>!!row);
+  const calibrationAttempts=(session.questions||[]).map(row=>row.problemId||"").filter(id=>id&&!selectedSet.has(id))
+    .map(id=>byProblem.get(id)).filter((row):row is Attempt=>!!row);
+  const questions=(session.questions||[]).map(question=>{
+    const attempt=question.problemId?byProblem.get(question.problemId):undefined;
+    if(!attempt)return question;
+    return {...question,actualScore:Number(attempt.score_numeric),actualMinutes:Number(attempt.time_minutes||0),
+      referenceUsed:Number(attempt.actual_reference_level??attempt.reference_level??0)>0,
+      completed:selectedSet.has(question.problemId||"")};
+  });
+  const selectedSolveMinutes=selectedAttempts.reduce((sum,row)=>sum+Number(row.time_minutes||0),0);
+  const scanMinutes=Number(session.scan_minutes||0),sessionElapsedMinutes=scanMinutes+selectedSolveMinutes;
+  const selectedComplete=selected.length===3&&selectedAttempts.length===3;
+  const allComparable=questions.length===5&&questions.every(row=>row.actualScore!=null);
+  const optimal=allComparable?[...questions].sort((a,b)=>Number(b.actualScore)-Number(a.actualScore)).slice(0,3).map(row=>row.problemId||row.questionLabel):[];
+  const successCount=allComparable?selected.filter(id=>optimal.includes(id)).length:0;
+  const scoreCalibration=questions.filter(row=>row.predictedScore!=null&&row.actualScore!=null).map(row=>({
+    problemId:row.problemId||row.questionLabel,predictedScore:Number(row.predictedScore),actualScore:Number(row.actualScore),
+    error:Number(row.actualScore)-Number(row.predictedScore),
+  }));
+  const latestDate=selectedAttempts.map(row=>row.date).sort().at(-1);
+  const noReference=selectedAttempts.every(row=>Number(row.actual_reference_level??row.reference_level??0)===0&&!row.hint_used);
+  const completedAt=selectedComplete?String(session.attempt_completed_at||`${latestDate||session.date}T23:59:59`):session.attempt_completed_at;
+  const projected:PastSession={...session,questions,initial_selected_problem_ids:selected,
+    linked_attempt_ids:uniqueNumbers([...selectedAttempts,...calibrationAttempts].map(row=>row.id)),
+    selected_timed_attempt_ids:selectedAttempts.map(row=>row.id),counterfactual_calibration_attempt_ids:calibrationAttempts.map(row=>row.id),
+    selected_solve_minutes:selectedSolveMinutes,session_elapsed_minutes:sessionElapsedMinutes,
+    actual_total_minutes:selectedComplete?sessionElapsedMinutes:Number(session.actual_total_minutes||0),
+    selected_answer_count:selectedAttempts.length,attempt_started_at:selectedAttempts.length?session.attempt_started_at||`${selectedAttempts[0].date}T00:00:00`:session.attempt_started_at,
+    attempt_completed_at:completedAt,simulation_completed_at:selectedComplete?session.simulation_completed_at||completedAt:session.simulation_completed_at,
+    exam_score_eligible:selectedComplete&&noReference&&sessionElapsedMinutes<=90,
+    selection_evaluation_eligible:allComparable,selection_evaluation_status:allComparable?"complete":"pending",
+    optimal_selected_problem_ids:allComparable?optimal:session.optimal_selected_problem_ids,
+    optimal_selection_basis:allComparable?"全5問の有効な採点結果による得点上位3問":session.optimal_selection_basis,
+    selection_success_count:allComparable?successCount:undefined,selection_target_count:allComparable?3:undefined,
+    selection_success_rate:allComparable?successCount/3:null,score_calibration:scoreCalibration,
+    analysis_status:session.analysis?"completed":session.analysis_status||"not_started"};
+  return {...projected,session_state:derivePastExamSessionState(projected)};
+}
 
 export type PastExamYearCandidate={
   year:number;rows:ExamReferenceCatalogItem[];eligibleRows:ExamReferenceCatalogItem[];
@@ -199,8 +269,11 @@ export function derivePastExamWorkspace(args:{
   const effectiveType:PastExamTaskType=taskType==="clean_scan5"&&!year.cleanScanEligible?"practice_scan5":taskType;
   const chosenType=active?pastExamSessionPurpose(active):effectiveType;
   const prior=candidates.filter(row=>row.year<year.year&&row.exposedCount>0).sort((a,b)=>b.year-a.year)[0];
+  const completedPrior=canonicalSessions.filter(row=>derivePastExamSessionState(row)==="completed"&&row.year<year.year)
+    .sort((a,b)=>b.year-a.year||String(b.attempt_completed_at||b.date).localeCompare(String(a.attempt_completed_at||a.date)))[0];
   const selectedYearReason=active?.selected_year_reason||[
-    prior?`${prior.year}年は${prior.exposedCount}/${prior.eligibleRows.length}問が既露出のためclean選題測定には使わない`:"より古い利用可能年度にclean候補なし",
+    completedPrior?`${completedPrior.year}年の本番型sessionが完了したため次の測定へ進む`:
+      prior?`${prior.year}年は${prior.exposedCount}/${prior.eligibleRows.length}問が既露出のためclean選題測定には使わない`:"より古い利用可能年度にclean候補なし",
     `${year.year}年は${year.exposedCount}/${year.eligibleRows.length}問露出で、clean選題証拠を取得できるため`,
     "2024/2025はsimulation保護を維持",
   ].join("。 ");

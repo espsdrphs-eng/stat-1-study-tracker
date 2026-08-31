@@ -66,6 +66,21 @@ test("PastExamSession identityは内部anchor problemの変更に依存しない
     currentActionFingerprint({...base,problem_id:"PY-2018-Q5"}));
 });
 
+test("未完了2018は次年度をblockし、completed後だけ理由付き2019候補へ進む",()=>{
+  const exposureOverrides=Object.fromEntries([2016,2017].flatMap(year=>[1,2,3,4,5].map(n=>[`PY-${year}-Q${n}`,"fully_attempted"])));
+  const catalog=buildPastExamCatalog({record:source,sessions:[],attempts:[],exposureOverrides});
+  const base={id:18,year:2018,date:"2026-08-30",session_type:"scan5",session_kind:"selected_three_timed",
+    session_purpose:"timed_three_question_session",scan_minutes:10,
+    selected_year_reason:"2018は完全未見でclean選題を測れるため",
+    questions:[1,2,3,4,5].map(n=>({problemId:`PY-2018-Q${n}`,questionLabel:`問${n}`,completed:false}))};
+  const blocked=derivePastExamWorkspace({catalog,attempts:[],pastSessions:[base],today:"2026-08-31",daysRemaining:76});
+  assert.equal(blocked.recommended.year,2018);
+  const completed={...base,attempt_completed_at:"2026-08-31T23:59:59",simulation_completed_at:"2026-08-31T23:59:59",
+    session_state:"completed",questions:base.questions.map((row,index)=>({...row,completed:index<3,actualScore:index<3?50-index*5:null}))};
+  const next=derivePastExamWorkspace({catalog,attempts:[],pastSessions:[completed],today:"2026-09-01",daysRemaining:75});
+  assert.equal(next.recommended.year,2019);assert.match(next.recommended.selectedYearReason,/2018.*2019/);
+});
+
 test("2024/2025は通常trainingから保護し最終simulationだけで選択可能",()=>{
   const catalog=buildPastExamCatalog({record:source,sessions:[],attempts:[],exposureOverrides:{}});
   const training=buildPastExamYearCandidates({catalog,attempts:[],pastSessions:[],today:"2026-08-27",daysRemaining:80});

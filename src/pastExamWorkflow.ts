@@ -38,6 +38,41 @@ export class Scan5ImportValidationError extends Error{
   }
 }
 
+export class Scan5ImportParseError extends Error{
+  stage:"yaml_parse"|"wrong_nesting"|"rubric_absent"|"rubric_unsupported"|"schema";
+  constructor(stage:Scan5ImportParseError["stage"],message:string){super(message);this.name="Scan5ImportParseError";this.stage=stage}
+}
+
+const SCAN5_UPDATE_FIELDS=new Set([
+  "session_id","date","session_kind","stage","good_decisions","bad_decisions","primary_selection_error",
+  "calibration_findings","next_selection_rule","next_scan_focus","candidate_review_problem_id",
+  "candidate_review_reason","grading_confidence","rubric_version",
+]);
+
+/**
+ * Accept typography introduced by rich-text copy/paste without rewriting quotes
+ * inside prose. Only quote pairs that start a YAML scalar are normalized.
+ */
+export function normalizeScan5YamlQuotes(text:string){
+  let normalized=false;
+  const value=text.split(/\r?\n/).map(line=>{
+    const colon=line.indexOf(":");
+    const valueStart=colon>=0?colon+1:/^\s*-\s*/.exec(line)?.[0].length??-1;
+    if(valueStart<0)return line;
+    const prefix=line.slice(0,valueStart),raw=line.slice(valueStart);
+    const leading=raw.match(/^\s*/)?.[0]||"",body=raw.slice(leading.length);
+    const pairs:Record<string,string>={"“":"”","‘":"’","＂":"＂"};
+    const closing=pairs[body[0]];
+    if(!closing)return line;
+    const close=body.lastIndexOf(closing);
+    if(close<=0)return line;
+    const quote=body[0]==="‘"?"'":"\"";
+    normalized=true;
+    return `${prefix}${leading}${quote}${body.slice(1,close)}${quote}${body.slice(close+1)}`;
+  }).join("\n");
+  return {text:value,normalized};
+}
+
 const list=(value:unknown)=>Array.isArray(value)?value.map(String).filter(Boolean):String(value||"").split(/[;,、\s]+/).map(row=>row.trim()).filter(Boolean);
 const nullableNumber=(value:unknown)=>value===""||value==null?null:Number.isFinite(Number(value))?Number(value):null;
 const bool=(value:unknown)=>value===true||value===1||value==="true";
@@ -128,7 +163,9 @@ export function sessionStudyMinutes(session:PastSession,linkedAttempts:Array<{id
 export function scanMetrics(session:PastSession){
   const questions=session.questions||[],solved=questions.filter(row=>row.completed);
   const assessedType=solved.filter(row=>row.typeJudgmentCorrect!=null),assessedStep=solved.filter(row=>row.firstStepCorrect!=null);
-  const scoreDiff=solved.filter(row=>row.actualScore!=null&&row.predictedScore!=null).map(row=>Number(row.actualScore)-Number(row.predictedScore));
+  // Counterfactual non-selected scores calibrate pre-scan score prediction,
+  // but never become selected timed answers or session time.
+  const scoreDiff=questions.filter(row=>row.actualScore!=null&&row.predictedScore!=null).map(row=>Number(row.actualScore)-Number(row.predictedScore));
   const timeDiff=solved.filter(row=>row.actualMinutes!=null&&row.predictedMinutes!=null).map(row=>Number(row.actualMinutes)-Number(row.predictedMinutes));
   return {selectionSuccessRate:selectionSuccessRate(session),typeIdentificationAccuracy:assessedType.length?Math.round(assessedType.filter(row=>row.typeJudgmentCorrect).length/assessedType.length*100):null,
     firstStepAccuracy:assessedStep.length?Math.round(assessedStep.filter(row=>row.firstStepCorrect).length/assessedStep.length*100):null,
@@ -157,17 +194,38 @@ export function buildScan5Prompt(session:PastSession,daysRemaining:number,metric
 }
 
 export function parseScan5Update(text:string):Record<string,unknown>{
-  const fenced=text.match(/```(?:yaml|yml)?\s*([\s\S]*?)```/i)?.[1]||text;
-  const parsed=yaml.load(fenced) as Record<string,unknown>||{};const row=(parsed.scan_update||parsed) as Record<string,unknown>;
-  if(String(row.rubric_version)!==SCAN5_RUBRIC_VERSION)throw new Error(`scan5専用rubric ${SCAN5_RUBRIC_VERSION} が必要です`);
+  const fenced=(text.match(/```(?:yaml|yml)?\s*([\s\S]*?)```/i)?.[1]||text).trim();
+  const compatible=normalizeScan5YamlQuotes(fenced);
+  let parsed:Record<string,unknown>;
+  try{parsed=(yaml.load(compatible.text) as Record<string,unknown>)||{}}
+  catch(error){throw new Scan5ImportParseError("yaml_parse",`SCAN5分析のYAMLを読み込めませんでした。${error instanceof Error?error.message:"構文を確認してください"}`)}
+  let row:Record<string,unknown>;
+  let indentRepaired=false;
+  if(parsed.scan_update&&typeof parsed.scan_update==="object")row=parsed.scan_update as Record<string,unknown>;
+  else if(parsed.scan_update==null&&Object.keys(parsed).some(key=>SCAN5_UPDATE_FIELDS.has(key))){
+    const unknown=Object.keys(parsed).filter(key=>key!=="scan_update"&&!SCAN5_UPDATE_FIELDS.has(key));
+    if(unknown.length)throw new Scan5ImportParseError("wrong_nesting",`scan_update以下のindentを確認してください。未知の項目：${unknown.join("、")}`);
+    row=Object.fromEntries(Object.entries(parsed).filter(([key])=>key!=="scan_update"));indentRepaired=true;
+  }else if(!Object.prototype.hasOwnProperty.call(parsed,"scan_update"))row=parsed;
+  else throw new Scan5ImportParseError("wrong_nesting","scan_update以下のindentが正しくありません。");
+  if(row.rubric_version==null||String(row.rubric_version).trim()==="")
+    throw new Scan5ImportParseError("rubric_absent",`rubric_versionがありません。${SCAN5_RUBRIC_VERSION}を指定してください。`);
+  if(String(row.rubric_version)!==SCAN5_RUBRIC_VERSION)
+    throw new Scan5ImportParseError("rubric_unsupported",`rubric_version ${String(row.rubric_version)} は未対応です。${SCAN5_RUBRIC_VERSION}を使用してください。`);
   const rawValue=String(row.primary_selection_error??"").trim();
   const formal=(PRIMARY_SELECTION_ERRORS as readonly string[]).includes(rawValue)?rawValue as PrimarySelectionError:undefined;
   const alias=PRIMARY_SELECTION_ERROR_ALIASES[rawValue as keyof typeof PRIMARY_SELECTION_ERROR_ALIASES];
   if(!formal&&!alias)throw new Scan5ImportValidationError({fieldName:"primary_selection_error",receivedValue:rawValue,
     allowedValues:[...PRIMARY_SELECTION_ERRORS]});
   const normalized=formal||alias,logs:Scan5ImportNormalizationLog[]=[];
+  if(compatible.normalized)logs.push({rawValue:"typographic_quotes",normalizedValue:"yaml_delimiters",fieldName:"input_quotes",rubricVersion:SCAN5_RUBRIC_VERSION,timestamp:new Date().toISOString()});
+  if(indentRepaired)logs.push({rawValue:"flat_scan_update",normalizedValue:"scan_update",fieldName:"scan_update_indent",rubricVersion:SCAN5_RUBRIC_VERSION,timestamp:new Date().toISOString()});
   if(alias)logs.push({rawValue,normalizedValue:alias,fieldName:"primary_selection_error",rubricVersion:SCAN5_RUBRIC_VERSION,timestamp:new Date().toISOString()});
-  return {...row,primary_selection_error:normalized,raw_primary_selection_error:rawValue,
+  const rawConfidence=nullableNumber(row.grading_confidence);
+  if(row.grading_confidence!=null&&(rawConfidence==null||rawConfidence<0||rawConfidence>100))
+    throw new Scan5ImportParseError("schema","grading_confidenceは0〜1または0〜100で指定してください。");
+  const gradingConfidence=rawConfidence==null?null:rawConfidence>1?rawConfidence/100:rawConfidence;
+  return {...row,primary_selection_error:normalized,raw_primary_selection_error:rawValue,grading_confidence:gradingConfidence,
     import_normalization_logs:logs,rubric_version:SCAN5_RUBRIC_VERSION};
 }
 

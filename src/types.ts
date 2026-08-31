@@ -299,6 +299,12 @@ export type PastSession = Record<string, unknown> & {
     classification:"clean"|"practice";exposed_problem_ids:string[];total_problem_count:number;captured_at:string;
   };
   selected_year_reason?:string;superseded_by_session_id?:number;superseded_reason?:string;
+  /** Current-evidence projection. Raw Attempts and duplicate session rows remain unchanged. */
+  session_alias_ids?:number[];selected_timed_attempt_ids?:number[];counterfactual_calibration_attempt_ids?:number[];
+  selected_solve_minutes?:number;session_elapsed_minutes?:number;selected_answer_count?:number;
+  selection_evaluation_status?:"pending"|"complete";selection_success_count?:number;selection_target_count?:number;
+  selection_success_rate?:number|null;score_calibration?:Array<{problemId:string;predictedScore:number;actualScore:number;error:number}>;
+  analysis_status?:"not_started"|"pending"|"completed"|"invalid";
 };
 export type Task = {
   id?:number; problem_id:string; title:string; kind:string; reason:string; mode:string;

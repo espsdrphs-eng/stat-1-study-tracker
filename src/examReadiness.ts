@@ -174,7 +174,7 @@ export function calculateExamReadinessMetrics(args: {
   return {
     unseenScoreRate: scoreAverage(transferAttempts),
     timedCompletionRate: timedAttempts.length+timedSessions.length ? Math.round((timedSuccesses.length+timedSessionSuccesses.length) / (timedAttempts.length+timedSessions.length) * 100) : null,
-    selectionSuccessRate: scanScores.length ? Math.round(scanScores.reduce((sum, value) => sum + value, 0) / scanScores.length * 100) : null,
+    selectionSuccessRate: scanScores.length ? Math.round(scanScores.reduce((sum, value) => sum + value, 0) / scanScores.length) : null,
     pastExamScoreRate: pastExamAttempts.length||pastSessionScores.length?Math.round(([...pastExamAttempts.map(attempt=>Number(attempt.score_numeric||0)),...pastSessionScores].reduce((sum,value)=>sum+value,0))/(pastExamAttempts.length+pastSessionScores.length)):null,
     kRecurrenceRate: kDenominator ? Math.round([...kGroups.values()].filter(count => count >= 2).length / kDenominator * 100) : null,
     repeatedWRate: wDenominator ? Math.round([...wGroups.values()].filter(count => count >= 2).length / wDenominator * 100) : null,
