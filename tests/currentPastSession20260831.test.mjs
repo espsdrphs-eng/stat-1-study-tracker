@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import "fake-indexeddb/auto";
 
-const {db,localGet,localPost}=await import("../src/localDb.ts");
+const {db,exportBackup,localGet,localPost,restoreBackup}=await import("../src/localDb.ts");
 
 const questions=Array.from({length:5},(_,index)=>({
   problemId:`PY-2018-Q${index+1}`,questionLabel:`問${index+1}`,
@@ -68,4 +68,14 @@ rubric_version: “STAT1-SCAN5-v1”`});
     JSON.stringify(live.masterStatus.integrity_summary.activeCategories));
   assert.equal(live.masterStatus.integrity_summary.plannerPolicyViolationCount,0,
     JSON.stringify(live.masterStatus.integrity_summary.activeCategories));
+});
+
+test("JSON restoreは当日のstale planだけを破棄してcurrent projectionを再生成可能にする",async()=>{
+  await localGet("/api/bootstrap");
+  const today=new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Tokyo",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
+  const key=`today-plan-snapshot:${today}`;
+  await db.meta.put({key,value:JSON.stringify({date:today,task_ids:["stale"],tasks:[{problem_id:"PY-2018-Q1"}]})});
+  const backup=await exportBackup();
+  await restoreBackup(backup);
+  assert.equal(await db.meta.get(key),undefined);
 });

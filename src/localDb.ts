@@ -3774,6 +3774,10 @@ export async function restoreBackup(data:any){
     if(Array.isArray(data.problemAliases)) await db.problemAliases.bulkAdd(data.problemAliases);
     if(Array.isArray(data.importLogs)) await db.importLogs.bulkAdd(data.importLogs);
     if(Array.isArray(data.meta)) await db.meta.bulkPut(data.meta);
+    // A restore changes the current source state. Keep historical day plans, but
+    // never let a pre-restore/stale plan for today override the reconciled
+    // PastExamSession and Review projections on the next bootstrap.
+    await db.meta.delete(`today-plan-snapshot:${todayString()}`);
     await db.meta.put({key:"seeded",value:"1"});
   });
   // Restore only writes source records. Rebuild the current projection through
