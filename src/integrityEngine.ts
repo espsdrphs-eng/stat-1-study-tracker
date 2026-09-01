@@ -14,7 +14,7 @@ import {canonicalAttemptId,logicalReviewKey,reviewExecutionMessage,reviewExecuti
 import {resolveSemanticReviewGeneration} from "./reviewGeneration.ts";
 import {WHOLE_ANSWER_DIAGNOSTIC_VERSION,wholeAnswerDiagnosticIssues} from "./wholeAnswerDiagnostic.ts";
 import {reviewDueState} from "./todayLearningPolicy.ts";
-import {derivePastExamSessionState,pastExamSessionKey,pastExamSessionPurpose,stablePastExamSessionKey} from "./pastExamPlanning.ts";
+import {buildPastExamYearCandidates,canonicalizePastExamSessions,derivePastExamSessionState,pastExamSessionKey,pastExamSessionPurpose,reconcilePastExamSessionEvidence,selectPastExamYear,stablePastExamSessionKey,type PastExamTaskType} from "./pastExamPlanning.ts";
 import {deriveFailureEpisode} from "./failureEpisode.ts";
 
 export const ACTIVE_REVIEW_STATUSES = new Set(["pending", "overdue"]);
@@ -157,6 +157,12 @@ export type IntegrityCategory =
   | "whitebook_match_low_confidence_required" | "old_review_suppressing_past_exam"
   | "dashboard_today_action_mismatch" | "duplicate_root_weakness_targets" | "year_selection_reason_missing"
   | "future_exam_practice_share_below_target" | "missing_timed_session"
+  | "attempt_evidence_not_reflected_in_session" | "completed_session_rescheduled_as_active"
+  | "completed_session_answer_count_mismatch" | "session_attempt_score_mismatch"
+  | "session_attempt_minutes_mismatch" | "selected_and_calibration_attempts_mixed"
+  | "stale_today_snapshot_overrode_canonical_state" | "dashboard_session_projection_mismatch"
+  | "analysis_blocking_session_completion" | "manual_duplicate_learning_fact"
+  | "too_many_session_repairs_required" | "next_session_created_before_previous_terminal"
   | "coach_update_parse_failed" | "coach_update_schema_invalid" | "coach_diff_generated_from_invalid_update";
 
 export type IntegrityIssue = {
@@ -224,6 +230,61 @@ export function runIntegrityAudit(args: {
   const reconciliation=analyzeReviewReconciliation({attempts,reviews,aliases,today,todayPlanSnapshots});
   const stableTargets=buildStableTargetIndex({attempts,reviews,aliases});
   const problemById=new Map(problems.map(problem=>[resolveCanonicalProblemId(problem.problem_id,aliases),problem]));
+  const canonicalPastSessions=canonicalizePastExamSessions(pastSessions).current
+    .map(session=>reconcilePastExamSessionEvidence(session,attempts,session.session_alias_ids));
+
+  for(const session of canonicalPastSessions){
+    const state=derivePastExamSessionState(session),selectedIds=new Set(session.selected_timed_attempt_ids||[]),
+      calibrationIds=new Set(session.counterfactual_calibration_attempt_ids||[]);
+    if([...selectedIds].some(id=>calibrationIds.has(id)))issues.push({category:"selected_and_calibration_attempts_mixed",severity:"active",
+      attemptIds:[...selectedIds].filter(id=>calibrationIds.has(id)),detail:`Session ${session.id} mixes selected and calibration Attempt roles`,repairable:true});
+    if(state==="completed"&&Number(session.selected_answer_count||0)!==3)issues.push({category:"completed_session_answer_count_mismatch",severity:"active",
+      attemptIds:[...selectedIds],detail:`Completed session ${session.id} has ${session.selected_answer_count||0}/3 selected answers`,repairable:true});
+    if((session.selected_timed_attempt_ids||[]).length===3&&state!=="completed")issues.push({category:"attempt_evidence_not_reflected_in_session",severity:"active",
+      attemptIds:session.selected_timed_attempt_ids,detail:`Session ${session.id} has three selected graded Attempts but is ${state}`,repairable:true});
+    if((session.selected_timed_attempt_ids||[]).length===3&&session.analysis_status!=="completed"&&state!=="completed")issues.push({
+      category:"analysis_blocking_session_completion",severity:"active",attemptIds:session.selected_timed_attempt_ids,
+      detail:`Session ${session.id} execution is incorrectly blocked by analysis state`,repairable:true});
+    for(const question of session.questions||[]){
+      if(!question.sourceAttemptId||question.actualScoreSource==="manual_override"||question.actualMinutesSource==="manual_override")continue;
+      const attempt=attemptsById.get(question.sourceAttemptId);if(!attempt)continue;
+      if(question.actualScore!==Number(attempt.score_numeric))issues.push({category:"session_attempt_score_mismatch",severity:"active",attemptIds:[attempt.id],
+        detail:`${question.problemId} session score ${question.actualScore} differs from Attempt ${attempt.score_numeric}`,repairable:true});
+      if(question.actualMinutes!==Number(attempt.time_minutes||0))issues.push({category:"session_attempt_minutes_mismatch",severity:"active",attemptIds:[attempt.id],
+        detail:`${question.problemId} session minutes ${question.actualMinutes} differs from Attempt ${attempt.time_minutes}`,repairable:true});
+    }
+  }
+  const unfinishedTimed=canonicalPastSessions.filter(session=>pastExamSessionPurpose(session)==="timed_three_question_session"&&
+    !["completed","deferred","cancelled","invalidated"].includes(derivePastExamSessionState(session)));
+  if(unfinishedTimed.length>1)issues.push({category:"next_session_created_before_previous_terminal",severity:"active",
+    detail:`${unfinishedTimed.length} unfinished timed PastExamSessions coexist`,repairable:true});
+  for(const session of canonicalPastSessions){
+    if(derivePastExamSessionState(session)!=="completed")continue;
+    const hasActiveSamePurpose=canonicalPastSessions.some(row=>row.id!==session.id&&row.year===session.year&&
+      pastExamSessionPurpose(row)===pastExamSessionPurpose(session)&&
+      !["completed","deferred","cancelled","invalidated"].includes(derivePastExamSessionState(row)));
+    const rescheduled=(currentTodayTasks||[]).filter(task=>!task.checked&&Number(task.past_exam_year||0)===session.year&&
+      ["timed_three_question_session","simulation"].includes(String(task.past_exam_task_type||""))&&!hasActiveSamePurpose);
+    if(rescheduled.length){
+      issues.push({category:"completed_session_rescheduled_as_active",severity:"active",
+        detail:`Completed session ${session.id} is still an active Today task`,repairable:true});
+      issues.push({category:"stale_today_snapshot_overrode_canonical_state",severity:"active",
+        detail:`A stale Today snapshot revived completed session ${session.id}`,repairable:true});
+      if(currentNextTask&&rescheduled.includes(currentNextTask))issues.push({category:"dashboard_session_projection_mismatch",severity:"active",
+        detail:`Dashboard Next Action points to completed session ${session.id}`,repairable:true});
+    }
+  }
+  for(const unfinished of unfinishedTimed){
+    const premature=(currentTodayTasks||[]).filter(task=>!task.checked&&Number(task.past_exam_year||0)!==unfinished.year&&
+      ["timed_three_question_session","simulation"].includes(String(task.past_exam_task_type||"")));
+    if(premature.length)issues.push({category:"next_session_created_before_previous_terminal",severity:"active",
+      detail:`Session ${unfinished.id} (${unfinished.year}) is unfinished but ${premature[0].past_exam_year} is active`,repairable:true});
+  }
+  for(const session of canonicalPastSessions){
+    const count=repairCandidates.filter(row=>row.sessionId===session.id&&row.required).length;
+    if(count>2)issues.push({category:"too_many_session_repairs_required",severity:"active",
+      detail:`Session ${session.id} promoted ${count} required repairs`,repairable:false});
+  }
 
   const activeSessionGroups=new Map<string,PastSession[]>();
   for(const session of pastSessions.filter(row=>!row.superseded_by_session_id&&
@@ -391,11 +452,14 @@ export function runIntegrityAudit(args: {
     const sessionKeys=sessions.map(row=>row.stableSessionKey).filter(Boolean);
     if(new Set(sessionKeys).size!==sessionKeys.length)issues.push({category:"duplicate_past_exam_session",severity:"active",
       detail:"rolling plan contains duplicate stable PastExamSession identities",repairable:false});
-    const cleanYears=[...new Set((args.pastExamCatalog||[]).filter(row=>!row.simulationProtected&&row.exposure==="unseen")
-      .map(row=>row.year))].filter(year=>(args.pastExamCatalog||[]).filter(row=>row.year===year&&row.exposure==="unseen").length>=5).sort((a,b)=>a-b);
     const firstSession=tasks.find(row=>["clean_scan5","timed_three_question_session"].includes(String(row.pastExamTaskType||"")));
-    if(remaining<=80&&cleanYears.length&&firstSession?.pastExamYear!==cleanYears[0])issues.push({category:"clean_scan_year_skipped",severity:"active",
-      detail:`clean year ${cleanYears[0]} was skipped for ${firstSession?.pastExamYear||"no session"}`,repairable:false});
+    const expectedCleanYear=selectPastExamYear({
+      candidates:buildPastExamYearCandidates({catalog:args.pastExamCatalog||[],attempts,pastSessions:canonicalPastSessions,
+        today,daysRemaining:remaining}),
+      taskType:(firstSession?.pastExamTaskType||"timed_three_question_session") as PastExamTaskType,
+    })?.year;
+    if(remaining<=80&&expectedCleanYear&&firstSession?.pastExamYear!==expectedCleanYear)issues.push({category:"clean_scan_year_skipped",severity:"active",
+      detail:`clean year ${expectedCleanYear} was skipped for ${firstSession?.pastExamYear||"no session"}`,repairable:false});
     const genericWhitebook=tasks.filter(row=>horizon.pastExamIsPrimary&&row.kind==="whitebook"&&!row.conceptId);
     if(genericWhitebook.length)issues.push({category:"generic_whitebook_in_past_exam_main",severity:"active",
       detail:`${genericWhitebook.length} whitebook tasks lack past-exam/concept repair evidence`,repairable:false});
@@ -817,6 +881,11 @@ export function runIntegrityAudit(args: {
     "required_whitebook_without_lineage", "whitebook_match_low_confidence_required", "old_review_suppressing_past_exam",
     "dashboard_today_action_mismatch", "duplicate_root_weakness_targets", "year_selection_reason_missing",
     "future_exam_practice_share_below_target", "missing_timed_session",
+    "attempt_evidence_not_reflected_in_session", "completed_session_rescheduled_as_active",
+    "completed_session_answer_count_mismatch", "session_attempt_score_mismatch", "session_attempt_minutes_mismatch",
+    "selected_and_calibration_attempts_mixed", "stale_today_snapshot_overrode_canonical_state",
+    "dashboard_session_projection_mismatch", "analysis_blocking_session_completion", "manual_duplicate_learning_fact",
+    "too_many_session_repairs_required", "next_session_created_before_previous_terminal",
     "coach_update_parse_failed", "coach_update_schema_invalid", "coach_diff_generated_from_invalid_update",
   ];
   const counts = Object.fromEntries(categories.map((category) =>
@@ -826,6 +895,7 @@ export function runIntegrityAudit(args: {
     "whitebook_backlog_suppressing_past_exam","past_exam_share_below_target_due_to_low_value_review",
     "unexecuted_past_session_replaced","duplicate_past_exam_session","required_whitebook_without_lineage",
     "whitebook_match_low_confidence_required","year_selection_reason_missing"
+    ,"completed_session_rescheduled_as_active","next_session_created_before_previous_terminal"
   ]);
   const advisoryCategories=new Set<IntegrityCategory>(["past_exam_share_below_phase_target"]);
   const activeIssues=issues.filter(issue=>issue.severity==="active");

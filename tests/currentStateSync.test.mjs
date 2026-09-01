@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import "fake-indexeddb/auto";
 import {buildGradingContractSnapshot,repairTargets} from "../src/gradingContract.ts";
 import {analyzeReviewReconciliation} from "../src/reviewReconciliation.ts";
-import {attemptModeSatisfiesTask,deriveCurrentTodayState,projectTodayTaskChecked,qualifyingAttemptForTodayTask} from "../src/todayTaskProjection.ts";
+import {attemptModeSatisfiesTask,deriveCurrentTodayState,projectTodayTaskChecked,qualifyingAttemptForTodayTask,qualifyingPastSessionForTodayTask} from "../src/todayTaskProjection.ts";
 import {runIntegrityAudit} from "../src/integrityEngine.ts";
 
 const problem=(problemId)=>({id:1,problem_id:problemId,source_type:"whitebook",category:"A",chapter:5,problem_number:28,
@@ -88,6 +88,20 @@ test("Today projection requires task mode, creation time, and exact Review contr
   const reviewAttempt={...attempt,mode:"check",source_review_id:364,generated_from_review_id:364,contract_hash:"hash",
     graded_part_ids:["A"],graded_findings:[{graded_part_id:"A",error_type:"N",evidence:"N",resolved:false}]};
   assert.equal(projectTodayTaskChecked({task:reviewTask,attempts:[reviewAttempt],snapshot}),true);
+});
+
+test("completed PastExamSessionは日付をまたいだ旧stable keyのToday taskを完了扱いにする",()=>{
+  const task={problem_id:"PY-2018-Q1",title:"2018年 本番型session",kind:"得点形成",reason:"timed",mode:"exam_90min",
+    minutes:90,load:1,past_exam_task_type:"timed_three_question_session",past_exam_year:2018,
+    stable_session_key:"past_exam_session:2026-08-30:2018:timed_three_question_session:1"};
+  const snapshot={date:"2026-09-01",task_ids:[],start_of_day_planned_minutes:90,initial_bucket:{},initial_estimated_minutes:{},
+    tasks:[task],created_at:"2026-09-01T00:00:00Z"};
+  const pastSession={id:3,year:2018,date:"2026-08-30",session_type:"scan5",session_kind:"selected_three_timed",
+    session_purpose:"timed_three_question_session",session_instance_id:"session-1",session_ordinal:1,scan_minutes:10,
+    actual_total_minutes:90,attempt_completed_at:"2026-08-31T23:59:59",session_state:"completed",
+    questions:[1,2,3,4,5].map((q,index)=>({problemId:`PY-2018-Q${q}`,questionLabel:`問${q}`,completed:[0,2,4].includes(index)}))};
+  assert.equal(qualifyingPastSessionForTodayTask({task,pastSessions:[pastSession],snapshot})?.id,3);
+  assert.equal(projectTodayTaskChecked({task,attempts:[],pastSessions:[pastSession],snapshot}),true);
 });
 
 test("integrity audit rejects an unprojected completed Today task and accepts the canonical projection",()=>{

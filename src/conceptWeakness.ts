@@ -3,7 +3,7 @@ import type {
   PastSession, Problem, Review, WeakNote
 } from "./types.ts";
 import type { StoredExamReferencePack } from "./examReferencePack.ts";
-import { canonicalPastExamProblemId } from "./examReferencePack.ts";
+import { canonicalPastExamProblemId,resolvePastExamProblemId } from "./examReferencePack.ts";
 import { planningErrorsForSource } from "./legacyKPolicy.ts";
 import { reviewExecutionState } from "./integrityEngine.ts";
 import {deriveFailureEpisode} from "./failureEpisode.ts";
@@ -182,11 +182,18 @@ export function buildPastExamRepairCandidates(args:{
     linksByPast.set(key,unique([...(linksByPast.get(key)||[]),link.resolved_whitebook_problem_id]));
   }
   const weakness=new Map(args.conceptWeaknesses.map(row=>[row.conceptId,row]));
-  const candidates:PastExamRepairCandidate[]=[];
+  const candidates:PastExamRepairCandidate[]=[],selectedBySession=new Map<number,Set<string>>(),
+    selectedAttemptsBySession=new Map<number,Set<number>>();
   for(const session of args.sessions){
     if(session.session_kind==="scan_only")continue;
     const linked=new Set((session.linked_attempt_ids||[]).map(Number));
-    const attempts=args.attempts.filter(attempt=>linked.has(attempt.id)||attempt.parent_past_session_id===session.id);
+    const selected=new Set((session.final_selected_problem_ids?.length?session.final_selected_problem_ids:session.initial_selected_problem_ids||[])
+      .map(value=>resolvePastExamProblemId(session.year,value)));
+    selectedBySession.set(session.id,selected);
+    selectedAttemptsBySession.set(session.id,new Set(session.selected_timed_attempt_ids||[]));
+    const attempts=args.attempts.filter(attempt=>linked.has(attempt.id)||attempt.parent_past_session_id===session.id)
+      .sort((left,right)=>Number(selected.has(canonicalPastExamProblemId(right.problem_id)))-
+        Number(selected.has(canonicalPastExamProblemId(left.problem_id)))||Number(left.score_numeric??100)-Number(right.score_numeric??100)||left.id-right.id);
     for(const attempt of attempts){
       if(!errorValues(attempt).length)continue;
       const sourceProblemId=canonicalPastExamProblemId(attempt.problem_id);
@@ -227,8 +234,12 @@ export function buildPastExamRepairCandidates(args:{
     }
   }
   const dedup=new Map<string,PastExamRepairCandidate>();
-  for(const row of candidates){
-    const key=`${row.sessionId}|${row.sourceProblemId}|${row.rootWeaknessId||row.conceptId}`;
+  const selectedEvidence=(row:PastExamRepairCandidate)=>selectedAttemptsBySession.get(row.sessionId)?.has(row.sourceAttemptId)||
+    selectedBySession.get(row.sessionId)?.has(row.sourceProblemId);
+  for(const row of candidates.sort((left,right)=>Number(right.required)-Number(left.required)||
+    Number(selectedEvidence(right))-Number(selectedEvidence(left))||
+    Number(left.sourceAttemptId)-Number(right.sourceAttemptId))){
+    const key=`${row.sessionId}|${row.conceptId}`;
     if(!dedup.has(key)&&[...dedup.values()].filter(item=>item.sessionId===row.sessionId).length<2)dedup.set(key,row);
   }
   return [...dedup.values()];

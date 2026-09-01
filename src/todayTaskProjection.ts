@@ -2,7 +2,7 @@ import type {Attempt,PastSession,ProblemAlias,Task,TodayPlanSnapshot} from "./ty
 import {resolveCanonicalProblemId} from "./examReadiness.ts";
 import {summarizeTodayTime} from "./todayPlan.ts";
 import {prioritizeCurrentTodayTasks} from "./todayLearningPolicy.ts";
-import {pastExamSessionKey} from "./pastExamPlanning.ts";
+import {pastExamSessionKey,pastExamSessionPurpose} from "./pastExamPlanning.ts";
 
 const scanModes=new Set(["scan","scan5","scan_only"]);
 
@@ -51,16 +51,25 @@ export function qualifyingAttemptForTodayTask(args:{
     .sort((left,right)=>right.id-left.id)[0];
 }
 
-export function qualifyingPastSessionForTodayTask(args:{task:Task;pastSessions?:PastSession[];snapshot:TodayPlanSnapshot}){
+export function matchingPastSessionForTodayTask(args:{task:Task;pastSessions?:PastSession[];snapshot:TodayPlanSnapshot}){
   if(!args.task.past_exam_task_type)return undefined;
-  const matching=(args.pastSessions||[]).filter(session=>session.date===args.snapshot.date&&
-    Number(session.year||0)===Number(args.task.past_exam_year||0)&&
-    (!args.task.stable_session_key||pastExamSessionKey(session)===args.task.stable_session_key));
+  const sameYear=(args.pastSessions||[]).filter(session=>Number(session.year||0)===Number(args.task.past_exam_year||0));
+  const exact=args.task.stable_session_key?sameYear.filter(session=>pastExamSessionKey(session)===args.task.stable_session_key):[];
+  const expectedPurposes=args.task.past_exam_task_type==="clean_scan5"||args.task.past_exam_task_type==="practice_scan5"?
+    new Set(["clean_scan5","practice_scan5"]):new Set([args.task.past_exam_task_type]);
+  const semantic=sameYear.filter(session=>expectedPurposes.has(pastExamSessionPurpose(session)))
+    .sort((left,right)=>String(right.attempt_completed_at||right.date).localeCompare(String(left.attempt_completed_at||left.date))||right.id-left.id);
+  return (exact.length?exact:semantic)[0];
+}
+
+export function qualifyingPastSessionForTodayTask(args:{task:Task;pastSessions?:PastSession[];snapshot:TodayPlanSnapshot}){
+  const session=matchingPastSessionForTodayTask(args);
+  if(!session)return undefined;
   if(args.task.past_exam_task_type==="clean_scan5"||args.task.past_exam_task_type==="practice_scan5")
-    return matching.find(session=>Number(session.scan_minutes||0)>0);
+    return Number(session.scan_minutes||0)>0?session:undefined;
   if(args.task.past_exam_task_type==="timed_three_question_session"||args.task.past_exam_task_type==="simulation")
-    return matching.find(session=>session.session_kind==="selected_three_timed"&&
-      Number(session.actual_total_minutes||0)>0&&(session.questions||[]).filter(row=>row.completed).length===3);
+    return session.session_kind==="selected_three_timed"&&
+      Number(session.actual_total_minutes||0)>0&&(session.questions||[]).filter(row=>row.completed).length===3?session:undefined;
   return undefined;
 }
 

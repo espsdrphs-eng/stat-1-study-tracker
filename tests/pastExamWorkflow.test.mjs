@@ -19,6 +19,14 @@ test("initial and final selections are stored separately",()=>{
   assert.deepEqual(row.final_selected_problem_ids,["PY-2024-Q1","PY-2024-Q2","PY-2024-Q4"]);
 });
 
+test("sessionの問ラベルは唯一のresolverでcanonical problem_idへ正規化する",()=>{
+  const row=normalizePastExamSession({session_kind:"selected_three_timed",date:"2026-08-30",year:2018,
+    questions:Array.from({length:5},(_,index)=>({questionLabel:`問${index+1}`,selected:[0,2,4].includes(index)})),
+    initial_selected_problem_ids:["問1","問3","問5"]});
+  assert.deepEqual(row.questions.map(question=>question.problemId),["PY-2018-Q1","PY-2018-Q2","PY-2018-Q3","PY-2018-Q4","PY-2018-Q5"]);
+  assert.deepEqual(row.initial_selected_problem_ids,["PY-2018-Q1","PY-2018-Q3","PY-2018-Q5"]);
+});
+
 const questions=()=>Array.from({length:5},(_,i)=>({problemId:`PY-2024-Q${i+1}`,questionLabel:`問${i+1}`,predictedType:"尤度",firstStep:"尤度を書く",predictedScore:20-i,predictedMinutes:25+i,sinkRisk:i===4?"high":"low",selected:i<3,selectionReason:"得点可能",plannedOrder:i<3?i+1:null,actualScore:null,actualMinutes:null,typeJudgmentCorrect:null,firstStepCorrect:null,sank:null,hintUsed:false,referenceUsed:false,completed:false}));
 const session=(kind="scan_only",patch={})=>normalizePastExamSession({session_kind:kind,date:"2026-07-22",year:2024,stage:"discrimination",scan_set_source:"past_exam_year",scan_minutes:10,questions:questions(),...patch});
 
@@ -70,6 +78,38 @@ test("2018 selected_three_timedへ翌日の5 Attemptを役割別に照合し90�
   assert.deepEqual(result.score_calibration.map(row=>row.error),[-4,4,-30,12,-28]);
   assert.equal(scanMetrics(result).predictedScoreDifference,-9);
   assert.equal(result.analysis_status,"not_started");assert.equal(result.questions.filter(row=>row.completed).length,3);
+  assert.deepEqual(result.questions.slice(0,3).map(row=>row.sourceAttemptId),[236,239,237]);
+  assert.ok(result.questions.every(row=>row.actualScoreSource==="attempt"&&row.actualMinutesSource==="attempt"));
+});
+
+test("legacy sessionが問ラベルだけでも翌日Attemptから同じcompleted projectionへ収束する",()=>{
+  const legacy=normalizePastExamSession({id:3,year:2018,date:"2026-08-30",session_kind:"selected_three_timed",
+    scan_evidence_kind:"clean",scan_minutes:10,questions:Array.from({length:5},(_,index)=>({
+      questionLabel:`問${index+1}`,selected:[0,2,4].includes(index),predictedScore:[60,20,80,0,60][index],predictedMinutes:20,
+    })),initial_selected_problem_ids:["問1","問3","問5"]});
+  const attempts=[[236,1,56,40],[237,3,50,20],[238,5,32,20],[239,2,24,15],[240,4,12,15]].map(([id,q,score,time])=>({
+    id,problem_id:`PY-2018-Q${q}`,date:"2026-08-31",mode:"full",score_numeric:score,time_minutes:time,
+    mark:"△",score_label:"C",error_type:"W",error_point:"",next_action:"",memo:"",actual_reference_level:0,
+  }));
+  const result=reconcilePastExamSessionEvidence(legacy,attempts);
+  assert.equal(result.session_state,"completed");assert.equal(result.selected_answer_count,3);
+  assert.deepEqual(result.initial_selected_problem_ids,["PY-2018-Q1","PY-2018-Q3","PY-2018-Q5"]);
+  assert.deepEqual(result.questions.filter(row=>row.completed).map(row=>row.actualScore),[56,50,32]);
+  assert.equal(result.selected_solve_minutes,80);assert.equal(result.session_elapsed_minutes,90);
+});
+
+test("explicit manual overrideはAttempt値との競合をprovenance付きで保持する",()=>{
+  const row=normalizePastExamSession({id:3,year:2018,date:"2026-08-30",session_kind:"selected_three_timed",scan_minutes:10,
+    questions:Array.from({length:5},(_,index)=>({questionLabel:`問${index+1}`,selected:index<3,
+      actualScore:index===0?60:null,actualScoreSource:index===0?"manual_override":undefined,
+      actualMinutes:index===0?35:null,actualMinutesSource:index===0?"manual_override":undefined})),
+    initial_selected_problem_ids:["問1","問2","問3"]});
+  const attempts=[1,2,3].map((q,index)=>({id:300+q,problem_id:`PY-2018-Q${q}`,date:"2026-08-31",mode:"full",
+    score_numeric:[56,50,32][index],time_minutes:[40,20,20][index],mark:"△",score_label:"C",error_type:"W",error_point:"",next_action:"",memo:""}));
+  const result=reconcilePastExamSessionEvidence(row,attempts),first=result.questions[0];
+  assert.equal(first.actualScore,60);assert.equal(first.actualMinutes,35);
+  assert.equal(first.actualScoreSource,"manual_override");assert.equal(first.actualMinutesSource,"manual_override");
+  assert.equal(first.attemptScore,56);assert.equal(first.attemptMinutes,40);assert.equal(first.sourceAttemptId,301);
 });
 test("SCAN5プロンプトはprimary_selection_errorの正式enumと型認識不足の扱いを固定する",()=>{const prompt=buildScan5Prompt({...session(),id:4},119);assert.match(prompt,/primary_selection_errorは次の正式値から厳密に1つ/);assert.match(prompt,/problem.*type|type_misclassification/);assert.match(prompt,/問題型を部分的にしか認識できない/)});
 test("primary_selection_errorの正式値は変換せず保存する",()=>{const parsed=parseScan5Update('scan_update:\n  session_id: 1\n  primary_selection_error: "time_underestimate"\n  rubric_version: "STAT1-SCAN5-v1"');assert.equal(parsed.primary_selection_error,"time_underestimate");assert.equal(parsed.import_normalization_logs.length,0)});

@@ -91,6 +91,15 @@ export function canonicalPastExamProblemId(value:string|PastExamReference){
   return match?`PY-${match[1]}-Q${Number(match[2])}`:String(value);
 }
 
+/** One canonical bridge between session labels such as `問1` and Attempt IDs. */
+export function resolvePastExamProblemId(year:number,value:unknown){
+  const raw=String(value||"").trim();
+  const canonical=canonicalPastExamProblemId(raw);
+  if(/^PY-\d{4}-Q\d+$/i.test(canonical))return canonical;
+  const question=raw.match(/(?:^|\s)(?:問|Q)\s*0*(\d+)(?:\s|$)/i)?.[1]||raw.match(/^0*(\d+)$/)?.[1];
+  return question&&Number(year)>0?`PY-${Number(year)}-Q${Number(question)}`:canonical;
+}
+
 function assertObject(value:unknown,name:string):Record<string,unknown>{
   if(!value||typeof value!=="object"||Array.isArray(value))throw new Error(`${name}の形式が正しくありません`);
   return value as Record<string,unknown>;

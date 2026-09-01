@@ -103,3 +103,17 @@ test("root skillを特定できない複数concept問題では章一致Whitebook
   assert.deepEqual(rows[0].whitebookProblemIds,[]);
   assert.match(rows[0].matchReason,/局所補修/);
 });
+
+test("selected threeのmajor weaknessを非選択の較正用Attemptより先に補修候補化する",()=>{
+  const rec=record({data:{...record().data,pastExamProblems:[pastProblem(2021,1,["c1"]),pastProblem(2021,2,["c1"]),
+    pastProblem(2021,3,["c1"]),pastProblem(2021,4,["c1"]),pastProblem(2021,5,["c1"])]}});
+  const attempts=[1,2,3,4,5].map(id=>attempt(id,`PY-2021-Q${id}`,"2026-08-31",{score_numeric:60-id*5,
+    review_outcome:"failed",error_type:"W",error_types:["W"]}));
+  const weaknesses=analyzeConceptWeaknesses({record:rec,problems,attempts,reviews:[],weakNotes:[],today:"2026-09-01"});
+  const session={id:20,year:2021,date:"2026-08-30",session_kind:"selected_three_timed",session_type:"scan5",stage:"calibration",
+    scan_set_source:"past_exam_year",questions:[],linked_attempt_ids:[1,2,3,4,5],selected_timed_attempt_ids:[1,3,5],
+    counterfactual_calibration_attempt_ids:[2,4],initial_selected_problem_ids:["PY-2021-Q1","PY-2021-Q3","PY-2021-Q5"]};
+  const rows=buildPastExamRepairCandidates({record:rec,sessions:[session],attempts,conceptWeaknesses:weaknesses});
+  assert.ok(rows.length<=2);
+  assert.ok(rows.every(row=>[1,3,5].includes(row.sourceAttemptId)),JSON.stringify(rows));
+});

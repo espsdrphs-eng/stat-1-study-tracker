@@ -1,5 +1,6 @@
 import type {Attempt,ConceptWeaknessInsight,ExamReferenceCatalogItem,PastExamSessionPurpose,PastExamSessionState,PastSession} from "./types.ts";
 import {attemptPlanningEligible} from "./legacyKPolicy.ts";
+import {resolvePastExamProblemId} from "./examReferencePack.ts";
 
 export type PastExamTaskType="clean_scan5"|"practice_scan5"|"individual_full"|"timed_three_question_session"|"simulation";
 export type {PastExamSessionState} from "./types.ts";
@@ -105,7 +106,13 @@ const attemptIsUsable=(attempt:Attempt)=>!attempt.invalidated_at&&!attempt.super
 const problemYear=(problemId:string)=>Number(String(problemId).match(/(?:PY-|PE-)(\d{4})/i)?.[1]||0);
 const selectedProblemIds=(session:PastSession)=>{
   const explicit=(session.final_selected_problem_ids?.length?session.final_selected_problem_ids:session.initial_selected_problem_ids)||[];
-  return [...new Set((explicit.length?explicit:(session.questions||[]).filter(row=>row.selected).map(row=>row.problemId||"")).filter(Boolean))];
+  return [...new Set((explicit.length?explicit:(session.questions||[]).filter(row=>row.selected).map(row=>row.problemId||row.questionLabel))
+    .filter(Boolean).map(value=>resolvePastExamProblemId(session.year,value)))];
+};
+
+const addDays=(date:string,days:number)=>{
+  const timestamp=Date.parse(`${date}T12:00:00Z`);
+  return Number.isFinite(timestamp)?new Date(timestamp+days*86400000).toISOString().slice(0,10):date;
 };
 
 /**
@@ -117,29 +124,37 @@ const selectedProblemIds=(session:PastSession)=>{
 export function reconcilePastExamSessionEvidence(session:PastSession,attempts:Attempt[],aliasSessionIds:number[]=[]):PastSession{
   if(session.session_kind!=="selected_three_timed")return {...session,analysis_status:session.analysis?"completed":session.analysis_status||"not_started"};
   const aliases=new Set([session.id,...(session.session_alias_ids||[]),...aliasSessionIds].filter(Boolean));
-  const questionIds=new Set((session.questions||[]).map(row=>row.problemId).filter(Boolean) as string[]);
+  const canonicalQuestions=(session.questions||[]).map((row,index)=>({...row,
+    problemId:resolvePastExamProblemId(session.year,row.problemId||row.questionLabel||`問${index+1}`)}));
+  const questionIds=new Set(canonicalQuestions.map(row=>row.problemId).filter(Boolean) as string[]);
   const selected=selectedProblemIds(session),selectedSet=new Set(selected);
   const existingIds=new Set([...(session.selected_timed_attempt_ids||[]),...(session.counterfactual_calibration_attempt_ids||[]),...(session.linked_attempt_ids||[])]);
-  const candidates=attempts.filter(attempt=>attemptIsUsable(attempt)&&questionIds.has(attempt.problem_id)&&
+  const candidates=attempts.filter(attempt=>attemptIsUsable(attempt)&&questionIds.has(resolvePastExamProblemId(session.year,attempt.problem_id))&&
     (existingIds.has(attempt.id)||aliases.has(Number(attempt.parent_past_session_id||0))||
-      (problemYear(attempt.problem_id)===Number(session.year)&&String(attempt.date)>=String(session.date))))
+      (problemYear(attempt.problem_id)===Number(session.year)&&String(attempt.date)>=String(session.date)&&
+        String(attempt.date)<=addDays(String(session.date),14))))
     .sort((a,b)=>String(a.date).localeCompare(String(b.date))||a.id-b.id);
   const byProblem=new Map<string,Attempt>();
   for(const attempt of candidates){
-    const current=byProblem.get(attempt.problem_id);
-    if(!current||existingIds.has(attempt.id)&&!existingIds.has(current.id))byProblem.set(attempt.problem_id,attempt);
+    const problemId=resolvePastExamProblemId(session.year,attempt.problem_id),current=byProblem.get(problemId);
+    if(!current||existingIds.has(attempt.id)&&!existingIds.has(current.id))byProblem.set(problemId,attempt);
   }
   const selectedAttempts=selected.map(id=>byProblem.get(id)).filter((row):row is Attempt=>!!row);
-  const calibrationAttempts=(session.questions||[]).map(row=>row.problemId||"").filter(id=>id&&!selectedSet.has(id))
+  const calibrationAttempts=canonicalQuestions.map(row=>row.problemId||"").filter(id=>id&&!selectedSet.has(id))
     .map(id=>byProblem.get(id)).filter((row):row is Attempt=>!!row);
-  const questions=(session.questions||[]).map(question=>{
+  const questions=canonicalQuestions.map(question=>{
     const attempt=question.problemId?byProblem.get(question.problemId):undefined;
     if(!attempt)return question;
-    return {...question,actualScore:Number(attempt.score_numeric),actualMinutes:Number(attempt.time_minutes||0),
+    const manualScore=question.actualScoreSource==="manual_override",manualMinutes=question.actualMinutesSource==="manual_override";
+    return {...question,actualScore:manualScore?question.actualScore:Number(attempt.score_numeric),
+      actualMinutes:manualMinutes?question.actualMinutes:Number(attempt.time_minutes||0),
+      actualScoreSource:manualScore?"manual_override" as const:"attempt" as const,
+      actualMinutesSource:manualMinutes?"manual_override" as const:"attempt" as const,
+      sourceAttemptId:attempt.id,attemptScore:Number(attempt.score_numeric),attemptMinutes:Number(attempt.time_minutes||0),
       referenceUsed:Number(attempt.actual_reference_level??attempt.reference_level??0)>0,
       completed:selectedSet.has(question.problemId||"")};
   });
-  const selectedSolveMinutes=selectedAttempts.reduce((sum,row)=>sum+Number(row.time_minutes||0),0);
+  const selectedSolveMinutes=selected.reduce((sum,id)=>sum+Number(questions.find(row=>row.problemId===id)?.actualMinutes||0),0);
   const scanMinutes=Number(session.scan_minutes||0),sessionElapsedMinutes=scanMinutes+selectedSolveMinutes;
   const selectedComplete=selected.length===3&&selectedAttempts.length===3;
   const allComparable=questions.length===5&&questions.every(row=>row.actualScore!=null);

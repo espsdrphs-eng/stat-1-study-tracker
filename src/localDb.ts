@@ -57,6 +57,7 @@ import {buildCoachDiagnosisState, coachPreview, COACH_HISTORY_META_KEY, parseCoa
 import {deriveMasteryByProblem} from "./masteryProjection.ts";
 import {materializeObservedOutOfScopeFindings} from "./outOfScopeObservations.ts";
 import {deriveCurrentTodayProjection} from "./currentTodayProjection.ts";
+import {matchingPastSessionForTodayTask} from "./todayTaskProjection.ts";
 import {resolveSemanticReviewGeneration} from "./reviewGeneration.ts";
 import {classifyFailureStrength,examHorizonPolicy,learningEventKind,masteryLevelForTargets} from "./examOptimizationPolicy.ts";
 import {parseWholeAnswerRediagnosis,WHOLE_ANSWER_DIAGNOSTIC_VERSION,wholeAnswerDiagnosticFingerprint} from "./wholeAnswerDiagnostic.ts";
@@ -1189,6 +1190,9 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     ,exclude_from_recurrence_metrics:excludeWholeAttempt
     ,superseded_by_policy_version:excludeWholeAttempt?LEARNING_POLICY_VERSION:undefined
     ,parent_past_session_id:Number(input.parent_past_session_id||0)||undefined
+    ,past_exam_session_instance_id:String(input.past_exam_session_instance_id||"")||undefined
+    ,session_role:["selected_timed","counterfactual_calibration","individual_transfer"].includes(String(input.session_role||""))?
+      input.session_role as Attempt["session_role"]:undefined
      ,contract_id:input.contract_id,contract_version:input.contract_version,contract_hash:input.contract_hash
      ,semantic_rebind_from_review_id:input.semantic_rebind_from_review_id,semantic_rebind_message:input.semantic_rebind_message
      ,replaces_attempt_id:input.replacement_for_attempt_id
@@ -2949,8 +2953,7 @@ async function bootstrap():Promise<Bootstrap>{
     const forcedMust=review?.triage_override==="must"||record?.triage_override==="must";
     const contract=review?.grading_contract||saved.grading_contract||current?.grading_contract;
     const contractFields=contract?taskFieldsFromContract(contract):{};
-    const matchingPastSession=saved.past_exam_year?pastSessions.find(session=>saved.stable_session_key?
-      pastExamSessionKey(session)===saved.stable_session_key:session.year===saved.past_exam_year&&session.date===today):undefined;
+    const matchingPastSession=saved.past_exam_year?matchingPastSessionForTodayTask({task:saved,pastSessions,snapshot:snapshot!}):undefined;
     const projected={...current,...saved,...(review||{}),...contractFields,
       kind:saved.kind,reason:review&&review.id!==saved.id?"最新の復習状態へ同期":saved.reason,
       title:saved.stable_session_key?saved.title:(pmap.get(saved.problem_id)?.display_label||pmap.get(saved.problem_id)?.title||saved.title),
@@ -3178,7 +3181,8 @@ async function savePastExamSession(body:Record<string,unknown>,existingId?:numbe
       if(!allowedSolved.has(update.problem_id))throw new Error(`解いていない問題 ${update.problem_id} はAttemptとして保存できません`);
       const target=resolveCanonicalProblemId(update.problem_id,aliases);
       const existingAttempt=(await db.attempts.toArray()).find(row=>row.parent_past_session_id===sessionId&&resolveCanonicalProblemId(row.problem_id,aliases)===target);
-      const attemptId=existingAttempt?.id||await saveAttempt({...update,parent_past_session_id:sessionId,date:update.date||normalized.date});
+      const attemptId=existingAttempt?.id||await saveAttempt({...update,parent_past_session_id:sessionId,
+        past_exam_session_instance_id:sessionInstanceId,session_role:"selected_timed",date:update.date||normalized.date});
       if(!linkedIds.includes(attemptId))linkedIds.push(attemptId);
     }
     if(linkedIds.length)await db.pastSessions.update(sessionId,{linked_attempt_ids:linkedIds});

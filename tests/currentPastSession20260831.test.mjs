@@ -60,6 +60,14 @@ rubric_version: “STAT1-SCAN5-v1”`});
   assert.equal(analyzed.analysis_status,"completed");assert.equal(analyzed.analysis.grading_confidence,.99);
   assert.equal(analyzed.analysis.candidate_review_problem_id,"PY-2018-Q3");
 
+  const roundtrip=await exportBackup();
+  await restoreBackup(roundtrip);
+  const restored=await localGet("/api/bootstrap"),restored2018=restored.pastSessions.filter(row=>row.year===2018);
+  assert.equal(restored2018.length,1);assert.equal(restored2018[0].session_state,"completed");
+  assert.equal(restored2018[0].selected_answer_count,3);assert.equal(restored2018[0].selection_success_count,3);
+  assert.deepEqual(restored2018[0].questions.filter(row=>row.completed).map(row=>row.actualScore),[56,50,32]);
+  assert.equal(restored.today.tasks.some(task=>!task.checked&&task.past_exam_year===2018&&task.minutes===90),false);
+
   const second=await localPost("/api/integrity/repair",{});
   assert.equal(second.changes.pastSessionsSuperseded,0);
   assert.ok(first.changes.pastSessionsSuperseded>0);

@@ -66,6 +66,8 @@ export type ScanQuestion = {
   predictedScore:number|null;predictedMinutes:number|null;sinkRisk:"low"|"medium"|"high";
   selected:boolean;selectionReason:string;plannedOrder:number|null;
   actualScore?:number|null;actualMinutes?:number|null;typeJudgmentCorrect?:boolean|null;
+  actualScoreSource?:"attempt"|"manual_override";actualMinutesSource?:"attempt"|"manual_override";
+  sourceAttemptId?:number;attemptScore?:number|null;attemptMinutes?:number|null;
   firstStepCorrect?:boolean|null;sank?:boolean|null;hintUsed?:boolean;referenceUsed?:boolean;completed?:boolean;
 };
 export type LearningPurpose="error_repair"|"retrieval_check"|"integration_check"|"transfer_check"|"exam_performance";
@@ -203,6 +205,8 @@ export type Attempt = {
   policy_validity?:KPolicyValidity; exclude_from_planning?:boolean;
   exclude_from_recurrence_metrics?:boolean; superseded_by_policy_version?:string;
   parent_past_session_id?:number;
+  past_exam_session_instance_id?:string;
+  session_role?:"selected_timed"|"counterfactual_calibration"|"individual_transfer";
   grading_contract?:GradingContractSnapshot;contract_id?:string;contract_version?:string;contract_hash?:string;
   explicitly_out_of_scope_parts?:string[];
   submission_id?:string;source_review_id?:number;saved_at?:string;

@@ -281,6 +281,30 @@ test("planner audit rejects one-problem 90-minute work and skipping an older cle
   assert.equal(audit.counts.clean_scan_year_skipped,1);
 });
 
+test("完了済み年度をclean skip候補へ戻さず次のcanonical年度を監査する",()=>{
+  const session={id:1,year:2018,date:"2026-08-30",session_kind:"selected_three_timed",session_type:"scan5",stage:"calibration",
+    scan_set_source:"past_exam_year",scan_minutes:10,initial_selected_problem_ids:["PY-2018-Q1","PY-2018-Q3","PY-2018-Q5"],
+    questions:[1,2,3,4,5].map(q=>({problemId:`PY-2018-Q${q}`,questionLabel:`問${q}`,completed:[1,3,5].includes(q),
+      actualScore:[1,3,5].includes(q)?50:null,actualMinutes:[1,3,5].includes(q)?20:null})),
+    selected_timed_attempt_ids:[1,3,5],attempt_completed_at:"2026-08-31T00:00:00Z"};
+  const catalog=[2018,2019].flatMap(year=>Array.from({length:5},(_,index)=>({referenceProblemId:`PE-${year}-Q0${index+1}`,
+    canonicalProblemId:`PY-${year}-Q${index+1}`,year,questionNumber:index+1,title:"past",availability:"verified_problem",
+    schedulable:true,gradable:true,fineConceptIds:[],coarseTopics:[],exposure:"unseen",simulationProtected:false,
+    classificationConfidence:"verified"})));
+  const attempts=[1,3,5].map(id=>({id,problem_id:`PY-2018-Q${id}`,date:"2026-08-31",mode:"full",time_minutes:20,
+    score_numeric:50,score_label:"C",mark:"△",error_type:"W",memo:""}));
+  const task={taskKey:"next",date:"2026-09-01",slot:"score_building",kind:"timed",label:"2019年 本番型session",
+    problemId:"PY-2019-Q1",referenceProblemId:"PE-2019-Q01",minutes:90,reason:"次のclean session",requiresUserSelection:false,
+    pastExamTaskType:"timed_three_question_session",pastExamYear:2019,sessionProblemIds:[1,2,3,4,5].map(n=>`PY-2019-Q${n}`),
+    stableSessionKey:"past_exam_session:2019:timed_three_question_session:session-1"};
+  const summary={days:7,plan:[{date:"2026-09-01",tasks:[task],totalMinutes:90}],totalMinutes:90,
+    counts:{scoreBuilding:1,repair:0,maintenance:0,scan5:0,full:0,timed:1,pastExam:1,chapter5:0,chapter7:0,chapter8:0},
+    weeklyMinimumViolations:[],dailyCapacityViolations:0,reviewSchedule:{repairBudgetMinutes:0,placements:[],capacityConflicts:[]}};
+  const audit=runIntegrityAudit({attempts,reviews:[],today:"2026-09-01",examDate:"2026-11-15",currentPlanSummary:summary,
+    pastExamCatalog:catalog,pastSessions:[session]});
+  assert.equal(audit.counts.clean_scan_year_skipped,0,JSON.stringify(audit.issues));
+});
+
 test("canonical plan audit catches unstable session identity and low-value required repair",()=>{
   const saved={problem_id:"PY-2018-Q1",title:"2018年 本番型session",kind:"得点形成",reason:"本番型",mode:"full",
     minutes:90,load:0,triage:"must",past_exam_task_type:"timed_three_question_session",past_exam_year:2018,
@@ -343,4 +367,22 @@ test("required Whitebook candidates require root lineage and high-confidence mat
   }]});
   assert.equal(audit.counts.required_whitebook_without_lineage,1);
   assert.equal(audit.counts.whitebook_match_low_confidence_required,1);
+});
+
+test("completed sessionをstale Today/Dashboardが再投入するとblocking issueにする",()=>{
+  const questions=[1,2,3,4,5].map((q,index)=>({problemId:`PY-2018-Q${q}`,questionLabel:`問${q}`,
+    selected:[0,2,4].includes(index),completed:[0,2,4].includes(index),actualScore:[56,24,50,12,32][index],
+    actualMinutes:[40,15,20,15,20][index]}));
+  const session={id:3,year:2018,date:"2026-08-30",session_type:"scan5",session_kind:"selected_three_timed",
+    session_purpose:"timed_three_question_session",session_instance_id:"session-1",session_ordinal:1,scan_minutes:10,
+    actual_total_minutes:90,attempt_completed_at:"2026-08-31T23:59:59",session_state:"completed",questions,
+    initial_selected_problem_ids:["PY-2018-Q1","PY-2018-Q3","PY-2018-Q5"],selected_answer_count:3};
+  const stale={problem_id:"PY-2018-Q1",title:"2018年 本番型session",kind:"得点形成",reason:"stale",mode:"exam_90min",
+    minutes:90,load:1,checked:false,past_exam_task_type:"timed_three_question_session",past_exam_year:2018,
+    stable_session_key:"legacy-date-key"};
+  const audit=runIntegrityAudit({attempts:[],reviews:[],today:"2026-09-01",pastSessions:[session],
+    currentTodayTasks:[stale],currentNextTask:stale});
+  assert.equal(audit.counts.completed_session_rescheduled_as_active,1);
+  assert.equal(audit.counts.stale_today_snapshot_overrode_canonical_state,1);
+  assert.equal(audit.counts.dashboard_session_projection_mismatch,1);
 });
