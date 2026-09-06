@@ -153,7 +153,8 @@ test("未実施の本番型sessionはreplanだけで年度・identityを変更�
   assert.ok(session.stableSessionKey);
   const saved={problem_id:session.problemId,title:session.label,kind:"得点形成",reason:session.reason,mode:"full",
     minutes:90,load:0,triage:"must",past_exam_task_type:session.pastExamTaskType,past_exam_year:session.pastExamYear,
-    session_problem_ids:session.sessionProblemIds,stable_session_key:session.stableSessionKey,past_exam_session_state:"planned"};
+    session_problem_ids:session.sessionProblemIds,stable_session_key:session.stableSessionKey,past_exam_session_state:"planned",
+    selected_year_reason:session.selectedYearReason};
   const changedCatalog=fresh.map(row=>row.year===2018?{...row,exposure:"prompt_scanned"}:row);
   const rerun=buildAdaptivePlannerShadow({record:source,catalog:changedCatalog,weaknesses:[repairWeakness],problems:repairWhitebook,
     attempts:[],reviews:[],pastSessions:[],currentTasks:[saved],today:"2026-08-30",examDate:"2026-11-15",targetMinutes:150});
@@ -385,4 +386,59 @@ test("major修復後の未確認retention Reviewは補修枠へ残す",()=>{
   assert.equal(placed?.todayCategory,"repair");
   assert.equal(placed?.reviewPlanningTier,"high_value_repair");
   assert.match(placed?.whyToday||"",/過去問/);
+});
+
+test("2019表示taskが2025 identityを持つstale snapshotを捨て2019 identityで再生成する",()=>{
+  const rows=[2019,2025].flatMap(year=>Array.from({length:5},(_,index)=>pastProblem(year,index+1)));
+  const source=record({data:{...baseRecord.data,pastExamProblems:rows}});
+  const currentCatalog=buildPastExamCatalog({record:source,sessions:[],attempts:[],exposureOverrides:{}});
+  const stale={problem_id:"PY-2019-Q1",title:"2019年 本番型session",kind:"得点形成",reason:"stale",mode:"exam_90min",
+    minutes:90,load:0,triage:"must",past_exam_task_type:"timed_three_question_session",past_exam_year:2019,
+    session_problem_ids:[1,2,3,4,5].map(n=>`PY-2019-Q${n}`),
+    stable_session_key:"past_exam_session:2025:scan5:session-2025-1",past_exam_session_state:"planned",
+    selected_year_reason:"2019を選択"};
+  const plan=buildAdaptivePlannerShadow({record:source,catalog:currentCatalog,weaknesses:[],problems:whitebook,
+    attempts:[],reviews:[],pastSessions:[],currentTasks:[stale],today:"2026-09-06",examDate:"2026-11-15",targetMinutes:150});
+  const task=plan.plan14.plan[0].tasks.find(row=>row.pastExamTaskType==="timed_three_question_session");
+  assert.equal(task.pastExamYear,2019);assert.match(task.stableSessionKey,/^past_exam_session:2019:timed_three_question_session:/);
+  assert.equal(task.stableSessionKey.includes("2025"),false);assert.ok(task.selectedYearReason);
+});
+
+test("PastExam日には通常major repairを最大2件・利用可能30分以内へ絞り90分sessionをstarveさせない",()=>{
+  const rows=[2019,2020,2021].flatMap(year=>Array.from({length:5},(_,index)=>pastProblem(year,index+1)));
+  const source=record({data:{...baseRecord.data,pastExamProblems:rows}});
+  const currentCatalog=buildPastExamCatalog({record:source,sessions:[],attempts:[],exposureOverrides:{}});
+  const reviews=whitebook.slice(0,5).map((row,index)=>reviewFixture(1200+index,row.problem_id,
+    {due:"2026-09-01",earliest:"2026-09-01",latest:"2026-09-02",minutes:12}));
+  const attempts=reviews.map(review=>({id:review.source_attempt_id,problem_id:review.problem_id,date:"2026-08-31",mode:"main_calc",
+    score_numeric:40,score_label:"C",mark:"×",error_type:"W",error_types:["W"],review_outcome:"partial",
+    conclusion_reached:false,minimum_pass_condition_met:false,time_minutes:20}));
+  const plan=buildAdaptivePlannerShadow({record:source,catalog:currentCatalog,weaknesses:[repairWeakness],problems:repairWhitebook,
+    attempts,reviews,pastSessions:[],currentTasks:[],today:"2026-09-06",examDate:"2026-11-15",targetMinutes:105});
+  const today=plan.plan14.plan[0].tasks,session=today.find(task=>task.pastExamTaskType==="timed_three_question_session");
+  const required=today.filter(task=>task.kind==="review"&&!task.requiresUserSelection);
+  assert.ok(session);assert.ok(required.length<=2);assert.ok(required.reduce((sum,row)=>sum+row.minutes,0)<=15);
+});
+
+test("selected答案のmajor repairはnon-selected診断Reviewより先に配置する",()=>{
+  const rows=[2019].flatMap(year=>Array.from({length:5},(_,index)=>pastProblem(year,index+1)));
+  const source=record({data:{...baseRecord.data,pastExamProblems:rows}});
+  const currentCatalog=buildPastExamCatalog({record:source,sessions:[],attempts:[],exposureOverrides:{}});
+  const selectedReview=reviewFixture(1400,"WB-2-A-01",{due:"2026-09-01",earliest:"2026-09-01",latest:"2026-09-02",minutes:10});
+  const diagnosticReview=reviewFixture(1300,"WB-2-A-02",{due:"2026-09-01",earliest:"2026-09-01",latest:"2026-09-02",minutes:10});
+  const attempts=[
+    {id:1400,problem_id:"PY-2018-Q1",date:"2026-08-31",mode:"full",score_numeric:40,score_label:"C",mark:"×",error_type:"W",error_types:["W"],review_outcome:"partial",conclusion_reached:false},
+    {id:1300,problem_id:"PY-2018-Q2",date:"2026-08-31",mode:"full",score_numeric:30,score_label:"D",mark:"×",error_type:"W",error_types:["W"],review_outcome:"partial",conclusion_reached:false},
+  ];
+  const reviews=[{...selectedReview,problem_id:"PY-2018-Q1",grading_contract:{...selectedReview.grading_contract,problemId:"PY-2018-Q1",sourceAttemptId:1400}},
+    {...diagnosticReview,problem_id:"PY-2018-Q2",grading_contract:{...diagnosticReview.grading_contract,problemId:"PY-2018-Q2",sourceAttemptId:1300}}];
+  const pastSessions=[{id:18,year:2018,date:"2026-08-30",session_type:"scan5",session_kind:"selected_three_timed",
+    session_purpose:"timed_three_question_session",session_instance_id:"session-2018-1",session_ordinal:1,
+    session_state:"completed",attempt_completed_at:"2026-08-31T23:00:00Z",selected_timed_attempt_ids:[1400],
+    initial_selected_problem_ids:["PY-2018-Q1","PY-2018-Q3","PY-2018-Q5"],
+    counterfactual_calibration_attempt_ids:[1300],questions:[1,2,3,4,5].map(n=>({problemId:`PY-2018-Q${n}`,questionLabel:`問${n}`}))}];
+  const plan=buildAdaptivePlannerShadow({record:source,catalog:currentCatalog,weaknesses:[repairWeakness],problems:repairWhitebook,
+    attempts,reviews,pastSessions,currentTasks:[],today:"2026-09-06",examDate:"2026-11-15",targetMinutes:150});
+  const placed=plan.plan14.plan[0].tasks.filter(task=>task.kind==="review");
+  assert.equal(placed[0]?.reviewId,1400,JSON.stringify(placed));
 });

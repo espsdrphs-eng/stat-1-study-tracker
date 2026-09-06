@@ -386,3 +386,42 @@ test("completed sessionをstale Today/Dashboardが再投入するとblocking iss
   assert.equal(audit.counts.stale_today_snapshot_overrode_canonical_state,1);
   assert.equal(audit.counts.dashboard_session_projection_mismatch,1);
 });
+
+test("year混在sessionと保存上activeのterminal scan_onlyをcurrent auditで検出する",()=>{
+  const mixed={id:51,year:2019,date:"2026-09-06",session_type:"scan5",session_kind:"selected_three_timed",
+    session_purpose:"timed_three_question_session",session_instance_id:"session-2025-1",
+    stable_session_key:"past_exam_session:2025:scan5:session-2025-1",selected_year_reason:"2025を継続",
+    questions:[1,2,3,4,5].map(n=>({problemId:`PY-2019-Q${n}`,questionLabel:`問${n}`}))};
+  const scan={id:52,year:2025,date:"2026-09-05",session_type:"scan5",session_kind:"scan_only",
+    session_purpose:"practice_scan5",session_instance_id:"session-2025-2",
+    stable_session_key:"past_exam_session:2025:scan5:session-2025-2",selected_year_reason:"holdout scan",
+    session_state:"selection_draft",prompt_scanned_at:"2026-09-05T12:00:00Z",scan_minutes:10,
+    questions:[1,2,3,4,5].map(n=>({problemId:`PY-2025-Q${n}`,questionLabel:`問${n}`,predictedType:"type"}))};
+  const audit=runIntegrityAudit({attempts:[],reviews:[],today:"2026-09-06",pastSessions:[mixed,scan]});
+  assert.equal(audit.counts.past_exam_session_year_mismatch,1);
+  assert.equal(audit.counts.past_exam_session_identity_reused_for_new_year,1);
+  assert.equal(audit.counts.selected_year_reason_mismatch,1);
+  assert.equal(audit.counts.terminal_scan_only_session_active,1);
+  assert.equal(audit.stale,false);assert.ok(audit.sourceStateVersion);
+});
+
+test("PastExam日の補修過多とnon-selected診断がselected majorを逆転するplanをpolicy violationにする",()=>{
+  const diagnostic={taskKey:"d",date:"2026-09-06",slot:"repair",kind:"review",label:"diagnostic",problemId:"PY-2018-Q2",
+    reviewId:2,minutes:15,reason:"overdue",requiresUserSelection:false,diagnosticOnly:true};
+  const selected={taskKey:"s",date:"2026-09-06",slot:"repair",kind:"review",label:"selected",problemId:"PY-2018-Q1",
+    reviewId:1,minutes:15,reason:"major",requiresUserSelection:false,directExamLoss:true};
+  const third={...selected,taskKey:"s2",reviewId:3,problemId:"PY-2018-Q3"};
+  const timed={taskKey:"t",date:"2026-09-06",slot:"score_building",kind:"timed",label:"2019年 本番型session",
+    problemId:"PY-2019-Q1",referenceProblemId:"PE-2019-Q01",minutes:90,reason:"timed",requiresUserSelection:false,
+    pastExamTaskType:"timed_three_question_session",pastExamYear:2019,
+    sessionProblemIds:[1,2,3,4,5].map(n=>`PY-2019-Q${n}`),stableSessionKey:"past_exam_session:2019:timed_three_question_session:session-2019-1",
+    selectedYearReason:"2018完了後の未露出年度を測るため"};
+  const summary={days:7,plan:[{date:"2026-09-06",tasks:[diagnostic,selected,third,timed],totalMinutes:135},
+    ...Array.from({length:6},(_,index)=>({date:`2026-09-${String(7+index).padStart(2,"0")}`,tasks:[],totalMinutes:0}))],totalMinutes:135,
+    counts:{scoreBuilding:1,repair:3,maintenance:0,scan5:0,full:0,timed:1,pastExam:1,chapter5:0,chapter7:0,chapter8:0},
+    weeklyMinimumViolations:[],dailyCapacityViolations:0,reviewSchedule:{repairBudgetMinutes:30,placements:[],capacityConflicts:[]}};
+  const audit=runIntegrityAudit({attempts:[],reviews:[],today:"2026-09-06",examDate:"2026-11-15",currentPlanSummary:summary});
+  assert.equal(audit.counts.too_many_pre_session_required_repairs,1);
+  assert.equal(audit.counts.selected_major_deprioritized_by_nonselected,1);
+  assert.ok(audit.plannerPolicyViolationCount>=2);
+});

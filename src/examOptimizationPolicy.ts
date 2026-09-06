@@ -92,7 +92,7 @@ export function reviewPurposeAfterCorrection(args:{attempt:Partial<Attempt>;expl
 
 export function isSuccessfulTransferForProblem(attempt:Attempt,problemId:string){
   const clean=(attempt.error_types||[attempt.error_type]).every(error=>!['K','W','N','C'].includes(String(error)));
-  return attempt.source_problem_id===problemId&&attempt.transfer_evidence===true&&clean&&
+  return attempt.problem_id!==problemId&&attempt.source_problem_id===problemId&&attempt.transfer_evidence===true&&clean&&
     attempt.review_outcome==="success"&&Number(attempt.actual_reference_level||0)===0;
 }
 

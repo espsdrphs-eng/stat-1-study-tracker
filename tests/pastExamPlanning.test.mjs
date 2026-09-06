@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {buildPastExamYearCandidates,derivePastExamSessionState,derivePastExamWorkspace,generatedUnseenPolicy,selectPastExamYear} from "../src/pastExamPlanning.ts";
+import {buildPastExamYearCandidates,canonicalizePastExamSessions,derivePastExamSessionState,derivePastExamWorkspace,generatedUnseenPolicy,selectPastExamYear,
+  validatePastExamSessionIdentity,validatePastExamTaskIdentity} from "../src/pastExamPlanning.ts";
 import {buildPastExamCatalog} from "../src/examReferencePack.ts";
 import {pastProblem,record} from "./adaptiveFixture.mjs";
 import {deriveCurrentTodayState} from "../src/todayTaskProjection.ts";
@@ -57,6 +58,49 @@ test("PastExamSession progressはscan・選択・答案・採点の事実から�
   assert.equal(derivePastExamSessionState({questions:[{completed:true,actualScore:null}]}),"grading_pending");
   assert.equal(derivePastExamSessionState({attempt_completed_at:"2026-08-30T02:00:00Z",
     questions:[1,2,3].map(()=>({completed:true,actualScore:70}))}),"completed");
+});
+
+test("scan_onlyは保存済みscan evidenceだけでterminalになり3問答案を要求しない",()=>{
+  const session={id:25,year:2025,date:"2026-09-05",session_type:"scan5",session_kind:"scan_only",
+    session_purpose:"practice_scan5",prompt_scanned_at:"2026-09-05T12:00:00Z",scan_minutes:10,
+    questions:[1,2,3,4,5].map(n=>({problemId:`PY-2025-Q${n}`,questionLabel:`問${n}`,predictedType:"type"})),
+    analysis:{rubric_version:"STAT1-SCAN5-v1"}};
+  assert.equal(derivePastExamSessionState(session),"completed");
+  assert.equal(derivePastExamSessionState({...session,prompt_scanned_at:undefined,analysis:undefined,
+    questions:[1,2,3,4,5].map(n=>({problemId:`PY-2025-Q${n}`,questionLabel:`問${n}`}))}),"scan_started");
+});
+
+test("PastExamSession identityはyear・problem year・stable keyの混在を拒否する",()=>{
+  const session={id:19,year:2019,date:"2026-09-06",session_type:"scan5",session_kind:"selected_three_timed",
+    session_purpose:"timed_three_question_session",session_instance_id:"session-2",
+    stable_session_key:"past_exam_session:2025:scan5:session-1",
+    selected_year_reason:"2019は未露出で次の測定に適するため",
+    questions:[1,2,3,4,5].map(n=>({problemId:`PY-2019-Q${n}`,questionLabel:`問${n}`}))};
+  const validation=validatePastExamSessionIdentity(session);
+  assert.equal(validation.valid,false);assert.ok(validation.errors.some(row=>/stable/i.test(row)));
+  const taskValidation=validatePastExamTaskIdentity({past_exam_year:2019,past_exam_task_type:"timed_three_question_session",
+    stable_session_key:"past_exam_session:2025:scan5:session-1",selected_year_reason:"2019を選択",
+    session_problem_ids:[1,2,3,4,5].map(n=>`PY-2019-Q${n}`),title:"2019年 本番型session"});
+  assert.equal(taskValidation.valid,false);
+});
+
+test("2025 identityを参照する2019 active sessionは新しい2019 identityへ冪等収束する",()=>{
+  const historical={id:25,year:2025,date:"2026-09-05",session_type:"scan5",session_kind:"scan_only",
+    session_purpose:"practice_scan5",session_state:"completed",session_instance_id:"session-2025-shared",
+    stable_session_key:"past_exam_session:2025:scan5:session-2025-shared",scan_minutes:10,
+    questions:[1,2,3,4,5].map(n=>({problemId:`PY-2025-Q${n}`,predictedType:"type"}))};
+  const mixed={id:26,year:2019,date:"2026-09-06",session_type:"scan5",session_kind:"selected_three_timed",
+    session_purpose:"timed_three_question_session",session_instance_id:"session-2025-shared",
+    stable_session_key:"past_exam_session:2025:scan5:session-2025-shared",
+    selected_year_reason:"2018完了後、2019のclean選題を測るため",
+    questions:[1,2,3,4,5].map(n=>({problemId:`PY-2019-Q${n}`}))};
+  const first=canonicalizePastExamSessions([historical,mixed]).current.find(row=>row.year===2019);
+  assert.match(first.session_instance_id,/^session-2019-/);
+  assert.match(first.stable_session_key,/^past_exam_session:2019:timed_three_question_session:/);
+  assert.equal(validatePastExamSessionIdentity(first).valid,true);
+  const second=canonicalizePastExamSessions([historical,first]).current.find(row=>row.year===2019);
+  assert.equal(second.session_instance_id,first.session_instance_id);
+  assert.equal(second.stable_session_key,first.stable_session_key);
 });
 
 test("PastExamSession identityは内部anchor problemの変更に依存しない",()=>{

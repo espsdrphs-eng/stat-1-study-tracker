@@ -12,7 +12,8 @@ import { resolvePersistedAttemptLifecycle } from "./reviewTransition.ts";
 import { scheduleActiveReviews, type ScheduledReviewPlacement } from "./reviewScheduling.ts";
 import {deriveLearningPolicy,examHorizonPolicy} from "./examOptimizationPolicy.ts";
 import {buildPastExamYearCandidates,canonicalizePastExamSessions,derivePastExamSessionState,pastExamSessionKey,
-  pastExamSessionPurpose,pastExamTaskTypeFor,selectPastExamYear,stablePastExamSessionKey} from "./pastExamPlanning.ts";
+  pastExamSessionPurpose,pastExamTaskTypeFor,selectPastExamYear,stablePastExamSessionKey,
+  validatePastExamSessionIdentity,validatePastExamTaskIdentity,reconcilePastExamSessionEvidence} from "./pastExamPlanning.ts";
 import {reviewPlanningDecision} from "./todayLearningPolicy.ts";
 import {deriveFailureEpisode} from "./failureEpisode.ts";
 
@@ -184,7 +185,8 @@ function planDays(args:{
   weaknesses:ConceptWeaknessInsight[];currentTasks:Task[];repairCandidates?:PastExamRepairCandidate[];
 }){
   const result:AdaptivePlanDay[]=[],usedProblems=new Map<string,string>(),usedPast=new Map<string,string>(),usedSessionYears=new Set<number>();
-  const canonicalPastSessions=canonicalizePastExamSessions(args.pastSessions).current;
+  const canonicalPastSessions=canonicalizePastExamSessions(args.pastSessions).current
+    .map(session=>reconcilePastExamSessionEvidence(session,args.attempts,session.session_alias_ids));
   const pinnedPastSession=canonicalPastSessions.find(session=>
     !["completed","deferred","cancelled","invalidated"].includes(derivePastExamSessionState(session))&&
     ["clean_scan5","practice_scan5","timed_three_question_session","simulation"].includes(pastExamSessionPurpose(session)));
@@ -202,6 +204,24 @@ function planDays(args:{
   for(const placement of reviewSchedule.placements)
     reviewsByDate.set(placement.date,[...(reviewsByDate.get(placement.date)||[]),placement]);
   const horizonEnd=addCalendarDays(args.startDate,Math.max(0,args.days-1));
+  const selectedAttemptIds=new Set(canonicalPastSessions.flatMap(session=>session.selected_timed_attempt_ids||[]));
+  const calibrationAttemptIds=new Set(canonicalPastSessions.flatMap(session=>session.counterfactual_calibration_attempt_ids||[]));
+  const selectedProblemIds=new Set(canonicalPastSessions.flatMap(session=>
+    session.final_selected_problem_ids?.length?session.final_selected_problem_ids:session.initial_selected_problem_ids||[]));
+  const sourceForReview=(review:Review)=>args.attempts.find(attempt=>attempt.id===Number(
+    review.grading_contract?.sourceAttemptId||review.source_attempt_id||review.generated_from_attempt_id||0));
+  const reviewSourceRank=(review:Review)=>{
+    const source=sourceForReview(review);if(!source)return 6;
+    if(source.session_role==="selected_timed"||selectedAttemptIds.has(source.id)||selectedProblemIds.has(source.problem_id))return 0;
+    if(source.session_role==="individual_transfer"||source.transfer_evidence)return 1;
+    if(source.parent_past_session_id)return calibrationAttemptIds.has(source.id)||source.session_role==="counterfactual_calibration"?3:2;
+    return 5;
+  };
+  const isHardBlockerReview=(review:Review)=>{
+    if(review.triage_override==="must")return true;
+    const source=sourceForReview(review),episode=source?deriveFailureEpisode(source):undefined;
+    return reviewSourceRank(review)===0&&!!episode?.rootWeaknesses.some(root=>root.requiredRepair&&root.masteryLevel===1);
+  };
   const activeReviewProblemIds=new Set(allActiveReviews.filter(review=>String(review.earliest_date||review.due_date)<=horizonEnd)
     .map(review=>review.problem_id));
   const allowNew=examHorizonPolicy(args.daysRemaining).allowNewWhitebook;
@@ -244,6 +264,18 @@ function planDays(args:{
       row.repairKind==="whitebook"&&row.matchConfidence==="high"&&row.whitebookProblemIds.some(id=>!usedProblems.has(id))));
     if(!candidate)return args.repairCandidates?null:makeWhitebook(date,[2,4,5,6,7,8],"skeleton",
       "過去問で確認された高価値targetだけを局所補修","score_building",true);
+    if(candidate.repairKind==="transfer"){
+      const transferProblemId=candidate.transferProblemIds.find(id=>!usedProblems.has(id));
+      const transferProblem=args.problems.find(row=>row.problem_id===transferProblemId);
+      if(!transferProblem||!transferProblemId)return null;
+      usedProblems.set(transferProblemId,date);
+      return task({date,slot:"score_building",kind:"past_exam",label:transferProblem.display_label||transferProblem.title,
+        problemId:transferProblemId,conceptId:candidate.conceptId,minutes:35,mode:"full",
+        reason:`${candidate.sourceProblemId}で同じrootを反復失敗したため、別問題で介入形式を変更`,purpose:"transfer_check",
+        purposeLabel:"別問題で転移確認",requiresUserSelection:false,todayCategory:"exam_practice",actionClass:"exam_practice",
+        whyToday:"同じ問題の反復ではなく、別問題で同じ能力を参照なし再現できるか測るため"});
+    }
+    if(candidate.repairKind==="rediagnosis")return null;
     if(candidate.repairKind!=="whitebook"){
       const sourceProblem=args.problems.find(row=>row.problem_id===candidate.sourceProblemId);
       if(!sourceProblem)return null;
@@ -277,10 +309,12 @@ function planDays(args:{
   };
   const makePast=(date:string,kind:"past_exam"|"scan5"|"timed",minutes:number,reason:string)=>{
     const requestedType=kind==="timed"?"timed_three_question_session":kind==="scan5"?"clean_scan5":"individual_full";
-    const stickyTask=date===args.startDate?args.currentTasks.find(current=>!current.checked&&current.past_exam_year&&
+    const stickyTaskCandidate=date===args.startDate?args.currentTasks.find(current=>!current.checked&&current.past_exam_year&&
       current.past_exam_session_state!=="completed"&&current.past_exam_session_state!=="deferred"&&
       (current.past_exam_task_type===requestedType||kind==="scan5"&&current.past_exam_task_type==="practice_scan5")):undefined;
-    const persisted=date===args.startDate?pinnedPastSession:undefined;
+    const stickyTask=stickyTaskCandidate&&validatePastExamTaskIdentity(stickyTaskCandidate).valid?stickyTaskCandidate:undefined;
+    const persistedCandidate=date===args.startDate?pinnedPastSession:undefined;
+    const persisted=persistedCandidate&&validatePastExamSessionIdentity(persistedCandidate).valid?persistedCandidate:undefined;
     const stickyYear=persisted?.year||stickyTask?.past_exam_year;
     const stickyRows=stickyYear?args.catalog.filter(row=>row.year===stickyYear&&row.schedulable&&row.gradable&&
       (!row.simulationProtected||args.daysRemaining<=30)):[];
@@ -335,6 +369,7 @@ function planDays(args:{
       todayCategory:"exam_practice",whyToday:"初見・選題・時間内完遂・別問題への転移を測るため"});
   };
   let materialConfirmationPlanned=false;
+  const includedReviewIds=new Set<number>();
   for(let offset=0;offset<args.days;offset++){
     const date=addCalendarDays(args.startDate,offset),weekday=offset%7;
     if(offset>0&&offset%7===0)weekActual={chapter5:0,chapter7:0,chapter8:0,scan5:0,fullOrTimed:0,pastExam:0};
@@ -363,7 +398,24 @@ function planDays(args:{
       score=makePast(date,weekday===0||weekday===4?"timed":weekday===2?"scan5":"past_exam",
         weekday===0||weekday===4?90:weekday===2?10:35,"本番形式・3題選択・確認済み弱点を主軸に固定");
     }
-    const tasks:SlotTask[]=(reviewsByDate.get(date)||[]).map(placement=>{
+    let dayPlacements=[...(reviewsByDate.get(date)||[])].sort((left,right)=>
+      Number(isHardBlockerReview(right.review))-Number(isHardBlockerReview(left.review))||
+      reviewSourceRank(left.review)-reviewSourceRank(right.review)||left.review.id-right.review.id);
+    const timedSession=score&&["timed_three_question_session","simulation"].includes(String(score.pastExamTaskType||""));
+    if(score&&timedSession){
+      const repairBudget=Math.min(30,Math.max(0,args.targetMinutes-score.minutes));
+      const selectedPlacements:ScheduledReviewPlacement[]=[];
+      let repairMinutes=0;
+      for(const placement of dayPlacements){
+        if(selectedPlacements.length>=2)break;
+        const hardBlocker=isHardBlockerReview(placement.review);
+        if(!hardBlocker&&repairMinutes+placement.minutes>repairBudget)continue;
+        selectedPlacements.push(placement);repairMinutes+=placement.minutes;
+      }
+      dayPlacements=selectedPlacements;
+    }
+    const tasks:SlotTask[]=dayPlacements.map(placement=>{
+      includedReviewIds.add(placement.review.id);
       const sourceId=Number(placement.review.grading_contract?.sourceAttemptId||placement.review.source_attempt_id||
         placement.review.generated_from_attempt_id||0);
       const source=args.attempts.find(attempt=>attempt.id===sourceId);
@@ -372,6 +424,9 @@ function planDays(args:{
       const errors=new Set([...(source?.error_types||[]),source?.primary_error_type||source?.error_type||""].filter(Boolean));
       const episode=source?deriveFailureEpisode(source):undefined;
       const root=episode?.rootWeaknesses.find(row=>row.sourceFindingIds.includes(part?.id||""))||episode?.rootWeaknesses[0];
+      const directExamLoss=!!source&&(source.session_role==="selected_timed"||selectedAttemptIds.has(source.id)||selectedProblemIds.has(source.problem_id));
+      const diagnosticOnly=!!source&&(source.session_role==="counterfactual_calibration"||calibrationAttemptIds.has(source.id));
+      const hardBlocker=isHardBlockerReview(placement.review);
       const major=root?.materiality==="major"||reviewDecisions.get(placement.review.id)?.tier==="high_value_repair"||
         [...errors].some(error=>["K","W"].includes(error))||source?.review_outcome==="failed";
       const repairLineage=source?{sourceAttemptId:source.id,sourceProblemId:source.problem_id,
@@ -388,6 +443,7 @@ function planDays(args:{
         minutes:placement.minutes,reason:placement.status==="overdue_recovery"?"期限超過Reviewを最優先で回収":"復習ウィンドウ内に配置",
         requiresUserSelection:false,todayCategory:"repair",whyToday:reviewDecisions.get(placement.review.id)?.reason,
         reviewPlanningTier:reviewDecisions.get(placement.review.id)?.tier,repairLineage,
+        hardBlocker,directExamLoss,diagnosticOnly,
         reviewEarliestDate:placement.earliestDate,reviewPreferredDate:placement.preferredDate,
         reviewLatestDate:placement.latestDate,reviewScheduleStatus:placement.status});
     });
@@ -437,7 +493,11 @@ function planDays(args:{
     }
     result.push({date,tasks,totalMinutes:tasks.filter(row=>!row.requiresUserSelection).reduce((sum,row)=>sum+row.minutes,0)});
   }
-  return {days:result,reviewSchedule};
+  const retainedPlacements=reviewSchedule.placements.filter(row=>includedReviewIds.has(row.review.id));
+  const scheduledMinutes=Object.fromEntries(retainedPlacements.reduce((rows,row)=>{
+    rows.set(row.date,Number(rows.get(row.date)||0)+row.minutes);return rows;
+  },new Map<string,number>()));
+  return {days:result,reviewSchedule:{...reviewSchedule,placements:retainedPlacements,scheduledMinutes}};
 }
 
 function weeklyActual(args:{startDate:string;attempts:Attempt[];pastSessions:PastSession[];problems:Problem[]}){

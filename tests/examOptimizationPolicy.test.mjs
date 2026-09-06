@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   classifyFailureStrength,currentActionFingerprint,examHorizonPolicy,learningEventKind,
-  retentionWindow,reviewPurposeAfterCorrection,
+  retentionWindow,reviewPurposeAfterCorrection,isSuccessfulTransferForProblem,
 } from "../src/examOptimizationPolicy.ts";
 
 test("corrective feedback and a delayed test are separate learning events",()=>{
@@ -34,6 +34,14 @@ test("explicit transfer success or a low-ROI transfer opportunity can replace sa
     transferAlreadySucceeded:true}).scheduleSameProblem,false);
   assert.equal(retentionWindow({sourceDate:"2026-08-18",daysRemaining:20,masteryLevel:2,failureStrength:"standard",
     examRelevance:"low",strategyRank:"A",alternativeTransferOpportunity:true}).scheduleSameProblem,false);
+});
+
+test("transfer successは明示的source lineageを持つ別problemの参照なし成功だけ",()=>{
+  const base={id:1,problem_id:"PY-2019-Q2",source_problem_id:"PY-2018-Q1",date:"2026-09-06",mode:"full",
+    error_type:"none",error_types:["none"],transfer_evidence:true,review_outcome:"success",actual_reference_level:0};
+  assert.equal(isSuccessfulTransferForProblem(base,"PY-2018-Q1"),true);
+  assert.equal(isSuccessfulTransferForProblem({...base,problem_id:"PY-2018-Q1"},"PY-2018-Q1"),false);
+  assert.equal(isSuccessfulTransferForProblem({...base,source_problem_id:"PY-2017-Q1"},"PY-2018-Q1"),false);
 });
 
 test("exam horizon moves rolling study time from whitebook to past exams",()=>{

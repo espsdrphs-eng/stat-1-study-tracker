@@ -56,12 +56,14 @@ test("90分PastExamSessionはanchor problemではなくsession identityで表示
     taskKey:"session",date:"2026-08-30",slot:"score_building",kind:"timed",label:"2018年 本番型session",
     problemId:"PY-2018-Q1",referenceProblemId:"PE-2018-Q01",minutes:90,reason:"本番型",requiresUserSelection:false,
     pastExamTaskType:"timed_three_question_session",pastExamYear:2018,
-    sessionProblemIds:[1,2,3,4,5].map(n=>`PY-2018-Q${n}`),stableSessionKey:"past_exam_session:2018:timed:2026-08-30",
+    sessionProblemIds:[1,2,3,4,5].map(n=>`PY-2018-Q${n}`),
+    stableSessionKey:"past_exam_session:2018:timed_three_question_session:session-2018-1",
+    selectedYearReason:"2018は完全未露出でclean選題を測れるため",
     sessionWorkflow:"5問scan → 3問選択 → 3問答案 → 採点",todayCategory:"exam_practice"
   }]};
   const tasks=adaptivePlanDayToTasks({day,problems:[problem("PY-2018-Q1")],reviews:[],today:"2026-08-30"});
   assert.equal(tasks[0].title,"2018年 本番型session");
-  assert.equal(tasks[0].stable_session_key,"past_exam_session:2018:timed:2026-08-30");
+  assert.equal(tasks[0].stable_session_key,"past_exam_session:2018:timed_three_question_session:session-2018-1");
   assert.equal(tasks[0].session_workflow,"5問scan → 3問選択 → 3問答案 → 採点");
 });
 

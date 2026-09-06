@@ -64,11 +64,11 @@ import {parseWholeAnswerRediagnosis,WHOLE_ANSWER_DIAGNOSTIC_VERSION,wholeAnswerD
 import {deriveDashboardKpis} from "./dashboardKpi.ts";
 import {reviewDueState} from "./todayLearningPolicy.ts";
 import {deriveCanonicalStudyPlan} from "./canonicalStudyPlan.ts";
-import {canonicalizePastExamSessions,derivePastExamSessionState,pastExamSessionKey,pastExamSessionPurpose,reconcilePastExamSessionEvidence,stablePastExamSessionKey} from "./pastExamPlanning.ts";
+import {canonicalizePastExamSessions,derivePastExamSessionState,pastExamSessionKey,pastExamSessionPurpose,reconcilePastExamSessionEvidence,stablePastExamSessionKey,validatePastExamSessionIdentity,validatePastExamTaskIdentity} from "./pastExamPlanning.ts";
 
 const PLANNER_RUNTIME_MODE_META_KEY="planner-runtime-mode";
 const CURRENT_PLAN_PROJECTION_META_KEY="current-plan-projection-version";
-const CURRENT_PLAN_PROJECTION_VERSION="past-session-attempt-evidence-v1";
+const CURRENT_PLAN_PROJECTION_VERSION="past-session-year-integrity-v2";
 
 type SMemory = { problem_id:string; state:"stable"|"check"|"forgotten"|"collapsed"; last_touched?:string; k_trigger_count:number };
 type StoredAttempt = Attempt;
@@ -2609,16 +2609,23 @@ async function ensureBuiltInExamReferencePack(){
 async function bootstrap():Promise<Bootstrap>{
   await initialize();
   const storedProjectionVersion=await db.meta.get(CURRENT_PLAN_PROJECTION_META_KEY);
-  if(storedProjectionVersion?.value!==CURRENT_PLAN_PROJECTION_VERSION){
+  const projectionUpgradeRequired=storedProjectionVersion?.value!==CURRENT_PLAN_PROJECTION_VERSION;
+  if(projectionUpgradeRequired){
     await db.transaction("rw",db.meta,async()=>{
       // A deployed projection upgrade must not keep today's plan from the old
       // reducer. Historical snapshots remain immutable and available.
       await db.meta.delete(`today-plan-snapshot:${todayString()}`);
-      await db.meta.put({key:CURRENT_PLAN_PROJECTION_META_KEY,value:CURRENT_PLAN_PROJECTION_VERSION});
     });
   }
   await ensureBuiltInCanonical();
   await ensureBuiltInExamReferencePack();
+  if(projectionUpgradeRequired){
+    // Existing production data must converge on first load. This is a
+    // history-preserving current-state reconciliation, not a data migration.
+    await reconcileProblemLearningState(undefined,false);
+    await reconcilePastExamSessionGenerations(false);
+    await db.meta.put({key:CURRENT_PLAN_PROJECTION_META_KEY,value:CURRENT_PLAN_PROJECTION_VERSION});
+  }
   const [problems,attempts,rawReviews,roadmap,weakNotes,rawPastSessions,sMemory,metaEntries,answerIndex,answerPdfs,problemAliases]=await Promise.all([
     db.problems.toArray(),db.attempts.orderBy("id").reverse().toArray(),db.reviews.orderBy("due_date").toArray(),db.roadmap.orderBy("order_index").toArray(),
     db.weakNotes.orderBy("id").reverse().toArray(),db.pastSessions.orderBy("id").reverse().toArray(),db.sMemory.toArray(),db.meta.toArray(),
@@ -2981,6 +2988,7 @@ async function bootstrap():Promise<Bootstrap>{
   const currentToday=deriveCurrentTodayProjection({snapshot,generatedTasks:generatedTriage.tasks,attempts,pastSessions,reviews,today,
     aliases:problemAliases,adaptive:plannerMode==="adaptive",hydrateTask:hydrateCurrentTask,
     includeTask:task=>{
+      if(!validatePastExamTaskIdentity(task).valid)return false;
       if(task.id&&task.review_type)return true;
       const record=taskPostponements.get(`${task.problem_id}:${task.kind}`);
       if(!record)return true;
@@ -3054,7 +3062,8 @@ async function bootstrap():Promise<Bootstrap>{
     ,source_mismatch_summary:(()=>{try{return JSON.parse(metaEntries.find(entry=>entry.key==="source_mismatch_reorganization_summary")?.value||"null")||undefined}catch{return undefined}})()
     ,review_schedule_summary:(()=>{try{return JSON.parse(metaEntries.find(entry=>entry.key==="review_schedule_repair_summary")?.value||"null")||undefined}catch{return undefined}})()
     ,integrity_summary:{
-      generatedAt:integrityHealth.generatedAt,activeIssueCount:integrityHealth.activeIssueCount,
+      generatedAt:integrityHealth.generatedAt,sourceStateVersion:integrityHealth.sourceStateVersion,stale:integrityHealth.stale,
+      activeIssueCount:integrityHealth.activeIssueCount,
       historyWarningCount:integrityHealth.historyWarningCount,informationalHistoryCount:integrityHealth.informationalHistoryCount,
       blockingIntegrityIssueCount:integrityHealth.blockingIntegrityIssueCount,
       plannerPolicyViolationCount:integrityHealth.plannerPolicyViolationCount,
@@ -3133,22 +3142,42 @@ async function reconcilePastExamSessionGenerations(preview=false){
 async function savePastExamSession(body:Record<string,unknown>,existingId?:number){
   return await db.transaction("rw",[db.pastSessions,db.reviews,db.meta,db.problems,db.attempts,db.problemAliases,db.answerIndex,db.weakNotes,db.sMemory],async()=>{
     const all=await db.pastSessions.toArray();
-    const preliminary=normalizePastExamSession({...body,id:existingId||0});
+    let previous=existingId?await db.pastSessions.get(existingId):undefined;
+    if(existingId&&!previous)throw new Error("過去問セッションが見つかりません");
+    const preliminary=normalizePastExamSession({...previous,...body,id:existingId||0});
     const purpose=pastExamSessionPurpose(preliminary),logicalPurpose=["clean_scan5","practice_scan5"].includes(purpose)?"scan5":purpose;
     const canonical=canonicalizePastExamSessions(all).current;
+    const previousPurpose=previous?pastExamSessionPurpose(previous):undefined;
+    const previousLogical=previousPurpose&&["clean_scan5","practice_scan5"].includes(previousPurpose)?"scan5":previousPurpose;
+    const identityChanged=!!previous&&(Number(previous.year)!==Number(preliminary.year)||previousLogical!==logicalPurpose);
+    if(identityChanged){
+      if(!["completed","deferred","cancelled","invalidated"].includes(derivePastExamSessionState(previous)))
+        throw new Error("未完了の過去問sessionを別年度・別目的へ変更できません。先に延期または完了してください。");
+      existingId=undefined;previous=undefined;
+    }
     const active=canonical.find(row=>row.year===preliminary.year&&
       (["clean_scan5","practice_scan5"].includes(pastExamSessionPurpose(row))?"scan5":pastExamSessionPurpose(row))===logicalPurpose&&
       !["completed","deferred","cancelled","invalidated"].includes(derivePastExamSessionState(row)));
-    const ordinal=Number(active?.session_ordinal||preliminary.session_ordinal||
+    const compatibleSameDay=!previous&&!body.session_instance_id?canonical.find(row=>row.year===preliminary.year&&row.date===preliminary.date&&
+      (["clean_scan5","practice_scan5"].includes(pastExamSessionPurpose(row))?"scan5":pastExamSessionPurpose(row))===logicalPurpose&&
+      (preliminary.session_kind==="scan_only"||derivePastExamSessionState(row)!=="completed")):undefined;
+    const target=previous||active||compatibleSameDay;
+    const otherActive=canonical.find(row=>row.id!==target?.id&&
+      !["completed","deferred","cancelled","invalidated"].includes(derivePastExamSessionState(row))&&
+      ["clean_scan5","practice_scan5","timed_three_question_session","simulation"].includes(pastExamSessionPurpose(row)));
+    if(!target&&otherActive&&["clean_scan5","practice_scan5","timed_three_question_session","simulation"].includes(purpose))
+      throw new Error(`${otherActive.year}年の未完了sessionがあります。先に完了・延期・取消してください。`);
+    const ordinal=Number(target?.session_ordinal||preliminary.session_ordinal||
       Math.max(0,...canonical.filter(row=>row.year===preliminary.year&&
         (["clean_scan5","practice_scan5"].includes(pastExamSessionPurpose(row))?"scan5":pastExamSessionPurpose(row))===logicalPurpose)
         .map(row=>Number(row.session_ordinal||0)))+1);
-    const sessionInstanceId=String(active?.session_instance_id||body.session_instance_id||`session-${ordinal}`);
+    const suppliedInstance=String(body.session_instance_id||"");
+    const suppliedOwner=suppliedInstance?canonical.find(row=>row.session_instance_id===suppliedInstance&&row.year!==preliminary.year):undefined;
+    const sessionInstanceId=String(target?.session_instance_id||(!suppliedOwner&&suppliedInstance)||`session-${preliminary.year}-${ordinal}`);
     const identity=stablePastExamSessionKey({year:preliminary.year,purpose,ordinal,sessionInstanceId});
-    const current=active||canonical.find(row=>pastExamSessionKey(row)===identity);
+    const current=target||canonical.find(row=>pastExamSessionKey(row)===identity);
     existingId=existingId||current?.id;
-    const previous=existingId?await db.pastSessions.get(existingId):undefined;
-    if(existingId&&!previous)throw new Error("過去問セッションが見つかりません");
+    previous=previous||current;
     const suppliedSnapshot=body.exposure_snapshot_at_start as PastSession["exposure_snapshot_at_start"]|undefined;
     const snapshot=previous?.exposure_snapshot_at_start||suppliedSnapshot||{
       classification:(previous?.scan_evidence_kind||body.scan_evidence_kind)==="clean"?"clean" as const:"practice" as const,
@@ -3159,6 +3188,8 @@ async function savePastExamSession(body:Record<string,unknown>,existingId?:numbe
       session_instance_id:sessionInstanceId,session_purpose:stablePurpose,session_ordinal:ordinal,
       exposure_snapshot_at_start:snapshot,scan_evidence_kind:snapshot.classification}),validation=validatePastExamSession(normalized);
     if(!validation.valid)throw new Error(validation.errors.join(" "));
+    const identityValidation=validatePastExamSessionIdentity(normalized);
+    if(!identityValidation.valid)throw new Error(identityValidation.errors.join(" "));
     const now=new Date().toISOString(),hasSolved=validation.solvedQuestions.length>0;
     const session={...previous,...normalized,exam_score_eligible:validation.examScoreEligible,
       prompt_scanned_at:previous?.prompt_scanned_at||normalized.prompt_scanned_at||(normalized.session_kind!=="retrospective_review"?now:undefined),

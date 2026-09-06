@@ -7,8 +7,8 @@ const {db,localGet,localPost}=await import("../src/localDb.ts");
 test("selected_three_timed updates post-results on the same saved session",async()=>{
   const date=new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Tokyo",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
   const initial=await localGet("/api/bootstrap"),initialMinutes=initial.today.actualMinutes;
-  const selected=questions.map((row,index)=>({...row,selected:index<3,plannedOrder:index<3?index+1:null,completed:false,actualScore:null,actualMinutes:null}));
-  const created=await localPost("/api/past-sessions",{session_kind:"selected_three_timed",date,year:2023,stage:"calibration",scan_set_source:"past_exam_year",scan_minutes:10,actual_total_minutes:0,questions:selected});
+  const selected=questions.map((row,index)=>({...row,problemId:`PY-2023-Q${index+1}`,selected:index<3,plannedOrder:index<3?index+1:null,completed:false,actualScore:null,actualMinutes:null}));
+  const created=await localPost("/api/past-sessions",{session_kind:"selected_three_timed",date,year:2023,stage:"calibration",scan_set_source:"past_exam_year",scan_minutes:10,actual_total_minutes:0,selected_year_reason:"2023を測るため",questions:selected});
   const before=await db.pastSessions.count();
   const completed=selected.map((row,index)=>index<3?{...row,completed:true,actualScore:70-index*5,actualMinutes:30}:{...row,completed:false,actualScore:null,actualMinutes:null});
   await localPost(`/api/past-sessions/${created.sessionId}/update`,{questions:completed,actual_total_minutes:90});
@@ -29,14 +29,17 @@ test("同日同年度同purposeのscan保存はcanonical sessionを更新しclea
   const rows=questions.map((row,index)=>({...row,problemId:`PY-${year}-Q${index+1}`}));
   const first=await localPost("/api/past-sessions",{session_kind:"selected_three_timed",session_purpose:"timed_three_question_session",
     date,year,stage:"calibration",scan_set_source:"past_exam_year",scan_evidence_kind:"clean",scan_minutes:0,questions:rows,
+    selected_year_reason:"2018のclean選題を測るため",
     exposure_snapshot_at_start:{classification:"clean",exposed_problem_ids:[],total_problem_count:5,captured_at:"2026-08-30T00:00:00Z"}});
   const second=await localPost("/api/past-sessions",{session_kind:"selected_three_timed",session_purpose:"timed_three_question_session",
-    date,year,stage:"calibration",scan_set_source:"past_exam_year",scan_evidence_kind:"practice",scan_minutes:10,questions:rows});
+    date,year,stage:"calibration",scan_set_source:"past_exam_year",scan_evidence_kind:"practice",scan_minutes:10,
+    selected_year_reason:"2018のclean選題を測るため",questions:rows});
   assert.equal(second.sessionId,first.sessionId);
   const active=(await db.pastSessions.toArray()).filter(row=>row.date===date&&row.year===year&&!row.superseded_by_session_id);
   assert.equal(active.length,1);
   assert.equal(active[0].scan_evidence_kind,"clean");
   assert.equal(active[0].exposure_snapshot_at_start.classification,"clean");
+  await db.pastSessions.update(first.sessionId,{cancelled:true,session_state:"cancelled"});
 });
 
 test("clean/practiceはsession identityではなく開始時exposureでありscan入力で別sessionを作らない",async()=>{
@@ -57,10 +60,45 @@ test("clean/practiceはsession identityではなく開始時exposureでありsca
   assert.equal(active[0].session_purpose,"clean_scan5");
 });
 
+test("terminalな2025 sessionのupdate IDを2019開始へ流用せず新identityを発行する",async()=>{
+  await localGet("/api/bootstrap");
+  const scanQuestions=questions.map((row,index)=>({...row,problemId:`PY-2025-Q${index+1}`}));
+  const old=await localPost("/api/past-sessions",{session_kind:"scan_only",session_purpose:"practice_scan5",
+    date:"2026-09-05",year:2025,stage:"simulation",scan_set_source:"past_exam_year",scan_minutes:10,
+    selected_year_reason:"2025 holdoutのscan evidenceを取得するため",questions:scanQuestions});
+  const timedQuestions=questions.map((row,index)=>({...row,problemId:`PY-2019-Q${index+1}`}));
+  const next=await localPost(`/api/past-sessions/${old.sessionId}/update`,{session_kind:"selected_three_timed",
+    session_purpose:"timed_three_question_session",date:"2026-09-06",year:2019,stage:"calibration",
+    scan_set_source:"past_exam_year",scan_minutes:10,selected_year_reason:"2018完了後の未露出年度を測るため",
+    questions:timedQuestions});
+  assert.notEqual(next.sessionId,old.sessionId);
+  const preserved=await db.pastSessions.get(old.sessionId),created=await db.pastSessions.get(next.sessionId);
+  assert.equal(preserved.year,2025);assert.equal(preserved.session_kind,"scan_only");
+  assert.equal(created.year,2019);assert.equal(created.session_kind,"selected_three_timed");
+  assert.match(created.stable_session_key,/^past_exam_session:2019:timed_three_question_session:/);
+  assert.equal(created.questions.every(row=>row.problemId.startsWith("PY-2019-")),true);
+  await db.pastSessions.update(next.sessionId,{cancelled:true,session_state:"cancelled"});
+});
+
+test("旧buildのscan_only active stateはprojection upgradeの初回loadだけでterminalへ収束する",async()=>{
+  const id=Number((await db.pastSessions.orderBy("id").last())?.id||0)+1;
+  await db.pastSessions.put({id,year:2025,date:"2026-09-05",session_type:"scan5",session_kind:"scan_only",
+    session_purpose:"practice_scan5",session_instance_id:"session-2025-upgrade",
+    stable_session_key:"past_exam_session:2025:scan5:session-2025-upgrade",selected_year_reason:"2025 holdout scan",
+    session_state:"selection_draft",prompt_scanned_at:"2026-09-05T12:00:00Z",scan_minutes:10,
+    questions:questions.map((row,index)=>({...row,problemId:`PY-2025-Q${index+1}`}))});
+  await db.meta.put({key:"current-plan-projection-version",value:"legacy-build"});
+  await localGet("/api/bootstrap");
+  const upgraded=await db.pastSessions.get(id);
+  assert.equal(upgraded.session_state,"completed");
+  assert.equal(upgraded.session_kind,"scan_only");
+});
+
 test("scan_only保存はAttemptもReviewも作らず通常答案採点と混同しない",async()=>{
   await localGet("/api/bootstrap");
   const before={attempts:await db.attempts.count(),reviews:await db.reviews.count(),sessions:await db.pastSessions.count()};
-  await localPost("/api/past-sessions",{session_kind:"scan_only",date:"2026-07-22",year:2024,stage:"discrimination",scan_set_source:"past_exam_year",scan_minutes:10,questions});
+  await localPost("/api/past-sessions",{session_kind:"scan_only",date:"2026-07-22",year:2024,stage:"discrimination",scan_set_source:"past_exam_year",scan_minutes:10,
+    selected_year_reason:"2024 scan evidenceを取得するため",questions});
   assert.equal(await db.attempts.count(),before.attempts);assert.equal(await db.reviews.count(),before.reviews);assert.equal(await db.pastSessions.count(),before.sessions+1);
   const saved=await db.pastSessions.orderBy("id").last();assert.equal(saved.exam_score_eligible,false);assert.equal(saved.questions[4].actualScore,null);
 });

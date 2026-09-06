@@ -1,4 +1,4 @@
-import type {Attempt,ConceptWeaknessInsight,ExamReferenceCatalogItem,PastExamSessionPurpose,PastExamSessionState,PastSession} from "./types.ts";
+import type {AdaptivePlanTask,Attempt,ConceptWeaknessInsight,ExamReferenceCatalogItem,PastExamSessionPurpose,PastExamSessionState,PastSession,Task} from "./types.ts";
 import {attemptPlanningEligible} from "./legacyKPolicy.ts";
 import {resolvePastExamProblemId} from "./examReferencePack.ts";
 
@@ -16,7 +16,7 @@ export function pastExamSessionPurpose(session:Partial<PastSession>):PastExamSes
 
 export function stablePastExamSessionKey(args:{date?:string;year:number;purpose:string;ordinal?:number;sessionInstanceId?:string}){
   const logicalPurpose=["clean_scan5","practice_scan5"].includes(args.purpose)?"scan5":args.purpose;
-  const instance=args.sessionInstanceId||`session-${Math.max(1,Number(args.ordinal||1))}`;
+  const instance=args.sessionInstanceId||`session-${args.year}-${Math.max(1,Number(args.ordinal||1))}`;
   return `past_exam_session:${args.year}:${logicalPurpose}:${instance}`;
 }
 
@@ -25,12 +25,72 @@ export function pastExamSessionKey(session:Partial<PastSession>){
     ordinal:Number(session.session_ordinal||1),sessionInstanceId:session.session_instance_id});
 }
 
+const terminalSessionStates=new Set<PastExamSessionState>(["completed","deferred","cancelled","invalidated"]);
+const yearFromProblemId=(value:unknown)=>Number(String(value||"").match(/(?:PY-|PE-)(\d{4})/i)?.[1]||0);
+const logicalPurpose=(purpose:string)=>["clean_scan5","practice_scan5"].includes(purpose)?"scan5":purpose;
+
+/** Fail-closed validation used before a persisted session can pin planning. */
+export function validatePastExamSessionIdentity(session:Partial<PastSession>){
+  const errors:string[]=[],year=Number(session.year||0),purpose=pastExamSessionPurpose(session);
+  if(!year)errors.push("session year is missing");
+  for(const question of session.questions||[]){
+    const problemYear=yearFromProblemId(question.problemId);
+    if(problemYear&&problemYear!==year)errors.push(`problem year ${problemYear} does not match session year ${year}`);
+  }
+  const key=String(session.stable_session_key||"");
+  if(key){
+    const match=key.match(/^past_exam_session:(\d{4}):([^:]+):(.+)$/);
+    if(!match)errors.push("stable session key is malformed");
+    else{
+      if(Number(match[1])!==year)errors.push(`stable session key year ${match[1]} does not match ${year}`);
+      if(match[2]!==logicalPurpose(purpose))errors.push(`stable session key purpose ${match[2]} does not match ${logicalPurpose(purpose)}`);
+    }
+  }
+  if(!terminalSessionStates.has(derivePastExamSessionState(session))&&!String(session.selected_year_reason||"").trim())
+    errors.push("selected year reason is missing");
+  return {valid:errors.length===0,errors};
+}
+
+/** Same invariant for materialized planner/Today tasks. */
+export function validatePastExamTaskIdentity(task:Partial<Task>|Partial<AdaptivePlanTask>){
+  const persisted=task as Partial<Task>,adaptive=task as Partial<AdaptivePlanTask>;
+  const errors:string[]=[],taskType=String(persisted.past_exam_task_type||adaptive.pastExamTaskType||"");
+  const isSession=["clean_scan5","practice_scan5","timed_three_question_session","simulation"].includes(taskType);
+  if(!isSession)return {valid:true,errors};
+  const year=Number(persisted.past_exam_year||adaptive.pastExamYear||0);
+  if(!year)errors.push("task year is missing");
+  const problemIds=persisted.session_problem_ids||adaptive.sessionProblemIds||[];
+  for(const problemId of problemIds){
+    const problemYear=yearFromProblemId(problemId);
+    if(problemYear&&problemYear!==year)errors.push(`problem year ${problemYear} does not match task year ${year}`);
+  }
+  const key=String(persisted.stable_session_key||adaptive.stableSessionKey||"");
+  const match=key.match(/^past_exam_session:(\d{4}):([^:]+):(.+)$/);
+  if(!match)errors.push("stable session key is missing or malformed");
+  else{
+    if(Number(match[1])!==year)errors.push(`stable session key year ${match[1]} does not match ${year}`);
+    if(match[2]!==logicalPurpose(taskType))errors.push(`stable session key purpose ${match[2]} does not match ${logicalPurpose(taskType)}`);
+  }
+  const reason=String(persisted.selected_year_reason||adaptive.selectedYearReason||"").trim();
+  if(!reason)errors.push("selected year reason is missing");
+  const title=String(persisted.title||adaptive.label||""),titleYear=Number(title.match(/(20\d{2})年/)?.[1]||0);
+  if(titleYear&&titleYear!==year)errors.push(`display year ${titleYear} does not match task year ${year}`);
+  return {valid:errors.length===0,errors};
+}
+
 /** Derives workflow progress from immutable session facts; refresh never resets it. */
 export function derivePastExamSessionState(session?:Partial<PastSession>|null):PastExamSessionState{
   if(!session)return "planned";
   if(session.session_state==="invalidated")return "invalidated";
   if(session.cancelled===true||session.session_state==="cancelled")return "cancelled";
   if(session.deferred===true)return "deferred";
+  if(session.session_kind==="scan_only"){
+    const scanSaved=!!session.prompt_scanned_at||!!session.analysis||(session.questions||[]).some(row=>
+      !!row.predictedType||!!row.firstStep||row.predictedScore!=null||row.selected===true||!!row.sinkRisk||!!row.selectionReason);
+    if(scanSaved)return "completed";
+    if(Number(session.scan_minutes||0)>0)return "scan_started";
+    return "planned";
+  }
   if(session.simulation_completed_at||session.attempt_completed_at&&Number((session.questions||[]).filter(row=>row.completed).length)>=3)return "completed";
   const selected=(session.final_selected_problem_ids||session.initial_selected_problem_ids||[]).filter(Boolean);
   const solved=(session.questions||[]).filter(row=>row.completed);
@@ -62,7 +122,7 @@ export function canonicalizePastExamSessions(sessions:PastSession[]){
     groups.set(key,[...(groups.get(key)||[]),session]);
   }
   const current:PastSession[]=[],superseded:Array<{sessionId:number;canonicalSessionId:number;reason:string}>=[];
-  for(const [key,rows] of groups){
+  for(const rows of groups.values()){
     const ranked=[...rows].sort((a,b)=>stateRank[derivePastExamSessionState(b)]-stateRank[derivePastExamSessionState(a)]||
       inputScore(b)-inputScore(a)||Number(b.id)-Number(a.id));
     const winner=ranked[0];
@@ -74,6 +134,14 @@ export function canonicalizePastExamSessions(sessions:PastSession[]){
     const rawPurpose=pastExamSessionPurpose(winner);
     const sessionPurpose=["clean_scan5","practice_scan5"].includes(rawPurpose)?
       (snapshot.classification==="clean"?"clean_scan5" as const:"practice_scan5" as const):rawPurpose;
+    const rawInstance=String(winner.session_instance_id||"");
+    const encodedInstanceYear=Number(rawInstance.match(/(?:^|-)session-(\d{4})(?:-|$)/)?.[1]||
+      rawInstance.match(/(?:^|-)(20\d{2})(?:-|$)/)?.[1]||0);
+    const reusedAcrossYears=!!rawInstance&&sessions.some(row=>row.id!==winner.id&&row.year!==winner.year&&row.session_instance_id===rawInstance);
+    const canonicalInstanceId=!rawInstance||reusedAcrossYears||(encodedInstanceYear&&encodedInstanceYear!==winner.year)?
+      `session-${winner.year}-${Number(winner.session_ordinal||1)}`:rawInstance;
+    const canonicalKey=stablePastExamSessionKey({year:winner.year,purpose:sessionPurpose,
+      ordinal:Number(winner.session_ordinal||1),sessionInstanceId:canonicalInstanceId});
     const richest=<K extends keyof PastSession>(field:K)=>ranked.find(row=>{
       const value=row[field];return Array.isArray(value)?value.length>0:value&&typeof value==="object"?Object.keys(value).length>0:value!=null&&value!=="";
     })?.[field];
@@ -88,13 +156,13 @@ export function canonicalizePastExamSessions(sessions:PastSession[]){
       linked_attempt_ids:uniqueNumbers(rows.flatMap(row=>row.linked_attempt_ids||[])),
       selected_year_reason:richest("selected_year_reason")||winner.selected_year_reason||
         `${winner.year}年の未完了sessionを継続し、開始時点の${snapshot.classification==="clean"?"未露出":"一部露出"}証拠を保持するため`};
-    current.push({...merged,stable_session_key:key,session_instance_id:winner.session_instance_id||`session-${Number(winner.session_ordinal||1)}`,
+    current.push({...merged,stable_session_key:canonicalKey,session_instance_id:canonicalInstanceId,
       session_purpose:sessionPurpose,
       session_ordinal:Number(winner.session_ordinal||1),session_state:derivePastExamSessionState(merged),
       exposure_snapshot_at_start:snapshot,scan_evidence_kind:snapshot.classification,
       session_alias_ids:uniqueNumbers(rows.flatMap(row=>[row.id,...(row.session_alias_ids||[])])).sort((a,b)=>a-b)});
     for(const row of ranked.slice(1))superseded.push({sessionId:row.id,canonicalSessionId:winner.id,
-      reason:`同一logical PastExamSession ${key} のcurrent generationへ統合`});
+      reason:`同一logical PastExamSession ${canonicalKey} のcurrent generationへ統合`});
   }
   return {current:current.sort((a,b)=>String(b.date).localeCompare(String(a.date))||b.id-a.id),superseded};
 }
@@ -122,7 +190,10 @@ const addDays=(date:string,days:number)=>{
  * not rewrite the historical session.
  */
 export function reconcilePastExamSessionEvidence(session:PastSession,attempts:Attempt[],aliasSessionIds:number[]=[]):PastSession{
-  if(session.session_kind!=="selected_three_timed")return {...session,analysis_status:session.analysis?"completed":session.analysis_status||"not_started"};
+  if(session.session_kind!=="selected_three_timed"){
+    const projected={...session,analysis_status:session.analysis?"completed":session.analysis_status||"not_started"};
+    return {...projected,session_state:derivePastExamSessionState(projected)};
+  }
   const aliases=new Set([session.id,...(session.session_alias_ids||[]),...aliasSessionIds].filter(Boolean));
   const canonicalQuestions=(session.questions||[]).map((row,index)=>({...row,
     problemId:resolvePastExamProblemId(session.year,row.problemId||row.questionLabel||`問${index+1}`)}));

@@ -358,6 +358,7 @@ export type Task = {
   repair_lineage?:RepairLineageProjection;
   today_category?:"exam_practice"|"repair";why_today?:string;
   action_class?:"exam_practice"|"targeted_repair"|"maintenance";
+  hard_blocker?:boolean;direct_exam_loss?:boolean;diagnostic_only?:boolean;
   review_due_state?:"upcoming"|"due_window"|"hard_overdue";
   review_planning_tier?:"high_value_repair"|"exceptional_maintenance"|"deferred_maintenance";
   lifecycle_success_evidence_id?:string;lifecycle_transition_provenance?:string;
@@ -436,6 +437,7 @@ export type AdaptivePlanTask = {
   repairLineage?:RepairLineageProjection;
   todayCategory?:"exam_practice"|"repair";whyToday?:string;
   actionClass?:"exam_practice"|"targeted_repair"|"maintenance";
+  hardBlocker?:boolean;directExamLoss?:boolean;diagnosticOnly?:boolean;
   reviewPlanningTier?:"high_value_repair"|"exceptional_maintenance"|"deferred_maintenance";
 };
 export type AdaptivePlanDay = {date:string;tasks:AdaptivePlanTask[];totalMinutes:number};
@@ -479,7 +481,8 @@ export type PastExamRepairCandidate = {
   requiresUserConfirmation:true;
   rootWeaknessId?:string;sourceFindingIds?:string[];weaknessSkillIds?:string[];
   matchedSkillIds?:string[];matchScore?:number;matchConfidence?:"low"|"medium"|"high";
-  repairKind?:"whitebook"|"same_problem"|"concept_mini";
+  repairKind?:"whitebook"|"same_problem"|"concept_mini"|"transfer"|"rediagnosis";
+  sameRootFailureCount?:number;interventionChanged?:boolean;
 };
 export type RepairLineageProjection = {
   sourceAttemptId:number;sourceProblemId:string;sourceFindingId:string;

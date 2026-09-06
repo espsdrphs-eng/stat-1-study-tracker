@@ -218,16 +218,23 @@ export function buildPastExamRepairCandidates(args:{
         const transfer=row?args.record.data.pastExamProblems.filter(problem=>problem.schedulable&&
           canonicalPastExamProblemId(problem)!==sourceProblemId&&problem.fine_concept_ids.includes(row.conceptId))
           .map(canonicalPastExamProblemId).slice(0,3):[];
+        const sameRootFailureCount=args.attempts.filter(other=>other.problem_id===attempt.problem_id&&
+          deriveFailureEpisode(other).rootWeaknesses.some(otherRoot=>otherRoot.rootWeaknessId===root.rootWeaknessId&&otherRoot.requiredRepair)).length;
+        const interventionChanged=sameRootFailureCount>=2;
+        const repairKind:PastExamRepairCandidate["repairKind"]=linkedWhitebook.length?"whitebook":
+          interventionChanged&&transfer.length?"transfer":interventionChanged?"rediagnosis":"concept_mini";
+        const interventionRequired=required&&repairKind!=="rediagnosis";
         candidates.push({sessionId:session.id,sourceAttemptId:attempt.id,sourceProblemId,
           sourceFindingId:root.sourceFindingIds[0],sourceFindingIds:root.sourceFindingIds,
           rootWeaknessId:root.rootWeaknessId,conceptId,conceptLabel:root.title,
-          materiality:root.materiality,recurrence:root.recurrence,examImpact:root.examImpact,required,
+          materiality:root.materiality,recurrence:root.recurrence,examImpact:root.examImpact,required:interventionRequired,
           whitebookProblemIds:linkedWhitebook,transferProblemIds:transfer,
           weaknessSkillIds:unique([...root.skillIds,...(row?[row.conceptId]:[])]),matchedSkillIds:linkedWhitebook.length&&row?[row.conceptId]:[],
-          matchScore:linkedWhitebook.length?100:0,matchConfidence,repairKind:linkedWhitebook.length?"whitebook":"concept_mini",
+          matchScore:linkedWhitebook.length?100:0,matchConfidence,repairKind,sameRootFailureCount,interventionChanged,
           matchReason:linkedWhitebook.length?`fine concept「${row!.displayName}」と検証済みsolution linkが一致`:
             `exact skill/operation一致の白本がないため、${sourceProblemId}の該当部分を局所補修`,
-          reason:root.requiredRepair?`過去問 ${sourceProblemId} の本番得点を変える${root.errorTypes.join("/")} rootを最小補修`:
+          reason:interventionChanged?`${sameRootFailureCount}回失敗した同一形式を繰り返さず、${repairKind==="transfer"?"別問題transfer":"root cause再診断"}へ変更`:
+            root.requiredRepair?`過去問 ${sourceProblemId} の本番得点を変える${root.errorTypes.join("/")} rootを最小補修`:
             `単発の${root.errorTypes.join("/")}は必須化せず任意確認`,
           requiresUserConfirmation:true});
       }

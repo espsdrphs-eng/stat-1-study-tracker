@@ -45,7 +45,9 @@ test("latest-data相当の2018 clean/practice重複は履歴を残して1 curren
   const old=(await db.pastSessions.toArray()).filter(row=>row.date===today&&row.year===year).map(row=>row.id);
   if(old.length)await db.pastSessions.bulkDelete(old);
   const base={date:today,year,session_kind:"selected_three_timed",session_purpose:"timed_three_question_session",
-    session_ordinal:1,stage:"calibration",scan_set_source:"past_exam_year",questions:[]};
+    session_ordinal:1,stage:"calibration",scan_set_source:"past_exam_year",
+    selected_year_reason:"2018は完全未露出でclean選題を測れるため",
+    questions:[1,2,3,4,5].map(index=>({problemId:`PY-2018-Q${index}`,questionLabel:`問${index}`}))};
   await db.pastSessions.add({...base,scan_minutes:10,scan_evidence_kind:"clean",
     exposure_snapshot_at_start:{classification:"clean",exposed_problem_ids:[],total_problem_count:5,captured_at:`${today}T00:00:00Z`}});
   await db.pastSessions.add({...base,scan_minutes:20,scan_evidence_kind:"practice"});
@@ -61,7 +63,7 @@ test("latest-data相当の2018 clean/practice重複は履歴を残して1 curren
   assert.equal(active[0].exposure_snapshot_at_start.classification,"clean");
   assert.equal(raw.filter(row=>row.date===today&&row.year===year).length,2,"history rows are retained");
   const current=await localGet("/api/bootstrap");
-  assert.equal(current.today.currentTask.stable_session_key,current.today.canonicalStudyPlan.primaryAction.stable_session_key);
+  assert.equal(current.today.currentTask?.stable_session_key,current.today.canonicalStudyPlan.primaryAction?.stable_session_key);
   const again=await localPost("/api/integrity/repair",{});
   assert.equal(Object.values(again.changes).reduce((sum,value)=>sum+Number(value||0),0),0);
   assert.equal(again.after.counts.duplicate_active_past_session,0);

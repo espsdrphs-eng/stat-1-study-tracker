@@ -4,6 +4,7 @@ import { reviewExecutionState } from "./integrityEngine.ts";
 import { resolveCanonicalProblemId } from "./examReadiness.ts";
 import {currentActionFingerprint} from "./examOptimizationPolicy.ts";
 import {todayLearningCategory,whyToday} from "./todayLearningPolicy.ts";
+import {validatePastExamTaskIdentity} from "./pastExamPlanning.ts";
 
 export const ADAPTIVE_PLANNER_VERSION="adaptive-v1";
 
@@ -56,6 +57,7 @@ export function adaptivePlanDayToTasks(args:{
         review_planning_tier:item.reviewPlanningTier,
         repair_lineage:item.repairLineage,
         action_class:item.actionClass,
+        hard_blocker:item.hardBlocker,direct_exam_loss:item.directExamLoss,diagnostic_only:item.diagnosticOnly,
         today_category:item.todayCategory||"repair",
         why_today:item.whyToday||item.reason,
       } as Task;
@@ -97,6 +99,7 @@ export function adaptivePlanDayToTasks(args:{
       today_category:item.todayCategory,
       why_today:item.whyToday,
     } as Task;
+    if(!validatePastExamTaskIdentity(projected).valid)continue;
     projected.today_category=projected.today_category||todayLearningCategory(projected);
     projected.why_today=projected.why_today||whyToday(projected);
     result.push(projected);

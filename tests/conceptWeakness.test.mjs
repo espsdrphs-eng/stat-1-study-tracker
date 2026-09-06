@@ -117,3 +117,17 @@ test("selected threeのmajor weaknessを非選択の較正用Attemptより先に
   assert.ok(rows.length<=2);
   assert.ok(rows.every(row=>[1,3,5].includes(row.sourceAttemptId)),JSON.stringify(rows));
 });
+
+test("same rootを同一problemで2回失敗したら3回目の同形式repairを作らずtransferへ介入変更する",()=>{
+  const rec=record({data:{...record().data,pastExamProblems:[pastProblem(2021,1,["c1"]),pastProblem(2022,1,["c1"])]}});
+  const rootContract={gradedParts:[{id:"calc",label:"主要計算",rootCauseKey:"root-operation"}]};
+  const attempts=[1,2].map((id,index)=>attempt(id,"PY-2021-Q1",`2026-09-0${index+1}`,{score_numeric:45,
+    review_outcome:"failed",grading_contract:rootContract,
+    graded_findings:[{graded_part_id:"calc",error_type:"W",evidence:"同じ主要計算で停止",resolved:false}]}));
+  const weaknesses=analyzeConceptWeaknesses({record:rec,problems,attempts,reviews:[],weakNotes:[],today:"2026-09-06"});
+  const session={id:30,year:2021,date:"2026-09-01",session_kind:"scan_plus_one",session_type:"scan5",
+    stage:"calibration",scan_set_source:"past_exam_year",questions:[],linked_attempt_ids:[1,2]};
+  const rows=buildPastExamRepairCandidates({record:rec,sessions:[session],attempts,conceptWeaknesses:weaknesses,problems});
+  assert.equal(rows[0].sameRootFailureCount,2);assert.equal(rows[0].interventionChanged,true);
+  assert.equal(rows[0].repairKind,"transfer");assert.notEqual(rows[0].sourceProblemId,rows[0].transferProblemIds[0]);
+});
