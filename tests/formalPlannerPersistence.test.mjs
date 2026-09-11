@@ -29,12 +29,29 @@ test("公開更新とplanner mode変更は既存当日snapshotを上書きしな
 
 test("同日切替は差分previewだけでは変更せず、明示確定後も履歴を残す",async()=>{
   const key=`today-plan-snapshot:${today()}`;
+  const older=JSON.parse((await db.meta.get(key)).value);
+  older.tasks[0].minutes+=1;
+  await db.meta.put({key,value:JSON.stringify(older)});
   const before=(await db.meta.get(key)).value;
   const preview=await localPost("/api/today/adaptive-preview",{});
   assert.equal(preview.preview,true);
+  assert.ok(preview.changes>0);
   assert.equal((await db.meta.get(key)).value,before);
   await localPost("/api/today/recalculate",{});
   const after=JSON.parse((await db.meta.get(key)).value);
   assert.equal(after.planner_source,"adaptive");
   assert.ok((await db.meta.where("key").startsWith(`today-plan-snapshot-history:${today()}:`).count())>=1);
+});
+
+test("同じ状態の2回目replanは変更ゼロでsnapshot/historyを書き直さない",async()=>{
+  await localPost("/api/today/recalculate",{});
+  const key=`today-plan-snapshot:${today()}`,before=(await db.meta.get(key)).value;
+  const history=await db.meta.where("key").startsWith(`today-plan-snapshot-history:${today()}:`).count();
+  const preview=await localPost("/api/today/adaptive-preview",{});
+  assert.equal(preview.added,0);
+  assert.equal(preview.changes,0);
+  const result=await localPost("/api/today/recalculate",{});
+  assert.equal(result.changes,0);
+  assert.equal((await db.meta.get(key)).value,before);
+  assert.equal(await db.meta.where("key").startsWith(`today-plan-snapshot-history:${today()}:`).count(),history);
 });

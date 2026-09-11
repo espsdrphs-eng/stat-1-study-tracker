@@ -194,7 +194,9 @@ function planDays(args:{
   const allActiveReviews=args.reviews.filter(review=>reviewExecutionState(review,args.startDate)==="actionable")
     .sort((a,b)=>a.due_date.localeCompare(b.due_date)||a.id-b.id);
   const reviewDecisions=new Map(allActiveReviews.map(review=>[review.id,reviewPlanningDecision({
-    review,attempts:args.attempts,problems:args.problems,weaknesses:args.weaknesses
+    review,attempts:args.attempts,problems:args.problems,weaknesses:args.weaknesses,
+    pastExamIsPrimary:deriveLearningPolicy(args.daysRemaining).pastExamIsPrimary,
+    repairCandidates:args.repairCandidates,pastSessions:canonicalPastSessions
   })]));
   const activeReviews=allActiveReviews.filter(review=>reviewDecisions.get(review.id)?.scheduleAsRequired);
   const deferredReviews=allActiveReviews.filter(review=>!reviewDecisions.get(review.id)?.scheduleAsRequired);
@@ -222,7 +224,7 @@ function planDays(args:{
     const source=sourceForReview(review),episode=source?deriveFailureEpisode(source):undefined;
     return reviewSourceRank(review)===0&&!!episode?.rootWeaknesses.some(root=>root.requiredRepair&&root.masteryLevel===1);
   };
-  const activeReviewProblemIds=new Set(allActiveReviews.filter(review=>String(review.earliest_date||review.due_date)<=horizonEnd)
+  const activeReviewProblemIds=new Set(activeReviews.filter(review=>String(review.earliest_date||review.due_date)<=horizonEnd)
     .map(review=>review.problem_id));
   const allowNew=examHorizonPolicy(args.daysRemaining).allowNewWhitebook;
   const recentEligibleSuccesses=args.attempts.filter(attempt=>attempt.date>=addCalendarDays(args.startDate,-14)&&
@@ -258,22 +260,31 @@ function planDays(args:{
         "過去問・答案証拠で確認された弱点だけを補修するため":
         "初見の得点形成と時間内の答案化を測るため"}):null;
   };
+  const usedRepairRoots=new Set<string>();
   const makeTargetedRepair=(date:string)=>{
-    const candidate=args.repairCandidates?.find(row=>row.required&&(
+    const candidate=args.repairCandidates?.find(row=>row.required&&!usedRepairRoots.has(row.rootWeaknessId||row.conceptId)&&(
+      row.repairKind==="transfer"&&row.transferProblemIds.some(id=>!usedProblems.has(id))||
       row.repairKind==="concept_mini"||row.repairKind==="same_problem"||
       row.repairKind==="whitebook"&&row.matchConfidence==="high"&&row.whitebookProblemIds.some(id=>!usedProblems.has(id))));
     if(!candidate)return args.repairCandidates?null:makeWhitebook(date,[2,4,5,6,7,8],"skeleton",
       "過去問で確認された高価値targetだけを局所補修","score_building",true);
+    usedRepairRoots.add(candidate.rootWeaknessId||candidate.conceptId);
     if(candidate.repairKind==="transfer"){
       const transferProblemId=candidate.transferProblemIds.find(id=>!usedProblems.has(id));
       const transferProblem=args.problems.find(row=>row.problem_id===transferProblemId);
       if(!transferProblem||!transferProblemId)return null;
       usedProblems.set(transferProblemId,date);
       return task({date,slot:"score_building",kind:"past_exam",label:transferProblem.display_label||transferProblem.title,
-        problemId:transferProblemId,conceptId:candidate.conceptId,minutes:35,mode:"full",
-        reason:`${candidate.sourceProblemId}で同じrootを反復失敗したため、別問題で介入形式を変更`,purpose:"transfer_check",
+        problemId:transferProblemId,referenceProblemId:transferProblemId,conceptId:candidate.conceptId,minutes:35,mode:"full",
+        reason:candidate.reason,purpose:"transfer_check",
         purposeLabel:"別問題で転移確認",requiresUserSelection:false,todayCategory:"exam_practice",actionClass:"exam_practice",
-        whyToday:"同じ問題の反復ではなく、別問題で同じ能力を参照なし再現できるか測るため"});
+        whyToday:"同じ問題の反復ではなく、別問題で同じ能力を参照なし再現できるか測るため",
+        repairLineage:{sourceAttemptId:candidate.sourceAttemptId,sourceProblemId:candidate.sourceProblemId,
+          sourceFindingId:candidate.sourceFindingId,sourceFindingIds:candidate.sourceFindingIds,rootConceptId:candidate.conceptId,
+          materiality:candidate.materiality,recurrence:candidate.recurrence,examImpact:candidate.examImpact,
+          repairProblemId:transferProblemId,rootWeaknessId:candidate.rootWeaknessId,
+          weaknessSkillIds:candidate.weaknessSkillIds,matchedSkillIds:candidate.weaknessSkillIds,
+          matchConfidence:"high",matchReason:candidate.reason,repairSuccessEvidenceId:candidate.repairSuccessEvidenceId}});
     }
     if(candidate.repairKind==="rediagnosis")return null;
     if(candidate.repairKind!=="whitebook"){
@@ -285,6 +296,7 @@ function planDays(args:{
         requiresUserSelection:false,todayCategory:"repair",actionClass:"targeted_repair",
         whyToday:`${candidate.sourceProblemId}のmajor root weaknessだけを5〜10分で訂正するため`,
         repairLineage:{sourceAttemptId:candidate.sourceAttemptId,sourceProblemId:candidate.sourceProblemId,
+          sourceFindingIds:candidate.sourceFindingIds,
           sourceFindingId:candidate.sourceFindingId,rootConceptId:candidate.conceptId,materiality:candidate.materiality,
           recurrence:candidate.recurrence,examImpact:candidate.examImpact,repairProblemId:candidate.sourceProblemId,
           matchReason:candidate.matchReason,sourcePastExamProblemId:candidate.sourceProblemId,
@@ -301,6 +313,7 @@ function planDays(args:{
       requiresUserSelection:false,todayCategory:"repair",actionClass:"targeted_repair",
       whyToday:`${candidate.sourceProblemId}の失点原因「${candidate.conceptLabel}」だけを補修するため`,
       repairLineage:{sourceAttemptId:candidate.sourceAttemptId,sourceProblemId:candidate.sourceProblemId,
+        sourceFindingIds:candidate.sourceFindingIds,
         sourceFindingId:candidate.sourceFindingId,rootConceptId:candidate.conceptId,materiality:candidate.materiality,
         recurrence:candidate.recurrence,examImpact:candidate.examImpact,repairProblemId,matchReason:candidate.matchReason,
         sourcePastExamProblemId:candidate.sourceProblemId,rootWeaknessId:candidate.rootWeaknessId,
@@ -393,7 +406,7 @@ function planDays(args:{
       if(weekday===0)score=makePast(date,"timed",90,"5問scan・3問選択・3問答案を一つの本番型sessionで実施");
       else if([2,4].includes(weekday))score=makePast(date,"past_exam",35,"未見・過去問で得点形成とtransferを測定");
       else if(weekday===6)score=makePast(date,"past_exam",35,"別の未見問題でtransferを測定");
-      else score=makeTargetedRepair(date);
+      else score=makeTargetedRepair(date)||makePast(date,"past_exam",35,"必要な補修がなければ、別問題の本番答案で再測定する");
     }else{
       score=makePast(date,weekday===0||weekday===4?"timed":weekday===2?"scan5":"past_exam",
         weekday===0||weekday===4?90:weekday===2?10:35,"本番形式・3題選択・確認済み弱点を主軸に固定");

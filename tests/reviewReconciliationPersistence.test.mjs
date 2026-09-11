@@ -78,7 +78,9 @@ test("safe integrity repair replaces a partially stale repair and hydrates Today
   assert.ok(currentReview);
   assert.deepEqual(currentReview.grading_contract.gradedParts.map(row=>row.id).sort(),["C","E"]);
   assert.equal(currentReview.minutes,10);
-  assert.equal(currentReview.triage,"must");
+  // Snapshot history stays must, but the two remaining isolated N findings
+  // have no current major consequence and must not suppress exam practice.
+  assert.equal(currentReview.triage,"tomorrow");
   const count=await db.reviews.count();
   await localPost("/api/integrity/repair",{});
   await localPost("/api/integrity/repair",{});

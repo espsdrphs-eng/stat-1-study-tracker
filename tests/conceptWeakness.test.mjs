@@ -47,8 +47,11 @@ test("遅延・別問題成功で解消し、その後の失敗を再発にす�
   const base=[attempt(1,"PY-2021-Q1","2026-07-01"),attempt(2,"PY-2022-Q1","2026-07-02"),
     attempt(3,"PY-2021-Q1","2026-07-05",{mark:"○",error_type:"none",error_types:["none"],score_numeric:80}),
     attempt(4,"PY-2022-Q1","2026-07-06",{mark:"○",error_type:"none",error_types:["none"],score_numeric:85})];
-  assert.equal(analyze(base).state,"resolved");
-  assert.equal(analyze([...base,attempt(5,"PY-2022-Q1","2026-07-12")]).state,"relapsed");
+  const scoped=rows=>rows.map(a=>({...a,grading_confidence:.95,
+    grading_contract:{gradedParts:[{id:"calc",label:"変換",rootCauseKey:"c1"}]},
+    graded_findings:[{graded_part_id:"calc",error_type:a.error_type,resolved:a.error_type==="none",evidence:"係数の再現結果"}]}));
+  assert.equal(analyze(scoped(base)).state,"resolved");
+  assert.equal(analyze(scoped([...base,attempt(5,"PY-2022-Q1","2026-07-12")])).state,"relapsed");
 });
 
 test("scan_onlyから数学的補修候補を作らず、通常答案でも最大2件",()=>{
@@ -120,7 +123,8 @@ test("selected threeのmajor weaknessを非選択の較正用Attemptより先に
 
 test("same rootを同一problemで2回失敗したら3回目の同形式repairを作らずtransferへ介入変更する",()=>{
   const rec=record({data:{...record().data,pastExamProblems:[pastProblem(2021,1,["c1"]),pastProblem(2022,1,["c1"])]}});
-  const rootContract={gradedParts:[{id:"calc",label:"主要計算",rootCauseKey:"root-operation"}]};
+  // The intervention is a transfer only when the destination explicitly tests this root.
+  const rootContract={gradedParts:[{id:"calc",label:"主要計算",rootCauseKey:"c1"}]};
   const attempts=[1,2].map((id,index)=>attempt(id,"PY-2021-Q1",`2026-09-0${index+1}`,{score_numeric:45,
     review_outcome:"failed",grading_contract:rootContract,
     graded_findings:[{graded_part_id:"calc",error_type:"W",evidence:"同じ主要計算で停止",resolved:false}]}));

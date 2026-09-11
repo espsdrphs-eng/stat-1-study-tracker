@@ -1,5 +1,6 @@
 import type {Attempt,FailureEpisode,GradedFinding,GradingErrorType,RootWeakness} from "./types.ts";
 import {planningEligibleFindings,planningErrorsForSource} from "./legacyKPolicy.ts";
+import {partSkillIds} from "./skillEvidence.ts";
 
 const unique=<T,>(values:T[])=>[...new Set(values)];
 const stableHash=(value:string)=>[...value].reduce((hash,char)=>Math.imul(hash^char.charCodeAt(0),16777619)>>>0,2166136261).toString(16).padStart(8,"0");
@@ -17,7 +18,7 @@ function findingEvidence(attempt:Attempt):FindingEvidence[]{
     return {findingId:finding.graded_part_id,rootKey:part?.rootCauseKey||stable||finding.graded_part_id,
       errorType:finding.error_type,evidence:finding.evidence||"",title:part?.currentLabel||part?.label||attempt.error_point||finding.graded_part_id,
       masteryLevel:part?.masteryLevel||(finding.error_type==="K"?1:2),explicitMajor:false,confidence:"high" as const,
-      skillIds:[part?.rootCauseKey||stable||""].filter(Boolean)};
+      skillIds:partSkillIds(part)};
   });
   const observed=(attempt.observed_out_of_scope_findings||[]).filter(finding=>finding.create_target_candidate&&
     finding.materiality==="major"&&finding.confidence!=="low").map((finding,index)=>({
@@ -31,9 +32,9 @@ function findingEvidence(attempt:Attempt):FindingEvidence[]{
   const errors=planningErrorsForSource(attempt) as GradingErrorType[];
   if(!errors.length)return [];
   const description=String(attempt.error_point||attempt.result_summary||attempt.next_action||`${errors.join("/")} error`);
-  return [{findingId:`attempt:${attempt.id}:legacy`,rootKey:`legacy:${stableHash(description)}`,
-    errorType:errors[0],evidence:description,title:description,
-    masteryLevel:errors.includes("K")?1:2,explicitMajor:false,confidence:"medium",skillIds:[]}];
+  return errors.map(errorType=>({findingId:`attempt:${attempt.id}:legacy:${errorType}`,rootKey:`legacy:${stableHash(description)}`,
+    errorType,evidence:description,title:description,
+    masteryLevel:errors.includes("K")?1 as const:2 as const,explicitMajor:false,confidence:"medium" as const,skillIds:[]}));
 }
 
 /**

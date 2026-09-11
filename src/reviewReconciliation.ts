@@ -7,6 +7,8 @@ import {currentTargetPayloadMatches,withCurrentFindingPayload} from "./currentTa
 import {resolvePersistedAttemptLifecycle} from "./reviewTransition.ts";
 import {correctiveFeedbackAvailable,isSuccessfulTransferForProblem} from "./examOptimizationPolicy.ts";
 import {attemptPlanningEligible,findingPlanningEligible,planningErrorsForSource} from "./legacyKPolicy.ts";
+import {deriveTransferEvidence,partSkillIds} from "./skillEvidence.ts";
+import {deriveFailureEpisode} from "./failureEpisode.ts";
 
 const ACTIVE_STATUSES=new Set(["pending","overdue"]);
 const STANDARD_PURPOSES=new Set(["error_repair","retrieval_check"]);
@@ -210,10 +212,16 @@ export function analyzeReviewReconciliation(args:{
     const desired=new Map<string,LearningEvidenceEvent>();
     for(const event of lastEvent.values())if(!event.resolved)desired.set(event.stableIdentityKey,event);
     const ambiguous:string[]=[];
-    for(const repair of repairs){
+    const unprovenLegacyChecks=delayed.filter(review=>{
+      const source=attemptMap.get(Number(review.source_attempt_id||review.generated_from_attempt_id||0));
+      return !!source&&deriveFailureEpisode(source).rootWeaknesses.some(root=>root.requiredRepair);
+    });
+    for(const repair of [...repairs,...unprovenLegacyChecks]){
       const source=attemptMap.get(Number(repair.source_attempt_id||repair.generated_from_attempt_id||0));
       const parts=partsFromContract(repair).map(part=>({part,resolution:stableIndex.reviewPart(repair.id,part.id)}));
       if(!source)continue;
+      if(reviewPurpose(repair)==="retrieval_check"&&errorsFor(source).length===0&&
+        !(source.observed_out_of_scope_findings||[]).some(f=>f.materiality==="major"&&f.create_target_candidate))continue;
       // A legacy unstructured Attempt has one synthetic learning target in
       // error_point. next_action is its correction, never another target.
       if(!(source.graded_findings||[]).length&&source.error_point){
@@ -241,6 +249,13 @@ export function analyzeReviewReconciliation(args:{
       for(const {part,resolution} of parts){
         if(!resolution?.identityKey){ambiguous.push(`Review ${repair.id} / ${part.id}: ${resolution?.reason||"stable target identity is missing"}`);continue;}
         const key=resolution.identityKey;
+        // Older generators duplicated a source finding as a synthetic root.
+        // Require identical source Attempt + exact finding evidence (not a
+        // similar label on another problem) before preferring its canonical slot.
+        const payload=String(part.currentEvidence||part.currentLabel||part.label||"").trim();
+        const sourceMatches=events.filter(e=>e.attemptId===source.id&&!e.observedOutOfScope&&
+          e.evidence.trim()===payload&&payload.length>=15);
+        if(part.id.startsWith("part:")&&sourceMatches.length===1&&sourceMatches[0].stableIdentityKey!==key)continue;
         const later=events.filter(event=>event.stableIdentityKey===key&&attemptAfter(attemptMap.get(event.attemptId)!,source)).at(-1);
         if(!later&&!lastEvent.has(key))desired.set(key,{problemId,part:withStableTargetKey(part,resolution.key),
           stableIdentityKey:key,stableTargetKey:resolution.key,
@@ -248,9 +263,10 @@ export function analyzeReviewReconciliation(args:{
           evidence:source.error_point||"",observedOutOfScope:false});
       }
     }
-    const transferSuccesses=args.attempts.filter(attempt=>isSuccessfulTransferForProblem(attempt,problemId));
+    const skillTransfers=deriveTransferEvidence(args.attempts).filter(t=>t.sourceProblemId===problemId);
     for(const [key,event] of desired){
-      if(transferSuccesses.some(attempt=>attempt.id>event.attemptId||attempt.date>event.attemptDate))desired.delete(key);
+      const skills=partSkillIds(event.part);
+      if(skills.length&&skills.every(id=>skillTransfers.some(t=>t.successAttemptId>event.attemptId&&t.skillId===id)))desired.delete(key);
     }
     const desiredRows=[...desired.values()].sort((a,b)=>a.stableIdentityKey.localeCompare(b.stableIdentityKey));
     const desiredIds=desiredRows.map(row=>row.stableIdentityKey);
@@ -307,7 +323,7 @@ export function analyzeReviewReconciliation(args:{
       }
       const purpose=reviewPurpose(review);
       if(!STANDARD_PURPOSES.has(purpose))continue;
-      const laterTransfer=transferSuccesses.find(attempt=>attempt.id>source.id||attempt.date>source.date);
+      const laterTransfer=args.attempts.find(attempt=>isSuccessfulTransferForProblem(attempt,problemId,source));
       if(laterTransfer){
         supersedes.push({reviewId:review.id,category:"graduated_but_pending",
           reason:`別問題Attempt ${laterTransfer.id}のtransfer成功でsame-problem確認を代替`});

@@ -1,5 +1,6 @@
 import type {AssessmentTiming,Attempt,GradedPartContract,LearningPurpose,Review,Task} from "./types.ts";
 import {addCalendarDays} from "./reviewSchedulePolicy.ts";
+import {partSkillIds,successfulSkillIds} from "./skillEvidence.ts";
 
 export type ExamHorizonPhase="foundation_to_A"|"A_and_past_parallel"|"past_exam_main"|"final_stabilization";
 export type FailureStrength="standard"|"strong"|"level1_collapse";
@@ -90,10 +91,13 @@ export function reviewPurposeAfterCorrection(args:{attempt:Partial<Attempt>;expl
   return "error_repair";
 }
 
-export function isSuccessfulTransferForProblem(attempt:Attempt,problemId:string){
-  const clean=(attempt.error_types||[attempt.error_type]).every(error=>!['K','W','N','C'].includes(String(error)));
-  return attempt.problem_id!==problemId&&attempt.source_problem_id===problemId&&attempt.transfer_evidence===true&&clean&&
-    attempt.review_outcome==="success"&&Number(attempt.actual_reference_level||0)===0;
+export function isSuccessfulTransferForProblem(attempt:Attempt,problemId:string,source?:Attempt){
+  if(!source||attempt.id<=source.id||attempt.problem_id===problemId||attempt.source_problem_id!==problemId)return false;
+  const skills=[...new Set((source.grading_contract?.gradedParts||[]).flatMap(partSkillIds))];
+  const successes=new Set(successfulSkillIds(attempt));
+  // A whole-problem substitution requires every explicit source skill. Partial
+  // transfer is applied per target by the canonical skill-evidence reducer.
+  return skills.length>0&&skills.every(id=>successes.has(id));
 }
 
 const partKeys=(review?:Partial<Review>)=>[...(review?.grading_contract?.gradedParts||[])]

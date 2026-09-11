@@ -364,3 +364,5 @@ header h1{font-size:28px;font-weight:700;letter-spacing:-.02em;color:var(--text-
 @media(max-width:1180px){.dashboard-kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.dashboard-kpi{min-height:164px}}
 @media(max-width:640px){.dashboard-kpi-intro{align-items:flex-start;flex-direction:column}.dashboard-kpi-grid{grid-template-columns:1fr}.dashboard-kpi{min-height:0}.dashboard-support-strip{display:grid}.dashboard-kpi-action .button-row{flex-direction:column;align-items:stretch}}
 @media(max-width:900px){.initial-grading-panel{grid-template-columns:1fr}.initial-grading-panel small{grid-column:auto}}
+.past-workspace-next .primary{flex-shrink:0;white-space:nowrap}
+.weekly-chart{min-width:0}.week-bars{gap:4px}.week-bars>div{min-width:0}.week-bars small{white-space:normal;overflow-wrap:anywhere}

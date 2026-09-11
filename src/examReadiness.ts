@@ -1,7 +1,9 @@
 import type { Attempt, PastSession, Problem, ProblemAlias } from "./types.ts";
 import { examScoreEligibility } from "./scoreEligibility.ts";
-import { excludeLegacyKFromPlanning } from "./legacyKPolicy.ts";
-import { scanMetrics, selectionSuccessRate, validatePastExamSession } from "./pastExamWorkflow.ts";
+import { excludeLegacyKFromPlanning, findingPlanningEligible } from "./legacyKPolicy.ts";
+import { scanMetrics, selectionSuccessRate } from "./pastExamWorkflow.ts";
+import {resolvePastExamProblemId} from "./examReferencePack.ts";
+import {deriveTransferEvidence,partSkillIds,problemSkillIds} from "./skillEvidence.ts";
 import {examHorizonPolicy} from "./examOptimizationPolicy.ts";
 
 export type ExamPhase =
@@ -11,6 +13,7 @@ export type ExamPhase =
   | "final_stabilization";
 
 export type ExamReadinessMetrics = {
+  evidence?: LearningMetricEvidence;
   unseenScoreRate: number | null;
   timedCompletionRate: number | null;
   selectionSuccessRate: number | null;
@@ -31,6 +34,17 @@ export type ExamReadinessMetrics = {
     wReviews: number;
   };
 };
+
+export type MetricEvidence={value:number|null;numerator:number;denominator:number;evidenceCount:number;
+  eligibleEvidenceRule:string;modeScope:string[];lastUpdated:string|null;confidence:"low"|"medium"|"high"};
+export type LearningMetricEvidence={
+  selectedThree:MetricEvidence&{sessions:Array<{sessionId:number;year:number;score:number;attemptIds:number[]}>};
+  individual:MetricEvidence;diagnostic:MetricEvidence;timed:MetricEvidence;selection:MetricEvidence;
+  transfer?:MetricEvidence;
+};
+const metric=(numerator:number,denominator:number,count:number,rule:string,modes:string[],date:string|null,percent=false):MetricEvidence=>({
+  value:denominator?numerator/denominator*(percent?100:1):null,numerator,denominator,evidenceCount:count,
+  eligibleEvidenceRule:rule,modeScope:modes,lastUpdated:date,confidence:count>=6?"high":count>=3?"medium":"low"});
 
 export function normalizeProblemId(value: string) {
   const raw = String(value || "").toUpperCase().replace(/[‐‑‒–—―ー－]/g, "-").trim();
@@ -104,6 +118,19 @@ export function calculateExamReadinessMetrics(args: {
   today: string;
 }): ExamReadinessMetrics {
   const { problems, attempts, pastSessions, aliases, today } = args;
+  void today;
+  const sessionAttemptIds=new Set(pastSessions.flatMap(s=>[...(s.linked_attempt_ids||[]),
+    ...(s.selected_timed_attempt_ids||[]),...(s.counterfactual_calibration_attempt_ids||[])]));
+  const skillProblems=new Map<string,Set<string>>();
+  for(const p of problems)for(const id of problemSkillIds(p))skillProblems.set(id,new Set([...(skillProblems.get(id)||[]),p.problem_id]));
+  for(const a of attempts)for(const id of (a.grading_contract?.gradedParts||[]).flatMap(partSkillIds))
+    skillProblems.set(id,new Set([...(skillProblems.get(id)||[]),a.problem_id]));
+  const transferRows=deriveTransferEvidence(attempts);
+  const transferOpportunities=new Set(attempts.filter(a=>!a.exclude_from_metrics&&!a.duplicate_of_attempt_id).flatMap(a=>
+    (a.graded_findings||[]).filter(f=>findingPlanningEligible(a,f)&&!f.resolved&&f.error_type!=="none").flatMap(f=>
+      partSkillIds(a.grading_contract?.gradedParts.find(p=>p.id===f.graded_part_id))
+        .filter(id=>(skillProblems.get(id)?.size||0)>1).map(id=>`${a.problem_id}|${id}`))));
+  const transferred=new Set(transferRows.map(t=>`${t.sourceProblemId}|${t.skillId}`));
   const problemMap = new Map(problems.map(problem => [resolveCanonicalProblemId(problem.problem_id, aliases), problem]));
   const sorted = [...attempts].sort((a, b) => `${a.date}:${a.id}`.localeCompare(`${b.date}:${b.id}`));
   const lastByProblem = new Map<string, Attempt>();
@@ -120,16 +147,20 @@ export function calculateExamReadinessMetrics(args: {
     const daysSince = previous
       ? Math.floor((new Date(`${attempt.date}T12:00:00`).getTime() - new Date(`${previous.date}T12:00:00`).getTime()) / 86400000)
       : Infinity;
-    const eligibility=attempt.exam_score_eligible===true||examScoreEligibility(attempt,problem).eligible;
+    const eligibility=!attempt.exclude_from_metrics&&!attempt.duplicate_of_attempt_id&&
+      !attempt.is_review_attempt&&attempt.learning_purpose!=="error_repair"&&
+      attempt.evaluation_scope!=="conditional_full"&&attempt.assessment_timing!=="same_session_correction"&&
+      ["full","timed","timed_single","exam_90min","past_exam"].includes(attempt.mode)&&noReference(attempt)&&!attempt.hint_used&&
+      (attempt.exam_score_eligible===true||examScoreEligibility(attempt,problem).eligible);
     const eligibilityResult=examScoreEligibility(attempt,problem);
-    const standaloneExamAttempt=!attempt.parent_past_session_id;
+    const standaloneExamAttempt=!attempt.parent_past_session_id&&!sessionAttemptIds.has(attempt.id)&&
+      attempt.session_role!=="counterfactual_calibration";
     if (standaloneExamAttempt&&(!previous || daysSince >= 30) && eligibility && noReference(attempt) && validScore(attempt)&&
       Number(attempt.time_minutes||0)<=Number(attempt.time_limit_minutes||eligibilityResult.timeLimitMinutes||0)) transferAttempts.push(attempt);
     const mode = attempt.mode || "";
     const timeLimit = mode === "exam_90min" ? 90 : mode === "full" ? 35 : problem?.category === "past_exam" ? 30 : 0;
-    if (standaloneExamAttempt&&eligibility&&(mode === "full" || mode === "exam_90min" || problem?.category === "past_exam") && timeLimit) timedAttempts.push(attempt);
-    if (standaloneExamAttempt&&eligibility&&problem?.category === "past_exam" && validScore(attempt)&&
-      Number(attempt.time_minutes||0)<=Number(attempt.time_limit_minutes||eligibilityResult.timeLimitMinutes||0)) pastExamAttempts.push(attempt);
+    if (standaloneExamAttempt&&eligibility&&Number(attempt.time_minutes)>0&&timeLimit) timedAttempts.push(attempt);
+    if (standaloneExamAttempt&&eligibility&&problem?.category === "past_exam" && validScore(attempt)) pastExamAttempts.push(attempt);
     const errors = new Set([...(attempt.error_types || []), attempt.primary_error_type || attempt.error_type || ""].filter(Boolean));
     if(excludeLegacyKFromPlanning(attempt))errors.delete("K");
     if (errors.has("K")) kGroups.set(canonicalId, (kGroups.get(canonicalId) || 0) + 1);
@@ -147,8 +178,7 @@ export function calculateExamReadinessMetrics(args: {
     return limit > 0 &&
       Number(attempt.time_minutes || 0) > 0 &&
       Number(attempt.time_minutes || 0) <= limit &&
-      Number(attempt.score_numeric || 0) >= 60 &&
-      !["×", "ﾃ・"].includes(attempt.mark || "");
+      attempt.conclusion_reached!==false;
   });
 
   const scanSessions = pastSessions.filter(session => ["scan_5_questions", "scan5"].includes(session.session_type)||!!session.session_kind);
@@ -156,26 +186,55 @@ export function calculateExamReadinessMetrics(args: {
   const scanRows=scanSessions.map(scanMetrics);
   const averageNullable=(values:Array<number|null>)=>{const rows=values.filter((value):value is number=>value!=null);return rows.length?Math.round(rows.reduce((a,b)=>a+b,0)/rows.length):null};
 
-  const sessionEligible=(session:PastSession)=>session.session_kind==="selected_three_timed"
-    ?session.exam_score_eligible===true&&validatePastExamSession(session).examScoreEligible
-    :session.exam_score_eligible===true&&Number(session.actual_reference_level||0)===0&&session.evaluation_scope!=="conditional_full";
-  const timedSessions=pastSessions.filter(session=>sessionEligible(session)&&Number(session.actual_total_minutes||session.actual_minutes||session.selection_time_minutes||0)>0);
-  const sessionScore=(session:PastSession)=>{
-    if(session.session_kind!=="selected_three_timed")return Number(session.score_numeric||0);
-    const scored=(session.questions||[]).filter(row=>row.completed&&row.actualScore!=null);
-    return scored.length?scored.reduce((sum,row)=>sum+Number(row.actualScore),0)/scored.length:0;
+  const selectedRows=(session:PastSession)=>{
+    const ids=new Set((session.final_selected_problem_ids?.length?session.final_selected_problem_ids:session.initial_selected_problem_ids||[])
+      .map(id=>resolvePastExamProblemId(session.year,id)));
+    return (session.questions||[]).filter(row=>ids.size?ids.has(resolvePastExamProblemId(session.year,row.problemId)):row.selected);
   };
-  const timedSessionSuccesses=timedSessions.filter(session=>Number(session.actual_total_minutes||session.actual_minutes||session.selection_time_minutes||0)<=Number(session.time_limit_minutes||90)&&sessionScore(session)>=60);
-  const pastSessionScores=pastSessions.filter(session=>sessionEligible(session)).map(sessionScore);
+  // Time overruns are a measured deficit, not a reason to erase the score.
+  const eligibleSessions=pastSessions.filter(session=>!session.superseded_by_session_id&&session.session_kind==="selected_three_timed"&&
+    Number(session.actual_reference_level||0)===0&&session.evaluation_scope!=="conditional_full"&&
+    selectedRows(session).length===3&&selectedRows(session).every(row=>row.actualScore!=null&&Number.isFinite(row.actualScore)&&!row.referenceUsed&&!row.hintUsed));
+  const elapsed=(session:PastSession)=>Number(session.session_elapsed_minutes??
+    (Number(session.actual_total_minutes||session.actual_minutes||0)+Number(session.scan_minutes||0)));
+  const timedSessions=eligibleSessions.filter(session=>elapsed(session)>0);
+  const timedSessionSuccesses=timedSessions.filter(session=>elapsed(session)<=Number(session.time_limit_minutes||90)&&
+    (session.selected_timed_attempt_ids||[]).every(id=>attempts.find(a=>a.id===id)?.conclusion_reached!==false));
+  const selectedScores=eligibleSessions.flatMap(s=>selectedRows(s).map(q=>Number(q.actualScore)));
+  const lastDate=(rows:Array<{date:string}>)=>rows.map(r=>r.date).sort().at(-1)||null;
+  const lastEvidenceDate=(sessions:PastSession[],role:"selected"|"all"="selected")=>lastDate(sessions.flatMap(s=>{
+    const ids=role==="selected"?s.selected_timed_attempt_ids:s.linked_attempt_ids;
+    const linked=attempts.filter(a=>(ids||[]).includes(a.id));
+    return (linked.length?linked:[s]).map(row=>({date:row.date}));
+  }));
+  const selectedEvidence={...metric(selectedScores.reduce((a,b)=>a+b,0),selectedScores.length,eligibleSessions.length,
+    "参照なしの選択3問のみ。非選択・補修を除外。時間超過も得点の母数に保持",["selected_three_timed"],lastEvidenceDate(eligibleSessions)),
+    sessions:eligibleSessions.map(s=>({sessionId:s.id,year:s.year,score:selectedRows(s).reduce((sum,q)=>sum+Number(q.actualScore),0)/3,
+      attemptIds:s.selected_timed_attempt_ids||[]}))};
+  const diagnosticRows=pastSessions.flatMap(s=>(s.questions||[]).filter(q=>!selectedRows(s).includes(q)&&q.actualScore!=null));
+  const individual=metric(pastExamAttempts.reduce((sum,a)=>sum+Number(a.score_numeric),0),pastExamAttempts.length,pastExamAttempts.length,
+    "session未所属の参照なしfull/timed。選択3問KPIとは別集計",["full","timed"],lastDate(pastExamAttempts));
+  const timed=metric(timedSessions.length?timedSessionSuccesses.length:timedSuccesses.length,
+    timedSessions.length||timedAttempts.length,timedSessions.length||timedAttempts.length,
+    "時間記録あり・参照なし。得点率とは独立。3問sessionがあればsession単位のみ",timedSessions.length?["selected_three_timed"]:["full","timed"],
+    timedSessions.length?lastEvidenceDate(timedSessions):lastDate(timedAttempts),true);
 
   const kDenominator = [...kGroups.values()].length;
   const wDenominator = [...wGroups.values()].length;
 
   return {
     unseenScoreRate: scoreAverage(transferAttempts),
-    timedCompletionRate: timedAttempts.length+timedSessions.length ? Math.round((timedSuccesses.length+timedSessionSuccesses.length) / (timedAttempts.length+timedSessions.length) * 100) : null,
+    timedCompletionRate:timed.value==null?null:Math.round(timed.value),
     selectionSuccessRate: scanScores.length ? Math.round(scanScores.reduce((sum, value) => sum + value, 0) / scanScores.length) : null,
-    pastExamScoreRate: pastExamAttempts.length||pastSessionScores.length?Math.round(([...pastExamAttempts.map(attempt=>Number(attempt.score_numeric||0)),...pastSessionScores].reduce((sum,value)=>sum+value,0))/(pastExamAttempts.length+pastSessionScores.length)):null,
+    pastExamScoreRate:(selectedEvidence.value??individual.value)==null?null:Math.round((selectedEvidence.value??individual.value)!),
+    evidence:{selectedThree:selectedEvidence,individual,timed,
+      transfer:metric(transferred.size,transferOpportunities.size,transferRows.length,
+        "別問題・明示skill一致・参照なし・関連finding成功・採点信頼度80%以上。母数は別問題候補がある失敗root",["different_problem"],
+        transferRows.map(t=>t.date).sort().at(-1)||null,true),
+      selection:metric(scanScores.reduce((a,b)=>a+b/100,0),scanScores.length,scanScores.length,
+        "clean scanと選択3問・比較可能な採点が揃ったsessionのみ",["clean_scan5"],lastEvidenceDate(scanSessions.filter(s=>selectionSuccessRate(s)!=null),"all"),true),
+      diagnostic:metric(diagnosticRows.reduce((sum,q)=>sum+Number(q.actualScore),0),diagnosticRows.length,diagnosticRows.length,
+        "非選択問題の較正得点。本番3答案・時間に合算しない",["counterfactual_calibration"],lastDate(attempts.filter(a=>pastSessions.some(s=>s.counterfactual_calibration_attempt_ids?.includes(a.id)))))},
     kRecurrenceRate: kDenominator ? Math.round([...kGroups.values()].filter(count => count >= 2).length / kDenominator * 100) : null,
     repeatedWRate: wDenominator ? Math.round([...wGroups.values()].filter(count => count >= 2).length / wDenominator * 100) : null,
     typeIdentificationAccuracy:averageNullable(scanRows.map(row=>row.typeIdentificationAccuracy)),
@@ -184,10 +243,10 @@ export function calculateExamReadinessMetrics(args: {
     predictedTimeCalibration:averageNullable(scanRows.map(row=>row.predictedTimeDifference)),
     sampleSizes: {
       unseen: transferAttempts.length,
-      timed: timedAttempts.length+timedSessions.length,
+      timed:timed.evidenceCount,
       scans: scanScores.length,
       selectionPending:Math.max(0,scanSessions.length-scanScores.length),
-      pastExams: pastExamAttempts.length+pastSessionScores.length,
+      pastExams:eligibleSessions.length||pastExamAttempts.length,
       kReviews: kDenominator,
       wReviews: wDenominator,
     },

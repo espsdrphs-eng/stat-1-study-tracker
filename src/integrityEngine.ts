@@ -246,7 +246,7 @@ export function runIntegrityAudit(args: {
       calibrationIds=new Set(session.counterfactual_calibration_attempt_ids||[]);
     if([...selectedIds].some(id=>calibrationIds.has(id)))issues.push({category:"selected_and_calibration_attempts_mixed",severity:"active",
       attemptIds:[...selectedIds].filter(id=>calibrationIds.has(id)),detail:`Session ${session.id} mixes selected and calibration Attempt roles`,repairable:true});
-    if(state==="completed"&&Number(session.selected_answer_count||0)!==3)issues.push({category:"completed_session_answer_count_mismatch",severity:"active",
+    if(session.session_kind==="selected_three_timed"&&state==="completed"&&Number(session.selected_answer_count||0)!==3)issues.push({category:"completed_session_answer_count_mismatch",severity:"active",
       attemptIds:[...selectedIds],detail:`Completed session ${session.id} has ${session.selected_answer_count||0}/3 selected answers`,repairable:true});
     if((session.selected_timed_attempt_ids||[]).length===3&&state!=="completed")issues.push({category:"attempt_evidence_not_reflected_in_session",severity:"active",
       attemptIds:session.selected_timed_attempt_ids,detail:`Session ${session.id} has three selected graded Attempts but is ${state}`,repairable:true});
@@ -370,7 +370,7 @@ export function runIntegrityAudit(args: {
       category:"same_session_review_from_successful_out_of_scope_only",severity:"active",reviewIds:[review.id],
       attemptIds:[source.id],detail:`Review ${review.id} repeats a successful assessment in the same session instead of scheduling retention`,repairable:true,
     });
-    if(source&&attempts.some(attempt=>isSuccessfulTransferForProblem(attempt,review.problem_id)&&
+    if(source&&attempts.some(attempt=>isSuccessfulTransferForProblem(attempt,review.problem_id,source)&&
       (attempt.id>source.id||attempt.date>source.date))){
       issues.push({category:"unnecessary_same_problem_review_after_transfer",severity:"active",reviewIds:[review.id],
         attemptIds:[source.id],detail:`Review ${review.id} remains after explicit cross-problem transfer success`,repairable:true});
@@ -453,7 +453,7 @@ export function runIntegrityAudit(args: {
     detail:`${candidate.rootWeaknessId||candidate.conceptId} repeats the same repair without changing intervention`,repairable:false});
 
   if(currentPlanSummary&&currentPlanSummary.plan.length>=7){
-    const week=currentPlanSummary.plan.slice(0,7),tasks=week.flatMap(day=>day.tasks);
+    const week=currentPlanSummary.plan.slice(0,7),tasks=week.flatMap(day=>day.tasks).filter(task=>!task.requiresUserSelection);
     const total=tasks.reduce((sum,row)=>sum+row.minutes,0);
     const concrete=tasks.filter(row=>["past_exam","scan5","timed"].includes(row.kind)&&!!row.referenceProblemId);
     const past=concrete.reduce((sum,row)=>sum+row.minutes,0);
@@ -480,7 +480,7 @@ export function runIntegrityAudit(args: {
     const whitebookReviews=active.filter(review=>problems.find(problem=>problem.problem_id===review.problem_id)?.source_type!=="past_exam");
     if(currentPlanSummary.counts.pastExam>0&&share<horizon.pastExamShareMin&&whitebookReviews.length)issues.push({category:"whitebook_backlog_suppressing_past_exam",severity:"active",
       reviewIds:whitebookReviews.map(review=>review.id),detail:"whitebook Review backlog is suppressing the exam-horizon past-exam floor",repairable:false});
-    const confirmations=tasks.filter(row=>row.kind==="exposure_confirmation");
+    const confirmations=week.flatMap(day=>day.tasks).filter(row=>row.kind==="exposure_confirmation");
     const remaining=daysUntilExam(today,args.examDate||"2026-11-15");
     const eligible=(args.pastExamCatalog||[]).filter(row=>row.availability==="verified_problem"&&row.schedulable&&row.gradable&&
       !(remaining>30&&row.simulationProtected));
@@ -970,7 +970,8 @@ export function runIntegrityAudit(args: {
   ]);
   const advisoryCategories=new Set<IntegrityCategory>(["past_exam_share_below_phase_target"]);
   const activeIssues=issues.filter(issue=>issue.severity==="active");
-  const sourceStateVersion=`state:${hash(stable({today,attempts,reviews,pastSessions,currentTodayTasks,
+  const byId=<T extends {id:number}>(rows:T[])=>[...rows].sort((a,b)=>a.id-b.id);
+  const sourceStateVersion=`state:${hash(stable({today,attempts:byId(attempts),reviews:byId(reviews),pastSessions:byId(pastSessions),currentTodayTasks,
     currentNextTask,currentPlanSummary,futurePlanSummaries,repairCandidates}))}`;
   return {
     generatedAt: new Date().toISOString(),sourceStateVersion,stale:false,issues,counts,

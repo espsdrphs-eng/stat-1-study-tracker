@@ -7,6 +7,8 @@ import { canonicalPastExamProblemId,resolvePastExamProblemId } from "./examRefer
 import { planningErrorsForSource } from "./legacyKPolicy.ts";
 import { reviewExecutionState } from "./integrityEngine.ts";
 import {deriveFailureEpisode} from "./failureEpisode.ts";
+import {deriveTransferEvidence,partSkillIds,problemSkillIds,rootProgress} from "./skillEvidence.ts";
+import {buildStableTargetIndex} from "./stableTargetIdentity.ts";
 
 type ConceptMapping={conceptIds:string[];confidence:"verified"|"candidate"};
 type EvidenceEvent={
@@ -67,10 +69,15 @@ function evidenceEvents(args:{
     const successful=!failed&&successMark(attempt);
     const timed=context==="timed"||context==="past_exam",strongContext=referenceFree&&
       !["same_session","check"].includes(context)&&(attempt.policy_validity!=="invalid_legacy_k"||errors.length>0);
+    const scopedSkills=(attempt.grading_contract?.gradedParts||[]).flatMap(partSkillIds);
+    const failedSkills=deriveFailureEpisode(attempt).rootWeaknesses.flatMap(r=>r.skillIds);
     for(const conceptId of mapping.conceptIds){
+      const scopedFailure=failedSkills.includes(conceptId);
+      const knownScope=scopedSkills.length>0;
+      if(knownScope&&!scopedSkills.includes(conceptId))continue;
       const key=[conceptId,attempt.date,canonicalId,context].join("|");
-      const event:EvidenceEvent={conceptId,date:attempt.date,problemId:canonicalId,context,failed,successful,
-        strong:strongContext&&mapping.confidence==="verified",referenceFree,mappingConfidence:mapping.confidence,
+      const event:EvidenceEvent={conceptId,date:attempt.date,problemId:canonicalId,context,failed:knownScope?scopedFailure:failed,successful:knownScope?!scopedFailure:successful,
+        strong:strongContext&&mapping.confidence==="verified"&&(knownScope||mapping.conceptIds.length===1),referenceFree,mappingConfidence:mapping.confidence,
         pastExam:context==="past_exam",timed};
       const old=byKey.get(key);
       if(!old||(!old.failed&&event.failed)||(!old.strong&&event.strong))byKey.set(key,event);
@@ -92,6 +99,7 @@ export function analyzeConceptWeaknesses(args:{
 }):ConceptWeaknessInsight[]{
   if(!args.record)return [];
   const events=evidenceEvents(args),byConcept=new Map<string,EvidenceEvent[]>();
+  const transfers=deriveTransferEvidence(args.attempts);
   for(const event of events)byConcept.set(event.conceptId,[...(byConcept.get(event.conceptId)||[]),event]);
   const conceptMap=new Map(args.record.data.concepts.map(concept=>[concept.concept_id,concept]));
   const mappings=buildConceptMappings(args.record);
@@ -119,15 +127,14 @@ export function analyzeConceptWeaknesses(args:{
         lastFailureDate=row.date;
       }else if(row.successful&&lastFailureDate&&row.date>lastFailureDate&&row.strong){
         const after=successes.filter(item=>item.strong&&item.date>lastFailureDate&&item.date<=row.date);
-        const transfer=unique(after.map(item=>item.problemId)).length>=2||after.some(item=>item.pastExam);
+        const transfer=transfers.some(t=>t.skillId===concept.concept_id&&t.date>lastFailureDate&&t.date<=row.date);
         if(after.length>=2&&transfer)state="resolved";else if(["confirmed","repairing","relapsed","transfer_pending"].includes(state))state="transfer_pending";
       }
     }
     if(state==="confirmed"&&[...activeRepairProblems].some(problemId=>mappings.get(problemId)?.conceptIds.includes(concept.concept_id)))state="repairing";
     if(!verifiedRows.length&&failures.length)state="suspected";
     const delayedNoReferenceSuccesses=successes.filter(row=>row.strong&&row.referenceFree&&row.context!=="same_session").length;
-    const transferSuccesses=unique(successes.filter(row=>row.strong&&lastFailureDate&&row.date>lastFailureDate)
-      .map(row=>row.problemId)).length;
+    const transferSuccesses=unique(transfers.filter(t=>t.skillId===concept.concept_id&&t.date>lastFailureDate).map(t=>t.successAttemptId)).length;
     const failureRate=rows.length?failures.length/rows.length:null;
     const exam=conceptExamValue(args.record,concept.concept_id);
     const normalizedFailure=rows.length?(failures.length+1)/(rows.length+2):0;
@@ -174,13 +181,8 @@ export function buildPastExamRepairCandidates(args:{
   conceptWeaknesses:ConceptWeaknessInsight[];problems?:Problem[];
 }):PastExamRepairCandidate[]{
   if(!args.record)return [];
+  const targetIndex=buildStableTargetIndex({attempts:args.attempts,reviews:[]});
   const references=new Map(args.record.data.pastExamProblems.map(problem=>[canonicalPastExamProblemId(problem),problem]));
-  const linksByPast=new Map<string,string[]>();
-  for(const link of args.record.data.whitebookLinks){
-    if(!link.resolved_whitebook_problem_id||link.reconciliation_status==="unresolved")continue;
-    const key=canonicalPastExamProblemId(link.past_exam_problem_id);
-    linksByPast.set(key,unique([...(linksByPast.get(key)||[]),link.resolved_whitebook_problem_id]));
-  }
   const weakness=new Map(args.conceptWeaknesses.map(row=>[row.conceptId,row]));
   const candidates:PastExamRepairCandidate[]=[],selectedBySession=new Map<number,Set<string>>(),
     selectedAttemptsBySession=new Map<number,Set<number>>();
@@ -202,38 +204,53 @@ export function buildPastExamRepairCandidates(args:{
       const ranked=reference.fine_concept_ids.map(conceptId=>weakness.get(conceptId))
         .filter((row):row is ConceptWeaknessInsight=>!!row)
         .sort((a,b)=>b.priorityScore-a.priorityScore).slice(0,2);
-      const recurrence=Math.max(0,...ranked.map(row=>row.recurrenceCount));
-      const episode=deriveFailureEpisode(attempt,{recurrenceByRoot:Object.fromEntries(
-        (attempt.grading_contract?.gradedParts||[]).map(part=>[part.rootCauseKey||part.stableTargetKey||part.id,recurrence]))});
-      for(const root of episode.rootWeaknesses.slice(0,2)){
+      const episode=deriveFailureEpisode(attempt);
+      for(const originalRoot of episode.rootWeaknesses){
+        // Current evidence for this root supersedes older failed payloads. A
+        // resolved sibling does not erase a still-failed mathematical operation.
+        const progress=rootProgress(attempt,originalRoot,args.attempts,targetIndex);
+        if(progress.transfer)continue;
+        const root=progress.latestFailure.id!==attempt.id?
+          deriveFailureEpisode(progress.latestFailure).rootWeaknesses.find(r=>r.rootWeaknessId===originalRoot.rootWeaknessId)||originalRoot:originalRoot;
         const explicitRow=ranked.find(candidate=>root.skillIds.includes(candidate.conceptId));
-        const row=explicitRow||(ranked.length===1?ranked[0]:undefined);
+        const row=explicitRow||(reference.fine_concept_ids.length===1?ranked[0]:undefined);
         const conceptId=row?.conceptId||root.skillIds[0]||root.rootWeaknessId;
-        const linkedWhitebook=(row?linksByPast.get(sourceProblemId)||[]:[]).filter(problemId=>{
-          const problem=args.problems?.find(item=>item.problem_id===problemId);
-          return !!problem?.fine_concept_ids?.includes(row!.conceptId);
-        }).slice(0,2);
+        const skills=unique([...root.skillIds,...(row?[row.conceptId]:[])]);
+        const recentSuccess=(id:string)=>args.attempts.some(a=>a.problem_id===id&&a.id>attempt.id&&
+          a.actual_reference_level===0&&(a.graded_findings||[]).length&&(a.graded_findings||[]).every(f=>f.resolved&&f.error_type==="none"));
+        const matches=(args.problems||[]).filter(p=>p.source_type!=="past_exam"&&p.category!=="past_exam"&&
+          problemSkillIds(p).some(id=>skills.includes(id))&&!recentSuccess(p.problem_id))
+          .sort((a,b)=>problemSkillIds(b).filter(id=>skills.includes(id)).length-problemSkillIds(a).filter(id=>skills.includes(id)).length||a.problem_id.localeCompare(b.problem_id));
+        const linkedWhitebook=matches.slice(0,2).map(p=>p.problem_id);
         const matchConfidence:PastExamRepairCandidate["matchConfidence"]=linkedWhitebook.length?"high":"low";
-        const required=root.requiredRepair;
-        const transfer=row?args.record.data.pastExamProblems.filter(problem=>problem.schedulable&&
-          canonicalPastExamProblemId(problem)!==sourceProblemId&&problem.fine_concept_ids.includes(row.conceptId))
-          .map(canonicalPastExamProblemId).slice(0,3):[];
-        const sameRootFailureCount=args.attempts.filter(other=>other.problem_id===attempt.problem_id&&
+        const required=root.requiredRepair&&(session.session_kind!=="selected_three_timed"||
+          selected.has(sourceProblemId)||root.recurrence>0);
+        const transfer=args.record.data.pastExamProblems.filter(problem=>problem.schedulable&&problem.gradable&&
+          !problem.simulation_protection_default&&![2024,2025].includes(problem.year)&&
+          canonicalPastExamProblemId(problem)!==sourceProblemId&&skills.length>0&&skills.every(id=>
+            problem.fine_concept_ids.includes(id)||problemSkillIds(args.problems?.find(p=>p.problem_id===canonicalPastExamProblemId(problem))).includes(id)))
+          .sort((a,b)=>Number(args.attempts.some(x=>x.problem_id===canonicalPastExamProblemId(a)))-
+            Number(args.attempts.some(x=>x.problem_id===canonicalPastExamProblemId(b)))||a.year-b.year)
+          .map(canonicalPastExamProblemId).slice(0,3);
+        if(progress.repairSuccess&&!transfer.length)continue;
+        const sameRootFailureCount=args.attempts.filter(other=>!other.exclude_from_metrics&&!other.duplicate_of_attempt_id&&other.problem_id===attempt.problem_id&&
           deriveFailureEpisode(other).rootWeaknesses.some(otherRoot=>otherRoot.rootWeaknessId===root.rootWeaknessId&&otherRoot.requiredRepair)).length;
         const interventionChanged=sameRootFailureCount>=2;
-        const repairKind:PastExamRepairCandidate["repairKind"]=linkedWhitebook.length?"whitebook":
+        const repairKind:PastExamRepairCandidate["repairKind"]=progress.repairSuccess?"transfer":linkedWhitebook.length?"whitebook":
           interventionChanged&&transfer.length?"transfer":interventionChanged?"rediagnosis":"concept_mini";
         const interventionRequired=required&&repairKind!=="rediagnosis";
-        candidates.push({sessionId:session.id,sourceAttemptId:attempt.id,sourceProblemId,
+        candidates.push({sessionId:session.id,sourceAttemptId:progress.latestFailure.id,sourceProblemId,
+          repairSuccessEvidenceId:progress.repairSuccess?.id,
           sourceFindingId:root.sourceFindingIds[0],sourceFindingIds:root.sourceFindingIds,
           rootWeaknessId:root.rootWeaknessId,conceptId,conceptLabel:root.title,
           materiality:root.materiality,recurrence:root.recurrence,examImpact:root.examImpact,required:interventionRequired,
-          whitebookProblemIds:linkedWhitebook,transferProblemIds:transfer,
-          weaknessSkillIds:unique([...root.skillIds,...(row?[row.conceptId]:[])]),matchedSkillIds:linkedWhitebook.length&&row?[row.conceptId]:[],
+          whitebookProblemIds:repairKind==="whitebook"?linkedWhitebook:[],transferProblemIds:transfer,
+          weaknessSkillIds:skills,matchedSkillIds:unique(matches.slice(0,2).flatMap(problemSkillIds).filter(id=>skills.includes(id))),
           matchScore:linkedWhitebook.length?100:0,matchConfidence,repairKind,sameRootFailureCount,interventionChanged,
-          matchReason:linkedWhitebook.length?`fine concept「${row!.displayName}」と検証済みsolution linkが一致`:
+          matchReason:linkedWhitebook.length?`source findingのfine concept / operation「${skills.join(" / ")}」とlive白本masterの明示skillが一致`:
             `exact skill/operation一致の白本がないため、${sourceProblemId}の該当部分を局所補修`,
-          reason:interventionChanged?`${sameRootFailureCount}回失敗した同一形式を繰り返さず、${repairKind==="transfer"?"別問題transfer":"root cause再診断"}へ変更`:
+          reason:progress.repairSuccess?`Attempt ${progress.repairSuccess.id}で参照なし補修成功。別問題で同じskillを確認`:
+            interventionChanged?`${sameRootFailureCount}回失敗した同一形式を繰り返さず、${repairKind==="transfer"?"別問題transfer":"root cause再診断"}へ変更`:
             root.requiredRepair?`過去問 ${sourceProblemId} の本番得点を変える${root.errorTypes.join("/")} rootを最小補修`:
             `単発の${root.errorTypes.join("/")}は必須化せず任意確認`,
           requiresUserConfirmation:true});
@@ -245,7 +262,7 @@ export function buildPastExamRepairCandidates(args:{
     selectedBySession.get(row.sessionId)?.has(row.sourceProblemId);
   for(const row of candidates.sort((left,right)=>Number(right.required)-Number(left.required)||
     Number(selectedEvidence(right))-Number(selectedEvidence(left))||
-    Number(left.sourceAttemptId)-Number(right.sourceAttemptId))){
+    Number(right.sourceAttemptId)-Number(left.sourceAttemptId))){
     const key=`${row.sessionId}|${row.conceptId}`;
     if(!dedup.has(key)&&[...dedup.values()].filter(item=>item.sessionId===row.sessionId).length<2)dedup.set(key,row);
   }

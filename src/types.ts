@@ -17,6 +17,7 @@ export type Problem = {
   past_exam_availability?:"verified_problem"|"metadata_only";
   schedulable?:boolean;gradable?:boolean;
   fine_concept_ids?:string[];coarse_topics?:string[];
+  solution_operation_ids?:string[];root_skill_ids?:string[];
   difficulty_by_source?:Record<string,string|number|null>;
   simulation_protection_default?:boolean;classification_confidence?:string;
 };
@@ -86,6 +87,7 @@ export type GradedPartContract={
   currentLabel?:string;currentEvidence?:string;currentErrorType?:GradingErrorType;
   currentCorrection?:string;evidenceSourceAttemptId?:number;evidenceUpdatedAt?:string;
   masteryLevel?:1|2|3;rootCauseKey?:string;
+  fineConceptIds?:string[];solutionOperationIds?:string[];rootSkillIds?:string[];
 };
 export type GradedFinding={
   graded_part_id:string;error_type:GradingErrorType;evidence:string;resolved:boolean;
@@ -474,6 +476,7 @@ export type AdditionalStudyCandidate = {
   purposeLabel:string;reason:string;minutes:number;task:Task;
 };
 export type PastExamRepairCandidate = {
+  repairSuccessEvidenceId?:number;transferEvidenceId?:string;
   sessionId:number;sourceAttemptId:number;sourceProblemId:string;sourceFindingId:string;
   conceptId:string;conceptLabel:string;materiality:"minor"|"major";recurrence:number;
   examImpact:"low"|"medium"|"high";required:boolean;matchReason:string;
@@ -485,6 +488,7 @@ export type PastExamRepairCandidate = {
   sameRootFailureCount?:number;interventionChanged?:boolean;
 };
 export type RepairLineageProjection = {
+  sourceFindingIds?:string[];repairSuccessEvidenceId?:number;
   sourceAttemptId:number;sourceProblemId:string;sourceFindingId:string;
   rootConceptId:string;materiality:"minor"|"major";recurrence:number;
   examImpact:"low"|"medium"|"high";repairProblemId:string;matchReason:string;
@@ -536,6 +540,7 @@ export type Dashboard = {
   analysisConfidence:"参考"|"暫定"|"分析可能"; analysisAttemptCount:number;
   weaknessInsights:WeaknessInsight[];
   readiness:{
+    evidence?:import("./examReadiness.ts").LearningMetricEvidence;
     unseenScoreRate:number|null;timedCompletionRate:number|null;selectionSuccessRate:number|null;
     pastExamScoreRate:number|null;kRecurrenceRate:number|null;repeatedWRate:number|null;
     typeIdentificationAccuracy:number|null;firstStepAccuracy:number|null;

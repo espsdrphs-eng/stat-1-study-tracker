@@ -62,13 +62,13 @@ import {resolveSemanticReviewGeneration} from "./reviewGeneration.ts";
 import {classifyFailureStrength,examHorizonPolicy,learningEventKind,masteryLevelForTargets} from "./examOptimizationPolicy.ts";
 import {parseWholeAnswerRediagnosis,WHOLE_ANSWER_DIAGNOSTIC_VERSION,wholeAnswerDiagnosticFingerprint} from "./wholeAnswerDiagnostic.ts";
 import {deriveDashboardKpis} from "./dashboardKpi.ts";
-import {reviewDueState} from "./todayLearningPolicy.ts";
+import {reviewDueState,reviewPlanningDecision} from "./todayLearningPolicy.ts";
 import {deriveCanonicalStudyPlan} from "./canonicalStudyPlan.ts";
 import {canonicalizePastExamSessions,derivePastExamSessionState,pastExamSessionKey,pastExamSessionPurpose,reconcilePastExamSessionEvidence,stablePastExamSessionKey,validatePastExamSessionIdentity,validatePastExamTaskIdentity} from "./pastExamPlanning.ts";
 
 const PLANNER_RUNTIME_MODE_META_KEY="planner-runtime-mode";
 const CURRENT_PLAN_PROJECTION_META_KEY="current-plan-projection-version";
-const CURRENT_PLAN_PROJECTION_VERSION="past-session-year-integrity-v2";
+const CURRENT_PLAN_PROJECTION_VERSION="learning-root-transfer-evidence-v3";
 
 type SMemory = { problem_id:string; state:"stable"|"check"|"forgotten"|"collapsed"; last_touched?:string; k_trigger_count:number };
 type StoredAttempt = Attempt;
@@ -2977,10 +2977,17 @@ async function bootstrap():Promise<Bootstrap>{
       answer_page_end:answer?.page_end,
       answer_document_key:answer?.document_key,
       // Snapshot selection/order/triage/minutes stay fixed. Current Review content is a read-only overlay.
-      minutes:Number(snapshot!.initial_estimated_minutes[key]??saved.minutes),
-      triage:forcedMust?"must":snapshot!.initial_bucket[key]||saved.triage||"tomorrow",
+      minutes:Number(snapshot!.initial_estimated_minutes?.[key]??saved.minutes),
+      triage:forcedMust?"must":snapshot!.initial_bucket?.[key]||saved.triage||"tomorrow",
       past_exam_session_state:saved.past_exam_year?derivePastExamSessionState(matchingPastSession):saved.past_exam_session_state,
     } as Task;
+    if(review){
+      const decision=reviewPlanningDecision({review,attempts:activeAttempts,problems,weaknesses:conceptWeaknesses,
+        pastExamIsPrimary:!!referenceRecord&&dashboard.pace.daysRemaining<=80,repairCandidates:pastExamRepairCandidates,pastSessions});
+      projected.review_planning_tier=decision.tier;
+      projected.why_today=decision.reason;
+      if(!decision.scheduleAsRequired&&!forcedMust)projected.triage="tomorrow";
+    }
     return projected;
   };
   const actualMinutes=activeAttempts.filter(attempt=>attempt.date===today&&!attempt.parent_past_session_id).reduce((sum,attempt)=>sum+Math.max(0,Number(attempt.time_minutes||0)),0)
@@ -3238,20 +3245,40 @@ async function replaceTodayWithAdaptivePlan(preview:boolean){
   });
   const retained=current.today.tasks.filter(task=>task.checked||task.triage==="tomorrow"||
     task.plan_origin==="adaptive_additional");
-  const logical=(task:Task)=>task.id?`review:${task.id}`:
+  const logical=(task:Task)=>task.stable_session_key?`session:${task.stable_session_key}`:task.id?`review:${task.id}`:
     `${task.problem_id}|${task.learning_purpose||task.purpose_label||task.kind}|${task.mode}`;
   const occupied=new Set(retained.map(logical));
-  const added=proposed.filter(task=>!occupied.has(logical(task)));
-  const nextTasks=[...retained,...added];
-  const retainedKeys=new Set(retained.map(logical));
-  const removed=snapshot.tasks.filter(task=>!retainedKeys.has(logical(task))&&!added.some(row=>logical(row)===logical(task)));
+  const nextTasks=[...retained,...proposed.filter(task=>!occupied.has(logical(task)))];
+  const previousByKey=new Map(snapshot.tasks.map(task=>[logical(task),task]));
+  const nextKeys=new Set(nextTasks.map(logical));
+  // Compare the executable plan, not regenerated display enrichment or timestamps.
+  // An unchanged explicit replan must not create another snapshot/history entry.
+  const planValue=(task:Task)=>JSON.stringify([
+    logical(task),task.problem_id,task.title,task.mode,task.effective_mode,task.minutes,
+    task.triage||"tomorrow",!!task.checked,task.plan_origin,task.learning_purpose,task.learning_stage,
+    task.effective_review_scope||task.review_scope,task.targeted_parts,task.contract_hash,
+    task.source_attempt_id,task.past_exam_year,task.past_exam_task_type,task.session_problem_ids,
+    task.selected_year_reason,task.reason,task.why_today,task.repair_lineage,
+    task.hard_blocker,task.direct_exam_loss,task.diagnostic_only
+  ]);
+  const added=nextTasks.filter(task=>!previousByKey.has(logical(task)));
+  const updated=nextTasks.filter(task=>{
+    const previous=previousByKey.get(logical(task));
+    return previous&&planValue(previous)!==planValue(task);
+  });
+  const removed=snapshot.tasks.filter(task=>!nextKeys.has(logical(task)));
+  const reordered=added.length===0&&removed.length===0&&
+    (snapshot.tasks.length!==nextTasks.length||snapshot.tasks.some((task,index)=>logical(task)!==logical(nextTasks[index])));
+  const policyChanged=snapshot.planner_source!=="adaptive"||snapshot.planner_version!==ADAPTIVE_PLANNER_VERSION;
+  const changes=added.length+updated.length+removed.length+Number(reordered)+Number(policyChanged);
   const summary={
-    preview,retained:retained.length,added:added.length,removed:removed.length,
+    preview,retained:nextTasks.length-added.length-updated.length,added:added.length,removed:removed.length,
+    updated:updated.length,changes,reordered,policyChanged,
     beforeMinutes:snapshot.tasks.filter(task=>task.triage!=="tomorrow").reduce((sum,task)=>sum+task.minutes,0),
     afterMinutes:nextTasks.filter(task=>task.triage!=="tomorrow").reduce((sum,task)=>sum+task.minutes,0),
     retainedTaskIds:retained.map(taskSnapshotId),addedTaskIds:added.map(taskSnapshotId),removedTaskIds:removed.map(taskSnapshotId)
   };
-  if(preview)return summary;
+  if(preview||changes===0)return summary;
   const next:TodayPlanSnapshot={...snapshot,tasks:nextTasks,task_ids:nextTasks.map(taskSnapshotId),
     initial_bucket:Object.fromEntries(nextTasks.map(task=>[taskSnapshotId(task),task.triage||"tomorrow"])),
     initial_estimated_minutes:Object.fromEntries(nextTasks.map(task=>[taskSnapshotId(task),task.minutes])),
@@ -3798,6 +3825,9 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
 
 export async function exportBackup(){
   await initialize();
+  // Recompute against facts at export time, not the last repair's cached audit.
+  const currentAudit=await integrityAudit();
+  await db.meta.put({key:"integrity_audit_summary",value:JSON.stringify(currentAudit)});
   return {
     version:3,exported_at:new Date().toISOString(),
     problems:await db.problems.toArray(),attempts:await db.attempts.toArray(),reviews:await db.reviews.toArray(),

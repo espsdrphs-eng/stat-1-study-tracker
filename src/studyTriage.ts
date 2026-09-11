@@ -21,7 +21,7 @@ export function taskPriority(task:Task,problem?:Problem,today="",sourceProblem?:
   if(overdueDays(task,today)>0)return 3;
   if(errors.has("W"))return 4;
   if(errors.has("C"))return 5;
-  if(task.kind.includes("S"))return 7;
+  if(String(task.kind||"").includes("S"))return 7;
   return 6;
 }
 

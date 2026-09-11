@@ -21,6 +21,13 @@ test("fresh coach保存後は合格圏と最大ボトルネックを同じprojec
   assert.equal(after.nextAction.problemId,"WB-4-A-24");
 });
 
+test("本番session2件の信頼度を無関係な未見Attempt件数で高へ水増ししない",()=>{
+  const small={evidenceCount:2,confidence:"low",numerator:2,denominator:2,value:100,sessions:[]};
+  const result=deriveDashboardKpis(base({readiness:readiness({sampleSizes:{unseen:30,timed:2,scans:2,pastExams:2},
+    evidence:{selectedThree:small,timed:small,selection:small}})}));
+  assert.equal(result.examReadiness.confidence,"low");
+});
+
 test("古いcoachより十分なtimed客観deficitを優先し、n=1では断定しない",()=>{
   const one=deriveDashboardKpis(base({coach:coach("軽微な概念",true),readiness:readiness({timedCompletionRate:22,
     sampleSizes:{unseen:0,timed:1,scans:0,pastExams:0,kReviews:0,wReviews:0}})}));

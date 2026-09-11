@@ -38,8 +38,13 @@ test("explicit transfer success or a low-ROI transfer opportunity can replace sa
 
 test("transfer successは明示的source lineageを持つ別problemの参照なし成功だけ",()=>{
   const base={id:1,problem_id:"PY-2019-Q2",source_problem_id:"PY-2018-Q1",date:"2026-09-06",mode:"full",
-    error_type:"none",error_types:["none"],transfer_evidence:true,review_outcome:"success",actual_reference_level:0};
-  assert.equal(isSuccessfulTransferForProblem(base,"PY-2018-Q1"),true);
+    error_type:"none",error_types:["none"],transfer_evidence:true,review_outcome:"success",actual_reference_level:0,
+    grading_confidence:.95,grading_contract:{gradedParts:[{id:"calc",fineConceptIds:["c1"]}]},
+    graded_findings:[{graded_part_id:"calc",resolved:true,error_type:"none"}]};
+  const source={...base,id:0,problem_id:"PY-2018-Q1"};
+  assert.equal(isSuccessfulTransferForProblem(base,"PY-2018-Q1",source),true);
+  assert.equal(isSuccessfulTransferForProblem(base,"PY-2018-Q1"),false);
+  assert.equal(isSuccessfulTransferForProblem({...base,grading_confidence:.3},"PY-2018-Q1",source),false);
   assert.equal(isSuccessfulTransferForProblem({...base,problem_id:"PY-2018-Q1"},"PY-2018-Q1"),false);
   assert.equal(isSuccessfulTransferForProblem({...base,source_problem_id:"PY-2017-Q1"},"PY-2018-Q1"),false);
 });

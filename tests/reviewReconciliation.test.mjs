@@ -161,16 +161,21 @@ test("a superseded repair without success evidence rolls an active retrieval bac
 });
 
 test("explicit success on another problem substitutes the same-problem delayed Review",()=>{
-  const failed=attempt(2,"2026-08-05",[finding("A","N",false)],{next_action:"Aを訂正",saved_gpt_feedback:true});
-  const transfer={...attempt(3,"2026-08-08",[],{problem_id:"PY-2021-Q1",source_problem_id:"WB-4-A-29",
+  const scoped={...contract(["A"]),gradedParts:[{...part("A"),fineConceptIds:["c1"]}]};
+  const failed=attempt(2,"2026-08-05",[finding("A","N",false)],{next_action:"Aを訂正",saved_gpt_feedback:true,grading_contract:scoped});
+  const transfer=attempt(3,"2026-08-08",[finding("A","none",true)],{problem_id:"PY-2021-Q1",source_problem_id:"WB-4-A-29",
     transfer_evidence:true,learning_purpose:"transfer_check",assessment_timing:"independent_performance",
-    review_outcome:"success",error_type:"none",error_types:["none"],actual_reference_level:0}),graded_part_ids:[],graded_findings:[]};
+    review_outcome:"success",error_type:"none",error_types:["none"],actual_reference_level:0,
+    grading_contract:scoped,grading_confidence:.95});
   const delayed=review(12,2,["A"],{review_type:"light_check",learning_purpose:"retrieval_check",
     assessment_timing:"delayed_retrieval",grading_contract:contract(["A"],"retrieval_check")});
   const plan=analyzeReviewReconciliation({attempts:[failed,transfer],reviews:[delayed],today:"2026-08-10"})
     .problems.find(row=>row.problemId==="WB-4-A-29");
   assert.deepEqual(plan.desiredRepairParts,[]);
   assert.match(plan.reviewsToSupersede[0].reason,/transfer成功/);
+  const unscoped=analyzeReviewReconciliation({attempts:[failed,{...transfer,graded_findings:[]}],reviews:[delayed],today:"2026-08-10"})
+    .problems.find(row=>row.problemId==="WB-4-A-29");
+  assert.equal(unscoped.desiredRepairParts.length,1,"a transfer flag without relevant grading cannot retire the root");
 });
 
 test("duplicate active repairs reconcile to one current target set",()=>{

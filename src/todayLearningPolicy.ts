@@ -1,4 +1,4 @@
-import type {Attempt,ConceptWeaknessInsight,Problem,Review,Task} from "./types.ts";
+import type {Attempt,ConceptWeaknessInsight,Problem,Review,Task,PastExamRepairCandidate,PastSession} from "./types.ts";
 import {isSuccessfulTransferForProblem} from "./examOptimizationPolicy.ts";
 import {resolvePersistedAttemptLifecycle} from "./reviewTransition.ts";
 import {deriveFailureEpisode} from "./failureEpisode.ts";
@@ -107,6 +107,7 @@ export function prioritizeCurrentTodayTasks(tasks:Task[],today:string){
  */
 export function reviewPlanningDecision(args:{
   review:Review;attempts:Attempt[];problems:Problem[];weaknesses:ConceptWeaknessInsight[];
+  pastExamIsPrimary?:boolean;repairCandidates?:PastExamRepairCandidate[];pastSessions?:PastSession[];
 }):{tier:ReviewPlanningTier;scheduleAsRequired:boolean;reason:string}{
   const {review}=args,purpose=reviewPurpose(review);
   const sourceId=review.grading_contract?.sourceAttemptId||review.source_attempt_id||review.generated_from_attempt_id;
@@ -117,7 +118,7 @@ export function reviewPlanningDecision(args:{
   const recurrence=related.some(row=>row.recurrenceCount>0||row.state==="relapsed");
   const highExamValue=related.some(row=>row.pastExamFailureCount>0||row.examImportance>=60);
   const transferSucceeded=args.attempts.some(attempt=>
-    (!source||attempt.date>=source.date)&&isSuccessfulTransferForProblem(attempt,review.problem_id)
+    (!source||attempt.date>=source.date)&&isSuccessfulTransferForProblem(attempt,review.problem_id,source)
   )||related.some(row=>row.state==="resolved"&&row.transferSuccesses>0);
   const graduated=!!source&&resolvePersistedAttemptLifecycle(source).graduated;
   const episode=source?deriveFailureEpisode(source):undefined;
@@ -138,6 +139,15 @@ export function reviewPlanningDecision(args:{
     reason:"ユーザーが今日必須へ明示指定"};
   if(transferSucceeded)return {tier:"deferred_maintenance",scheduleAsRequired:false,
     reason:"別問題・本番形式の参照なし成功をmaintenance代替証拠として採用"};
+  if(args.pastExamIsPrimary&&args.repairCandidates&&purpose==="error_repair"){
+    const sessionSource=args.pastSessions?.some(s=>(s.linked_attempt_ids||[]).some(id=>
+      args.attempts.find(a=>a.id===id)?.problem_id===review.problem_id));
+    if(sessionSource&&!args.repairCandidates.some(c=>c.sourceProblemId===review.problem_id&&c.required&&c.repairKind!=="transfer"))return {
+      tier:"deferred_maintenance",scheduleAsRequired:false,reason:"sessionのcurrent major rootを優先。補修済み・非選択の診断や残りのrootは任意/transfer候補"};
+    if(!pastExamOrigin&&!recurrence&&!args.repairCandidates.some(c=>c.required&&c.matchConfidence==="high"&&
+      c.whitebookProblemIds.includes(review.problem_id)))return {tier:"deferred_maintenance",scheduleAsRequired:false,
+      reason:"直近本番失点との明示lineageがない白本backlogは、現在の必須補修へ入れない"};
+  }
   if(graduated&&purpose!=="error_repair")return {tier:"deferred_maintenance",scheduleAsRequired:false,
     reason:"保持済みでcurrent major targetがなく、経過日数だけでは必須化しない"};
   if(purpose==="error_repair"&&(isolatedMinorC||!sourceMajor))return {tier:"deferred_maintenance",scheduleAsRequired:false,

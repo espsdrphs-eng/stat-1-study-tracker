@@ -1,6 +1,7 @@
 import type {CoachDiagnosisState,ConceptWeaknessInsight,DashboardKpiProjection,DashboardKpiValue,Task} from "./types.ts";
 
 type Readiness={
+  evidence?:import("./examReadiness.ts").LearningMetricEvidence;
   unseenScoreRate:number|null;timedCompletionRate:number|null;selectionSuccessRate:number|null;pastExamScoreRate:number|null;
   sampleSizes:{unseen:number;timed:number;scans:number;selectionPending?:number;pastExams:number;kReviews:number;wReviews:number};
 };
@@ -15,8 +16,8 @@ export type DashboardKpiInput={
 
 const measured=(count:number)=>count>=3;
 const pct=(value:number|null)=>value==null?"未計測":`${Math.round(value)}%`;
-const localExamEvidence=(readiness:Readiness)=>readiness.sampleSizes.unseen+readiness.sampleSizes.timed+
-  readiness.sampleSizes.scans+readiness.sampleSizes.pastExams;
+const localExamEvidence=(readiness:Readiness)=>Math.max(readiness.sampleSizes.unseen,readiness.sampleSizes.timed,
+  readiness.sampleSizes.scans,readiness.sampleSizes.pastExams);
 
 function passJudgementMeaning(value:string){
   if(value.includes("判定材料不足"))return "本番形式の実測が足りない状態です。";
@@ -28,11 +29,15 @@ function passJudgementMeaning(value:string){
 }
 
 export function deriveDashboardKpis(input:DashboardKpiInput):DashboardKpiProjection{
-  const r=input.readiness,directEvidence=localExamEvidence(r),transferEvidence=input.concepts.reduce((sum,row)=>sum+row.transferSuccesses,0);
+  const r=input.readiness,directEvidence=localExamEvidence(r),transferEvidence=r.evidence?.transfer?.numerator??input.concepts.reduce((sum,row)=>sum+row.transferSuccesses,0);
   const total=directEvidence+transferEvidence,freshCoach=input.coach.source==="gpt"&&!input.coach.stale;
   const timedMeasured=measured(r.sampleSizes.timed),pastMeasured=measured(r.sampleSizes.pastExams);
   const unseenMeasured=measured(r.sampleSizes.unseen),selectionMeasured=measured(r.sampleSizes.scans);
-  const readinessDetail=`過去問得点 ${pct(r.pastExamScoreRate)}・時間内完走 ${pct(r.timedCompletionRate)}${r.sampleSizes.timed<3&&r.sampleSizes.timed?"（標本少）":""}・選題精度 ${pct(r.selectionSuccessRate)}・転移成功 ${transferEvidence}件`;
+  const latestSelected=r.evidence?.selectedThree.sessions.at(0);
+  const scoreLabel=r.evidence?.selectedThree.evidenceCount?"選択3問得点":r.evidence?"個別過去問得点":"過去問得点";
+  const transferLabel=r.evidence?.transfer?r.evidence.transfer.denominator?`転移成功 ${transferEvidence}/${r.evidence.transfer.denominator}機会`:
+    "転移 未計測（対象skillの特定が必要）":`転移成功 ${transferEvidence}件`;
+  const readinessDetail=`${scoreLabel} ${pct(r.pastExamScoreRate)}（${r.sampleSizes.pastExams}件）${latestSelected?`・直近${latestSelected.year}年 ${latestSelected.score.toFixed(1)}%`:""}・時間内完走 ${pct(r.timedCompletionRate)}（${r.sampleSizes.timed}件）・選題精度 ${pct(r.selectionSuccessRate)}（${r.sampleSizes.scans} session）・${transferLabel}`;
   const missingEvidence:string[]=[];
   if(r.sampleSizes.pastExams<3)missingEvidence.push(`過去問答案 ${r.sampleSizes.pastExams}/3件`);
   if(r.sampleSizes.timed<2)missingEvidence.push(`3問timed session ${r.sampleSizes.timed}/2件`);
@@ -44,7 +49,10 @@ export function deriveDashboardKpis(input:DashboardKpiInput):DashboardKpiProject
         "未実施の過去問を答案化して採点する":"別問題で同じ能力のtransferを確認する";
   const examReadiness:DashboardKpiValue={value:directEvidence<3?"本番証拠を蓄積中":pastMeasured&&Number(r.pastExamScoreRate)>=70?"合格答案を形成中":"本番証拠を蓄積中",
     detail:readinessDetail,source:transferEvidence?"exam_and_transfer_evidence":"exam_evidence",evidenceCount:total,freshness:directEvidence<3?"measuring":"current",
-    confidence:directEvidence>=6?"high":directEvidence>=3?"medium":"low",updatedAt:input.updatedAt,
+    confidence:r.evidence?.selectedThree.evidenceCount?
+      [r.evidence.selectedThree,r.evidence.timed,r.evidence.selection].some(row=>row.confidence==="low")?"low":
+        [r.evidence.selectedThree,r.evidence.timed,r.evidence.selection].every(row=>row.confidence==="high")?"high":"medium":
+      directEvidence>=6?"high":directEvidence>=3?"medium":"low",updatedAt:input.updatedAt,
     missingEvidence:missingEvidence.slice(0,3),nextEvidenceAction};
 
   let passZoneValue="判定材料不足",passSource="insufficient_evidence",passConfidence:"low"|"medium"|"high"="low",passCount=total;
@@ -60,7 +68,7 @@ export function deriveDashboardKpis(input:DashboardKpiInput):DashboardKpiProject
     ?"選題精度 未評価（選択3問の採点待ち）"
     :`選題精度 ${pct(r.selectionSuccessRate)}${r.sampleSizes.scans?`（${r.sampleSizes.scans}件）`:""}`;
   const passEvidenceReasons=[
-    `過去問得点 ${pct(r.pastExamScoreRate)}${r.sampleSizes.pastExams?`（${r.sampleSizes.pastExams}件）`:""}`,
+    `${scoreLabel} ${pct(r.pastExamScoreRate)}${r.sampleSizes.pastExams?`（${r.sampleSizes.pastExams}件）`:""}`,
     `時間内完遂 ${pct(r.timedCompletionRate)}${r.sampleSizes.timed?`（${r.sampleSizes.timed}件）`:""}`,
     selectionEvidence,
   ];
@@ -72,7 +80,7 @@ export function deriveDashboardKpis(input:DashboardKpiInput):DashboardKpiProject
   if(transferEvidence<2)passActions.push("別問題・過去問で同じ能力のtransferを確認する");
   if(!passActions.length)passActions.push("別年度の本番形式でも必要点を再現する");
   const passZone={value:passZoneValue,detail:freshCoach?`GPT診断・信頼度 ${input.coach.display.level.confidence}`:"本番形式の実測を優先",
-    source:passSource,evidenceCount:passCount,freshness:(freshCoach?"current":input.coach.source==="gpt"?"stale":"measuring") as "current"|"stale"|"measuring",
+    source:passSource,evidenceCount:passCount,freshness:(freshCoach||passSource==="exam_evidence"?"current":"measuring") as "current"|"stale"|"measuring",
     confidence:passConfidence,updatedAt:input.updatedAt,
     missingEvidence:passZoneValue==="判定材料不足"?missingEvidence.slice(0,3):[],
     nextEvidenceAction:passActions[0],evidenceReasons:passEvidenceReasons.slice(0,3),

@@ -242,6 +242,9 @@ function DashboardView({data,go,select}:{data:Bootstrap;go:(p:Page)=>void;select
         {(()=>{const m=readinessValue(d.readiness.repeatedWRate,d.readiness.sampleSizes.wReviews);return <Metric label="同一W再発率" value={m.value} unit={m.unit} hint={m.hint} tone={(d.readiness.repeatedWRate??0)>25?"amber":""}/>})()}
       </div>
       <p className="stable-release-message">{d.stableRelease.message}</p>
+      {d.readiness.evidence&&<details><summary>指標の母数・対象・更新日</summary>
+        {Object.entries(d.readiness.evidence).map(([key,e])=><p key={key}><b>{({selectedThree:"選択3問",individual:"個別答案",diagnostic:"非選択・診断",timed:"時間内完走",selection:"選題",transfer:"転移"} as Record<string,string>)[key]}</b>：{e.numerator.toFixed(1)} / {e.denominator}（標本{e.evidenceCount}・信頼度{confidence(e.confidence)}）<br/>{e.eligibleEvidenceRule}<br/>対象 {e.modeScope.join(" / ")}・更新 {e.lastUpdated||"未計測"}</p>)}
+      </details>}
       {!!d.stableRelease.blockingIssues.length&&<ul className="stable-blockers">{d.stableRelease.blockingIssues.map(item=><li key={item}>{item}</li>)}</ul>}
       <div className="weekly-soft-quota"><strong>今週の不足候補</strong>{d.weeklyQuota.candidates.length
         ?d.weeklyQuota.candidates.map(item=><span key={item.kind}>{item.kind==="full_skeleton"?"全体統合":item.kind==="timed_full"?"時間制限答案":"5問スキャン"}・{item.minutes}分</span>)
@@ -543,7 +546,7 @@ function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a
   const [postponeTask,setPostponeTask]=useState<{item:Task;initial:ScheduleAction}|null>(null);
   const [todayFilter,setTodayFilter]=useState<"exam_practice"|"repair"|"maintenance"|"optional"|"completed"|"all">("all");
   const [recalculatePreview,setRecalculatePreview]=useState<{
-    retained:number;added:number;removed:number;beforeMinutes:number;afterMinutes:number
+    retained:number;added:number;removed:number;updated:number;changes:number;beforeMinutes:number;afterMinutes:number
   }|null>(null);
   const pmap=Object.fromEntries(data.problems.map(problem=>[problem.problem_id,problem]));
   const saveReview=(body:Record<string,unknown>)=>{if(!reviewTask?.id)return;const id=reviewTask.id;setReviewTask(null);
@@ -553,6 +556,8 @@ function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a
   const postponeReview=(body:Record<string,unknown>,label:string)=>{if(!postponeTask)return;const item=postponeTask.item;setPostponeTask(null);
     run(()=>post(item.id&&item.review_type?`/api/reviews/${item.id}/postpone`:"/api/tasks/postpone",body),`課題を「${label}」に変更しました`)};
   const activeTodayTasks=data.today.tasks.filter(task=>task.triage!=="tomorrow"&&!task.checked);
+  const primaryAction=data.today.canonicalStudyPlan?.primaryAction||data.today.currentTask;
+  const primaryLane=primaryAction&&deriveCurrentActionClass(primaryAction)==="targeted_repair"?"repair":"exam_practice";
   const maintenanceTasks=data.today.tasks.filter(task=>!task.checked&&deriveCurrentActionClass(task)==="maintenance");
   const allGroups=[
     {key:"exam_practice",label:"今日の本番演習",description:"初見・選題・時間内完遂・別問題への転移を測る",tasks:activeTodayTasks.filter(task=>deriveCurrentActionClass(task)==="exam_practice")},
@@ -561,7 +566,8 @@ function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a
     {key:"optional",label:"追加候補・先送り",description:"本番演習と高価値補修の後にだけ行う",tasks:data.today.tasks.filter(task=>task.triage==="tomorrow"&&!task.checked&&deriveCurrentActionClass(task)!=="maintenance")}
   ];
   const triageGroups=allGroups.filter(group=>todayFilter==="all"?
-    ["exam_practice","repair"].includes(group.key)||group.tasks.length:todayFilter===group.key&&group.tasks.length);
+    ["exam_practice","repair"].includes(group.key)||group.tasks.length:todayFilter===group.key&&group.tasks.length)
+    .sort((a,b)=>Number(b.key===primaryLane)-Number(a.key===primaryLane));
   const summary=[
     {key:"exam_practice",label:"本番演習",count:allGroups[0].tasks.length,minutes:allGroups[0].tasks.reduce((sum,task)=>sum+task.minutes,0)},
     {key:"repair",label:"補修",count:allGroups[1].tasks.length,minutes:allGroups[1].tasks.reduce((sum,task)=>sum+task.minutes,0)},
@@ -577,6 +583,7 @@ function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a
       ()=>post<typeof recalculatePreview>("/api/today/adaptive-preview",{}).then(result=>setRecalculatePreview(result)),
       "合格逆算プランとの差分を確認しました"
     )}><RefreshCw size={15}/>今日の計画を現行方式で再作成</button></div></div><div className={`load-pill ${data.today.warning?"over":""}`}><Gauge/><div><span>確定計画／目標</span><strong>{data.today.confirmed_plan_minutes} / {data.today.target_minutes_today}分</strong><small>完了 {data.today.completed_minutes_today}分 + 確定課題の残り {data.today.confirmed_remaining_minutes}分</small><small>追加可能 最大{data.today.additional_capacity_minutes}分・先送り候補は未計上</small></div></div></div>
+    {primaryAction&&<div className="time-guidance" aria-label="今日の最優先課題"><Play size={16}/><div><strong>最初に：{primaryAction.title}・{primaryAction.minutes}分</strong><p>{primaryAction.why_today||primaryAction.reason}</p></div></div>}
     {data.today.warning&&<div className="warning"><AlertTriangle/><div><strong>今日の実行見込みが目標を超えています</strong><p>{data.today.warning}</p></div></div>}
     <div className="today-time-ledger">
       <span>今日の目標<strong>{data.today.target_minutes_today}分</strong></span>
@@ -616,7 +623,8 @@ function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a
     {postponeTask&&<PostponeReviewModal item={postponeTask.item} initial={postponeTask.initial} busy={busy} close={()=>setPostponeTask(null)} save={postponeReview}/>}
     {recalculatePreview&&<Modal title="今日の計画を現行方式で再作成" close={()=>setRecalculatePreview(null)}><div className="postpone-review">
       <p>完了済み・追加済み・先送り済みの課題を保持し、未完了の確定課題だけを合格逆算プランへ置き換えます。</p>
-      <dl><dt>保持</dt><dd>{recalculatePreview.retained}件</dd><dt>追加</dt><dd>{recalculatePreview.added}件</dd><dt>置換対象</dt><dd>{recalculatePreview.removed}件</dd><dt>確定計画</dt><dd>{recalculatePreview.beforeMinutes}分 → {recalculatePreview.afterMinutes}分</dd></dl>
+      <dl><dt>保持</dt><dd>{recalculatePreview.retained}件</dd><dt>追加</dt><dd>{recalculatePreview.added}件</dd><dt>更新</dt><dd>{recalculatePreview.updated}件</dd><dt>置換対象</dt><dd>{recalculatePreview.removed}件</dd><dt>確定計画</dt><dd>{recalculatePreview.beforeMinutes}分 → {recalculatePreview.afterMinutes}分</dd></dl>
+      {recalculatePreview.changes===0&&<p>変更はありません。現在の計画をそのまま保持します。</p>}
       <div className="form-actions"><button className="ghost" onClick={()=>setRecalculatePreview(null)}>キャンセル</button><button className="primary" disabled={busy} onClick={()=>{setRecalculatePreview(null);run(()=>post("/api/today/recalculate",{}),"今日の計画を合格逆算プランナーで再作成しました")}}>差分を確定する</button></div>
     </div></Modal>}
   </>
@@ -692,7 +700,7 @@ function TodayTaskDetails({task,problem,onOpenProblem,onOpenPastExam,problemAlia
       <div><span>{isPastSession?"実行順":"問題文・概要"}</span><strong>{isPastSession?task.session_workflow:(questionExcerpt||"問題文と模範解答は、書籍またはGoodNotesで確認してください。")}</strong></div>
     </div>
     {origin==="first_attempt"&&<div className="first-attempt-note"><Badge tone="green">初回</Badge><div><strong>この問題は初回です</strong><span>{task.mode==="full"?"まずフル答案として、方針・出発式・主要計算・結論まで書いてください。":"指定モードで、方針・出発式・今回見る量を明確にしてから解いてください。"}</span></div></div>}
-    {origin==="review_attempt"&&<div className="first-attempt-note review"><Badge tone="orange">復習</Badge><div><strong>前回記録：{hasPrevious?"あり":"なし"}</strong><span>{hasPrevious?`前回：${task.previous_score||task.previous_date}`:"前回ミスの詳細はありません。通常確認として扱います。"}</span></div></div>}
+    {origin==="review_attempt"&&<div className="first-attempt-note review"><Badge tone="orange">復習</Badge><div><strong>前回記録：{hasPrevious?"あり":"なし"}</strong><span>{hasPrevious?`前回：${task.previous_score||task.previous_date||"採点履歴を参照"}`:"前回ミスの詳細はありません。通常確認として扱います。"}</span></div></div>}
     {origin==="linked_s_check"&&<div className="first-attempt-note linked"><Badge tone="blue">関連確認</Badge><div><strong>この問題自体の前回記録：{hasPrevious?"あり":"なし"}</strong><span>元問題の弱点から作られた関連確認です。元問題：{resolved?.sourceProblem?.displayLabel||task.source_problem_id||"記録なし"}</span></div></div>}
     {resolved?.reviewNeeded&&<div className="review-consistency-warning"><AlertTriangle size={18}/><div><strong>要確認</strong><span>問題情報または復習履歴の不整合により、具体的な復習指示を一時的に非表示にしています。</span></div></div>}
     <div className="today-specific-guide">
@@ -1003,12 +1011,15 @@ function ReviewsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>
   const [postponeReviewItem,setPostponeReviewItem]=useState<{item:Review;initial:ScheduleAction}|null>(null);
   const stateOf=(review:Review)=>reviewExecutionState(review,data.dashboard.today);
   const dueStateOf=(review:Review)=>reviewDueState(review,data.dashboard.today);
+  const requiredReviews=data.today.canonicalStudyPlan.requiredRepairs.filter(task=>!task.checked&&
+    data.reviews.some(review=>review.id===task.id&&review.problem_id===task.problem_id));
+  const requiredOrder=new Map(requiredReviews.map((task,index)=>[Number(task.id),index]));
   const rows=data.reviews.filter(review=>filter==="all"?true:
     filter==="open"?stateOf(review)==="actionable":
     filter==="done"?stateOf(review)==="completed":
     filter==="overdue"?stateOf(review)==="actionable"&&dueStateOf(review)==="hard_overdue":
     review.status===filter)
-    .sort((a,b)=>a.due_date.localeCompare(b.due_date)||Number(a.manual_order||0)-Number(b.manual_order||0)||a.id-b.id);
+    .sort((a,b)=>(requiredOrder.get(a.id)??Infinity)-(requiredOrder.get(b.id)??Infinity)||a.due_date.localeCompare(b.due_date)||Number(a.manual_order||0)-Number(b.manual_order||0)||a.id-b.id);
   const successorsFor=(review:Review)=>selectCurrentReviewsForProblem({
     reviews:data.reviews,problemId:review.problem_id,aliases:data.problemAliases,today:data.dashboard.today
   }).current.filter(item=>item.id!==review.id);
@@ -1038,7 +1049,7 @@ function ReviewsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>
   const portfolio=data.dashboard.reviewPortfolio;
   return <><section className="panel review-portfolio">
     <div className="panel-title"><div><span className="eyebrow">REVIEW FLOW</span><h3>現在の復習予定と直近7日の推移</h3></div>
-      <Badge tone={portfolio.overdue||portfolio.activeDuplicateLogicalKeys?"orange":"green"}>見るべき主指標：期限超過 {portfolio.overdue}件</Badge></div>
+      <Badge tone="green">今日の必須補修 {requiredReviews.length}件・Todayと同じ順序</Badge></div>
     <div className="review-portfolio-grid">
       <span>期限超過<strong>{portfolio.overdue}</strong></span><span>今日が期限<strong>{portfolio.dueToday}</strong></span>
       <span>今後7日<strong>{portfolio.next7Days}</strong></span><span>8日以降<strong>{portfolio.later}</strong></span>
@@ -1046,7 +1057,7 @@ function ReviewsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>
     </div>
     <p>直近7日：{portfolio.completedLast7Days}件完了／{portfolio.generatedLast7Days}件生成／差引 {portfolio.netChangeLast7Days>=0?"+":""}{portfolio.netChangeLast7Days}件
       {portfolio.completedWithSuccessorLast7Days?`（完了後に次回確認を生成した流れ ${portfolio.completedWithSuccessorLast7Days}件）`:""}</p>
-    <small>総pendingが横ばいでも、完了後の正常な遅延確認が生成されることがあります。総数を強制的に減らさず、期限超過と重複・無効を確認します。</small>
+    <small>期限超過は今日の必須を意味しません。Todayの必須補修を先に表示し、それ以外は任意・今後の候補として履歴を保持します。</small>
   </section><div className="toolbar"><div className="segmented">{[["open","現在の予定"],["overdue","期限切れ"],["deferred","期限なし"],["done","完了"],["all","すべて"]].map(([k,v])=><button key={k} className={filter===k?"active":""} onClick={()=>setFilter(k)}>{v}</button>)}</div></div>
     <div className="review-list">{rows.map(review=>{
       const state=stateOf(review);
@@ -1057,7 +1068,7 @@ function ReviewsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>
       </article>;
       const dueState=dueStateOf(review),dueLabel=dueState==="hard_overdue"?"期限切れ":dueState==="due_window"?"確認ウィンドウ中":"予定";
       return <article className="panel review-card" id={`review-${review.id}`} key={review.id}>
-        <div className="review-card-head"><div><Badge tone={dueState==="hard_overdue"?"red":dueState==="due_window"?"orange":""}>{dueLabel}</Badge><Badge>{reviewMeaning(review,resolved.item)}</Badge><h3>{resolved.card.displayLabel}</h3>
+        <div className="review-card-head"><div><Badge tone={requiredOrder.has(review.id)?"green":""}>{requiredOrder.has(review.id)?"今日の必須":"今日の必須ではない・任意／今後"}</Badge><Badge tone={dueState==="hard_overdue"?"red":dueState==="due_window"?"orange":""}>{dueLabel}</Badge><Badge>{reviewMeaning(review,resolved.item)}</Badge><h3>{resolved.card.displayLabel}</h3>
           <span>{resolved.card.canonicalProblemId}・次回復習 {resolved.card.dueDate}・Review #{review.id}{(review.postpone_count||review.postponed_count)?`・先送り ${review.postpone_count||review.postponed_count}回`:""}</span></div>
           <div className="review-card-actions"><button disabled={busy} className="small primary" onClick={()=>setSelectedReview(review)}><Check size={14}/>復習結果を記録</button></div>
         </div>
@@ -1115,24 +1126,24 @@ function CoachPanel({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,
   const save=()=>{if(!preview)return;setPreview(null);run(()=>post("/api/coach/save",{text}),"学習コーチ診断を履歴へ保存しました")};
   return <>
     <section className="coach-hero">
-      <div className="coach-level"><span>本番レベル</span><strong>{diagnosis.level.value}<small>/ 5</small></strong><b>{diagnosis.level.passOutlook}</b></div>
+      <div className="coach-level"><span>{coach.stale?"前回診断の本番レベル":"本番レベル"}</span><strong>{diagnosis.level.value}<small>/ 5</small></strong><b>{diagnosis.level.passOutlook}</b></div>
       <div className="coach-current"><div className="coach-meta"><Badge tone={diagnosis.level.confidence==="high"?"green":diagnosis.level.confidence==="medium"?"orange":""}>信頼度 {coachConfidenceText(diagnosis.level.confidence)}</Badge>
         <span>最終レビュー：{coach.lastReviewedAt?coach.lastReviewedAt.slice(0,10):"GPTレビュー未実施"}</span>
         {coach.source==="local_provisional"&&<Badge>自動暫定診断</Badge>}</div>
         <h2>{diagnosis.level.label}</h2><p>{diagnosis.level.rationale}</p>
         <small>問題別の現在地：Level 1 {masteryCounts[0]}件 / Level 2 {masteryCounts[1]}件 / Level 3 {masteryCounts[2]}件</small>
-        {coach.stale&&<div className="coach-stale"><AlertTriangle size={17}/><strong>前回診断後に新しい採点 {coach.newAttemptCount}件・再レビュー推奨</strong></div>}
+        {coach.stale&&<div className="coach-stale"><AlertTriangle size={17}/><strong>前回診断後に新しい採点 {coach.newAttemptCount}件。上記は前回の診断であり、現在の結論ではありません。現在の客観判定は下欄をご確認ください。</strong></div>}
       </div>
     </section>
     {passJudgement&&<section className="panel coach-pass-judgement"><div className="panel-title"><div><span className="eyebrow">PASS JUDGEMENT</span><h3>本番合格判定</h3></div><Badge tone={passJudgement.confidence==="high"?"green":passJudgement.confidence==="medium"?"orange":""}>信頼度 {coachConfidenceText(passJudgement.confidence)}</Badge></div><PassJudgementContent value={passJudgement}/></section>}
     <section className="coach-summary-grid">
       <article className="panel coach-bottleneck"><span className="eyebrow">PRIMARY BOTTLENECK</span><h3>最大ボトルネック</h3><strong>{currentBottleneck?.value||diagnosis.primaryBottleneck.title}</strong>
-        <p>{currentBottleneck?.detail||diagnosis.primaryBottleneck.explanation}</p><small>{diagnosis.primaryBottleneck.effectOnExam}</small>
-        {!!diagnosis.primaryBottleneck.evidenceProblemIds.length&&<div className="coach-evidence-ids">根拠：{diagnosis.primaryBottleneck.evidenceProblemIds.join(" / ")}</div>}</article>
-      <article className="panel"><span className="eyebrow">NEXT ACTIONS</span><h3>次に鍛えること</h3><div className="coach-list">{diagnosis.nextActions.length?diagnosis.nextActions.map((row,index)=><div key={`${row.title}-${index}`}><b>{index+1}</b><span><strong>{row.title}</strong><small>{row.practiceMethod}</small><em>成功条件：{row.successCondition}</em></span></div>):<p>GPTレビューで具体化してください。</p>}</div></article>
-      <article className="panel"><span className="eyebrow">IMPROVEMENTS</span><h3>最近改善したこと</h3><CoachFactList rows={diagnosis.improvements}/></article>
-      <article className="panel"><span className="eyebrow">STRENGTHS</span><h3>現在の強み</h3><CoachFactList rows={diagnosis.strengths}/></article>
-      <article className="panel"><span className="eyebrow">UNKNOWNS</span><h3>まだ判断できないこと</h3><div className="coach-fact-list">{diagnosis.unknowns.length?diagnosis.unknowns.map((row,index)=><div key={`${row.title}-${index}`}><strong>{row.title}</strong><span>必要な証拠：{row.evidenceNeeded}</span></div>):<p>大きな未確認項目はありません。</p>}</div></article>
+        <p>{currentBottleneck?.detail||diagnosis.primaryBottleneck.explanation}</p>{!coach.stale&&<small>{diagnosis.primaryBottleneck.effectOnExam}</small>}
+        {!coach.stale&&!!diagnosis.primaryBottleneck.evidenceProblemIds.length&&<div className="coach-evidence-ids">根拠：{diagnosis.primaryBottleneck.evidenceProblemIds.join(" / ")}</div>}</article>
+      <article className="panel"><span className="eyebrow">NEXT ACTIONS</span><h3>{coach.stale?"前回診断の練習案（再レビュー待ち）":"次に鍛えること"}</h3><div className="coach-list">{diagnosis.nextActions.length?diagnosis.nextActions.map((row,index)=><div key={`${row.title}-${index}`}><b>{index+1}</b><span><strong>{row.title}</strong><small>{row.practiceMethod}</small><em>成功条件：{row.successCondition}</em></span></div>):<p>GPTレビューで具体化してください。</p>}</div></article>
+      <article className="panel"><span className="eyebrow">IMPROVEMENTS</span><h3>{data.coach.stale?"前回診断で挙げた改善点":"最近改善したこと"}</h3><CoachFactList rows={diagnosis.improvements}/></article>
+      <article className="panel"><span className="eyebrow">STRENGTHS</span><h3>{coach.stale?"前回診断の強み":"現在の強み"}</h3><CoachFactList rows={diagnosis.strengths}/></article>
+      <article className="panel"><span className="eyebrow">UNKNOWNS</span><h3>{data.coach.stale?"前回診断時の未確認事項（現在の測定値は上欄）":"まだ判断できないこと"}</h3><div className="coach-fact-list">{diagnosis.unknowns.length?diagnosis.unknowns.map((row,index)=><div key={`${row.title}-${index}`}><strong>{row.title}</strong><span>必要な証拠：{row.evidenceNeeded}</span></div>):<p>大きな未確認項目はありません。</p>}</div></article>
     </section>
     <section className="panel coach-review-panel">
       <div className="panel-title"><div><span className="eyebrow">GPT COACH REVIEW</span><h3>GPTで現在地をレビュー</h3></div><Badge>API不使用</Badge></div>
@@ -1336,7 +1347,7 @@ function PastView({data,go,run,busy}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()
       <div className="scan-question-list">{session.questions.map((question,index)=><article className="scan-question-card" key={index}><div className="scan-question-head"><strong>{index+1}問目</strong><label><input type="checkbox" checked={question.selected} onChange={event=>setSession({...session,questions:session.questions.map((row,i)=>i===index?{...row,selected:event.target.checked}:row)})}/>選ぶ</label></div>
         <div className="form-grid"><Field label="問題IDまたはラベル"><input value={question.problemId||question.questionLabel} onChange={event=>setSession({...session,questions:session.questions.map((row,i)=>i===index?{...row,problemId:event.target.value}:row)})}/></Field><Field label="型"><input value={question.predictedType} onChange={event=>setSession({...session,questions:session.questions.map((row,i)=>i===index?{...row,predictedType:event.target.value}:row)})}/></Field><Field label="最初の一手" wide><input value={question.firstStep} onChange={event=>setSession({...session,questions:session.questions.map((row,i)=>i===index?{...row,firstStep:event.target.value}:row)})}/></Field><Field label="予想得点"><input type="number" value={question.predictedScore??""} onChange={event=>setSession({...session,questions:session.questions.map((row,i)=>i===index?{...row,predictedScore:event.target.value===""?null:Number(event.target.value)}:row)})}/></Field><Field label="予想時間"><input type="number" value={question.predictedMinutes??""} onChange={event=>setSession({...session,questions:session.questions.map((row,i)=>i===index?{...row,predictedMinutes:event.target.value===""?null:Number(event.target.value)}:row)})}/></Field><Field label="沈没リスク"><select value={question.sinkRisk} onChange={event=>setSession({...session,questions:session.questions.map((row,i)=>i===index?{...row,sinkRisk:event.target.value as ScanQuestion["sinkRisk"]}:row)})}><option value="low">低</option><option value="medium">中</option><option value="high">高</option></select></Field><Field label="解答順"><input type="number" min="1" max="3" value={question.plannedOrder??""} onChange={event=>setSession({...session,questions:session.questions.map((row,i)=>i===index?{...row,plannedOrder:event.target.value===""?null:Number(event.target.value)}:row)})}/></Field><Field label="選ぶ／捨てる理由" wide><input value={question.selectionReason} onChange={event=>setSession({...session,questions:session.questions.map((row,i)=>i===index?{...row,selectionReason:event.target.value}:row)})}/></Field>
         {session.session_kind!=="scan_only"&&<>
-          <Field label="実際に解いた"><input type="checkbox" checked={!!question.completed} onChange={event=>setSession({...session,questions:session.questions.map((row,i)=>i===index?{...row,completed:event.target.checked}:row)})}/></Field>
+          <Field label={session.session_kind==="selected_three_timed"?"本番答案として解いた":"実際に解いた"}><input type="checkbox" checked={!!question.completed} onChange={event=>setSession({...session,questions:session.questions.map((row,i)=>i===index?{...row,completed:event.target.checked}:row)})}/>{session.session_kind==="selected_three_timed"&&!question.selected&&question.actualScore!=null&&<small>較正用の採点あり。本番3答案の得点・時間には含めません。</small>}</Field>
           <Field label="実得点（未評価は空欄）"><input type="number" value={question.actualScore??""} onChange={event=>setSession({...session,questions:session.questions.map((row,i)=>i===index?{...row,actualScore:event.target.value===""?null:Number(event.target.value),actualScoreSource:"manual_override"}:row)})}/>{question.actualScoreSource==="attempt"&&<small>Attempt #{question.sourceAttemptId} から自動反映</small>}{question.actualScoreSource==="manual_override"&&question.attemptScore!=null&&question.attemptScore!==question.actualScore&&<small>Attempt値 {question.attemptScore} を手動override</small>}</Field>
           <Field label="実時間"><input type="number" value={question.actualMinutes??""} onChange={event=>setSession({...session,questions:session.questions.map((row,i)=>i===index?{...row,actualMinutes:event.target.value===""?null:Number(event.target.value),actualMinutesSource:"manual_override"}:row)})}/>{question.actualMinutesSource==="attempt"&&<small>Attempt #{question.sourceAttemptId} から自動反映</small>}{question.actualMinutesSource==="manual_override"&&question.attemptMinutes!=null&&question.attemptMinutes!==question.actualMinutes&&<small>Attempt値 {question.attemptMinutes}分を手動override</small>}</Field>
           <Field label="型判断"><select value={question.typeJudgmentCorrect==null?"":question.typeJudgmentCorrect?"yes":"no"} onChange={event=>setSession({...session,questions:session.questions.map((row,i)=>i===index?{...row,typeJudgmentCorrect:event.target.value===""?null:event.target.value==="yes"}:row)})}><option value="">未評価</option><option value="yes">正しい</option><option value="no">誤り</option></select></Field><Field label="初手判断"><select value={question.firstStepCorrect==null?"":question.firstStepCorrect?"yes":"no"} onChange={event=>setSession({...session,questions:session.questions.map((row,i)=>i===index?{...row,firstStepCorrect:event.target.value===""?null:event.target.value==="yes"}:row)})}><option value="">未評価</option><option value="yes">正しい</option><option value="no">誤り</option></select></Field><Field label="沈没した"><input type="checkbox" checked={!!question.sank} onChange={event=>setSession({...session,questions:session.questions.map((row,i)=>i===index?{...row,sank:event.target.checked}:row)})}/></Field><Field label="ヒント使用"><input type="checkbox" checked={!!question.hintUsed} onChange={event=>setSession({...session,questions:session.questions.map((row,i)=>i===index?{...row,hintUsed:event.target.checked}:row)})}/></Field><Field label="外部参照"><input type="checkbox" checked={!!question.referenceUsed} onChange={event=>setSession({...session,questions:session.questions.map((row,i)=>i===index?{...row,referenceUsed:event.target.checked}:row)})}/></Field>
@@ -1352,15 +1363,16 @@ function PastView({data,go,run,busy}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()
       const calibrationRows=(saved.questions||[]).filter(row=>!selected.includes(row.problemId||row.questionLabel)&&row.actualScore!=null);
       const typeCalibration=saved.analysis_status==="completed"&&saved.analysis?.primary_selection_error==="type_misclassification";
       const sessionTitle=saved.session_kind==="selected_three_timed"?`${saved.year}年 本番型session`:`${saved.year||saved.source_label||"カスタム"}・${saved.session_kind||saved.session_type}`;
+      const selectedScoreEligible=!!data.dashboard.readiness.evidence?.selectedThree.sessions.some(row=>row.sessionId===saved.id);
       return <article className="panel past-result-card" key={saved.id}>
-        <div className="past-result-head"><div><h3>{sessionTitle}</h3><span>{saved.date} ・ 露出：{exposure} ・ {state==="completed"?"完了":"進行中"}</span></div><Badge tone={saved.exam_score_eligible?"green":""}>{saved.exam_score_eligible?"本番得点対象":"学習指標"}</Badge></div>
+        <div className="past-result-head"><div><h3>{sessionTitle}</h3><span>{saved.date} ・ 露出：{exposure} ・ {state==="completed"?"完了":"進行中"}</span></div><Badge tone={selectedScoreEligible?"green":""}>{selectedScoreEligible?"選択3問得点の対象":"学習指標"}</Badge></div>
         {saved.selected_year_reason&&<p className="past-session-reason"><b>なぜこの年度：</b>{saved.selected_year_reason}</p>}
         {saved.session_kind==="selected_three_timed"&&<p className="past-session-flow">5問scan → 3問選択 → 3問答案 → 採点</p>}
         <div className="past-result-body">
           <div><span>型判断</span><p>{typeCalibration?"要較正":metrics.typeIdentificationAccuracy==null?(saved.analysis_status==="completed"?"分析済み":"分析待ち"):`${metrics.typeIdentificationAccuracy}%`}</p></div>
-          <div><span>選題結果</span><p>{metrics.selectionSuccessRate==null?"選択答案の採点待ち":`${saved.selection_success_count??Math.round(metrics.selectionSuccessRate/100*3)}/3 成功`}</p></div>
-          <div><span>選択答案</span><p>{saved.selected_answer_count??metrics.solvedCount}/3完了{selectedRows.some(row=>row.actualScore!=null)&&<><br/>{selectedRows.map(row=>`${row.questionLabel}=${row.actualScore}`).join(" / ")}</>}</p></div>
-          <div><span>本番時間</span><p>答案 {saved.selected_solve_minutes??0}分 / scan {saved.scan_minutes??0}分 / 合計 {saved.session_elapsed_minutes??saved.actual_total_minutes??0}分</p></div>
+          <div><span>選題結果</span><p>{saved.session_kind==="scan_only"?"scanのみ・実得点による選題評価の対象外":metrics.selectionSuccessRate==null?"選択答案の採点待ち":`${saved.selection_success_count??Math.round(metrics.selectionSuccessRate/100*3)}/3 成功`}</p></div>
+          {saved.session_kind!=="scan_only"&&<div><span>選択答案</span><p>{saved.selected_answer_count??metrics.solvedCount}/3完了{selectedRows.some(row=>row.actualScore!=null)&&<><br/>{selectedRows.map(row=>`${row.questionLabel}=${row.actualScore}`).join(" / ")}</>}</p></div>}
+          <div><span>本番時間</span><p>{saved.session_kind==="scan_only"?`scan ${saved.scan_minutes??0}分（3問答案は不要）`:`答案 ${saved.selected_solve_minutes??0}分 / scan ${saved.scan_minutes??0}分 / 合計 ${saved.session_elapsed_minutes??saved.actual_total_minutes??0}分`}</p></div>
         </div>
         {!!calibrationRows.length&&<p className="past-calibration"><b>較正用追加採点：</b>{calibrationRows.map(row=>`${row.questionLabel}=${row.actualScore}`).join(" / ")}</p>}
         {!!saved.score_calibration?.length&&<p className="past-calibration"><b>得点予測較正：</b>{saved.score_calibration.map(row=>`${row.problemId} ${row.error>0?"+":""}${row.error}`).join(" / ")}</p>}
@@ -1381,13 +1393,13 @@ function PastView({data,go,run,busy}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()
       const problem=pmap.get(attempt.problem_id)!;
       const review=data.reviews.find(item=>item.generated_from_attempt_id===attempt.id&&item.problem_id===attempt.problem_id&&
         reviewExecutionState(item,data.dashboard.today)==="actionable");
-      const insight=data.dashboard.weaknessInsights.find(item=>item.theme.includes(problem.theme)||problem.theme.includes(item.theme));
-      const direct=[...String(problem.linked_a_problems||"").split(/[;,、\s]+/),...(problem.related_s_problem_ids||[])].filter(Boolean);
-      const targets=[...new Set([...direct,...(insight?.recommendedA||[]),...(insight?.recommendedS||[])])];
+      const matchedRepairs=data.adaptiveLearning.pastExamRepairCandidates.filter(row=>row.sourceAttemptId===attempt.id&&
+        row.repairKind==="whitebook"&&row.matchConfidence==="high");
+      const targets=[...new Set(matchedRepairs.flatMap(row=>row.whitebookProblemIds))];
       return <article className="panel past-result-card" key={attempt.id}>
         <div className="past-result-head"><div><ErrorBadge value={attempt.primary_error_type||attempt.error_type}/><h3>{problemDisplayLabel(problem)}</h3><span>{attempt.date} ・ {attempt.score_text||attempt.score_label} {attempt.score_numeric!=null?`${attempt.score_numeric}点`:""}</span></div>{review&&<Badge tone={reviewDueState(review,todayString())==="hard_overdue"?"red":"orange"}>{review.due_date} 復習</Badge>}</div>
         <div className="past-result-body"><div><span>失点・不安定だった箇所</span><p>{attempt.error_point||attempt.result_summary||"詳細未入力"}</p></div><div><span>次に直すこと</span><p>{removeTimingExpressions(attempt.next_action)||review?.review_instruction||"GPT採点結果の指示を確認"}</p></div></div>
-        <div className="repair-targets"><span>戻るA/S問題</span><div>{targets.map(id=><Badge tone={id.includes("-S-")?"blue":""} key={id}>{id}</Badge>)}{!targets.length&&<small>関連問題はまだ未設定です</small>}</div></div>
+        <div className="repair-targets"><span>今回の失点に一致する白本</span><div>{targets.map(id=><Badge tone={id.includes("-S-")?"blue":""} key={id}>{id}</Badge>)}{!targets.length&&<small>高信頼の一致なし。白本を必須化せず、現在の補修候補・Todayを確認してください。</small>}{matchedRepairs.map(row=><small key={row.rootWeaknessId}>{row.matchReason}</small>)}</div></div>
         {review&&<ReviewPlanDetails item={review} compact/>}
       </article>;
     })}</div>
