@@ -216,7 +216,12 @@ export function reconcilePastExamSessionEvidence(session:PastSession,attempts:At
   const questions=canonicalQuestions.map(question=>{
     const attempt=question.problemId?byProblem.get(question.problemId):undefined;
     if(!attempt)return question;
-    const manualScore=question.actualScoreSource==="manual_override",manualMinutes=question.actualMinutesSource==="manual_override";
+    // Clearing an override means “use the learning fact”, not “erase it”.
+    // Zero is a real score; null/NaN/out-of-range values are not overrides.
+    const manualScore=question.actualScoreSource==="manual_override"&&typeof question.actualScore==="number"&&
+      Number.isFinite(question.actualScore)&&question.actualScore>=0&&question.actualScore<=100;
+    const manualMinutes=question.actualMinutesSource==="manual_override"&&typeof question.actualMinutes==="number"&&
+      Number.isFinite(question.actualMinutes)&&question.actualMinutes>0;
     return {...question,actualScore:manualScore?question.actualScore:Number(attempt.score_numeric),
       actualMinutes:manualMinutes?question.actualMinutes:Number(attempt.time_minutes||0),
       actualScoreSource:manualScore?"manual_override" as const:"attempt" as const,
@@ -231,7 +236,8 @@ export function reconcilePastExamSessionEvidence(session:PastSession,attempts:At
   const allComparable=questions.length===5&&questions.every(row=>row.actualScore!=null);
   const optimal=allComparable?[...questions].sort((a,b)=>Number(b.actualScore)-Number(a.actualScore)).slice(0,3).map(row=>row.problemId||row.questionLabel):[];
   const successCount=allComparable?selected.filter(id=>optimal.includes(id)).length:0;
-  const scoreCalibration=questions.filter(row=>row.predictedScore!=null&&row.actualScore!=null).map(row=>({
+  const scoreCalibration=questions.filter(row=>row.predictedScore!=null&&Number.isFinite(row.predictedScore)&&
+    row.predictedScore>=0&&row.predictedScore<=100&&row.actualScore!=null).map(row=>({
     problemId:row.problemId||row.questionLabel,predictedScore:Number(row.predictedScore),actualScore:Number(row.actualScore),
     error:Number(row.actualScore)-Number(row.predictedScore),
   }));

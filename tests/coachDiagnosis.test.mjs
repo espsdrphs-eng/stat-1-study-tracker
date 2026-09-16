@@ -90,6 +90,8 @@ test("新Attemptは診断をstaleにし再レビューでcutoffを更新でき�
   const state=buildCoachDiagnosisState({history:[current],attempts,concepts:[],dashboard,reviews:[],problems:[],
     planner:{phase:"foundation_to_A",daysRemaining:90,weeklyActual:{},weeklyTarget:{}},today:"2026-08-17"});
   assert.equal(state.stale,true);assert.equal(state.newAttemptCount,1);
+  assert.equal(state.source,"local_provisional");
+  assert.notEqual(state.display,state.current,"old coach remains history, not the current conclusion");
   const refreshed=normalizeCoachUpdate(diagnosis(4,4));
   const next=buildCoachDiagnosisState({...state,history:[current,refreshed],attempts,concepts:[],dashboard,reviews:[],problems:[],
     planner:{phase:"foundation_to_A",daysRemaining:90,weeklyActual:{},weeklyTarget:{}},today:"2026-08-17"});

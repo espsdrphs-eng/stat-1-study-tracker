@@ -100,7 +100,7 @@ test("旧buildの当日planはprojection upgrade時だけ破棄しreloadでは�
   await db.meta.delete(versionKey);
 
   const upgraded=await localGet("/api/bootstrap");
-  assert.equal((await db.meta.get(versionKey))?.value,"learning-root-transfer-evidence-v3");
+  assert.equal((await db.meta.get(versionKey))?.value,"autonomous-coach-evidence-v4");
   assert.equal(upgraded.today.tasks.some(task=>task.stable_session_key==="stale-2018"),false);
   const regenerated=(await db.meta.get(key))?.value;
   assert.ok(regenerated&&!regenerated.includes("stale-2018"));

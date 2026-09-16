@@ -40,7 +40,7 @@ test("古いcoachより十分なtimed客観deficitを優先し、n=1では断定
 
 test("本番証拠0件は0%ではなく不足証拠と次の測定行動を示す",()=>{
   const result=deriveDashboardKpis(base({coach:{...coach(),source:"local_provisional"}}));
-  assert.equal(result.examReadiness.value,"本番証拠を蓄積中");
+  assert.match(result.examReadiness.value,/Level 1.0.*未測定/);
   assert.equal(result.passZone.value,"判定材料不足");
   assert.match(result.examReadiness.detail,/未計測/);
   assert.ok(result.examReadiness.missingEvidence.length);
@@ -61,7 +61,7 @@ test("本番合格判定は判定済みでも根拠と次の行動を常に返�
 test("transfer成功はKPI証拠へ反映するが局所証拠だけで本番対応力を確定しない",()=>{
   const concepts=[{transferSuccesses:2,distinctProblemCount:1,independentFailures:0,priorityScore:0}];
   const result=deriveDashboardKpis(base({coach:{...coach(),source:"local_provisional"},concepts}));
-  assert.equal(result.examReadiness.value,"本番証拠を蓄積中");assert.equal(result.examReadiness.evidenceCount,2);
+  assert.match(result.examReadiness.value,/Level 1.0.*未測定/);assert.equal(result.examReadiness.evidenceCount,2);
   assert.match(result.examReadiness.detail,/転移成功 2件/);
 });
 

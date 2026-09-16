@@ -27,7 +27,7 @@ const sessions=state.pastSessions.map(s=>({id:s.id,year:s.year,state:s.session_s
 const exportData=await exportBackup();
 const exportedAudit=JSON.parse(exportData.meta.find(m=>m.key==="integrity_audit_summary")?.value||"null");
 const report={source,sessions,readiness:state.dashboard.readiness,kpis:state.dashboard.kpis,
-  coach:{stale:state.coach.stale,newAttemptCount:state.coach.newAttemptCount},
+  coach:{stale:state.coach.stale,newAttemptCount:state.coach.newAttemptCount,needsTextRefresh:state.coach.needsTextRefresh,source:state.coach.source},
   repairs:state.adaptiveLearning.pastExamRepairCandidates,plan:state.today.canonicalStudyPlan,
   audit:state.masterStatus.integrity_summary,exportedAuditDate:exportedAudit?.generatedAt,
   issues:fullAudit.issues.filter(i=>i.severity!=="history"),changes:repair.changes};
@@ -57,7 +57,22 @@ if(process.argv.includes("--verify")){
   assert.deepEqual(actual.scores,[58,78,55]);
   assert.equal(actual.state,"completed");
   assert.ok(Math.abs(selected.sessions.find(s=>s.year===2019).score-191/3)<1e-8);
-  assert.equal(state.coach.stale,true);
+  const afterCutoff=backup.attempts.filter(a=>a.id>Number(state.coach.current?.evidenceCutoffAttemptId||0)&&!a.exclude_from_metrics&&!a.duplicate_of_attempt_id);
+  if(afterCutoff.length)assert.equal(state.coach.stale,true);
+  if(fixtureDay==="2026-09-16"){
+    const latest=sessions.find(s=>s.year===2021);
+    assert.deepEqual(latest.scores,[50,55,52]);assert.equal(latest.solve,105);assert.equal(latest.elapsed,115);
+    assert.equal(latest.selection,3);assert.equal(latest.state,"completed");
+    assert.equal(selected.evidenceCount,3);assert.equal(selected.numerator,486);assert.equal(selected.denominator,9);
+    assert.equal(report.readiness.evidence.selection.denominator,3);
+    assert.equal(report.readiness.evidence.timed.numerator,1);assert.equal(report.readiness.evidence.timed.denominator,3);
+    assert.equal(state.coach.needsTextRefresh,true);assert.equal(state.coach.source,"local_provisional");
+    assert.equal(state.coach.display.level.value,state.dashboard.kpis.examReadiness.level);
+    for(const key of ["selectedThree","selection","timed","transfer","unseen","repeatedMajor"]){
+      assert.ok(Array.isArray(report.readiness.evidence[key].eligibleEvidenceIds),key);
+      assert.ok("missingEvidenceReason" in report.readiness.evidence[key],key);
+    }
+  }
   assert.equal(state.today.currentTask?.problem_id,state.today.canonicalStudyPlan.primaryAction?.problem_id);
   const requiredWhitebook=report.repairs.filter(r=>r.required&&r.repairKind==="whitebook");
   for(const r of requiredWhitebook){

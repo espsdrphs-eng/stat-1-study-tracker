@@ -223,7 +223,7 @@ function DashboardView({data,go,select}:{data:Bootstrap;go:(p:Page)=>void;select
     <section className="dashboard-kpi-intro"><div><strong>本番まで {k.support.daysRemaining}日</strong><span>{k.support.phaseLabel}</span></div>
       {data.coach.stale&&<small>GPT診断後に新しい採点 {data.coach.newAttemptCount}件・再レビュー推奨</small>}</section>
     <section className="dashboard-kpi-grid" aria-label="合格判断の主要4指標">
-      <article className="panel dashboard-kpi"><span className="eyebrow">EXAM PERFORMANCE</span><h3>本番対応力</h3><strong>{k.examReadiness.value}</strong><p>{k.examReadiness.detail}</p>{!!k.examReadiness.missingEvidence?.length&&<><small>不足：{k.examReadiness.missingEvidence.join("／")}</small><b className="kpi-next-evidence">評価を進めるには：{k.examReadiness.nextEvidenceAction}</b></>}<small>信頼度：{confidence(k.examReadiness.confidence)}</small></article>
+      <article className="panel dashboard-kpi"><span className="eyebrow">EXAM PERFORMANCE</span><h3>本番対応力</h3><strong>{k.examReadiness.value}</strong><p>{k.examReadiness.detail}</p><details><summary>Levelの根拠・証拠の範囲</summary><p>{k.examReadiness.levelRationale}</p></details>{!!k.examReadiness.missingEvidence?.length&&<><small>不足：{k.examReadiness.missingEvidence.join("／")}</small><b className="kpi-next-evidence">評価を進めるには：{k.examReadiness.nextEvidenceAction}</b></>}<small>信頼度：{confidence(k.examReadiness.confidence)}</small></article>
       <article className="panel dashboard-kpi dashboard-pass-judgement"><span className="eyebrow">PASS JUDGEMENT</span><h3>本番合格判定</h3><PassJudgementContent value={k.passZone}/><small>信頼度：{confidence(k.passZone.confidence)}</small></article>
       <article className="panel dashboard-kpi"><span className="eyebrow">BOTTLENECK</span><h3>最大ボトルネック</h3><strong>{k.bottleneck.value}</strong><p>{k.bottleneck.detail}</p><button className="text-btn" onClick={()=>go("weak")}>診断の根拠を見る <ChevronRight size={15}/></button></article>
       <article className="panel dashboard-kpi dashboard-kpi-action"><span className="eyebrow">NEXT ACTION</span><h3>今やること</h3><strong>{k.nextAction.value}</strong><p>{k.nextAction.detail}</p><div className="button-row"><button className="primary" onClick={()=>go("today")}><Play size={17}/>今日の課題へ</button>{nextProblem&&<button className="ghost" onClick={()=>select(nextProblem)}><BookOpen size={17}/>問題を開く</button>}</div></article>
@@ -243,7 +243,7 @@ function DashboardView({data,go,select}:{data:Bootstrap;go:(p:Page)=>void;select
       </div>
       <p className="stable-release-message">{d.stableRelease.message}</p>
       {d.readiness.evidence&&<details><summary>指標の母数・対象・更新日</summary>
-        {Object.entries(d.readiness.evidence).map(([key,e])=><p key={key}><b>{({selectedThree:"選択3問",individual:"個別答案",diagnostic:"非選択・診断",timed:"時間内完走",selection:"選題",transfer:"転移"} as Record<string,string>)[key]}</b>：{e.numerator.toFixed(1)} / {e.denominator}（標本{e.evidenceCount}・信頼度{confidence(e.confidence)}）<br/>{e.eligibleEvidenceRule}<br/>対象 {e.modeScope.join(" / ")}・更新 {e.lastUpdated||"未計測"}</p>)}
+        {Object.entries(d.readiness.evidence).map(([key,e])=><p key={key}><b>{({selectedThree:"選択3問",individual:"個別答案",diagnostic:"非選択・診断",timed:"時間内完走",selection:"選題",transfer:"転移",unseen:"未見答案",repeatedMajor:"major root再発"} as Record<string,string>)[key]}</b>：{e.numerator.toFixed(1)} / {e.denominator}（標本{e.evidenceCount}・信頼度{confidence(e.confidence)}）<br/>{e.eligibleEvidenceRule}<br/>対象 {e.modeScope.join(" / ")}・更新 {e.lastUpdated||"未計測"}{e.missingEvidenceReason&&<small>{e.missingEvidenceReason}</small>}</p>)}
       </details>}
       {!!d.stableRelease.blockingIssues.length&&<ul className="stable-blockers">{d.stableRelease.blockingIssues.map(item=><li key={item}>{item}</li>)}</ul>}
       <div className="weekly-soft-quota"><strong>今週の不足候補</strong>{d.weeklyQuota.candidates.length
@@ -1126,13 +1126,14 @@ function CoachPanel({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,
   const save=()=>{if(!preview)return;setPreview(null);run(()=>post("/api/coach/save",{text}),"学習コーチ診断を履歴へ保存しました")};
   return <>
     <section className="coach-hero">
-      <div className="coach-level"><span>{coach.stale?"前回診断の本番レベル":"本番レベル"}</span><strong>{diagnosis.level.value}<small>/ 5</small></strong><b>{diagnosis.level.passOutlook}</b></div>
+      <div className="coach-level"><span>{coach.source==="local_provisional"?"本番レベル（最新実測の暫定）":"本番レベル"}</span><strong>{diagnosis.level.value}<small>/ 5</small></strong><b>{diagnosis.level.passOutlook}</b></div>
       <div className="coach-current"><div className="coach-meta"><Badge tone={diagnosis.level.confidence==="high"?"green":diagnosis.level.confidence==="medium"?"orange":""}>信頼度 {coachConfidenceText(diagnosis.level.confidence)}</Badge>
         <span>最終レビュー：{coach.lastReviewedAt?coach.lastReviewedAt.slice(0,10):"GPTレビュー未実施"}</span>
         {coach.source==="local_provisional"&&<Badge>自動暫定診断</Badge>}</div>
+        {coach.needsTextRefresh&&<p className="coach-stale">前回の合格見通しは旧版の80文字制限で途切れている可能性があります。履歴は保持し、ここでは最新の実測から暫定診断を表示しています。GPT現在地レビューを更新してください。</p>}
         <h2>{diagnosis.level.label}</h2><p>{diagnosis.level.rationale}</p>
         <small>問題別の現在地：Level 1 {masteryCounts[0]}件 / Level 2 {masteryCounts[1]}件 / Level 3 {masteryCounts[2]}件</small>
-        {coach.stale&&<div className="coach-stale"><AlertTriangle size={17}/><strong>前回診断後に新しい採点 {coach.newAttemptCount}件。上記は前回の診断であり、現在の結論ではありません。現在の客観判定は下欄をご確認ください。</strong></div>}
+        {coach.stale&&<div className="coach-stale"><AlertTriangle size={17}/><strong>前回診断後に新しい採点 {coach.newAttemptCount}件。上記は最新の実測からの暫定診断です。以前のGPT診断は履歴に保持しています。現在地レビューを更新してください。</strong></div>}
       </div>
     </section>
     {passJudgement&&<section className="panel coach-pass-judgement"><div className="panel-title"><div><span className="eyebrow">PASS JUDGEMENT</span><h3>本番合格判定</h3></div><Badge tone={passJudgement.confidence==="high"?"green":passJudgement.confidence==="medium"?"orange":""}>信頼度 {coachConfidenceText(passJudgement.confidence)}</Badge></div><PassJudgementContent value={passJudgement}/></section>}
@@ -1140,10 +1141,10 @@ function CoachPanel({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,
       <article className="panel coach-bottleneck"><span className="eyebrow">PRIMARY BOTTLENECK</span><h3>最大ボトルネック</h3><strong>{currentBottleneck?.value||diagnosis.primaryBottleneck.title}</strong>
         <p>{currentBottleneck?.detail||diagnosis.primaryBottleneck.explanation}</p>{!coach.stale&&<small>{diagnosis.primaryBottleneck.effectOnExam}</small>}
         {!coach.stale&&!!diagnosis.primaryBottleneck.evidenceProblemIds.length&&<div className="coach-evidence-ids">根拠：{diagnosis.primaryBottleneck.evidenceProblemIds.join(" / ")}</div>}</article>
-      <article className="panel"><span className="eyebrow">NEXT ACTIONS</span><h3>{coach.stale?"前回診断の練習案（再レビュー待ち）":"次に鍛えること"}</h3><div className="coach-list">{diagnosis.nextActions.length?diagnosis.nextActions.map((row,index)=><div key={`${row.title}-${index}`}><b>{index+1}</b><span><strong>{row.title}</strong><small>{row.practiceMethod}</small><em>成功条件：{row.successCondition}</em></span></div>):<p>GPTレビューで具体化してください。</p>}</div></article>
-      <article className="panel"><span className="eyebrow">IMPROVEMENTS</span><h3>{data.coach.stale?"前回診断で挙げた改善点":"最近改善したこと"}</h3><CoachFactList rows={diagnosis.improvements}/></article>
-      <article className="panel"><span className="eyebrow">STRENGTHS</span><h3>{coach.stale?"前回診断の強み":"現在の強み"}</h3><CoachFactList rows={diagnosis.strengths}/></article>
-      <article className="panel"><span className="eyebrow">UNKNOWNS</span><h3>{data.coach.stale?"前回診断時の未確認事項（現在の測定値は上欄）":"まだ判断できないこと"}</h3><div className="coach-fact-list">{diagnosis.unknowns.length?diagnosis.unknowns.map((row,index)=><div key={`${row.title}-${index}`}><strong>{row.title}</strong><span>必要な証拠：{row.evidenceNeeded}</span></div>):<p>大きな未確認項目はありません。</p>}</div></article>
+      <article className="panel"><span className="eyebrow">NEXT ACTIONS</span><h3>次に鍛えること</h3><div className="coach-list">{diagnosis.nextActions.length?diagnosis.nextActions.map((row,index)=><div key={`${row.title}-${index}`}><b>{index+1}</b><span><strong>{row.title}</strong><small>{row.practiceMethod}</small><em>成功条件：{row.successCondition}</em></span></div>):<p>GPTレビューで具体化してください。</p>}</div></article>
+      <article className="panel"><span className="eyebrow">IMPROVEMENTS</span><h3>最近改善したこと</h3><CoachFactList rows={diagnosis.improvements}/></article>
+      <article className="panel"><span className="eyebrow">STRENGTHS</span><h3>現在の強み</h3><CoachFactList rows={diagnosis.strengths}/></article>
+      <article className="panel"><span className="eyebrow">UNKNOWNS</span><h3>まだ判断できないこと</h3><div className="coach-fact-list">{diagnosis.unknowns.length?diagnosis.unknowns.map((row,index)=><div key={`${row.title}-${index}`}><strong>{row.title}</strong><span>必要な証拠：{row.evidenceNeeded}</span></div>):<p>大きな未確認項目はありません。</p>}</div></article>
     </section>
     <section className="panel coach-review-panel">
       <div className="panel-title"><div><span className="eyebrow">GPT COACH REVIEW</span><h3>GPTで現在地をレビュー</h3></div><Badge>API不使用</Badge></div>
@@ -1386,13 +1387,15 @@ function PastView({data,go,run,busy}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()
       <div>{data.adaptiveLearning.pastExamRepairCandidates.map(row=><article key={`${row.sessionId}-${row.conceptId}`}>
         <strong>{row.conceptLabel}・{row.required?"必須補修候補":"任意確認"}</strong><span>{row.reason}</span>
         <small>根拠：Attempt #{row.sourceAttemptId} / {row.sourceProblemId}・{row.matchReason}</small>
-        <small>一致信頼度：{row.matchConfidence||"未評価"}／{row.repairKind==="concept_mini"?"Whitebook対応なし：元問題の該当部分を局所補修":`白本候補：${row.whitebookProblemIds.join("、")||"未解決"}`}／転移候補：{row.transferProblemIds.join("、")||"未設定"}</small>
+        <small>一致信頼度：{row.matchConfidence||"未評価"}／{row.repairKind==="concept_mini"?"Whitebook対応なし：元問題の該当部分を局所補修":`白本候補：${row.whitebookProblemIds.join("、")||"高信頼の一致なし"}`}／転移候補：{row.transferProblemIds.join("、")||"transfer候補なし（未測定・対応確認が必要）"}</small>
       </article>)}</div>
     </section>}
     <div className="past-result-list">{errorAttempts.map(attempt=>{
       const problem=pmap.get(attempt.problem_id)!;
       const review=data.reviews.find(item=>item.generated_from_attempt_id===attempt.id&&item.problem_id===attempt.problem_id&&
         reviewExecutionState(item,data.dashboard.today)==="actionable");
+      const reviewCard=review?resolveReviewCard({item:review,problems:data.problems,attempts:data.attempts,
+        aliases:data.problemAliases,answers:data.answerIndex,today:data.dashboard.today,examDate:data.settings.exam_date}):undefined;
       const matchedRepairs=data.adaptiveLearning.pastExamRepairCandidates.filter(row=>row.sourceAttemptId===attempt.id&&
         row.repairKind==="whitebook"&&row.matchConfidence==="high");
       const targets=[...new Set(matchedRepairs.flatMap(row=>row.whitebookProblemIds))];
@@ -1400,7 +1403,7 @@ function PastView({data,go,run,busy}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()
         <div className="past-result-head"><div><ErrorBadge value={attempt.primary_error_type||attempt.error_type}/><h3>{problemDisplayLabel(problem)}</h3><span>{attempt.date} ・ {attempt.score_text||attempt.score_label} {attempt.score_numeric!=null?`${attempt.score_numeric}点`:""}</span></div>{review&&<Badge tone={reviewDueState(review,todayString())==="hard_overdue"?"red":"orange"}>{review.due_date} 復習</Badge>}</div>
         <div className="past-result-body"><div><span>失点・不安定だった箇所</span><p>{attempt.error_point||attempt.result_summary||"詳細未入力"}</p></div><div><span>次に直すこと</span><p>{removeTimingExpressions(attempt.next_action)||review?.review_instruction||"GPT採点結果の指示を確認"}</p></div></div>
         <div className="repair-targets"><span>今回の失点に一致する白本</span><div>{targets.map(id=><Badge tone={id.includes("-S-")?"blue":""} key={id}>{id}</Badge>)}{!targets.length&&<small>高信頼の一致なし。白本を必須化せず、現在の補修候補・Todayを確認してください。</small>}{matchedRepairs.map(row=><small key={row.rootWeaknessId}>{row.matchReason}</small>)}</div></div>
-        {review&&<ReviewPlanDetails item={review} compact/>}
+        {review&&<ReviewPlanDetails item={review} compact resolved={reviewCard}/>}
       </article>;
     })}</div>
     {!errorAttempts.length&&<section className="panel"><Empty>過去問のGPT採点結果を取り込むと、要復習箇所がここに表示されます</Empty></section>}

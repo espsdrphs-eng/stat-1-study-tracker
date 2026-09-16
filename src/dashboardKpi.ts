@@ -1,4 +1,5 @@
 import type {CoachDiagnosisState,ConceptWeaknessInsight,DashboardKpiProjection,DashboardKpiValue,Task} from "./types.ts";
+import {deriveExamCapability} from "./examCapability.ts";
 
 type Readiness={
   evidence?:import("./examReadiness.ts").LearningMetricEvidence;
@@ -54,6 +55,9 @@ export function deriveDashboardKpis(input:DashboardKpiInput):DashboardKpiProject
         [r.evidence.selectedThree,r.evidence.timed,r.evidence.selection].every(row=>row.confidence==="high")?"high":"medium":
       directEvidence>=6?"high":directEvidence>=3?"medium":"low",updatedAt:input.updatedAt,
     missingEvidence:missingEvidence.slice(0,3),nextEvidenceAction};
+  const capability=deriveExamCapability(r);
+  Object.assign(examReadiness,{level:capability.level,levelLabel:capability.label,levelRationale:capability.rationale,
+    value:`Level ${capability.level.toFixed(1)} / 5・${capability.label}`,confidence:capability.confidence});
 
   let passZoneValue="判定材料不足",passSource="insufficient_evidence",passConfidence:"low"|"medium"|"high"="low",passCount=total;
   if(freshCoach&&input.coach.display.level.confidence!=="low"){

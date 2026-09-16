@@ -1,4 +1,4 @@
-import type { AdditionalStudyCandidate, AdaptivePlanSummary, Attempt, ExamReferenceCatalogItem, GradingContractSnapshot, PastExamRepairCandidate, PastSession, Problem, ProblemAlias, Review, StudyUpdate, Task, TodayPlanSnapshot } from "./types.ts";
+import type { AdditionalStudyCandidate, AdaptivePlanSummary, Attempt, ConceptWeaknessInsight, ExamReferenceCatalogItem, GradingContractSnapshot, PastExamRepairCandidate, PastSession, Problem, ProblemAlias, Review, StudyUpdate, Task, TodayPlanSnapshot } from "./types.ts";
 import { resolveCanonicalProblemId } from "./examReadiness.ts";
 import { addCalendarDays, resolveReviewSchedule } from "./reviewSchedulePolicy.ts";
 import { validateGradingContract } from "./gradingContract.ts";
@@ -16,6 +16,10 @@ import {WHOLE_ANSWER_DIAGNOSTIC_VERSION,wholeAnswerDiagnosticIssues} from "./who
 import {reviewDueState} from "./todayLearningPolicy.ts";
 import {buildPastExamYearCandidates,canonicalizePastExamSessions,derivePastExamSessionState,pastExamSessionKey,pastExamSessionPurpose,reconcilePastExamSessionEvidence,selectPastExamYear,stablePastExamSessionKey,validatePastExamSessionIdentity,validatePastExamTaskIdentity,type PastExamTaskType} from "./pastExamPlanning.ts";
 import {deriveFailureEpisode} from "./failureEpisode.ts";
+import type {CoachDiagnosisState,DashboardKpiProjection} from "./types.ts";
+import type {ExamReadinessMetrics} from "./examReadiness.ts";
+import {deriveTransferEvidence} from "./skillEvidence.ts";
+import {legacyTruncatedOutlook} from "./coachDiagnosis.ts";
 
 export const ACTIVE_REVIEW_STATUSES = new Set(["pending", "overdue"]);
 
@@ -169,7 +173,9 @@ export type IntegrityCategory =
   | "past_exam_starved_by_repairs" | "too_many_pre_session_required_repairs"
   | "selected_major_deprioritized_by_nonselected" | "same_root_repair_loop"
   | "transfer_success_not_recognized" | "stale_current_audit"
-  | "coach_update_parse_failed" | "coach_update_schema_invalid" | "coach_diff_generated_from_invalid_update";
+  | "coach_update_parse_failed" | "coach_update_schema_invalid" | "coach_diff_generated_from_invalid_update"
+  | "selected_attempt_missing_from_session" | "session_answer_count_mismatch" | "coach_kpi_projection_mismatch"
+  | "pass_outlook_truncated" | "transfer_false_positive";
 
 export type IntegrityIssue = {
   category: IntegrityCategory;
@@ -224,6 +230,9 @@ export function runIntegrityAudit(args: {
   pastExamCatalog?:ExamReferenceCatalogItem[];
   pastSessions?:PastSession[];
   repairCandidates?:PastExamRepairCandidate[];
+  conceptWeaknesses?:ConceptWeaknessInsight[];
+  currentPastSessions?:PastSession[];
+  currentCoach?:CoachDiagnosisState;currentKpis?:DashboardKpiProjection;currentReadiness?:ExamReadinessMetrics;
 }): IntegrityAudit {
   const { attempts, reviews, problems = [], aliases = [], today, todayPlanSnapshots = [], validCrossTargetReviewIds = [],
     currentTodayTasks, currentReviews, currentNextTask, currentPlanSummary, futurePlanSummaries=[],additionalCandidates=[],eligibleTodayTasks,pendingImportUpdates=[],
@@ -241,6 +250,34 @@ export function runIntegrityAudit(args: {
   const canonicalPastSessions=canonicalizePastExamSessions(pastSessions).current
     .map(session=>reconcilePastExamSessionEvidence(session,attempts,session.session_alias_ids));
 
+  for(const expected of canonicalPastSessions){
+    const supplied=args.currentPastSessions?.find(s=>s.id===expected.id);
+    if(args.currentPastSessions&&!supplied)issues.push({category:"selected_attempt_missing_from_session",severity:"active",
+      detail:`Canonical session ${expected.id} is absent from the current projection`,repairable:true});
+    const projected=supplied||expected;
+    for(const expectedQuestion of expected.questions||[]){
+      if(!expectedQuestion.sourceAttemptId)continue;
+      const question=projected.questions?.find(q=>q.problemId===expectedQuestion.problemId);
+      if(!question||question.actualScore==null)issues.push({category:"selected_attempt_missing_from_session",severity:"active",
+        attemptIds:[expectedQuestion.sourceAttemptId],detail:`Session ${expected.id} has no projected score for ${expectedQuestion.problemId}`,repairable:true});
+      else if(question.actualScore!==expectedQuestion.actualScore)issues.push({category:"session_attempt_score_mismatch",severity:"active",
+        attemptIds:[expectedQuestion.sourceAttemptId],detail:`Session ${expected.id} projected score differs from canonical Attempt evidence`,repairable:true});
+    }
+    if(projected.selected_answer_count!==expected.selected_answer_count)issues.push({category:"session_answer_count_mismatch",severity:"active",
+      detail:`Session ${expected.id} answer count differs from canonical evidence`,repairable:true});
+  }
+  if(args.currentCoach){
+    const coach=args.currentCoach;
+    if(coach.current&&legacyTruncatedOutlook(coach.current))issues.push({category:"pass_outlook_truncated",
+      severity:coach.source==="gpt"?"active":"history",detail:"Legacy outlook is 80 characters; preserve history and use a complete current diagnosis",repairable:false});
+    if(coach.source==="local_provisional"&&args.currentKpis&&coach.display.level.value!==args.currentKpis.examReadiness.level)
+      issues.push({category:"coach_kpi_projection_mismatch",severity:"active",detail:"Current provisional coach and Dashboard use different capability levels",repairable:false});
+  }
+  if(args.currentReadiness?.evidence?.transfer){
+    const valid=new Set(deriveTransferEvidence(attempts).map(row=>`${row.sourceProblemId}|${row.skillId}`)).size;
+    if(args.currentReadiness.evidence.transfer.numerator!==valid)issues.push({category:"transfer_false_positive",severity:"active",
+      detail:"Transfer KPI differs from reference-free different-problem skill evidence",repairable:false});
+  }
   for(const session of canonicalPastSessions){
     const state=derivePastExamSessionState(session),selectedIds=new Set(session.selected_timed_attempt_ids||[]),
       calibrationIds=new Set(session.counterfactual_calibration_attempt_ids||[]);
@@ -521,7 +558,7 @@ export function runIntegrityAudit(args: {
     const firstSession=tasks.find(row=>["clean_scan5","timed_three_question_session"].includes(String(row.pastExamTaskType||"")));
     const expectedCleanYear=selectPastExamYear({
       candidates:buildPastExamYearCandidates({catalog:args.pastExamCatalog||[],attempts,pastSessions:canonicalPastSessions,
-        today,daysRemaining:remaining}),
+        weaknesses:args.conceptWeaknesses,today,daysRemaining:remaining}),
       taskType:(firstSession?.pastExamTaskType||"timed_three_question_session") as PastExamTaskType,
     })?.year;
     if(remaining<=80&&expectedCleanYear&&firstSession?.pastExamYear!==expectedCleanYear)issues.push({category:"clean_scan_year_skipped",severity:"active",
@@ -957,6 +994,8 @@ export function runIntegrityAudit(args: {
     "past_exam_starved_by_repairs", "too_many_pre_session_required_repairs", "selected_major_deprioritized_by_nonselected",
     "same_root_repair_loop", "transfer_success_not_recognized", "stale_current_audit",
     "coach_update_parse_failed", "coach_update_schema_invalid", "coach_diff_generated_from_invalid_update",
+    "selected_attempt_missing_from_session", "session_answer_count_mismatch", "coach_kpi_projection_mismatch",
+    "pass_outlook_truncated", "transfer_false_positive",
   ];
   const counts = Object.fromEntries(categories.map((category) =>
     [category, issues.filter((issue) => issue.category === category).length])) as Record<IntegrityCategory, number>;

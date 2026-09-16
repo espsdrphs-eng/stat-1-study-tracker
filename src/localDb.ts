@@ -68,7 +68,7 @@ import {canonicalizePastExamSessions,derivePastExamSessionState,pastExamSessionK
 
 const PLANNER_RUNTIME_MODE_META_KEY="planner-runtime-mode";
 const CURRENT_PLAN_PROJECTION_META_KEY="current-plan-projection-version";
-const CURRENT_PLAN_PROJECTION_VERSION="learning-root-transfer-evidence-v3";
+const CURRENT_PLAN_PROJECTION_VERSION="autonomous-coach-evidence-v4";
 
 type SMemory = { problem_id:string; state:"stable"|"check"|"forgotten"|"collapsed"; last_touched?:string; k_trigger_count:number };
 type StoredAttempt = Attempt;
@@ -3044,6 +3044,17 @@ async function bootstrap():Promise<Bootstrap>{
     today,targetMinutes:settings.daily_study_minutes,completedMinutes:actualMinutes,
     activeRemainingMinutes,currentTasks:tasks,shadow:plannerShadow,urgentReviewBlocked
   });
+  let coachHistory:CoachDiagnosis[]=[];
+  try{coachHistory=JSON.parse(metaEntries.find(entry=>entry.key===COACH_HISTORY_META_KEY)?.value||"[]")}catch{coachHistory=[]}
+  const coach=buildCoachDiagnosisState({history:coachHistory,attempts:activeAttempts,concepts:conceptWeaknesses,
+    dashboard,reviews,problems,planner:plannerShadow,today});
+  const horizon=examHorizonPolicy(plannerShadow.daysRemaining);
+  const dashboardWithKpis={...dashboard,kpis:deriveDashboardKpis({today,updatedAt:new Date().toISOString(),coach,
+    readiness:dashboard.readiness,concepts:conceptWeaknesses,currentTask:canonicalStudyPlan.primaryAction||undefined,
+    daysRemaining:plannerShadow.daysRemaining,phaseLabel:dashboard.pace.phaseLabel,
+    pastExamShare:rollingPastExamShare(plannerShadow.plan14.plan.slice(0,7)),
+    pastExamShareTarget:`${Math.round(horizon.pastExamShareMin*100)}〜${Math.round(horizon.pastExamShareMax*100)}%`,
+    pendingReviews:reviewPortfolio.actionable})};
   const integrityHealth=runIntegrityAudit({
     attempts,reviews:rawReviews,currentReviews:reviews,problems,aliases:problemAliases,today,todayPlanSnapshots:[snapshot],validCrossTargetReviewIds,
     currentTodayTasks:tasks,currentNextTask:canonicalStudyPlan.primaryAction||undefined,currentPlanSummary:plannerShadow.plan14,
@@ -3051,7 +3062,8 @@ async function bootstrap():Promise<Bootstrap>{
       {label:"30-day",summary:plannerShadow.plan30}],
     additionalCandidates:additionalStudy.candidates,eligibleTodayTasks:generatedTriage.tasks,
     examDate:settings.exam_date||"2026-11-15",pastExamCatalog,pastSessions:rawPastSessions,
-    repairCandidates:pastExamRepairCandidates,
+    repairCandidates:pastExamRepairCandidates,conceptWeaknesses,currentPastSessions:pastSessions,
+    currentCoach:coach,currentKpis:dashboardWithKpis.kpis,currentReadiness:dashboard.readiness,
   });
   const systemHealth=deriveSystemHealth(integrityHealth);
   const masterStatus={
@@ -3082,17 +3094,6 @@ async function bootstrap():Promise<Bootstrap>{
   };
   const adaptiveLearning={referencePack:buildReferencePackStatus(referenceRecord),pastExamCatalog,
     conceptWeaknesses,pastExamRepairCandidates,plannerShadow,plannerMode,weaknessModel:"concept_evidence_v1" as const};
-  let coachHistory:CoachDiagnosis[]=[];
-  try{coachHistory=JSON.parse(metaEntries.find(entry=>entry.key===COACH_HISTORY_META_KEY)?.value||"[]")}catch{coachHistory=[]}
-  const coach=buildCoachDiagnosisState({history:coachHistory,attempts:activeAttempts,concepts:conceptWeaknesses,
-    dashboard,reviews,problems,planner:plannerShadow,today});
-  const horizon=examHorizonPolicy(plannerShadow.daysRemaining);
-  const dashboardWithKpis={...dashboard,kpis:deriveDashboardKpis({today,updatedAt:new Date().toISOString(),coach,
-    readiness:dashboard.readiness,concepts:conceptWeaknesses,currentTask:canonicalStudyPlan.primaryAction||undefined,
-    daysRemaining:plannerShadow.daysRemaining,phaseLabel:dashboard.pace.phaseLabel,
-    pastExamShare:rollingPastExamShare(plannerShadow.plan14.plan.slice(0,7)),
-    pastExamShareTarget:`${Math.round(horizon.pastExamShareMin*100)}〜${Math.round(horizon.pastExamShareMax*100)}%`,
-    pendingReviews:reviewPortfolio.actionable})};
   const masteryByProblem=deriveMasteryByProblem({problemIds:problems.map(problem=>problem.problem_id),attempts:activeAttempts,reviews});
   return {problems:problems.sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.category.localeCompare(b.category)||a.problem_number-b.problem_number),attempts,reviews,roadmap,weakNotes,pastSessions,answerIndex,problemAliases,dashboard:dashboardWithKpis,settings,masterStatus,databaseStatus,adaptiveLearning,
     coach,masteryByProblem,
@@ -3314,7 +3315,8 @@ async function integrityAudit():Promise<IntegrityAudit>{
       {label:"14-day",summary:current.adaptiveLearning.plannerShadow.plan14},
       {label:"30-day",summary:current.adaptiveLearning.plannerShadow.plan30}],
     examDate:current.settings.exam_date||"2026-11-15",pastExamCatalog:current.adaptiveLearning.pastExamCatalog,
-    pastSessions,repairCandidates:current.adaptiveLearning.pastExamRepairCandidates,
+    pastSessions,repairCandidates:current.adaptiveLearning.pastExamRepairCandidates,conceptWeaknesses:current.adaptiveLearning.conceptWeaknesses,
+    currentPastSessions:current.pastSessions,currentCoach:current.coach,currentKpis:current.dashboard.kpis,currentReadiness:current.dashboard.readiness,
     additionalCandidates:current.today.additionalCandidates,
     eligibleTodayTasks:adaptivePlanDayToTasks({day:current.adaptiveLearning.plannerShadow.plan14.plan.find(day=>day.date===todayString()),
       problems:current.problems,reviews:current.reviews,today:todayString()})});

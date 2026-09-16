@@ -90,6 +90,25 @@ test("WB is selected live from failed skill, without a static past-problem link"
   assert.deepEqual(rows[0].whitebookProblemIds,[wb.problem_id]);assert.equal(rows[0].matchConfidence,"high");
   assert.deepEqual(rows[0].sourceFindingIds,["calc"]);assert.deepEqual(rows[0].matchedSkillIds,["c1"]);
 });
+
+test("partial Whitebook skill overlap cannot be high-confidence required repair",()=>{
+  const both={...source,grading_contract:{gradedParts:[{...contract.gradedParts[0],fineConceptIds:["c1","c2"]}]}};
+  const rows=buildPastExamRepairCandidates({record:record(),sessions:[session],attempts:[both],
+    conceptWeaknesses:analyze([both]),problems:[{...problem("WB-4-A-01"),fine_concept_ids:["c1"]}]});
+  assert.deepEqual(rows[0].whitebookProblemIds,[]);
+  assert.equal(rows[0].repairKind,"concept_mini");
+});
+
+test("repair success without a verified transfer destination stays visible as an optional evidence gap",()=>{
+  const both={gradedParts:[{...contract.gradedParts[0],fineConceptIds:["c1","missing_skill"]}]};
+  const attempts=[{...source,grading_contract:both},{...success(2,source.problem_id,"2026-09-03"),grading_contract:both}];
+  const rows=buildPastExamRepairCandidates({record:record(),sessions:[session],attempts,
+    conceptWeaknesses:analyze(attempts),problems:[]});
+  assert.equal(rows.length,1);
+  assert.equal(rows[0].repairKind,"transfer_wait");
+  assert.equal(rows[0].required,false);
+  assert.match(rows[0].reason,/transfer候補なし/);
+});
 test("whole-problem theme is not proof that a particular finding failed every concept",()=>{
   const rec=record();rec.data.concepts.push({...rec.data.concepts[0],concept_id:"c2"});
   rec.data.pastExamProblems=[pastProblem(2021,1,["c1","c2"])];

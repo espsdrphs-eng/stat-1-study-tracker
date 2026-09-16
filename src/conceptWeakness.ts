@@ -218,9 +218,12 @@ export function buildPastExamRepairCandidates(args:{
         const skills=unique([...root.skillIds,...(row?[row.conceptId]:[])]);
         const recentSuccess=(id:string)=>args.attempts.some(a=>a.problem_id===id&&a.id>attempt.id&&
           a.actual_reference_level===0&&(a.graded_findings||[]).length&&(a.graded_findings||[]).every(f=>f.resolved&&f.error_type==="none"));
+        const overlap=(ids:string[]=[])=>ids.filter(id=>skills.includes(id)).length;
         const matches=(args.problems||[]).filter(p=>p.source_type!=="past_exam"&&p.category!=="past_exam"&&
-          problemSkillIds(p).some(id=>skills.includes(id))&&!recentSuccess(p.problem_id))
-          .sort((a,b)=>problemSkillIds(b).filter(id=>skills.includes(id)).length-problemSkillIds(a).filter(id=>skills.includes(id)).length||a.problem_id.localeCompare(b.problem_id));
+          skills.length>0&&skills.every(id=>problemSkillIds(p).includes(id))&&!recentSuccess(p.problem_id))
+          .sort((a,b)=>overlap(b.solution_operation_ids)-overlap(a.solution_operation_ids)||
+            overlap(b.fine_concept_ids)-overlap(a.fine_concept_ids)||overlap(b.root_skill_ids)-overlap(a.root_skill_ids)||
+            a.problem_id.localeCompare(b.problem_id));
         const linkedWhitebook=matches.slice(0,2).map(p=>p.problem_id);
         const matchConfidence:PastExamRepairCandidate["matchConfidence"]=linkedWhitebook.length?"high":"low";
         const required=root.requiredRepair&&(session.session_kind!=="selected_three_timed"||
@@ -232,13 +235,12 @@ export function buildPastExamRepairCandidates(args:{
           .sort((a,b)=>Number(args.attempts.some(x=>x.problem_id===canonicalPastExamProblemId(a)))-
             Number(args.attempts.some(x=>x.problem_id===canonicalPastExamProblemId(b)))||a.year-b.year)
           .map(canonicalPastExamProblemId).slice(0,3);
-        if(progress.repairSuccess&&!transfer.length)continue;
         const sameRootFailureCount=args.attempts.filter(other=>!other.exclude_from_metrics&&!other.duplicate_of_attempt_id&&other.problem_id===attempt.problem_id&&
           deriveFailureEpisode(other).rootWeaknesses.some(otherRoot=>otherRoot.rootWeaknessId===root.rootWeaknessId&&otherRoot.requiredRepair)).length;
         const interventionChanged=sameRootFailureCount>=2;
-        const repairKind:PastExamRepairCandidate["repairKind"]=progress.repairSuccess?"transfer":linkedWhitebook.length?"whitebook":
+        const repairKind:PastExamRepairCandidate["repairKind"]=progress.repairSuccess?(transfer.length?"transfer":"transfer_wait"):linkedWhitebook.length?"whitebook":
           interventionChanged&&transfer.length?"transfer":interventionChanged?"rediagnosis":"concept_mini";
-        const interventionRequired=required&&repairKind!=="rediagnosis";
+        const interventionRequired=required&&repairKind!=="rediagnosis"&&repairKind!=="transfer_wait";
         candidates.push({sessionId:session.id,sourceAttemptId:progress.latestFailure.id,sourceProblemId,
           repairSuccessEvidenceId:progress.repairSuccess?.id,
           sourceFindingId:root.sourceFindingIds[0],sourceFindingIds:root.sourceFindingIds,
@@ -247,9 +249,11 @@ export function buildPastExamRepairCandidates(args:{
           whitebookProblemIds:repairKind==="whitebook"?linkedWhitebook:[],transferProblemIds:transfer,
           weaknessSkillIds:skills,matchedSkillIds:unique(matches.slice(0,2).flatMap(problemSkillIds).filter(id=>skills.includes(id))),
           matchScore:linkedWhitebook.length?100:0,matchConfidence,repairKind,sameRootFailureCount,interventionChanged,
-          matchReason:linkedWhitebook.length?`source findingのfine concept / operation「${skills.join(" / ")}」とlive白本masterの明示skillが一致`:
+          matchReason:repairKind==="transfer_wait"?"一致する明示skillの別問題が未確認。章・テーマだけの候補を生成しない":
+            linkedWhitebook.length?`source findingのfine concept / operation「${skills.join(" / ")}」とlive白本masterの明示skillが一致`:
             `exact skill/operation一致の白本がないため、${sourceProblemId}の該当部分を局所補修`,
-          reason:progress.repairSuccess?`Attempt ${progress.repairSuccess.id}で参照なし補修成功。別問題で同じskillを確認`:
+          reason:repairKind==="transfer_wait"?`Attempt ${progress.repairSuccess!.id}で補修成功。transfer候補なし：対象skillと別問題の対応を確認するまで任意・保留`:
+            progress.repairSuccess?`Attempt ${progress.repairSuccess.id}で参照なし補修成功。別問題で同じskillを確認`:
             interventionChanged?`${sameRootFailureCount}回失敗した同一形式を繰り返さず、${repairKind==="transfer"?"別問題transfer":"root cause再診断"}へ変更`:
             root.requiredRepair?`過去問 ${sourceProblemId} の本番得点を変える${root.errorTypes.join("/")} rootを最小補修`:
             `単発の${root.errorTypes.join("/")}は必須化せず任意確認`,

@@ -5,6 +5,7 @@ import { scanMetrics, selectionSuccessRate } from "./pastExamWorkflow.ts";
 import {resolvePastExamProblemId} from "./examReferencePack.ts";
 import {deriveTransferEvidence,partSkillIds,problemSkillIds} from "./skillEvidence.ts";
 import {examHorizonPolicy} from "./examOptimizationPolicy.ts";
+import {deriveFailureEpisode} from "./failureEpisode.ts";
 
 export type ExamPhase =
   | "foundation_to_A"
@@ -36,15 +37,17 @@ export type ExamReadinessMetrics = {
 };
 
 export type MetricEvidence={value:number|null;numerator:number;denominator:number;evidenceCount:number;
-  eligibleEvidenceRule:string;modeScope:string[];lastUpdated:string|null;confidence:"low"|"medium"|"high"};
+  eligibleEvidenceRule:string;modeScope:string[];lastUpdated:string|null;confidence:"low"|"medium"|"high";
+  eligibleEvidenceIds:string[];lastUpdatedAt:string|null;missingEvidenceReason:string|null};
 export type LearningMetricEvidence={
   selectedThree:MetricEvidence&{sessions:Array<{sessionId:number;year:number;score:number;attemptIds:number[]}>};
   individual:MetricEvidence;diagnostic:MetricEvidence;timed:MetricEvidence;selection:MetricEvidence;
-  transfer?:MetricEvidence;
+  transfer?:MetricEvidence;unseen?:MetricEvidence;repeatedMajor?:MetricEvidence;
 };
 const metric=(numerator:number,denominator:number,count:number,rule:string,modes:string[],date:string|null,percent=false):MetricEvidence=>({
   value:denominator?numerator/denominator*(percent?100:1):null,numerator,denominator,evidenceCount:count,
-  eligibleEvidenceRule:rule,modeScope:modes,lastUpdated:date,confidence:count>=6?"high":count>=3?"medium":"low"});
+  eligibleEvidenceRule:rule,modeScope:modes,lastUpdated:date,lastUpdatedAt:date,eligibleEvidenceIds:[],
+  missingEvidenceReason:denominator?null:`未計測：${rule}`,confidence:count>=6?"high":count>=3?"medium":"low"});
 
 export function normalizeProblemId(value: string) {
   const raw = String(value || "").toUpperCase().replace(/[‐‑‒–—―ー－]/g, "-").trim();
@@ -155,8 +158,7 @@ export function calculateExamReadinessMetrics(args: {
     const eligibilityResult=examScoreEligibility(attempt,problem);
     const standaloneExamAttempt=!attempt.parent_past_session_id&&!sessionAttemptIds.has(attempt.id)&&
       attempt.session_role!=="counterfactual_calibration";
-    if (standaloneExamAttempt&&(!previous || daysSince >= 30) && eligibility && noReference(attempt) && validScore(attempt)&&
-      Number(attempt.time_minutes||0)<=Number(attempt.time_limit_minutes||eligibilityResult.timeLimitMinutes||0)) transferAttempts.push(attempt);
+    if (standaloneExamAttempt&&(!previous || daysSince >= 30) && eligibility && noReference(attempt) && validScore(attempt)) transferAttempts.push(attempt);
     const mode = attempt.mode || "";
     const timeLimit = mode === "exam_90min" ? 90 : mode === "full" ? 35 : problem?.category === "past_exam" ? 30 : 0;
     if (standaloneExamAttempt&&eligibility&&Number(attempt.time_minutes)>0&&timeLimit) timedAttempts.push(attempt);
@@ -221,20 +223,37 @@ export function calculateExamReadinessMetrics(args: {
 
   const kDenominator = [...kGroups.values()].length;
   const wDenominator = [...wGroups.values()].length;
-
-  return {
-    unseenScoreRate: scoreAverage(transferAttempts),
-    timedCompletionRate:timed.value==null?null:Math.round(timed.value),
-    selectionSuccessRate: scanScores.length ? Math.round(scanScores.reduce((sum, value) => sum + value, 0) / scanScores.length) : null,
-    pastExamScoreRate:(selectedEvidence.value??individual.value)==null?null:Math.round((selectedEvidence.value??individual.value)!),
-    evidence:{selectedThree:selectedEvidence,individual,timed,
+  const evidence:LearningMetricEvidence={selectedThree:selectedEvidence,individual,timed,
       transfer:metric(transferred.size,transferOpportunities.size,transferRows.length,
         "別問題・明示skill一致・参照なし・関連finding成功・採点信頼度80%以上。母数は別問題候補がある失敗root",["different_problem"],
         transferRows.map(t=>t.date).sort().at(-1)||null,true),
       selection:metric(scanScores.reduce((a,b)=>a+b/100,0),scanScores.length,scanScores.length,
         "clean scanと選択3問・比較可能な採点が揃ったsessionのみ",["clean_scan5"],lastEvidenceDate(scanSessions.filter(s=>selectionSuccessRate(s)!=null),"all"),true),
       diagnostic:metric(diagnosticRows.reduce((sum,q)=>sum+Number(q.actualScore),0),diagnosticRows.length,diagnosticRows.length,
-        "非選択問題の較正得点。本番3答案・時間に合算しない",["counterfactual_calibration"],lastDate(attempts.filter(a=>pastSessions.some(s=>s.counterfactual_calibration_attempt_ids?.includes(a.id)))))},
+        "非選択問題の較正得点。本番3答案・時間に合算しない",["counterfactual_calibration"],lastDate(attempts.filter(a=>pastSessions.some(s=>s.counterfactual_calibration_attempt_ids?.includes(a.id))))) };
+  const attemptIds=(rows:Attempt[])=>rows.map(a=>`attempt:${a.id}`),sessionIds=(rows:PastSession[])=>rows.map(s=>`session:${s.id}`);
+  evidence.selectedThree.eligibleEvidenceIds=sessionIds(eligibleSessions);
+  evidence.individual.eligibleEvidenceIds=attemptIds(pastExamAttempts);
+  evidence.timed.eligibleEvidenceIds=timedSessions.length?sessionIds(timedSessions):attemptIds(timedAttempts);
+  evidence.selection.eligibleEvidenceIds=sessionIds(scanSessions.filter(s=>selectionSuccessRate(s)!=null));
+  evidence.diagnostic.eligibleEvidenceIds=[...new Set(pastSessions.flatMap(s=>(s.counterfactual_calibration_attempt_ids||[]).map(id=>`attempt:${id}`)))];
+  evidence.transfer!.eligibleEvidenceIds=[...transferOpportunities].map(id=>`root:${id}`);
+  evidence.unseen={...metric(transferAttempts.reduce((sum,a)=>sum+Number(a.score_numeric),0),transferAttempts.length,transferAttempts.length,
+    "参照なし初回・30日以上未実施の個別full/timed。時間超過は得点から除外しない",["full","timed"],lastDate(transferAttempts)),
+    eligibleEvidenceIds:attemptIds(transferAttempts)};
+  const majorRows=attempts.filter(a=>!a.exclude_from_metrics&&!a.duplicate_of_attempt_id).flatMap(a=>
+    deriveFailureEpisode(a).rootWeaknesses.filter(root=>root.materiality==="major").map(root=>({
+      id:`attempt:${a.id}:${root.rootWeaknessId}`,key:root.skillIds.slice().sort().join("|")||root.rootWeaknessId,date:a.date})));
+  const majorGroups=new Map<string,number>();for(const row of majorRows)majorGroups.set(row.key,(majorGroups.get(row.key)||0)+1);
+  evidence.repeatedMajor={...metric([...majorGroups.values()].filter(n=>n>=2).length,majorGroups.size,majorRows.length,
+    "有効なmajor failureの明示root。2回以上失敗したroot数 / 観測root数",["graded_finding"],lastDate(majorRows),true),
+    eligibleEvidenceIds:majorRows.map(r=>r.id)};
+  return {
+    unseenScoreRate: scoreAverage(transferAttempts),
+    timedCompletionRate:timed.value==null?null:Math.round(timed.value),
+    selectionSuccessRate: scanScores.length ? Math.round(scanScores.reduce((sum, value) => sum + value, 0) / scanScores.length) : null,
+    pastExamScoreRate:(selectedEvidence.value??individual.value)==null?null:Math.round((selectedEvidence.value??individual.value)!),
+    evidence,
     kRecurrenceRate: kDenominator ? Math.round([...kGroups.values()].filter(count => count >= 2).length / kDenominator * 100) : null,
     repeatedWRate: wDenominator ? Math.round([...wGroups.values()].filter(count => count >= 2).length / wDenominator * 100) : null,
     typeIdentificationAccuracy:averageNullable(scanRows.map(row=>row.typeIdentificationAccuracy)),
@@ -245,7 +264,7 @@ export function calculateExamReadinessMetrics(args: {
       unseen: transferAttempts.length,
       timed:timed.evidenceCount,
       scans: scanScores.length,
-      selectionPending:Math.max(0,scanSessions.length-scanScores.length),
+      selectionPending:scanSessions.filter(s=>s.session_kind!=="scan_only"&&selectionSuccessRate(s)==null).length,
       pastExams:eligibleSessions.length||pastExamAttempts.length,
       kReviews: kDenominator,
       wReviews: wDenominator,

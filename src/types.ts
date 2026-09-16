@@ -387,6 +387,7 @@ export type ConceptWeaknessInsight = {
 };
 export type CoachConfidence="low"|"medium"|"high";
 export type CoachDiagnosis = {
+  textIntegrity?:"complete";
   schemaVersion:"stat1-coach-v1";reviewedAt:string;evidenceCutoffAttemptId:number;
   level:{value:number;label:string;passOutlook:string;confidence:CoachConfidence;rationale:string};
   primaryBottleneck:{title:string;explanation:string;evidenceProblemIds:string[];effectOnExam:string};
@@ -397,6 +398,7 @@ export type CoachDiagnosis = {
   optionalPassProbability?:{range:string;confidence:CoachConfidence;rationale:string}|null;
 };
 export type CoachDiagnosisState = {
+  needsTextRefresh?:boolean;
   current:CoachDiagnosis|null;display:CoachDiagnosis;history:CoachDiagnosis[];
   source:"gpt"|"local_provisional";stale:boolean;newAttemptCount:number;
   prompt:string;lastReviewedAt:string|null;
@@ -484,7 +486,7 @@ export type PastExamRepairCandidate = {
   requiresUserConfirmation:true;
   rootWeaknessId?:string;sourceFindingIds?:string[];weaknessSkillIds?:string[];
   matchedSkillIds?:string[];matchScore?:number;matchConfidence?:"low"|"medium"|"high";
-  repairKind?:"whitebook"|"same_problem"|"concept_mini"|"transfer"|"rediagnosis";
+  repairKind?:"whitebook"|"same_problem"|"concept_mini"|"transfer"|"transfer_wait"|"rediagnosis";
   sameRootFailureCount?:number;interventionChanged?:boolean;
 };
 export type RepairLineageProjection = {
@@ -523,6 +525,7 @@ export type AdaptiveLearning = {
 };
 export type DashboardKpiConfidence="low"|"medium"|"high";
 export type DashboardKpiValue={
+  level?:number;levelLabel?:string;levelRationale?:string;
   value:string;detail:string;source:string;evidenceCount:number;freshness:"current"|"stale"|"measuring";
   confidence:DashboardKpiConfidence;updatedAt:string;
   missingEvidence?:string[];nextEvidenceAction?:string;

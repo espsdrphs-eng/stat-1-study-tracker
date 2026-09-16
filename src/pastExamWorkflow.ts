@@ -129,6 +129,8 @@ export function validatePastExamSession(session:PastSession):PastSessionValidati
   const ids=questions.map(row=>row.problemId||row.questionLabel).filter(Boolean);
   if(session.session_kind!=="retrospective_review"&&questions.length!==5)errors.push("5問を登録してください");
   if(new Set(ids).size!==ids.length)errors.push("同じ問題を重複登録できません");
+  if(questions.some(q=>[q.predictedScore,q.actualScore].some(value=>value!=null&&
+    (!Number.isFinite(value)||value<0||value>100))))errors.push("予想得点・実得点は0〜100で入力してください");
   const selected=(session.final_selected_problem_ids?.length?session.final_selected_problem_ids:session.initial_selected_problem_ids||questions.filter(row=>row.selected).map(row=>row.problemId||row.questionLabel)).filter(Boolean);
   if(session.session_kind!=="retrospective_review"&&selected.length!==3)errors.push("選ぶ問題は3問にしてください");
   const planned=questions.filter(row=>selected.includes(row.problemId||row.questionLabel)).reduce((sum,row)=>sum+Number(row.predictedMinutes||0),0);
@@ -146,6 +148,7 @@ export function validatePastExamSession(session:PastSession):PastSessionValidati
 }
 
 export function selectionSuccessRate(session:PastSession):number|null{
+  if(session.scan_evidence_kind==="practice"||session.session_kind==="scan_only")return null;
   if(!session.selection_evaluation_eligible)return null;
   const optimal=session.optimal_selected_problem_ids||[];
   const selected=session.final_selected_problem_ids?.length?session.final_selected_problem_ids:session.initial_selected_problem_ids||[];
@@ -176,7 +179,8 @@ export function scanMetrics(session:PastSession){
   const assessedType=solved.filter(row=>row.typeJudgmentCorrect!=null),assessedStep=solved.filter(row=>row.firstStepCorrect!=null);
   // Counterfactual non-selected scores calibrate pre-scan score prediction,
   // but never become selected timed answers or session time.
-  const scoreDiff=questions.filter(row=>row.actualScore!=null&&row.predictedScore!=null).map(row=>Number(row.actualScore)-Number(row.predictedScore));
+  const scoreDiff=questions.filter(row=>row.actualScore!=null&&row.predictedScore!=null&&
+    Number.isFinite(row.predictedScore)&&row.predictedScore>=0&&row.predictedScore<=100).map(row=>Number(row.actualScore)-Number(row.predictedScore));
   const timeDiff=solved.filter(row=>row.actualMinutes!=null&&row.predictedMinutes!=null).map(row=>Number(row.actualMinutes)-Number(row.predictedMinutes));
   return {selectionSuccessRate:selectionSuccessRate(session),typeIdentificationAccuracy:assessedType.length?Math.round(assessedType.filter(row=>row.typeJudgmentCorrect).length/assessedType.length*100):null,
     firstStepAccuracy:assessedStep.length?Math.round(assessedStep.filter(row=>row.firstStepCorrect).length/assessedStep.length*100):null,

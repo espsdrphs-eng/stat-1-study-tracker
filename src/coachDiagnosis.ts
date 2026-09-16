@@ -1,4 +1,5 @@
 import yaml from "js-yaml";
+import {deriveExamCapability} from "./examCapability.ts";
 import type {
   AdaptivePlannerShadow, Attempt, CoachConfidence, CoachDiagnosis, CoachDiagnosisState,
   ConceptWeaknessInsight, Dashboard, Problem, Review
@@ -30,6 +31,13 @@ const JSON_STRING_PREFIXES=new Set(["{","[",",",":"]);
 const JSON_STRING_SUFFIXES=new Set([":",",","}","]"]);
 
 const text=(value:unknown,max=500)=>String(value??"").trim().slice(0,max);
+const completeText=(value:unknown)=>{
+  const result=String(value??"").trim();
+  if(result.length>16000)throw new CoachImportError("schema","coach_update.level.pass_outlook","maximum 16000 characters; regenerate a shorter complete diagnosis");
+  return result;
+};
+export const legacyTruncatedOutlook=(diagnosis:CoachDiagnosis)=>diagnosis.textIntegrity!=="complete"&&
+  diagnosis.level.passOutlook.length===80&&!/[。.!！?？]$/.test(diagnosis.level.passOutlook);
 const list=(value:unknown,max=3)=>Array.isArray(value)?value.slice(0,max):[];
 const confidence=(value:unknown):CoachConfidence=>{
   const raw=text(value).toLowerCase();
@@ -57,6 +65,8 @@ const requiredArray=(source:Record<string,unknown>,key:string)=>{
 };
 
 export function normalizeCoachUpdate(raw:unknown):CoachDiagnosis{
+  // Import preserves complete prose; prompt summarization alone may be bounded.
+  const text=(value:unknown,_max?:number)=>completeText(value);
   const root=(raw&&typeof raw==="object"?raw:{}) as Record<string,unknown>;
   const source=(root.coach_update&&typeof root.coach_update==="object"?root.coach_update:root) as Record<string,unknown>;
   if(!source.schema_version)throw new CoachImportError("schema","coach_update.schema_version","schema_version is required");
@@ -75,9 +85,9 @@ export function normalizeCoachUpdate(raw:unknown):CoachDiagnosis{
   const cutoff=Math.trunc(finite(source.evidence_cutoff_attempt_id));
   if(cutoff<0)throw new CoachImportError("semantic","coach_update.evidence_cutoff_attempt_id","cutoff must be zero or greater");
   const diagnosis:CoachDiagnosis={
-    schemaVersion:COACH_SCHEMA_VERSION,reviewedAt:text(source.reviewed_at)||new Date().toISOString(),
+    schemaVersion:COACH_SCHEMA_VERSION,textIntegrity:"complete",reviewedAt:text(source.reviewed_at)||new Date().toISOString(),
     evidenceCutoffAttemptId:cutoff,
-    level:{value,label:text(level.label,80),passOutlook:text(level.pass_outlook,80),
+    level:{value,label:text(level.label,80),passOutlook:completeText(level.pass_outlook),
       confidence:confidence(level.confidence),rationale:text(level.rationale,600)},
     primaryBottleneck:{title:text(bottleneck.title,120),explanation:text(bottleneck.explanation,600),
       evidenceProblemIds:list(bottleneck.evidence_problem_ids,12).map(String).filter(Boolean),
@@ -281,9 +291,15 @@ export function buildCoachDiagnosisState(args:{
   const history=[...args.history].sort((a,b)=>b.reviewedAt.localeCompare(a.reviewedAt)||
     b.evidenceCutoffAttemptId-a.evidenceCutoffAttemptId);
   const current=history[0]||null;
-  const display=current||deriveProvisionalCoachDiagnosis(args);
-  const newAttemptCount=current?args.attempts.filter(row=>row.id>current.evidenceCutoffAttemptId&&!row.exclude_from_metrics).length:args.attempts.length;
-  return {current,display,history,source:current?"gpt":"local_provisional",stale:!!current&&newAttemptCount>0,
+  const needsTextRefresh=!!current&&legacyTruncatedOutlook(current);
+  const newAttemptCount=current?args.attempts.filter(row=>row.id>current.evidenceCutoffAttemptId&&!row.exclude_from_metrics&&!row.duplicate_of_attempt_id).length:args.attempts.length;
+  const useCurrent=!!current&&!needsTextRefresh&&newAttemptCount===0;
+  const provisional=deriveProvisionalCoachDiagnosis(args);
+  const capability=deriveExamCapability(args.dashboard.readiness);
+  const display=useCurrent?current!:{...provisional,level:{value:capability.level,label:capability.label,
+    passOutlook:capability.outlook,confidence:capability.confidence,rationale:capability.rationale}};
+  return {current,display,history,source:useCurrent?"gpt":"local_provisional",stale:!!current&&newAttemptCount>0,
+    needsTextRefresh,
     newAttemptCount,prompt:buildCoachReviewPrompt(args),lastReviewedAt:current?.reviewedAt||null};
 }
 

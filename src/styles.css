@@ -366,3 +366,4 @@ header h1{font-size:28px;font-weight:700;letter-spacing:-.02em;color:var(--text-
 @media(max-width:900px){.initial-grading-panel{grid-template-columns:1fr}.initial-grading-panel small{grid-column:auto}}
 .past-workspace-next .primary{flex-shrink:0;white-space:nowrap}
 .weekly-chart{min-width:0}.week-bars{gap:4px}.week-bars>div{min-width:0}.week-bars small{white-space:normal;overflow-wrap:anywhere}
+.coach-level>b,.coach-current p,.pass-judgement-meaning p{white-space:normal;overflow:visible;overflow-wrap:anywhere;max-height:none}
