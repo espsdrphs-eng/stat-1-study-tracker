@@ -264,7 +264,7 @@ function planDays(args:{
   const makeTargetedRepair=(date:string)=>{
     const candidate=args.repairCandidates?.find(row=>row.required&&!usedRepairRoots.has(row.rootWeaknessId||row.conceptId)&&(
       row.repairKind==="transfer"&&row.transferProblemIds.some(id=>!usedProblems.has(id))||
-      row.repairKind==="concept_mini"||row.repairKind==="same_problem"||
+      row.repairKind==="concept_mini"||row.repairKind==="same_problem"||row.repairKind==="rediagnosis"||
       row.repairKind==="whitebook"&&row.matchConfidence==="high"&&row.whitebookProblemIds.some(id=>!usedProblems.has(id))));
     if(!candidate)return args.repairCandidates?null:makeWhitebook(date,[2,4,5,6,7,8],"skeleton",
       "過去問で確認された高価値targetだけを局所補修","score_building",true);
@@ -286,13 +286,12 @@ function planDays(args:{
           weaknessSkillIds:candidate.weaknessSkillIds,matchedSkillIds:candidate.weaknessSkillIds,
           matchConfidence:"high",matchReason:candidate.reason,repairSuccessEvidenceId:candidate.repairSuccessEvidenceId}});
     }
-    if(candidate.repairKind==="rediagnosis")return null;
     if(candidate.repairKind!=="whitebook"){
       const sourceProblem=args.problems.find(row=>row.problem_id===candidate.sourceProblemId);
       if(!sourceProblem)return null;
-      return task({date,slot:"score_building",kind:"whitebook",label:`${candidate.sourceProblemId} 該当部分の局所補修`,
+      return task({date,slot:"score_building",kind:"whitebook",label:`${candidate.sourceProblemId} ${candidate.interventionChanged?"初手から分解して再診断":"該当部分の局所補修"}`,
         problemId:candidate.sourceProblemId,conceptId:candidate.conceptId,minutes:7,mode:"skeleton",
-        reason:`${candidate.sourceProblemId}の失点原因「${candidate.conceptLabel}」にexact Whitebook一致がないため`,
+        reason:candidate.interventionChanged?candidate.reason:`${candidate.sourceProblemId}の失点原因「${candidate.conceptLabel}」にexact Whitebook一致がないため`,
         requiresUserSelection:false,todayCategory:"repair",actionClass:"targeted_repair",
         whyToday:`${candidate.sourceProblemId}のmajor root weaknessだけを5〜10分で訂正するため`,
         repairLineage:{sourceAttemptId:candidate.sourceAttemptId,sourceProblemId:candidate.sourceProblemId,

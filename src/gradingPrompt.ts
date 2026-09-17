@@ -3,7 +3,7 @@ export const REVIEW_RUBRIC_VERSION="STAT1-REVIEW-v9";
 
 import { removeTimingExpressions } from "./reviewTiming.ts";
 import type { EffectiveReviewScope } from "./reviewScopeResolver.ts";
-import type { Attempt, GradingContractSnapshot, ProblemContextPack, Review } from "./types.ts";
+import type { Attempt, GradingContractSnapshot, ProblemContextPack, Review,RepairLineageProjection } from "./types.ts";
 import { gradedPartIds, gradedPartLabels } from "./gradedParts.ts";
 import { suppliedReferenceCoverage } from "./wholeAnswerDiagnostic.ts";
 
@@ -34,6 +34,7 @@ export type FirstAttemptPromptContext={
   estimatedMinutes?:number;
   gradingContract?:GradingContractSnapshot;
   problemContext?:ProblemContextPack;
+  repairLineage?:RepairLineageProjection;
 };
 
 const wholeAnswerRules=`STEP 0で、今回実際に渡された全添付を problem_statement / official_reference_answer / supplemental_reference / current_answer / unrelated_or_unknown に分類する。
@@ -60,6 +61,17 @@ export function buildFirstAttemptGradingPrompt(context:FirstAttemptPromptContext
   const contract=context.gradingContract;
   const problemContext=context.problemContext;
   const contractParts=contract?.gradedParts||[];
+  const lineage=context.repairLineage;
+  const linkedSkillTask=lineage?.sourceProblemId!==context.problemId&&lineage?.matchConfidence==="high"&&lineage?.weaknessSkillIds?.length;
+  const assignedPurpose=contract?.learningPurpose||(linkedSkillTask?(lineage?.repairSuccessEvidenceId?"transfer_check":"error_repair"):"integration_check");
+  const transferFocus=linkedSkillTask
+    ?`【${lineage?.repairSuccessEvidenceId?"別問題transfer：採点済み補修からの確認対象":"Whitebook等のscaffold補修：まだtransfer成功ではない"}】
+source problem: ${lineage.sourceProblemId} / repair success Attempt: ${lineage.repairSuccessEvidenceId}
+root: ${lineage.rootWeaknessId}
+対象skill: ${(lineage.weaknessSkillIds||[]).join(" / ")}
+これは今回の成功を意味しない。参照なしで対象操作を実際に再現したかを確認し、該当するgraded_findingsのevidenceへ数学的操作名と答案の根拠を具体的に書く。
+操作名は例えばmoment_generating_functionなら積率母関数（MGF）、law_total_varianceなら全分散公式。単なる型認識では計算成功にしない。
+対象外の成功だけではtransfer成功としない。失敗・参照・不確実性もそのまま記録し、全体得点の契約は変更しない。` :"";
   return `あなたは統計検定1級・統計数理の答案採点者です。
 以下の問題について、私の初回答案を採点してください。
 
@@ -93,12 +105,13 @@ ${context.estimatedMinutes||""}分
 問題文：${problemContext?.problemStatement||"アプリ内に全文なし。添付された問題文を使用する"}
 公式・正規参照：${problemContext?.officialAnswerText||problemContext?.answerExcerpt||"アプリ内に全文なし。添付された公式解答を使用する"}
 情報充足度：${problemContext?.contextCompleteness||"metadata_only"}
+${transferFocus}
 
 【initial grading contract：Review非依存の今回の採点範囲】
 contract_id: ${contract?.contractId||"legacy_initial_prompt"}
 contract_version: ${contract?.contractVersion||""}
 contract_hash: ${contract?.contractHash||""}
-learning_purpose: ${contract?.learningPurpose||"integration_check"}
+learning_purpose: ${assignedPurpose}
 review_scope: ${contract?.reviewScope||"full_answer"}
 graded_parts:
 ${contractParts.length?contractParts.map(part=>`- ${part.id}｜${part.label}｜許可: ${part.allowedErrorTypes.join("/")}`).join("\n"):"- 答案から実際に採点した部分"}
@@ -150,11 +163,11 @@ study_update:
   contract_version: "${contract?.contractVersion||""}"
   contract_hash: "${contract?.contractHash||""}"
   problem_id: "${context.problemId}"
-  display_label: "${context.displayLabel||context.problemId}"
+${linkedSkillTask?`  source_problem_id: "${lineage.sourceProblemId}"\n`:""}  display_label: "${context.displayLabel||context.problemId}"
   date: "auto_today"
   task_origin: "first_attempt"
   mode: "${mode}"
-  learning_purpose: "${contract?.learningPurpose||"integration_check"}"
+  learning_purpose: "${assignedPurpose}"
   learning_stage: "${contract?.learningStage||"acquisition"}"
   assessment_timing: "independent_performance"
   review_scope: "${contract?.reviewScope||"full_answer"}"

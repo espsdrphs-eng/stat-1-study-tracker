@@ -1143,6 +1143,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
   const completionResult=evaluation.reviewOutcome,objectiveGraduation=evaluation.graduated;
   const id=Number(await db.attempts.add({
     id:undefined as unknown as number,problem_id:input.problem_id,date,mode:input.mode||problem.recommended_mode,
+    source_problem_id:input.source_problem_id||undefined,
     time_minutes:actualMinutes,mark:input.mark||"△",score_label:input.score_label||"B",
     error_type:primary,error_point:localizedErrorPoint,next_action:localizedNextAction,memo:String(input.memo||""),
     score_text:input.score_text||"",score_numeric:input.score_numeric??null,score_max:input.score_max??null,
@@ -2911,7 +2912,7 @@ async function bootstrap():Promise<Bootstrap>{
   const conceptWeaknesses=analyzeConceptWeaknesses({record:referenceRecord,problems,attempts:activeAttempts,
     reviews,weakNotes,today});
   const pastExamRepairCandidates=buildPastExamRepairCandidates({record:referenceRecord,sessions:pastSessions,
-    attempts:activeAttempts,conceptWeaknesses,problems});
+    attempts:activeAttempts,conceptWeaknesses,problems,answers:answerIndex,exposureOverrides});
   const plannerShadow=buildAdaptivePlannerShadow({record:referenceRecord,catalog:pastExamCatalog,
     weaknesses:conceptWeaknesses,problems,attempts:activeAttempts,reviews,pastSessions,
     currentTasks:plannerMode==="legacy"?baseTasks:(snapshot?.tasks||[]),today,examDate:settings.exam_date,

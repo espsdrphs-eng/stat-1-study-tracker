@@ -78,7 +78,9 @@ test("過去問の単発Cは任意、major反復はsource lineage付きrequired 
     recurrenceCount:0,pastExamFailureCount:1}];
   const minorRows=buildPastExamRepairCandidates({record:rec,sessions:[session],attempts:[minor],conceptWeaknesses:minorWeakness,problems:[wb]});
   assert.equal(minorRows[0].required,false);assert.equal(minorRows[0].materiality,"minor");
-  const major=attempt(1,"PY-2021-Q1","2026-08-29",{error_type:"W",error_types:["W"],score_numeric:55,review_outcome:"failed"});
+  const major=attempt(1,"PY-2021-Q1","2026-08-29",{error_type:"W",error_types:["W"],score_numeric:55,review_outcome:"failed",
+    grading_contract:{gradedParts:[{id:"calc",label:"主要計算",fineConceptIds:["c1"]}]},
+    graded_findings:[{graded_part_id:"calc",error_type:"W",resolved:false,evidence:"対象操作の計算停止"}]});
   const majorWeakness=[{...minorWeakness[0],recurrenceCount:2,strongFailures:2}];
   const majorRows=buildPastExamRepairCandidates({record:rec,sessions:[session],attempts:[major],conceptWeaknesses:majorWeakness,problems:[wb]});
   assert.equal(majorRows[0].required,true);assert.equal(majorRows[0].whitebookProblemIds.length,1);
@@ -121,9 +123,9 @@ test("selected threeのmajor weaknessを非選択の較正用Attemptより先に
   assert.ok(rows.every(row=>[1,3,5].includes(row.sourceAttemptId)),JSON.stringify(rows));
 });
 
-test("same rootを同一problemで2回失敗したら3回目の同形式repairを作らずtransferへ介入変更する",()=>{
+test("same rootを2回失敗したら再診断へ介入変更し、成功前のtransferを要求しない",()=>{
   const rec=record({data:{...record().data,pastExamProblems:[pastProblem(2021,1,["c1"]),pastProblem(2022,1,["c1"])]}});
-  // The intervention is a transfer only when the destination explicitly tests this root.
+  // An available destination does not substitute for explicit repair success.
   const rootContract={gradedParts:[{id:"calc",label:"主要計算",rootCauseKey:"c1"}]};
   const attempts=[1,2].map((id,index)=>attempt(id,"PY-2021-Q1",`2026-09-0${index+1}`,{score_numeric:45,
     review_outcome:"failed",grading_contract:rootContract,
@@ -133,5 +135,5 @@ test("same rootを同一problemで2回失敗したら3回目の同形式repair�
     stage:"calibration",scan_set_source:"past_exam_year",questions:[],linked_attempt_ids:[1,2]};
   const rows=buildPastExamRepairCandidates({record:rec,sessions:[session],attempts,conceptWeaknesses:weaknesses,problems});
   assert.equal(rows[0].sameRootFailureCount,2);assert.equal(rows[0].interventionChanged,true);
-  assert.equal(rows[0].repairKind,"transfer");assert.notEqual(rows[0].sourceProblemId,rows[0].transferProblemIds[0]);
+  assert.equal(rows[0].repairKind,"rediagnosis");assert.equal(rows[0].required,true);
 });

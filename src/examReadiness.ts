@@ -3,7 +3,7 @@ import { examScoreEligibility } from "./scoreEligibility.ts";
 import { excludeLegacyKFromPlanning, findingPlanningEligible } from "./legacyKPolicy.ts";
 import { scanMetrics, selectionSuccessRate } from "./pastExamWorkflow.ts";
 import {resolvePastExamProblemId} from "./examReferencePack.ts";
-import {deriveTransferEvidence,partSkillIds,problemSkillIds} from "./skillEvidence.ts";
+import {deriveTransferEvidence,findingSkillIds,problemSkillIds} from "./skillEvidence.ts";
 import {examHorizonPolicy} from "./examOptimizationPolicy.ts";
 import {deriveFailureEpisode} from "./failureEpisode.ts";
 
@@ -126,12 +126,12 @@ export function calculateExamReadinessMetrics(args: {
     ...(s.selected_timed_attempt_ids||[]),...(s.counterfactual_calibration_attempt_ids||[])]));
   const skillProblems=new Map<string,Set<string>>();
   for(const p of problems)for(const id of problemSkillIds(p))skillProblems.set(id,new Set([...(skillProblems.get(id)||[]),p.problem_id]));
-  for(const a of attempts)for(const id of (a.grading_contract?.gradedParts||[]).flatMap(partSkillIds))
+  for(const a of attempts)for(const id of (a.graded_findings||[]).flatMap(f=>findingSkillIds(a,f)))
     skillProblems.set(id,new Set([...(skillProblems.get(id)||[]),a.problem_id]));
   const transferRows=deriveTransferEvidence(attempts);
   const transferOpportunities=new Set(attempts.filter(a=>!a.exclude_from_metrics&&!a.duplicate_of_attempt_id).flatMap(a=>
     (a.graded_findings||[]).filter(f=>findingPlanningEligible(a,f)&&!f.resolved&&f.error_type!=="none").flatMap(f=>
-      partSkillIds(a.grading_contract?.gradedParts.find(p=>p.id===f.graded_part_id))
+      findingSkillIds(a,f)
         .filter(id=>(skillProblems.get(id)?.size||0)>1).map(id=>`${a.problem_id}|${id}`))));
   const transferred=new Set(transferRows.map(t=>`${t.sourceProblemId}|${t.skillId}`));
   const problemMap = new Map(problems.map(problem => [resolveCanonicalProblemId(problem.problem_id, aliases), problem]));

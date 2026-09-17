@@ -1,6 +1,6 @@
 import type {Attempt,FailureEpisode,GradedFinding,GradingErrorType,RootWeakness} from "./types.ts";
 import {planningEligibleFindings,planningErrorsForSource} from "./legacyKPolicy.ts";
-import {partSkillIds} from "./skillEvidence.ts";
+import {findingSkillIds} from "./skillEvidence.ts";
 
 const unique=<T,>(values:T[])=>[...new Set(values)];
 const stableHash=(value:string)=>[...value].reduce((hash,char)=>Math.imul(hash^char.charCodeAt(0),16777619)>>>0,2166136261).toString(16).padStart(8,"0");
@@ -18,7 +18,7 @@ function findingEvidence(attempt:Attempt):FindingEvidence[]{
     return {findingId:finding.graded_part_id,rootKey:part?.rootCauseKey||stable||finding.graded_part_id,
       errorType:finding.error_type,evidence:finding.evidence||"",title:part?.currentLabel||part?.label||attempt.error_point||finding.graded_part_id,
       masteryLevel:part?.masteryLevel||(finding.error_type==="K"?1:2),explicitMajor:false,confidence:"high" as const,
-      skillIds:partSkillIds(part)};
+      skillIds:findingSkillIds(attempt,finding)};
   });
   const observed=(attempt.observed_out_of_scope_findings||[]).filter(finding=>finding.create_target_candidate&&
     finding.materiality==="major"&&finding.confidence!=="low").map((finding,index)=>({

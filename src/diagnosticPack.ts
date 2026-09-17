@@ -379,10 +379,12 @@ export async function createDiagnosticPack():Promise<DiagnosticPackResult>{
   const exposureOverrides=parseMetaJson<Record<string,import("./types.ts").PastExamExposure>>(EXAM_REFERENCE_EXPOSURE_META_KEY,{});
   const referenceCatalog=buildPastExamCatalog({record:referenceRecord,sessions:pastSessions,attempts,exposureOverrides});
   const conceptWeaknesses=analyzeConceptWeaknesses({record:referenceRecord,problems,attempts,reviews,weakNotes,today});
+  const repairCandidates=buildPastExamRepairCandidates({record:referenceRecord,sessions:pastSessions,attempts,conceptWeaknesses,
+    problems,answers:answerIndex,exposureOverrides});
   const currentSnapshot=todayPlanSnapshots.find(row=>row.date===today);
   const adaptiveShadow=buildAdaptivePlannerShadow({record:referenceRecord,catalog:referenceCatalog,
     weaknesses:conceptWeaknesses,problems,attempts,reviews,pastSessions,currentTasks:currentSnapshot?.tasks||[],
-    today,examDate,targetMinutes:Math.max(30,Number(settings.daily_study_minutes||150))});
+    today,examDate,targetMinutes:Math.max(30,Number(settings.daily_study_minutes||150)),repairCandidates});
   const formalTodayTasks=adaptivePlanDayToTasks({day:adaptiveShadow.plan14.plan.find(day=>day.date===today),
     problems,reviews,today});
   const completedMinutes=attempts.filter(attempt=>attempt.date===today&&!attempt.parent_past_session_id)
@@ -404,7 +406,7 @@ export async function createDiagnosticPack():Promise<DiagnosticPackResult>{
     conceptStateCounts:Object.fromEntries([...new Set(conceptWeaknesses.map(row=>row.state))]
       .map(state=>[state,conceptWeaknesses.filter(row=>row.state===state).length])),
     topConceptWeaknesses:conceptWeaknesses.slice(0,20),
-    repairCandidates:buildPastExamRepairCandidates({record:referenceRecord,sessions:pastSessions,attempts,conceptWeaknesses}),
+    repairCandidates,
     adaptivePlanner:formalAdaptiveAudit};
   const plannerAudit={...buildPlannerAudit(snapshotRows,reviews,attempts,Math.max(30,Number(settings.daily_study_minutes||150)),projectedToday?.tasks||formalTodayTasks),
     plannerSource:"adaptive",formalPlan14:adaptiveShadow.plan14,formalPlan30:adaptiveShadow.plan30,

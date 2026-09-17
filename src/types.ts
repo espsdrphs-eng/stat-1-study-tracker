@@ -618,6 +618,7 @@ export type Bootstrap = {
 };
 export type StudyUpdate = {
   problem_id:string; date:string; mode:string; time_minutes?:number|string; actual_minutes?:number|string;
+  source_problem_id?:string;
   estimated_minutes?:number|string; mark:string; score_label:string;
   error_type:string; error_point:string; next_action:string; review_after_days?:number|string;
   linked_s_problem?:string; linked_past_exam?:string; theme?:string; correction_rule?:string;

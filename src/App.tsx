@@ -636,7 +636,8 @@ function StudyPromptButtons({item,resolved}:{item:Partial<Review&Task>;resolved?
   const [copied,setCopied]=useState("");
   const firstPrompt=buildFirstAttemptGradingPrompt({
     problemId:item.problem_id||"",displayLabel:item.title||item.problem_id,theme:item.theme,
-    canonicalProblemType:item.canonical_problem_type,mode:item.mode,estimatedMinutes:item.minutes||item.estimated_minutes
+    canonicalProblemType:item.canonical_problem_type,mode:item.mode,estimatedMinutes:item.minutes||item.estimated_minutes,
+    repairLineage:item.repair_lineage
   });
   const reviewPrompt=item.id&&item.problem_id?buildReviewGradingPrompt({
     reviewId:item.id,problemId:item.problem_id,title:item.title,theme:item.theme,date:todayString(),mode:reviewMode(item),

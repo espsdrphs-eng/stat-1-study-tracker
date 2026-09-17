@@ -295,6 +295,7 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
   const mergedCorrectionFields=[...new Set([...(Array.isArray(raw.correction_fields)?raw.correction_fields.map(String):[]),...autoCorrectionFields])];
   const normalized:StudyUpdate={
     problem_id:candidate,date:scalar(raw.date)==="auto_today"||!raw.date?todayString():scalar(raw.date),
+    source_problem_id:scalar(raw.source_problem_id)?canonicalProblemId(scalar(raw.source_problem_id)):undefined,
     mode,time_minutes:actualMinutes,actual_minutes:actualMinutes,
     raw_time_minutes:raw.time_minutes==null?undefined:raw.time_minutes as number|string,
     raw_score_label:rawScoreLabel||undefined,

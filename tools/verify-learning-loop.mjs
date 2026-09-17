@@ -6,7 +6,7 @@ const source=process.argv[2];
 if(!source)throw new Error("usage: node tools/verify-learning-loop.mjs <backup.json> [--verify]");
 const backup=JSON.parse(await readFile(source,"utf8"));
 const RealDate=Date;
-const fixtureDay=process.env.ACCEPTANCE_DATE||backup.exported_at.slice(0,10);
+const fixtureDay=process.env.ACCEPTANCE_DATE||[backup.exported_at.slice(0,10),...backup.attempts.map(a=>a.date)].sort().at(-1);
 globalThis.Date=class extends RealDate{
   constructor(...args){super(...(args.length?args:[`${fixtureDay}T12:00:00+09:00`]));}
   static now(){return new RealDate(`${fixtureDay}T12:00:00+09:00`).getTime();}

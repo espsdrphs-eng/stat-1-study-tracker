@@ -1,4 +1,5 @@
-import type {Attempt,GradedPartContract,Problem,RootWeakness} from "./types.ts";
+import type {Attempt,GradedFinding,GradedPartContract,Problem,RootWeakness} from "./types.ts";
+import {groundedFindingSkills} from "./groundedSkills.ts";
 import type {StoredExamReferencePack} from "./examReferencePack.ts";
 import {canonicalPastExamProblemId} from "./examReferencePack.ts";
 import {findingPlanningEligible} from "./legacyKPolicy.ts";
@@ -12,6 +13,11 @@ export function partSkillIds(part?:GradedPartContract){
 }
 export function problemSkillIds(problem?:Problem){
   return unique([...(problem?.fine_concept_ids||[]),...(problem?.solution_operation_ids||[]),...(problem?.root_skill_ids||[])]);
+}
+/** Shared derived scope; raw contracts and historical findings remain unchanged. */
+export function findingSkillIds(attempt:Attempt,finding:GradedFinding){
+  return unique([...partSkillIds(attempt.grading_contract?.gradedParts.find(p=>p.id===finding.graded_part_id)),
+    ...groundedFindingSkills(attempt,finding).filter(t=>t.confidence==="high").map(t=>t.skillId)]);
 }
 export function referenceSkills(record:StoredExamReferencePack|null|undefined,problemId:string,problems:Problem[]=[]){
   const canonical=canonicalPastExamProblemId(problemId);
@@ -30,12 +36,11 @@ export function confidentGrading(attempt:Attempt){
 }
 export function successfulSkillIds(attempt:Attempt){
   if(!independentReferenceFree(attempt)||!confidentGrading(attempt))return [];
-  const parts=attempt.grading_contract?.gradedParts||[];
   const findings=(attempt.graded_findings||[]).filter(f=>findingPlanningEligible(attempt,f));
   const failed=new Set(findings.filter(f=>!f.resolved&&f.error_type!=="none")
-    .flatMap(f=>partSkillIds(parts.find(p=>p.id===f.graded_part_id))));
+    .flatMap(f=>findingSkillIds(attempt,f)));
   return unique(findings.filter(f=>f.resolved&&f.error_type==="none").flatMap(f=>
-    partSkillIds(parts.find(p=>p.id===f.graded_part_id)))).filter(id=>!failed.has(id));
+    findingSkillIds(attempt,f))).filter(id=>!failed.has(id));
 }
 /** Explicit success is scoped to the assessed root. Feedback/prose never counts. */
 export function rootProgress(source:Attempt,root:RootWeakness,attempts:Attempt[],index?:StableTargetIndex){
@@ -48,11 +53,19 @@ export function rootProgress(source:Attempt,root:RootWeakness,attempts:Attempt[]
   for(const a of later.filter(a=>a.problem_id===source.problem_id)){
     const parts=a.grading_contract?.gradedParts||[];
     const relevant=(a.graded_findings||[]).filter(f=>findingPlanningEligible(a,f)&&parts.some(p=>p.id===f.graded_part_id&&
-      (keys.has(identity(a,p))||partSkillIds(p).some(id=>root.skillIds.includes(id)))));
+      (keys.has(identity(a,p))||findingSkillIds(a,f).some(id=>root.skillIds.includes(id)))));
     if(relevant.some(f=>!f.resolved&&f.error_type!=="none")){latestFailure=a;repairSuccess=undefined;}
-    else if(relevant.length&&relevant.every(f=>f.resolved&&f.error_type==="none")&&independentReferenceFree(a))repairSuccess=a;
+    else if(relevant.length&&relevant.every(f=>f.resolved&&f.error_type==="none")&&independentReferenceFree(a)&&confidentGrading(a))repairSuccess=a;
+  }
+  // A scaffold on another problem is still repair, not the independent test
+  // after repair. Require explicit source lineage before it can unlock transfer.
+  for(const a of later.filter(a=>a.id>latestFailure.id&&a.problem_id!==source.problem_id&&
+    a.source_problem_id===source.problem_id&&a.learning_purpose==="error_repair")){
+    if(root.skillIds.length&&root.skillIds.every(id=>successfulSkillIds(a).includes(id))&&
+      (!repairSuccess||a.id>repairSuccess.id))repairSuccess=a;
   }
   const transfer=later.find(a=>a.id>latestFailure.id&&a.problem_id!==source.problem_id&&root.skillIds.length>0&&
+    a.learning_purpose!=="error_repair"&&
     root.skillIds.every(id=>successfulSkillIds(a).includes(id)));
   return {repairSuccess,transfer,latestFailure};
 }
@@ -63,13 +76,13 @@ export function deriveTransferEvidence(attempts:Attempt[]):TransferEvidence[]{
   const rows:TransferEvidence[]=[],latestFailures=new Map<string,Attempt>();
   for(const a of [...attempts].sort((a,b)=>a.id-b.id)){
     if(a.exclude_from_metrics||a.duplicate_of_attempt_id)continue;
-    for(const skillId of successfulSkillIds(a)){
+    for(const skillId of a.learning_purpose==="error_repair"?[]:successfulSkillIds(a)){
       const failure=latestFailures.get(skillId);
       if(failure&&failure.problem_id!==a.problem_id)rows.push({id:`transfer:${failure.id}:${a.id}:${skillId}`,
         sourceAttemptId:failure.id,sourceProblemId:failure.problem_id,successAttemptId:a.id,successProblemId:a.problem_id,skillId,date:a.date});
     }
     for(const f of (a.graded_findings||[]).filter(f=>findingPlanningEligible(a,f)&&!f.resolved&&f.error_type!=="none"))
-      for(const id of partSkillIds(a.grading_contract?.gradedParts.find(p=>p.id===f.graded_part_id)))latestFailures.set(id,a);
+      for(const id of findingSkillIds(a,f))latestFailures.set(id,a);
   }
   return rows;
 }
