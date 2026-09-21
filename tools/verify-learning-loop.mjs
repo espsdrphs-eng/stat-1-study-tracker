@@ -53,6 +53,12 @@ if(process.argv.includes("--verify")){
   assert.equal(exportedAudit.sourceStateVersion,report.audit.sourceStateVersion);
   assert.ok(exportedAudit.generatedAt.slice(0,10)>=backup.exported_at.slice(0,10));
   const selected=report.readiness.evidence.selectedThree;
+  const assessment=state.dashboard.kpis.assessment;
+  assert.strictEqual(assessment,state.coach.assessment,'bootstrap must share one assessment object');
+  assert.equal(state.coach.display.level.value,assessment.level);
+  assert.equal(state.coach.display.level.passOutlook,state.dashboard.kpis.passZone.detail);
+  for(const [field,key] of [['selectedThreeScore','selectedThree'],['selectionAccuracy','selection'],['timedCompletion','timed'],['transfer','transfer']])
+    assert.deepEqual(assessment[field],report.readiness.evidence[key]);
   const actual=sessions.find(s=>s.year===2019);
   assert.deepEqual(actual.scores,[58,78,55]);
   assert.equal(actual.state,"completed");
@@ -74,6 +80,13 @@ if(process.argv.includes("--verify")){
     }
   }
   assert.equal(state.today.currentTask?.problem_id,state.today.canonicalStudyPlan.primaryAction?.problem_id);
+  if(fixtureDay==="2026-09-20"){
+    // Acceptance IDs belong only to this read-only real-data fixture.
+    const residual=backup.attempts.find(a=>a.id===264);
+    assert.equal(residual.score_numeric,92);
+    assert.equal(report.plan.requiredRepairs.some(t=>t.repair_lineage?.sourceAttemptId===residual.id),false,
+      'minor notation uncertainty must not outrank current major repair or the exam session');
+  }
   const requiredWhitebook=report.repairs.filter(r=>r.required&&r.repairKind==="whitebook");
   for(const r of requiredWhitebook){
     assert.equal(r.matchConfidence,"high");
@@ -98,6 +111,8 @@ if(process.argv.includes("--verify")){
   const roundtrip=await localGet("/api/bootstrap");
   assert.equal(roundtrip.today.canonicalStudyPlan.sourceStateVersion,before);
   assert.deepEqual(roundtrip.dashboard.readiness,state.dashboard.readiness);
+  assert.equal(roundtrip.dashboard.kpis.assessment.sourceStateVersion,assessment.sourceStateVersion);
+  assert.deepEqual(roundtrip.coach.display.level,state.coach.display.level);
   const roundtripAudit=await localPost("/api/integrity/audit",{});
   assert.equal(roundtripAudit.blockingIntegrityIssueCount,0);assert.equal(roundtripAudit.plannerPolicyViolationCount,0);
   console.log(JSON.stringify({blocking:report.audit.blockingIntegrityIssueCount,planner:report.audit.plannerPolicyViolationCount,

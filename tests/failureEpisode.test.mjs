@@ -1,6 +1,32 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {deriveFailureEpisode} from "../src/failureEpisode.ts";
+import {reviewPlanningDecision} from "../src/todayLearningPolicy.ts";
+
+// 9/20 current-data regression: the original calculation was repaired; the
+// only remaining checked-error region is explicitly uncertain and minor.
+const residualNotation=()=>({id:901,problem_id:"PY-2020-Q2",date:"2026-09-15",mode:"skeleton",
+  score_numeric:92,error_types:["N"],review_outcome:"failed",minimum_pass_condition_met:false,
+  graded_findings:[{graded_part_id:"residual",error_type:"N",evidence:"期待値記法に曖昧さが残る",resolved:false}],
+  whole_answer_scan:{performed:true,confidence:"high",written_answer_coverage:"full",regions:[
+    {region_id:"notation",status:"checked_error"},{region_id:"calculation",status:"checked_correct"}]},
+  diagnostic_uncertainties:[{region_id:"notation",potential_materiality:"minor",confidence:"medium"}]});
+
+test("minor-only diagnostic uncertainty is not promoted by a failed targeted Review",()=>{
+  const attempt=residualNotation(),root=deriveFailureEpisode(attempt).rootWeaknesses[0];
+  assert.equal(root.materiality,"minor");assert.equal(root.requiredRepair,false);
+  assert.equal(reviewPlanningDecision({review:{id:902,problem_id:attempt.problem_id,
+    learning_purpose:"error_repair",source_attempt_id:attempt.id},attempts:[attempt],
+    problems:[{problem_id:attempt.problem_id,source_type:"past_exam"}],weaknesses:[]}).scheduleAsRequired,false);
+});
+
+test("minor uncertainty cannot mask an uncovered major region or recurring root",()=>{
+  const attempt=residualNotation();
+  attempt.whole_answer_scan.regions.push({region_id:"other-calculation",status:"checked_error"});
+  assert.equal(deriveFailureEpisode(attempt).rootWeaknesses[0].requiredRepair,true);
+  const recurring=residualNotation();
+  assert.equal(deriveFailureEpisode(recurring,{recurrenceByRoot:{residual:1}}).rootWeaknesses[0].requiredRepair,true);
+});
 
 test("同じroot causeのfirst step・calculation・conclusionを1 weaknessへ集約する",()=>{
   const attempt={id:223,problem_id:"PY-2017-Q3",date:"2026-08-29",mode:"full",score_numeric:58,

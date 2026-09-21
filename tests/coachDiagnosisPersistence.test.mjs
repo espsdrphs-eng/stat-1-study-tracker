@@ -69,7 +69,9 @@ test("strict JSON coach保存はreload不要のprojectionを更新し、不正im
   await localPost("/api/coach/preview",{text});await localPost("/api/coach/save",{text});
   const after=await localGet("/api/bootstrap");
   assert.equal(after.dashboard.kpis.bottleneck.value,"新しい最大ボトルネック");
-  assert.equal(after.dashboard.kpis.passZone.value,"境界手前〜境界圏");
+  assert.equal(after.dashboard.kpis.passZone.detail,after.coach.display.level.passOutlook);
+  assert.strictEqual(after.dashboard.kpis.assessment,after.coach.assessment);
+  assert.equal(after.coach.current.level.passOutlook,"境界手前〜境界圏",'imported opinion remains in history');
   await assert.rejects(()=>localPost("/api/coach/save",{text:'{"coach_update":'}));
   const unchanged=await localGet("/api/bootstrap");
   assert.equal(unchanged.dashboard.kpis.bottleneck.value,"新しい最大ボトルネック");

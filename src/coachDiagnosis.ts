@@ -1,5 +1,5 @@
 import yaml from "js-yaml";
-import {deriveExamCapability} from "./examCapability.ts";
+import {deriveExamReadinessAssessment,type ExamReadinessAssessment} from "./examCapability.ts";
 import type {
   AdaptivePlannerShadow, Attempt, CoachConfidence, CoachDiagnosis, CoachDiagnosisState,
   ConceptWeaknessInsight, Dashboard, Problem, Review
@@ -201,23 +201,15 @@ export function parseCoachUpdate(input:string){
   throw failure instanceof Error?failure:new CoachImportError("parse","$","legacy YAML could not be parsed");
 }
 
-const scoreFor=(attempt:Attempt)=>attempt.score_numeric??Number(String(attempt.score_text||"").match(/\d+/)?.[0]||NaN);
 const confLabel=(value:CoachConfidence)=>value==="high"?"高":value==="medium"?"中":"低";
 
 export function deriveProvisionalCoachDiagnosis(args:{
   attempts:Attempt[];concepts:ConceptWeaknessInsight[];dashboard:Dashboard;today:string;
+  assessment?:ExamReadinessAssessment;
 }):CoachDiagnosis{
-  const recent=[...args.attempts].filter(row=>!row.exclude_from_metrics).sort((a,b)=>b.id-a.id).slice(0,20);
-  const scores=recent.map(scoreFor).filter(Number.isFinite);
-  const average=scores.length?scores.reduce((sum,value)=>sum+value,0)/scores.length:0;
   const readiness=args.dashboard.readiness;
-  const examEvidence=readiness.sampleSizes.pastExams+readiness.sampleSizes.timed+readiness.sampleSizes.unseen;
-  let value=!recent.length?1.5:average<50?2:average<70?2.5:average<80?3:average<90?3.5:4;
-  if(examEvidence===0)value=Math.min(value,3);
-  const strong=args.concepts.reduce((sum,row)=>sum+row.strongFailures,0);
+  const assessment=args.assessment||deriveExamReadinessAssessment(readiness,args.today);
   const transfer=args.concepts.reduce((sum,row)=>sum+row.transferSuccesses,0);
-  const delayed=args.concepts.reduce((sum,row)=>sum+row.delayedNoReferenceSuccesses,0);
-  const certainty:CoachConfidence=examEvidence>=5&&delayed+transfer>=4?"high":recent.length>=8&&examEvidence+delayed+transfer>=2?"medium":"low";
   const top=args.concepts.filter(row=>row.state!=="resolved"&&row.state!=="unassessed")
     .sort((a,b)=>b.priorityScore-a.priorityScore)[0];
   const resolved=args.concepts.filter(row=>row.state==="resolved").slice(0,3);
@@ -225,12 +217,10 @@ export function deriveProvisionalCoachDiagnosis(args:{
   if(!readiness.sampleSizes.timed)missing.push("時間制限答案での安定性");
   if(!readiness.sampleSizes.pastExams)missing.push("過去問実答案での得点力");
   if(!transfer)missing.push("別問題への転移力");
-  const label=value>=4.5?"高得点安定":value>=4?"合格答案を作れる段階":value>=3?"A/S問題を解けるが再現不安定":value>=2?"典型問題の理解段階":"基礎知識の補強段階";
-  const outlook=value>=4.5?"安定合格圏":value>=4?"合格圏":value>=3?"境界手前〜境界圏":value>=2?"合格圏まで距離あり":"要基礎補強";
   return {schemaVersion:COACH_SCHEMA_VERSION,reviewedAt:`${args.today}T00:00:00+09:00`,
     evidenceCutoffAttemptId:Math.max(0,...args.attempts.map(row=>row.id)),
-    level:{value,label,passOutlook:outlook,confidence:certainty,
-      rationale:`直近${recent.length}件の答案と本番系証拠${examEvidence}件から作った自動暫定診断。GPTレビュー前の参考値です。`},
+    level:{value:assessment.level,label:assessment.label,passOutlook:assessment.passOutlook,confidence:assessment.confidence,
+      rationale:assessment.rationale},
     primaryBottleneck:{title:top?`${top.displayName}の再現安定性`:"本番形式の診断証拠不足",
       explanation:top?top.nextRecommendedAction:"得点答案の証拠が不足しているため、最大障害をまだ特定できません。",
       evidenceProblemIds:[],effectOnExam:top?"関連問題の入口・途中式の安定性を下げる可能性があります。":"本番得点力の推定幅が広い状態です。"},
@@ -246,6 +236,7 @@ const jsonLine=(value:unknown)=>JSON.stringify(value);
 export function buildCoachReviewPrompt(args:{
   attempts:Attempt[];reviews:Review[];problems:Problem[];concepts:ConceptWeaknessInsight[];
   dashboard:Dashboard;planner:AdaptivePlannerShadow;today:string;
+  assessment?:ExamReadinessAssessment;
 }){
   const pmap=new Map(args.problems.map(row=>[row.problem_id,row]));
   const attempts=[...args.attempts].filter(row=>!row.exclude_from_metrics).sort((a,b)=>b.id-a.id).slice(0,12).map(row=>({
@@ -269,6 +260,7 @@ export function buildCoachReviewPrompt(args:{
     `テーマ別件数を言い換えるだけでなく、複数問題に共通する横断能力の最大ボトルネックを1件に絞ってください。根拠のない精密な合格確率は出さず、証拠不足はconfidenceとunknownsへ反映してください。\n\n`+
     `FACT_EVIDENCE_CUTOFF_ATTEMPT_ID: ${cutoff}\nDATE: ${args.today}\n`+
     `READINESS: ${jsonLine(args.dashboard.readiness)}\nREVIEW_SUMMARY: ${jsonLine(reviewSummary)}\n`+
+    `CURRENT_EXAM_ASSESSMENT: ${jsonLine(args.assessment||null)}\n現在の本番対応力はこの共通実測評価です。GPTの評価・見通しは別途保存する助言で、現在の実測LevelやKPIを上書きしません。\n`+
     `PLANNER_READINESS: ${jsonLine({phase:args.planner.phase,days_remaining:args.planner.daysRemaining,weekly_actual:args.planner.weeklyActual,weekly_target:args.planner.weeklyTarget})}\n`+
     `RECENT_REPRESENTATIVE_ATTEMPTS: ${jsonLine(attempts)}\nTOP_CONCEPT_EVIDENCE: ${jsonLine(concepts)}\n\n`+
     `JSON objectを1個だけ返してください。Markdown・code fence・説明文は禁止です。JSONのキーと文字列には必ずASCII double quote U+0022 (\")を使用し、typographic quotation marks “ ” や全角＂をdelimiterに使用しないでください。次のJSON shapeに完全準拠し、level.valueのnullは1〜5の0.5刻みの数値へ置き換えてください。reviewed_atは現在時刻、evidence_cutoff_attempt_idは${cutoff}をそのまま使用してください。optional_pass_probabilityは十分な根拠がなければnullにしてください。\n`+
@@ -287,6 +279,7 @@ export function coachPromptContract(cutoff:number){
 export function buildCoachDiagnosisState(args:{
   history:CoachDiagnosis[];attempts:Attempt[];concepts:ConceptWeaknessInsight[];dashboard:Dashboard;
   reviews:Review[];problems:Problem[];planner:AdaptivePlannerShadow;today:string;
+  assessment?:ExamReadinessAssessment;
 }):CoachDiagnosisState{
   const history=[...args.history].sort((a,b)=>b.reviewedAt.localeCompare(a.reviewedAt)||
     b.evidenceCutoffAttemptId-a.evidenceCutoffAttemptId);
@@ -294,13 +287,13 @@ export function buildCoachDiagnosisState(args:{
   const needsTextRefresh=!!current&&legacyTruncatedOutlook(current);
   const newAttemptCount=current?args.attempts.filter(row=>row.id>current.evidenceCutoffAttemptId&&!row.exclude_from_metrics&&!row.duplicate_of_attempt_id).length:args.attempts.length;
   const useCurrent=!!current&&!needsTextRefresh&&newAttemptCount===0;
-  const provisional=deriveProvisionalCoachDiagnosis(args);
-  const capability=deriveExamCapability(args.dashboard.readiness);
-  const display=useCurrent?current!:{...provisional,level:{value:capability.level,label:capability.label,
-    passOutlook:capability.outlook,confidence:capability.confidence,rationale:capability.rationale}};
-  return {current,display,history,source:useCurrent?"gpt":"local_provisional",stale:!!current&&newAttemptCount>0,
+  const assessment=args.assessment||deriveExamReadinessAssessment(args.dashboard.readiness,args.today);
+  const provisional=deriveProvisionalCoachDiagnosis({...args,assessment});
+  const display={...(useCurrent?current!:provisional),level:{value:assessment.level,label:assessment.label,
+    passOutlook:assessment.passOutlook,confidence:assessment.confidence,rationale:assessment.rationale}};
+  return {assessment,current,display,history,source:useCurrent?"gpt":"local_provisional",stale:!!current&&newAttemptCount>0,
     needsTextRefresh,
-    newAttemptCount,prompt:buildCoachReviewPrompt(args),lastReviewedAt:current?.reviewedAt||null};
+    newAttemptCount,prompt:buildCoachReviewPrompt({...args,assessment}),lastReviewedAt:current?.reviewedAt||null};
 }
 
 export function coachPreview(current:CoachDiagnosis|null,next:CoachDiagnosis){

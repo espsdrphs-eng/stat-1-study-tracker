@@ -5,6 +5,20 @@ import {findingSkillIds} from "./skillEvidence.ts";
 const unique=<T,>(values:T[])=>[...new Set(values)];
 const stableHash=(value:string)=>[...value].reduce((hash,char)=>Math.imul(hash^char.charCodeAt(0),16777619)>>>0,2166136261).toString(16).padStart(8,"0");
 
+// A targeted Review can fail its exact reproduction contract while the only
+// remaining diagnostic risk is explicitly minor. That is not a major exam loss.
+// Require region-level coverage; an unrelated minor uncertainty must not hide
+// a known calculation/knowledge failure or an unassessed error region.
+function onlyMinorDiagnosticRisk(attempt:Attempt):boolean{
+  const scan=attempt.whole_answer_scan;
+  if(!scan?.performed||scan.confidence!=="high"||scan.written_answer_coverage!=="full")return false;
+  const errors=scan.regions.filter(region=>region.status==="checked_error");
+  return errors.length>0&&errors.every(region=>{
+    const risks=(attempt.diagnostic_uncertainties||[]).filter(risk=>risk.region_id===region.region_id);
+    return risks.length>0&&risks.every(risk=>risk.potential_materiality==="minor"&&risk.confidence!=="low");
+  });
+}
+
 type FindingEvidence={
   findingId:string;rootKey:string;errorType:GradingErrorType;evidence:string;title:string;
   masteryLevel:1|2|3;explicitMajor:boolean;confidence:"low"|"medium"|"high";skillIds:string[];
@@ -48,10 +62,11 @@ export function deriveFailureEpisode(attempt:Attempt,args:{recurrenceByRoot?:Rec
     const errorTypes=unique(rows.map(row=>row.errorType));
     const recurrence=Number(args.recurrenceByRoot?.[rootKey]||0);
     const isolatedC=errorTypes.length===1&&errorTypes[0]==="C"&&recurrence===0;
+    const minorResidual=errorTypes.every(error=>error==="N"||error==="C")&&onlyMinorDiagnosticRisk(attempt);
     const major=rows.some(row=>row.explicitMajor)||errorTypes.some(error=>["K","W"].includes(error))||
-      (!isolatedC&&attempt.review_outcome==="failed")||(!isolatedC&&attempt.conclusion_reached===false)||
-      (!isolatedC&&attempt.minimum_pass_condition_met===false)||
-      (errorTypes.includes("N")&&Number(attempt.score_numeric??100)<70)||recurrence>0;
+      (!isolatedC&&!minorResidual&&(attempt.review_outcome==="failed"||attempt.conclusion_reached===false||
+        attempt.minimum_pass_condition_met===false||
+        (errorTypes.includes("N")&&Number(attempt.score_numeric??100)<70)))||recurrence>0;
     const masteryLevel=Math.min(...rows.map(row=>row.masteryLevel)) as 1|2|3;
     const confidence=rows.every(row=>row.confidence==="high")?"high":rows.some(row=>row.confidence!=="low")?"medium":"low";
     const title=rows[0].title;

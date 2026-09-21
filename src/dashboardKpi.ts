@@ -1,5 +1,5 @@
 import type {CoachDiagnosisState,ConceptWeaknessInsight,DashboardKpiProjection,DashboardKpiValue,Task} from "./types.ts";
-import {deriveExamCapability} from "./examCapability.ts";
+import {deriveExamReadinessAssessment,type ExamReadinessAssessment} from "./examCapability.ts";
 
 type Readiness={
   evidence?:import("./examReadiness.ts").LearningMetricEvidence;
@@ -7,9 +7,11 @@ type Readiness={
   sampleSizes:{unseen:number;timed:number;scans:number;selectionPending?:number;pastExams:number;kReviews:number;wReviews:number};
 };
 type CoachInput=Pick<CoachDiagnosisState,"source"|"stale"|"newAttemptCount"|"lastReviewedAt">&{
+  current?:CoachDiagnosisState["current"];
   display:{level:{value:number;passOutlook:string;confidence:"low"|"medium"|"high"};primaryBottleneck:{title:string}};
 };
 export type DashboardKpiInput={
+  assessment?:ExamReadinessAssessment;
   today:string;updatedAt:string;coach:CoachInput;readiness:Readiness;concepts:ConceptWeaknessInsight[];
   currentTask?:Task;daysRemaining:number;phaseLabel:string;pastExamShare:number|null;
   pastExamShareTarget:string;pendingReviews:number;
@@ -55,19 +57,11 @@ export function deriveDashboardKpis(input:DashboardKpiInput):DashboardKpiProject
         [r.evidence.selectedThree,r.evidence.timed,r.evidence.selection].every(row=>row.confidence==="high")?"high":"medium":
       directEvidence>=6?"high":directEvidence>=3?"medium":"low",updatedAt:input.updatedAt,
     missingEvidence:missingEvidence.slice(0,3),nextEvidenceAction};
-  const capability=deriveExamCapability(r);
+  const capability=input.assessment||deriveExamReadinessAssessment(r,input.updatedAt);
   Object.assign(examReadiness,{level:capability.level,levelLabel:capability.label,levelRationale:capability.rationale,
     value:`Level ${capability.level.toFixed(1)} / 5・${capability.label}`,confidence:capability.confidence});
 
-  let passZoneValue="判定材料不足",passSource="insufficient_evidence",passConfidence:"low"|"medium"|"high"="low",passCount=total;
-  if(freshCoach&&input.coach.display.level.confidence!=="low"){
-    passZoneValue=input.coach.display.level.passOutlook||"判定材料不足";passSource="fresh_coach";
-    passConfidence=input.coach.display.level.confidence;passCount=Math.max(1,total);
-  }else if(pastMeasured&&timedMeasured){
-    const score=Number(r.pastExamScoreRate),timed=Number(r.timedCompletionRate);
-    passZoneValue=score>=75&&timed>=70?"合格圏":score>=60&&timed>=55?"境界圏":"合格圏まで距離あり";
-    passSource="exam_evidence";passConfidence="medium";
-  }
+  const passZoneValue=capability.passJudgement,passSource="canonical_exam_assessment",passConfidence=capability.confidence,passCount=total;
   const selectionEvidence=Number(r.sampleSizes.selectionPending||0)>0&&!r.sampleSizes.scans
     ?"選題精度 未評価（選択3問の採点待ち）"
     :`選題精度 ${pct(r.selectionSuccessRate)}${r.sampleSizes.scans?`（${r.sampleSizes.scans}件）`:""}`;
@@ -83,8 +77,8 @@ export function deriveDashboardKpis(input:DashboardKpiInput):DashboardKpiProject
   if(r.sampleSizes.pastExams<3)passActions.push("未実施の過去問を時間内に答案化して採点する");
   if(transferEvidence<2)passActions.push("別問題・過去問で同じ能力のtransferを確認する");
   if(!passActions.length)passActions.push("別年度の本番形式でも必要点を再現する");
-  const passZone={value:passZoneValue,detail:freshCoach?`GPT診断・信頼度 ${input.coach.display.level.confidence}`:"本番形式の実測を優先",
-    source:passSource,evidenceCount:passCount,freshness:(freshCoach||passSource==="exam_evidence"?"current":"measuring") as "current"|"stale"|"measuring",
+  const passZone={value:passZoneValue,detail:capability.passOutlook,
+    source:passSource,evidenceCount:passCount,freshness:(pastMeasured?"current":"measuring") as "current"|"stale"|"measuring",
     confidence:passConfidence,updatedAt:input.updatedAt,
     missingEvidence:passZoneValue==="判定材料不足"?missingEvidence.slice(0,3):[],
     nextEvidenceAction:passActions[0],evidenceReasons:passEvidenceReasons.slice(0,3),
@@ -104,9 +98,9 @@ export function deriveDashboardKpis(input:DashboardKpiInput):DashboardKpiProject
   }else if(unseenMeasured&&Number(r.unseenScoreRate)<60){
     bottleneckValue="未見問題での得点形成";bottleneckDetail=`未見得点 ${pct(r.unseenScoreRate)}（${r.sampleSizes.unseen}件）`;
     bottleneckSource="unseen_evidence";bottleneckCount=r.sampleSizes.unseen;bottleneckConfidence="high";
-  }else if(freshCoach&&input.coach.display.level.confidence!=="low"){
+  }else if(freshCoach&&(input.coach.current?.level.confidence||input.coach.display.level.confidence)!=="low"){
     bottleneckValue=input.coach.display.primaryBottleneck.title||bottleneckValue;bottleneckDetail="最新のGPTコーチ診断";
-    bottleneckSource="fresh_coach";bottleneckCount=Math.max(1,total);bottleneckConfidence=input.coach.display.level.confidence;
+    bottleneckSource="fresh_coach";bottleneckCount=Math.max(1,total);bottleneckConfidence=input.coach.current?.level.confidence||input.coach.display.level.confidence;
   }else{
     const recurring=[...input.concepts].filter(row=>row.distinctProblemCount>=2&&row.independentFailures>=2)
       .sort((a,b)=>b.priorityScore-a.priorityScore)[0];
@@ -119,6 +113,6 @@ export function deriveDashboardKpis(input:DashboardKpiInput):DashboardKpiProject
   const nextAction={value:task?(task.stable_session_key?task.title:`${task.problem_id}｜${task.title}`):"本日の確定課題は完了",detail:task?`${task.reason}・${task.minutes}分`:"次の計画を確認してください",
     source:"current_today",evidenceCount:task?1:0,freshness:"current" as const,confidence:"high" as const,updatedAt:input.updatedAt,
     ...(task?{problemId:task.problem_id,minutes:task.minutes}:{})};
-  return {examReadiness,passZone,bottleneck,nextAction,support:{daysRemaining:input.daysRemaining,phaseLabel:input.phaseLabel,
+  return {assessment:capability,examReadiness,passZone,bottleneck,nextAction,support:{daysRemaining:input.daysRemaining,phaseLabel:input.phaseLabel,
     pastExamShare:input.pastExamShare,pastExamShareTarget:input.pastExamShareTarget,pendingReviews:input.pendingReviews}};
 }

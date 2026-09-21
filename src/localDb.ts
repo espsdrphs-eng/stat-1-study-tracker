@@ -62,6 +62,7 @@ import {resolveSemanticReviewGeneration} from "./reviewGeneration.ts";
 import {classifyFailureStrength,examHorizonPolicy,learningEventKind,masteryLevelForTargets} from "./examOptimizationPolicy.ts";
 import {parseWholeAnswerRediagnosis,WHOLE_ANSWER_DIAGNOSTIC_VERSION,wholeAnswerDiagnosticFingerprint} from "./wholeAnswerDiagnostic.ts";
 import {deriveDashboardKpis} from "./dashboardKpi.ts";
+import {deriveExamReadinessAssessment} from "./examCapability.ts";
 import {reviewDueState,reviewPlanningDecision} from "./todayLearningPolicy.ts";
 import {deriveCanonicalStudyPlan} from "./canonicalStudyPlan.ts";
 import {canonicalizePastExamSessions,derivePastExamSessionState,pastExamSessionKey,pastExamSessionPurpose,reconcilePastExamSessionEvidence,stablePastExamSessionKey,validatePastExamSessionIdentity,validatePastExamTaskIdentity} from "./pastExamPlanning.ts";
@@ -3047,10 +3048,11 @@ async function bootstrap():Promise<Bootstrap>{
   });
   let coachHistory:CoachDiagnosis[]=[];
   try{coachHistory=JSON.parse(metaEntries.find(entry=>entry.key===COACH_HISTORY_META_KEY)?.value||"[]")}catch{coachHistory=[]}
-  const coach=buildCoachDiagnosisState({history:coachHistory,attempts:activeAttempts,concepts:conceptWeaknesses,
+  const assessment=deriveExamReadinessAssessment(dashboard.readiness,new Date().toISOString());
+  const coach=buildCoachDiagnosisState({assessment,history:coachHistory,attempts:activeAttempts,concepts:conceptWeaknesses,
     dashboard,reviews,problems,planner:plannerShadow,today});
   const horizon=examHorizonPolicy(plannerShadow.daysRemaining);
-  const dashboardWithKpis={...dashboard,kpis:deriveDashboardKpis({today,updatedAt:new Date().toISOString(),coach,
+  const dashboardWithKpis={...dashboard,kpis:deriveDashboardKpis({assessment,today,updatedAt:assessment.generatedAt,coach,
     readiness:dashboard.readiness,concepts:conceptWeaknesses,currentTask:canonicalStudyPlan.primaryAction||undefined,
     daysRemaining:plannerShadow.daysRemaining,phaseLabel:dashboard.pace.phaseLabel,
     pastExamShare:rollingPastExamShare(plannerShadow.plan14.plan.slice(0,7)),

@@ -73,16 +73,21 @@ export function rootProgress(source:Attempt,root:RootWeakness,attempts:Attempt[]
 export type TransferEvidence={id:string;sourceAttemptId:number;sourceProblemId:string;successAttemptId:number;
   successProblemId:string;skillId:string;date:string};
 export function deriveTransferEvidence(attempts:Attempt[]):TransferEvidence[]{
-  const rows:TransferEvidence[]=[],latestFailures=new Map<string,Attempt>();
+  // A skill can be unresolved on several independent source problems. Keeping
+  // only one global failure loses the other roots when a later problem fails.
+  const rows:TransferEvidence[]=[],latestFailures=new Map<string,Map<string,Attempt>>();
   for(const a of [...attempts].sort((a,b)=>a.id-b.id)){
     if(a.exclude_from_metrics||a.duplicate_of_attempt_id)continue;
     for(const skillId of a.learning_purpose==="error_repair"?[]:successfulSkillIds(a)){
-      const failure=latestFailures.get(skillId);
-      if(failure&&failure.problem_id!==a.problem_id)rows.push({id:`transfer:${failure.id}:${a.id}:${skillId}`,
-        sourceAttemptId:failure.id,sourceProblemId:failure.problem_id,successAttemptId:a.id,successProblemId:a.problem_id,skillId,date:a.date});
+      for(const failure of latestFailures.get(skillId)?.values()||[])
+        if(failure.problem_id!==a.problem_id)rows.push({id:`transfer:${failure.id}:${a.id}:${skillId}`,
+          sourceAttemptId:failure.id,sourceProblemId:failure.problem_id,successAttemptId:a.id,successProblemId:a.problem_id,skillId,date:a.date});
     }
     for(const f of (a.graded_findings||[]).filter(f=>findingPlanningEligible(a,f)&&!f.resolved&&f.error_type!=="none"))
-      for(const id of findingSkillIds(a,f))latestFailures.set(id,a);
+      for(const id of findingSkillIds(a,f)){
+        const sources=latestFailures.get(id)||new Map<string,Attempt>();
+        sources.set(a.problem_id,a);latestFailures.set(id,sources);
+      }
   }
   return rows;
 }

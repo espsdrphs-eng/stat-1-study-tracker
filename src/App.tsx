@@ -40,6 +40,7 @@ import {
 } from "./integrityEngine";
 import { gradedPartLabels } from "./gradedParts";
 import {masteryLevelForPart} from "./masteryProjection.ts";
+import {LEARNING_ASSESSMENT_LABELS} from "./examCapability.ts";
 import { subscribeStudyDataChanged } from "./appEvents";
 import {
   orderCorePastExamYears, parseExamReferencePack, reconcileExamReferencePack,
@@ -210,6 +211,15 @@ function PassJudgementContent({value}:{value:DashboardKpiValue}){
       <li>安定合格圏：複数年度・複数sessionで余裕を持って再現</li>
     </ul></details>
   </>;
+}
+function ExamEvidenceSummary({assessment}:{assessment?:import("./examCapability").ExamReadinessAssessment}){
+  if(!assessment)return null;
+  return <div className="exam-evidence-summary" aria-label="共通の本番証拠">
+    {([['選択3問得点',assessment.selectedThreeScore],['選題',assessment.selectionAccuracy],
+      ['時間内完遂',assessment.timedCompletion],['転移',assessment.transfer]] as const).map(([label,metric])=>
+      <p key={label}><b>{label}</b>：{metric?.value==null?'未計測':`${metric.value.toFixed(1)}%`}
+        {metric&&<>（{Number(metric.numerator.toFixed(1))}/{metric.denominator}・標本{metric.evidenceCount}件）</>}</p>)}
+  </div>;
 }
 function DashboardView({data,go,select}:{data:Bootstrap;go:(p:Page)=>void;select:(p:Problem)=>void}) {
   const d=data.dashboard;
@@ -418,7 +428,7 @@ function ReviewPlanDetails({item:rawItem,compact=false,resolved}:{item:Partial<R
   return <div className={`review-plan ${compact?"compact":""}`}>
     {resolved?.reviewNeeded&&<div className="review-consistency-warning"><AlertTriangle size={18}/><div><strong>要確認</strong><span>問題情報または復習履歴に不整合があります。誤った具体的な指示は表示していません。</span></div></div>}
     {!!resolved?.consistencyWarnings.length&&!resolved.reviewNeeded&&<details className="review-consistency-details"><summary>自動整合済み {resolved.consistencyWarnings.length}件</summary><ul>{resolved.consistencyWarnings.map(warning=><li key={warning.code}>{warning.message}</li>)}</ul></details>}
-    <div className="mastery-current"><span>現在地</span><strong>Level {reviewLevel} / 3　{levelTitle}の{lifecycleLabel}</strong></div>
+    <div className="mastery-current"><span>{LEARNING_ASSESSMENT_LABELS.problem}</span><strong>{levelTitle}の{lifecycleLabel}</strong></div>
     {(resolved?.taskOrigin||item.task_origin)==="linked_s_check"&&<div className="task-origin-note"><Badge tone="blue">関連S確認</Badge><div><strong>この問題自体は{hasPreviousAttempt?"既習":"初回"}確認です</strong><span>元問題：{resolved?.sourceProblem?.displayLabel||item.source_problem_id||"記録なし"}／{resolved?.sourceProblem?.sourceIssue||"元問題で崩れた基礎型を確認します。"}</span></div></div>}
     <div className="next-actions"><span>今回やること</span><ol>{actions.map((action,index)=><li key={`${index}-${action}`}>{action}</li>)}</ol></div>
     <div className="completion-checklist"><span>合格条件</span>{(resolved?.completionConditions.value||completionChecklist(item)).map(condition=><label key={condition}><input type="checkbox" onChange={lockContract}/><b>{condition}</b></label>)}</div>
@@ -808,7 +818,7 @@ function ProblemsView({data,select,run,busy}:{data:Bootstrap;select:(p:Problem)=
 
 function MasteryLevels({levels}:{levels:MasteryLevelState[]}){
   return <div className="mastery-levels">{levels.map(level=><div key={level.level} className={`mastery-level ${level.status}`}>
-    <span>Level {level.level}</span><strong>{level.title}</strong><em>{level.label}</em>
+    <span>問題別段階 {level.level}</span><strong>{level.title}</strong><em>{level.label}</em>
   </div>)}</div>;
 }
 
@@ -894,7 +904,7 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport}:{problem:Problem;
         <option value="skeleton">骨格</option><option value="main_calc">主要計算</option><option value="full">フル答案</option>
       </select></label><div className="button-row"><button className="primary" onClick={copyInitialPrompt}><Copy size={16}/>{initialPromptCopied?"コピーしました":"初回採点プロンプトをコピー"}</button><button className="ghost" onClick={onImport}><ClipboardPaste size={16}/>GPT回答取り込みへ</button></div>
       <small>初回採点の保存後、major failureがある場合だけ必要なReviewを生成します。過去問scan_onlyは過去問演習のscan workflowを使用します。</small></section>}
-    {mastery&&<section className="panel problem-mastery"><div className="panel-title"><div><span className="eyebrow">CURRENT MASTERY</span><h3>現在地　Level {mastery.currentLevel} / 3　{mastery.currentTitle}</h3></div><Badge tone={mastery.normalReviewComplete?"blue":"orange"}>{mastery.normalReviewComplete?"通常復習なし":`現在の復習 ${mastery.activeTargetCount} target`}</Badge></div><MasteryLevels levels={mastery.levels}/></section>}
+    {mastery&&<section className="panel problem-mastery"><div className="panel-title"><div><span className="eyebrow">CURRENT MASTERY</span><h3>問題別到達段階　{mastery.currentTitle}</h3></div><Badge tone={mastery.normalReviewComplete?"blue":"orange"}>{mastery.normalReviewComplete?"通常復習なし":`現在の復習 ${mastery.activeTargetCount} target`}</Badge></div><MasteryLevels levels={mastery.levels}/></section>}
     {latest&&<section className="panel latest-result"><div><span>最新評価</span><strong>{latest.score_text||latest.score_label} {latest.score_numeric!=null?`/ ${latest.score_numeric}点`:""} / {latest.mark}</strong></div><div><span>K/W/N/C</span><strong>{latest.error_types?.join(" + ")||latest.error_type}</strong></div><div><span>次回復習</span><strong>{nextReview?.due_date||"—"}</strong></div></section>}
     {(latest?.corrected_answer||latest?.required_derivation||latest?.improvement_guidance)&&<details className="panel answer-feedback compact-feedback"><summary>GPTの修正版答案・途中計算を確認</summary><div className="feedback-body">
       {latest.corrected_answer&&<div><span>修正版答案</span><p>{latest.corrected_answer}</p></div>}
@@ -1127,13 +1137,14 @@ function CoachPanel({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,
   const save=()=>{if(!preview)return;setPreview(null);run(()=>post("/api/coach/save",{text}),"学習コーチ診断を履歴へ保存しました")};
   return <>
     <section className="coach-hero">
-      <div className="coach-level"><span>{coach.source==="local_provisional"?"本番レベル（最新実測の暫定）":"本番レベル"}</span><strong>{diagnosis.level.value}<small>/ 5</small></strong><b>{diagnosis.level.passOutlook}</b></div>
+      <div className="coach-level"><span>本番対応力（現在の実測評価）</span><strong>{diagnosis.level.value}<small>/ 5</small></strong><b>{diagnosis.level.passOutlook}</b></div>
       <div className="coach-current"><div className="coach-meta"><Badge tone={diagnosis.level.confidence==="high"?"green":diagnosis.level.confidence==="medium"?"orange":""}>信頼度 {coachConfidenceText(diagnosis.level.confidence)}</Badge>
         <span>最終レビュー：{coach.lastReviewedAt?coach.lastReviewedAt.slice(0,10):"GPTレビュー未実施"}</span>
         {coach.source==="local_provisional"&&<Badge>自動暫定診断</Badge>}</div>
         {coach.needsTextRefresh&&<p className="coach-stale">前回の合格見通しは旧版の80文字制限で途切れている可能性があります。履歴は保持し、ここでは最新の実測から暫定診断を表示しています。GPT現在地レビューを更新してください。</p>}
         <h2>{diagnosis.level.label}</h2><p>{diagnosis.level.rationale}</p>
-        <small>問題別の現在地：Level 1 {masteryCounts[0]}件 / Level 2 {masteryCounts[1]}件 / Level 3 {masteryCounts[2]}件</small>
+        <small>問題別到達段階：骨格 {masteryCounts[0]}件 / 主要計算 {masteryCounts[1]}件 / 転移 {masteryCounts[2]}件（本番対応力とは別指標）</small>
+        <ExamEvidenceSummary assessment={coach.assessment}/>
         {coach.stale&&<div className="coach-stale"><AlertTriangle size={17}/><strong>前回診断後に新しい採点 {coach.newAttemptCount}件。上記は最新の実測からの暫定診断です。以前のGPT診断は履歴に保持しています。現在地レビューを更新してください。</strong></div>}
       </div>
     </section>

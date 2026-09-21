@@ -14,6 +14,7 @@ import {analyzeReviewReconciliation} from '../src/reviewReconciliation.ts';
 const raw=JSON.parse(await readFile(process.argv[2],'utf8'));
 const record=JSON.parse(raw.meta.find(m=>m.key==='exam-reference-pack:active').value);
 const today=[raw.exported_at.slice(0,10),...raw.attempts.map(a=>a.date)].sort().at(-1),problems=raw.problems;
+const futureDate=days=>{const d=new Date(`${today}T12:00:00Z`);d.setUTCDate(d.getUTCDate()+days);return d.toISOString().slice(0,10);};
 const sessions=canonicalizePastExamSessions(raw.pastSessions).current.map(s=>reconcilePastExamSessionEvidence(s,raw.attempts));
 const overrides=JSON.parse(raw.meta.find(m=>m.key==='exam-reference-pack:exposure-overrides')?.value||'{}');
 const coverage=deriveWhitebookSkillCoverage(problems,raw.answerIndex);
@@ -42,7 +43,7 @@ for(const choice of choices){
   const preceding=[...new Set(initial.repairs.filter(r=>r.required&&r.sourceAttemptId>source.id).map(r=>r.sourceAttemptId))]
     .map(id=>raw.attempts.find(a=>a.id===id));
   let nextId=Math.max(...raw.attempts.map(a=>a.id))+1;
-  const prelude=preceding.map(a=>({...a,id:nextId++,date:'2026-09-18',mode:'full',time_minutes:30,
+  const prelude=preceding.map(a=>({...a,id:nextId++,date:futureDate(2),mode:'full',time_minutes:30,
     is_review_attempt:true,parent_past_session_id:undefined,session_role:undefined,exam_score_eligible:false,
     actual_reference_level:0,reference_level:0,hint_used:false,grading_confidence:.95,
     assessment_timing:'delayed_retrieval',learning_purpose:'error_repair',mark:'○',score_numeric:90,
@@ -52,7 +53,7 @@ for(const choice of choices){
   const beforeRepair=[...raw.attempts,...prelude],before=derive(beforeRepair,[]);
   if(!before.tasks.some(t=>t.problemId===source.problem_id&&t.todayCategory==='repair'))continue;
   const id=nextId;
-  const repair={...source,id,date:'2026-09-18',mode:'main_calc',time_minutes:8,is_review_attempt:true,
+  const repair={...source,id,date:futureDate(2),mode:'main_calc',time_minutes:8,is_review_attempt:true,
     parent_past_session_id:undefined,session_role:undefined,exam_score_eligible:false,
     source_problem_id:source.problem_id,learning_purpose:'error_repair',assessment_timing:'delayed_retrieval',
     actual_reference_level:0,reference_level:0,hint_used:false,grading_confidence:.95,
@@ -73,7 +74,7 @@ assert.ok(scenario,'Case 2: real repaired root must materialize a different-prob
 const {source,root,repair,candidate,task,beforeRepair,prelude}=scenario;
 assert.notEqual(task.problemId,source.problem_id);
 assert.equal(deriveTransferEvidence([...beforeRepair,repair]).some(t=>t.successAttemptId===repair.id),false,'same problem is not transfer');
-const transfer={...repair,id:repair.id+1,date:'2026-09-21',problem_id:task.problemId,mode:'full',time_minutes:30,
+const transfer={...repair,id:repair.id+1,date:futureDate(5),problem_id:task.problemId,mode:'full',time_minutes:30,
   learning_purpose:'transfer_check',source_problem_id:source.problem_id,
   grading_contract:{...repair.grading_contract,problemId:task.problemId,
     gradedParts:repair.grading_contract.gradedParts.filter(p=>root.sourceFindingIds.includes(p.id))},
@@ -83,7 +84,7 @@ const evidence=deriveTransferEvidence(finalAttempts).filter(t=>t.sourceProblemId
 assert.ok(root.skillIds.every(id=>evidence.some(t=>t.skillId===id)),'Case 3: root-scoped transfer evidence');
 const final=derive(finalAttempts,[]);
 assert.equal(final.repairs.some(r=>r.rootWeaknessId===root.rootWeaknessId&&r.required),false);
-const reconciliation=analyzeReviewReconciliation({attempts:finalAttempts,reviews:raw.reviews,aliases:raw.problemAliases,today:'2026-09-21'});
+const reconciliation=analyzeReviewReconciliation({attempts:finalAttempts,reviews:raw.reviews,aliases:raw.problemAliases,today:futureDate(5)});
 const current=reconciliation.problems.find(p=>p.problemId===source.problem_id);
 assert.ok(!current?.desiredRepairParts.some(p=>root.sourceFindingIds.includes(p.id)),'Case 3: transferred root no longer requires same-problem repair');
 const fallback=derive(raw.attempts,[]);

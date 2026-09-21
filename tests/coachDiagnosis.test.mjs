@@ -95,7 +95,8 @@ test("新Attemptは診断をstaleにし再レビューでcutoffを更新でき�
   const refreshed=normalizeCoachUpdate(diagnosis(4,4));
   const next=buildCoachDiagnosisState({...state,history:[current,refreshed],attempts,concepts:[],dashboard,reviews:[],problems:[],
     planner:{phase:"foundation_to_A",daysRemaining:90,weeklyActual:{},weeklyTarget:{}},today:"2026-08-17"});
-  assert.equal(next.stale,false);assert.equal(next.history.length,2);assert.equal(next.display.level.value,4);
+  assert.equal(next.stale,false);assert.equal(next.history.length,2);assert.equal(next.current.level.value,4);
+  assert.equal(next.display.level.value,next.assessment.level,'current readiness is evidence-derived, not the imported opinion');
 });
 
 test("confidence低は自動暫定として明示され、concept evidenceを変更しない",()=>{

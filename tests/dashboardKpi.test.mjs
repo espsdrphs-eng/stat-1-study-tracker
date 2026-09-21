@@ -17,7 +17,7 @@ test("fresh coach保存後は合格圏と最大ボトルネックを同じprojec
   const after=deriveDashboardKpis(base({coach:coach("新ボトルネック")}));
   assert.equal(before.bottleneck.value,"旧ボトルネック");
   assert.equal(after.bottleneck.value,"新ボトルネック");
-  assert.equal(after.passZone.value,"境界圏");
+  assert.equal(after.passZone.value,"判定材料不足",'coach cannot supply missing exam measurements');
   assert.equal(after.nextAction.problemId,"WB-4-A-24");
 });
 
@@ -52,10 +52,10 @@ test("本番証拠0件は0%ではなく不足証拠と次の測定行動を示�
 
 test("本番合格判定は判定済みでも根拠と次の行動を常に返す",()=>{
   const result=deriveDashboardKpis(base({coach:coach("制約追跡")}));
-  assert.equal(result.passZone.value,"境界圏");
+  assert.equal(result.passZone.value,"判定材料不足");
   assert.deepEqual(result.passZone.evidenceReasons.slice(0,2),["過去問得点 未計測","時間内完遂 未計測"]);
   assert.ok(result.passZone.nextEvidenceActions.length>0);
-  assert.match(result.passZone.meaning,/再現がまだ不安定/);
+  assert.match(result.passZone.meaning,/本番形式の実測/);
 });
 
 test("transfer成功はKPI証拠へ反映するが局所証拠だけで本番対応力を確定しない",()=>{

@@ -224,8 +224,8 @@ export function calculateExamReadinessMetrics(args: {
   const kDenominator = [...kGroups.values()].length;
   const wDenominator = [...wGroups.values()].length;
   const evidence:LearningMetricEvidence={selectedThree:selectedEvidence,individual,timed,
-      transfer:metric(transferred.size,transferOpportunities.size,transferRows.length,
-        "別問題・明示skill一致・参照なし・関連finding成功・採点信頼度80%以上。母数は別問題候補がある失敗root",["different_problem"],
+      transfer:metric(transferred.size,transferOpportunities.size,new Set(transferRows.map(t=>t.successAttemptId)).size,
+        "別問題・明示skill一致・参照なし・関連finding成功・採点信頼度80%以上。比率は失敗root単位、標本と信頼度は独立した成功Attempt単位",["different_problem"],
         transferRows.map(t=>t.date).sort().at(-1)||null,true),
       selection:metric(scanScores.reduce((a,b)=>a+b/100,0),scanScores.length,scanScores.length,
         "clean scanと選択3問・比較可能な採点が揃ったsessionのみ",["clean_scan5"],lastEvidenceDate(scanSessions.filter(s=>selectionSuccessRate(s)!=null),"all"),true),
@@ -237,7 +237,7 @@ export function calculateExamReadinessMetrics(args: {
   evidence.timed.eligibleEvidenceIds=timedSessions.length?sessionIds(timedSessions):attemptIds(timedAttempts);
   evidence.selection.eligibleEvidenceIds=sessionIds(scanSessions.filter(s=>selectionSuccessRate(s)!=null));
   evidence.diagnostic.eligibleEvidenceIds=[...new Set(pastSessions.flatMap(s=>(s.counterfactual_calibration_attempt_ids||[]).map(id=>`attempt:${id}`)))];
-  evidence.transfer!.eligibleEvidenceIds=[...transferOpportunities].map(id=>`root:${id}`);
+  evidence.transfer!.eligibleEvidenceIds=[...[...transferOpportunities].map(id=>`root:${id}`),...transferRows.map(row=>row.id)];
   evidence.unseen={...metric(transferAttempts.reduce((sum,a)=>sum+Number(a.score_numeric),0),transferAttempts.length,transferAttempts.length,
     "参照なし初回・30日以上未実施の個別full/timed。時間超過は得点から除外しない",["full","timed"],lastDate(transferAttempts)),
     eligibleEvidenceIds:attemptIds(transferAttempts)};

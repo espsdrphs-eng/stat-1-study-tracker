@@ -20,6 +20,7 @@ import type {CoachDiagnosisState,DashboardKpiProjection} from "./types.ts";
 import type {ExamReadinessMetrics} from "./examReadiness.ts";
 import {deriveTransferEvidence} from "./skillEvidence.ts";
 import {legacyTruncatedOutlook} from "./coachDiagnosis.ts";
+import {deriveExamReadinessAssessment,LEARNING_ASSESSMENT_LABELS} from "./examCapability.ts";
 
 export const ACTIVE_REVIEW_STATUSES = new Set(["pending", "overdue"]);
 
@@ -121,6 +122,9 @@ export function selectCurrentReviewsForProblem(args: {
 }
 
 export type IntegrityCategory =
+  | "exam_readiness_level_projection_mismatch" | "exam_readiness_kpi_projection_mismatch"
+  | "required_whitebook_without_high_confidence_lineage" | "transfer_required_but_no_candidate_generation"
+  | "false_transfer_evidence" | "problem_mastery_exam_level_label_collision"
   | "orphan_reference" | "exact_duplicate_attempt" | "duplicate_logical_review"
   | "duplicate_contract_id" | "repeated_deduplication_key" | "inactive_pending"
   | "expired_same_session" | "date_interval_mismatch" | "source_target_mismatch"
@@ -233,6 +237,7 @@ export function runIntegrityAudit(args: {
   conceptWeaknesses?:ConceptWeaknessInsight[];
   currentPastSessions?:PastSession[];
   currentCoach?:CoachDiagnosisState;currentKpis?:DashboardKpiProjection;currentReadiness?:ExamReadinessMetrics;
+  assessmentLabels?:{exam:string;problem:string};
 }): IntegrityAudit {
   const { attempts, reviews, problems = [], aliases = [], today, todayPlanSnapshots = [], validCrossTargetReviewIds = [],
     currentTodayTasks, currentReviews, currentNextTask, currentPlanSummary, futurePlanSummaries=[],additionalCandidates=[],eligibleTodayTasks,pendingImportUpdates=[],
@@ -249,6 +254,9 @@ export function runIntegrityAudit(args: {
   const problemById=new Map(problems.map(problem=>[resolveCanonicalProblemId(problem.problem_id,aliases),problem]));
   const canonicalPastSessions=canonicalizePastExamSessions(pastSessions).current
     .map(session=>reconcilePastExamSessionEvidence(session,attempts,session.session_alias_ids));
+  const labels=args.assessmentLabels||LEARNING_ASSESSMENT_LABELS;
+  if(labels.exam===labels.problem||/本番|Level\s*[123]/i.test(labels.problem))issues.push({category:"problem_mastery_exam_level_label_collision",
+    severity:"active",detail:"Problem mastery must be named separately from exam readiness",repairable:false});
 
   for(const expected of canonicalPastSessions){
     const supplied=args.currentPastSessions?.find(s=>s.id===expected.id);
@@ -270,12 +278,29 @@ export function runIntegrityAudit(args: {
     const coach=args.currentCoach;
     if(coach.current&&legacyTruncatedOutlook(coach.current))issues.push({category:"pass_outlook_truncated",
       severity:coach.source==="gpt"?"active":"history",detail:"Legacy outlook is 80 characters; preserve history and use a complete current diagnosis",repairable:false});
-    if(coach.source==="local_provisional"&&args.currentKpis&&coach.display.level.value!==args.currentKpis.examReadiness.level)
+    if(args.currentKpis&&coach.display.level.value!==args.currentKpis.examReadiness.level)
       issues.push({category:"coach_kpi_projection_mismatch",severity:"active",detail:"Current provisional coach and Dashboard use different capability levels",repairable:false});
+  }
+  if(args.currentReadiness){
+    const expected=deriveExamReadinessAssessment(args.currentReadiness,today);
+    const levelFields=(a:typeof expected)=>[a.level,a.label,a.confidence,a.passOutlook];
+    const metricFields=(a:typeof expected)=>[a.selectedThreeScore,a.selectionAccuracy,a.timedCompletion,a.transfer];
+    for(const [view,assessment] of [["Dashboard",args.currentKpis?.assessment],["Coach/Weakness",args.currentCoach?.assessment]] as const){
+      if(!assessment)continue;
+      if(stable(levelFields(assessment))!==stable(levelFields(expected)))issues.push({category:"exam_readiness_level_projection_mismatch",
+        severity:"active",detail:`${view} differs from current canonical readiness`,repairable:false});
+      if(stable(metricFields(assessment))!==stable(metricFields(expected)))issues.push({category:"exam_readiness_kpi_projection_mismatch",
+        severity:"active",detail:`${view} KPI values/denominators/evidence differ from current canonical metrics`,repairable:false});
+    }
+    if(args.currentCoach&&stable([args.currentCoach.display.level.value,args.currentCoach.display.level.label,
+      args.currentCoach.display.level.confidence,args.currentCoach.display.level.passOutlook])!==stable(levelFields(expected)))issues.push({
+      category:"exam_readiness_level_projection_mismatch",severity:"active",detail:"Current Coach display diverges from canonical assessment",repairable:false});
+    if(args.currentKpis&&(args.currentKpis.examReadiness.level!==expected.level||args.currentKpis.passZone.detail!==expected.passOutlook))issues.push({
+      category:"exam_readiness_level_projection_mismatch",severity:"active",detail:"Dashboard/Pass Judgement diverges from canonical assessment",repairable:false});
   }
   if(args.currentReadiness?.evidence?.transfer){
     const valid=new Set(deriveTransferEvidence(attempts).map(row=>`${row.sourceProblemId}|${row.skillId}`)).size;
-    if(args.currentReadiness.evidence.transfer.numerator!==valid)issues.push({category:"transfer_false_positive",severity:"active",
+    if(args.currentReadiness.evidence.transfer.numerator!==valid)issues.push({category:"false_transfer_evidence",severity:"active",
       detail:"Transfer KPI differs from reference-free different-problem skill evidence",repairable:false});
   }
   for(const session of canonicalPastSessions){
@@ -460,6 +485,14 @@ export function runIntegrityAudit(args: {
       }
       const isWhitebookRepair=task.today_category==="repair"&&!task.id&&
         problemById.get(resolveCanonicalProblemId(task.problem_id,aliases))?.source_type==="whitebook";
+      const lineage=task.repair_lineage;
+      if(task.today_category==="repair"&&task.triage==="must"&&
+        problemById.get(resolveCanonicalProblemId(task.problem_id,aliases))?.source_type==="whitebook"&&
+        (!lineage||lineage.matchConfidence!=="high"||!lineage.sourceAttemptId||!lineage.sourceProblemId||
+          !lineage.rootWeaknessId||!lineage.sourceFindingIds?.length||!lineage.matchedSkillIds?.length||
+          lineage.repairProblemId!==task.problem_id||!lineage.matchReason||!lineage.examImpact))issues.push({
+        category:"required_whitebook_without_high_confidence_lineage",severity:"active",
+        detail:`Required Whitebook task ${task.problem_id} lacks high-confidence failure lineage`,repairable:false});
       if(isWhitebookRepair&&!task.repair_lineage){
         issues.push({category:"repair_without_source_lineage",severity:"active",
           detail:`${task.problem_id} whitebook repair has no source Attempt/finding lineage`,repairable:false});
@@ -479,11 +512,22 @@ export function runIntegrityAudit(args: {
   }
 
   for(const candidate of repairCandidates.filter(row=>row.required&&row.repairKind==="whitebook")){
+    if(candidate.matchConfidence!=="high"||!candidate.rootWeaknessId||!candidate.sourceAttemptId||!candidate.sourceProblemId||
+      !candidate.sourceFindingIds?.length||!candidate.matchedSkillIds?.length||!candidate.whitebookProblemIds.length||
+      !candidate.matchReason||!candidate.examImpact)issues.push({category:"required_whitebook_without_high_confidence_lineage",severity:"active",
+      detail:`Required Whitebook ${candidate.conceptId} lacks verified operation/root lineage`,repairable:false});
     if(!candidate.rootWeaknessId||!candidate.sourceAttemptId||!candidate.sourceProblemId)issues.push({
       category:"required_whitebook_without_lineage",severity:"active",attemptIds:candidate.sourceAttemptId?[candidate.sourceAttemptId]:undefined,
       detail:`Required Whitebook candidate ${candidate.conceptId} lacks root failure lineage`,repairable:false});
     if(candidate.matchConfidence!=="high")issues.push({category:"whitebook_match_low_confidence_required",severity:"active",
       attemptIds:[candidate.sourceAttemptId],detail:`Required Whitebook candidate ${candidate.conceptId} has ${candidate.matchConfidence||"unknown"} match confidence`,repairable:false});
+  }
+  for(const candidate of repairCandidates.filter(row=>row.repairSuccessEvidenceId&&!row.transferEvidenceId)){
+    if(!['transfer','transfer_wait'].includes(String(candidate.repairKind))||
+      (candidate.repairKind==='transfer'&&!candidate.transferProblemIds.length)||
+      (candidate.repairKind==='transfer_wait'&&(!candidate.reason||candidate.transferProblemIds.length)))issues.push({
+      category:"transfer_required_but_no_candidate_generation",severity:"active",
+      detail:`Repaired root ${candidate.rootWeaknessId} has neither an eligible different problem nor an explicit no-candidate outcome`,repairable:false});
   }
   for(const candidate of repairCandidates.filter(row=>Number(row.sameRootFailureCount||0)>=2&&!row.interventionChanged))issues.push({
     category:"same_root_repair_loop",severity:"active",attemptIds:[candidate.sourceAttemptId],
@@ -996,6 +1040,9 @@ export function runIntegrityAudit(args: {
     "coach_update_parse_failed", "coach_update_schema_invalid", "coach_diff_generated_from_invalid_update",
     "selected_attempt_missing_from_session", "session_answer_count_mismatch", "coach_kpi_projection_mismatch",
     "pass_outlook_truncated", "transfer_false_positive",
+    "exam_readiness_level_projection_mismatch", "exam_readiness_kpi_projection_mismatch",
+    "required_whitebook_without_high_confidence_lineage", "transfer_required_but_no_candidate_generation",
+    "false_transfer_evidence", "problem_mastery_exam_level_label_collision",
   ];
   const counts = Object.fromEntries(categories.map((category) =>
     [category, issues.filter((issue) => issue.category === category).length])) as Record<IntegrityCategory, number>;

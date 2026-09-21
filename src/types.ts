@@ -398,6 +398,7 @@ export type CoachDiagnosis = {
   optionalPassProbability?:{range:string;confidence:CoachConfidence;rationale:string}|null;
 };
 export type CoachDiagnosisState = {
+  assessment?:import("./examCapability.ts").ExamReadinessAssessment;
   needsTextRefresh?:boolean;
   current:CoachDiagnosis|null;display:CoachDiagnosis;history:CoachDiagnosis[];
   source:"gpt"|"local_provisional";stale:boolean;newAttemptCount:number;
@@ -532,6 +533,7 @@ export type DashboardKpiValue={
   evidenceReasons?:string[];nextEvidenceActions?:string[];meaning?:string;
 };
 export type DashboardKpiProjection={
+  assessment?:import("./examCapability.ts").ExamReadinessAssessment;
   examReadiness:DashboardKpiValue;passZone:DashboardKpiValue;bottleneck:DashboardKpiValue;
   nextAction:DashboardKpiValue&{problemId?:string;minutes?:number};
   support:{daysRemaining:number;phaseLabel:string;pastExamShare:number|null;pastExamShareTarget:string;pendingReviews:number};
