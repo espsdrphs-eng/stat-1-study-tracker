@@ -118,7 +118,9 @@ export function buildInitialGradingContract(args:{problem:Problem;mode?:string;c
   const mode=initialGradingContractMode(args.mode||args.problem.recommended_mode);
   const part=(id:string,label:string,cueLabel:string,criterion:string,allowedErrorTypes:Array<"K"|"W"|"N"|"C"|"none">,
     masteryLevel:1|2)=>({id,label,cueLabel,completionCriterionId:criterion,allowedErrorTypes,
-      stableTargetKey:`target:${args.problem.problem_id}:slot:${id}`,masteryLevel});
+      stableTargetKey:`target:${args.problem.problem_id}:slot:${id}`,masteryLevel,
+      ...(args.problem.generated_transfer&&["first_step","major_calculation"].includes(id)?
+        {rootSkillIds:[args.problem.generated_transfer.root_skill_id]}:{})});
   const level1=[
     part("problem_type","問題の型","型","identify_problem_type",["K","N","C","none"],1),
     part("first_step","最初の一手","初手","choose_first_step",["K","W","N","C","none"],1),
@@ -135,18 +137,18 @@ export function buildInitialGradingContract(args:{problem:Problem;mode?:string;c
   const sheetType:GradingContractSnapshot["sheetType"]=mode==="check"?"check_sheet":mode==="skeleton"?"skeleton_sheet":
     mode==="main_calc"?"main_calc_sheet":"full_answer_sheet";
   const isPastExam=args.problem.category==="past_exam"||args.problem.source_type==="past_exam";
-  const learningPurpose:LearningPurpose=isPastExam||mode==="full"||mode==="check"?"exam_performance":"integration_check";
+  const learningPurpose:LearningPurpose=args.problem.generated_transfer?"transfer_check":isPastExam||mode==="full"||mode==="check"?"exam_performance":"integration_check";
   const completionCriteria=gradedParts.map(row=>({id:row.completionCriterionId,displayText:`${row.label}を今回の答案で確認できた`}));
   const explicitlyOutOfScopeParts=mode==="check"||mode==="skeleton"?["主要計算の完遂","最終結論"]:mode==="main_calc"?
     ["採点対象として指定していない問題全体の説明"]:[];
   const payload={
     contractVersion:GRADING_CONTRACT_VERSION,problemId:args.problem.problem_id,
-    learningPurpose,learningStage:isPastExam||mode==="full"?"performance" as const:"acquisition" as const,
+    learningPurpose,learningStage:args.problem.generated_transfer?"transfer" as const:isPastExam||mode==="full"?"performance" as const:"acquisition" as const,
     mode,reviewScope,targetedParts:gradedParts.map(row=>row.label),gradedParts,
     explicitlyOutOfScopePartIds:explicitlyOutOfScopeParts.map(value=>`out_${hashText(value)}`),explicitlyOutOfScopeParts,
     completionCriteria,hiddenAnswerKey:[],completionConditions:completionCriteria.map(row=>row.displayText),
     requiredEvidence:gradedParts.map(row=>row.label),allowedErrorTypes:["K","W","N","C"],requiresKEvidence:true,
-    allowedReferenceLevel:0,estimatedMinutes:mode==="check"?5:mode==="skeleton"?15:mode==="main_calc"?25:35,sheetType,
+    allowedReferenceLevel:0,estimatedMinutes:args.problem.generated_transfer?.estimated_minutes??(mode==="check"?5:mode==="skeleton"?15:mode==="main_calc"?25:35),sheetType,
   } satisfies Omit<GradingContractSnapshot,"contractHash"|"contractId"|"createdAt">;
   const contractHash=computeContractHash(payload);
   const contract:GradingContractSnapshot={...payload,

@@ -12,7 +12,9 @@ test('a later failure of the same skill on another problem must not erase the fi
 });
 test('one successful transfer resolving three roots remains one independent evidence sample',()=>{
   const attempts=[attempt(1,'a'),attempt(2,'b'),attempt(3,'c'),attempt(4,'destination',true)];
-  const metric=calculateExamReadinessMetrics({attempts,problems:[],pastSessions:[],aliases:[],today:'2026-09-25'}).evidence.transfer;
+  const evidence=calculateExamReadinessMetrics({attempts,problems:[],pastSessions:[],aliases:[],today:'2026-09-25'}).evidence;
+  assert.equal(evidence.transfer.numerator,0,'intentional training is not natural exam evidence');
+  const metric=evidence.trainingTransfer;
   assert.equal(metric.numerator,3);assert.equal(metric.denominator,3);
   assert.equal(metric.evidenceCount,1);assert.equal(metric.confidence,'low');
   assert.ok(metric.eligibleEvidenceIds.some(id=>id.startsWith('transfer:')));

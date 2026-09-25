@@ -36,6 +36,10 @@ export function confidentGrading(attempt:Attempt){
 }
 export function successfulSkillIds(attempt:Attempt){
   if(!independentReferenceFree(attempt)||!confidentGrading(attempt))return [];
+  if(attempt.source_type==="generated"){
+    const target=attempt.target_skill_assessment;
+    if(!target?.self_selected||!target.major_calculation_success||!target.no_major_error||!target.evidence.trim())return [];
+  }
   const findings=(attempt.graded_findings||[]).filter(f=>findingPlanningEligible(attempt,f));
   const failed=new Set(findings.filter(f=>!f.resolved&&f.error_type!=="none")
     .flatMap(f=>findingSkillIds(attempt,f)));
@@ -64,14 +68,26 @@ export function rootProgress(source:Attempt,root:RootWeakness,attempts:Attempt[]
     if(root.skillIds.length&&root.skillIds.every(id=>successfulSkillIds(a).includes(id))&&
       (!repairSuccess||a.id>repairSuccess.id))repairSuccess=a;
   }
-  const transfer=later.find(a=>a.id>latestFailure.id&&a.problem_id!==source.problem_id&&root.skillIds.length>0&&
+  const transferFailure=later.filter(a=>a.id>(repairSuccess?.id||latestFailure.id)&&a.source_type==="generated"&&
+    a.transfer_lineage?.sourceProblemId===source.problem_id&&root.skillIds.includes(a.transfer_lineage.rootSkillId)&&
+    independentReferenceFree(a)&&confidentGrading(a)&&a.target_skill_assessment&&
+    (!a.target_skill_assessment.self_selected||!a.target_skill_assessment.major_calculation_success||!a.target_skill_assessment.no_major_error)).at(-1);
+  if(transferFailure)repairSuccess=undefined;
+  const transfer=later.find(a=>a.id>(transferFailure?.id||latestFailure.id)&&a.problem_id!==source.problem_id&&root.skillIds.length>0&&
     a.learning_purpose!=="error_repair"&&
     root.skillIds.every(id=>successfulSkillIds(a).includes(id)));
-  return {repairSuccess,transfer,latestFailure};
+  return {repairSuccess,transfer,latestFailure,transferFailure};
 }
 
 export type TransferEvidence={id:string;sourceAttemptId:number;sourceProblemId:string;successAttemptId:number;
-  successProblemId:string;skillId:string;date:string};
+  successProblemId:string;skillId:string;date:string;evidenceStrength:"training"|"strong";
+  lineage?:Attempt["transfer_lineage"]};
+export function transferEvidenceStrength(a:Attempt):"training"|"strong"{
+  const past=a.source_type==="past_exam"||(!a.source_type&&/^PY-\d{4}-Q\d+$/.test(a.problem_id));
+  return past&&!a.target_skill_prompted&&!a.is_review_attempt&&
+    !["error_repair","retrieval_check","transfer_check"].includes(String(a.learning_purpose))&&
+    ["full","timed","timed_single","exam_90min","past_exam"].includes(a.mode)&&a.evidence_strength!=="training"?"strong":"training";
+}
 export function deriveTransferEvidence(attempts:Attempt[]):TransferEvidence[]{
   // A skill can be unresolved on several independent source problems. Keeping
   // only one global failure loses the other roots when a later problem fails.
@@ -80,10 +96,12 @@ export function deriveTransferEvidence(attempts:Attempt[]):TransferEvidence[]{
     if(a.exclude_from_metrics||a.duplicate_of_attempt_id)continue;
     for(const skillId of a.learning_purpose==="error_repair"?[]:successfulSkillIds(a)){
       for(const failure of latestFailures.get(skillId)?.values()||[])
-        if(failure.problem_id!==a.problem_id)rows.push({id:`transfer:${failure.id}:${a.id}:${skillId}`,
-          sourceAttemptId:failure.id,sourceProblemId:failure.problem_id,successAttemptId:a.id,successProblemId:a.problem_id,skillId,date:a.date});
+        if(failure.problem_id!==a.problem_id&&(a.source_type!=="generated"||
+          (a.transfer_lineage?.rootSkillId===skillId&&a.transfer_lineage.sourceProblemId===failure.problem_id)))rows.push({id:`transfer:${failure.id}:${a.id}:${skillId}`,
+          sourceAttemptId:failure.id,sourceProblemId:failure.problem_id,successAttemptId:a.id,successProblemId:a.problem_id,skillId,date:a.date,
+          evidenceStrength:transferEvidenceStrength(a),lineage:a.transfer_lineage});
     }
-    for(const f of (a.graded_findings||[]).filter(f=>findingPlanningEligible(a,f)&&!f.resolved&&f.error_type!=="none"))
+    for(const f of (a.source_type==="generated"?[]:a.graded_findings||[]).filter(f=>findingPlanningEligible(a,f)&&!f.resolved&&f.error_type!=="none"))
       for(const id of findingSkillIds(a,f)){
         const sources=latestFailures.get(id)||new Map<string,Attempt>();
         sources.set(a.problem_id,a);latestFailures.set(id,sources);

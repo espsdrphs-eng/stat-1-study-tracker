@@ -18,13 +18,13 @@ export function groundedFindingSkills(attempt:Attempt,finding:GradedFinding):Gro
   return extract(finding.evidence||"",`attempt:${attempt.id}/finding:${finding.graded_part_id}`);
 }
 export function groundedWhitebookSkills(problem:Problem,answers:AnswerIndexEntry[]=[]):GroundedSkillTag[]{
-  if(problem.source_type==="past_exam"||problem.category==="past_exam")return [];
+  if(problem.source_type==="generated"||problem.source_type==="past_exam"||problem.category==="past_exam")return [];
   const answer=answers.find(a=>a.problem_id===problem.problem_id);
   if(!answer?.answer_excerpt||!answer.document_key||!answer.page_start)return [];
   return extract(answer.answer_excerpt,`${answer.document_key}:page:${answer.page_start}/${problem.problem_id}`);
 }
 export function deriveWhitebookSkillCoverage(problems:Problem[],answers:AnswerIndexEntry[]=[]){
-  const rows=problems.filter(p=>p.source_type!=="past_exam"&&p.category!=="past_exam").map(p=>{
+  const rows=problems.filter(p=>p.source_type!=="generated"&&p.source_type!=="past_exam"&&p.category!=="past_exam").map(p=>{
     const tags=groundedWhitebookSkills(p,answers);
     return {problemId:p.problem_id,tags,status:tags.some(t=>t.confidence==="high")?"high":tags.length?"medium":"unmapped"};
   });

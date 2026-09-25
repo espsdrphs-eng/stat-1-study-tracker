@@ -122,6 +122,7 @@ export function selectCurrentReviewsForProblem(args: {
 }
 
 export type IntegrityCategory =
+  | "generated_transfer_invalid" | "generated_transfer_duplicate" | "generated_training_in_exam_kpi"
   | "exam_readiness_level_projection_mismatch" | "exam_readiness_kpi_projection_mismatch"
   | "required_whitebook_without_high_confidence_lineage" | "transfer_required_but_no_candidate_generation"
   | "false_transfer_evidence" | "problem_mastery_exam_level_label_collision"
@@ -252,6 +253,21 @@ export function runIntegrityAudit(args: {
   const reconciliation=analyzeReviewReconciliation({attempts,reviews,aliases,today,todayPlanSnapshots});
   const stableTargets=buildStableTargetIndex({attempts,reviews,aliases});
   const problemById=new Map(problems.map(problem=>[resolveCanonicalProblemId(problem.problem_id,aliases),problem]));
+  const generatedKeys=new Set<string>();
+  for(const p of problems.filter(p=>p.source_type==="generated")){
+    const c=p.generated_transfer;
+    if(!c||c.evidence_strength!=="training"||c.exam_score_eligible!==false||!c.content_hash||
+      c.validation?.draft_hash!==c.content_hash||!c.lineage?.repairAttemptId||!c.lineage?.retrievalAttemptId||
+      c.lineage?.rootSkillId!==c.root_skill_id||Object.keys(c.validation?.checks||{}).length!==9||
+      Object.values(c.validation?.checks||{}).some(check=>!check.pass||!check.evidence))
+      issues.push({category:"generated_transfer_invalid",severity:"active",detail:`${p.problem_id}: invalid validation/lineage`,repairable:false});
+    if(c&&c.lifecycle_status!=="graded"){
+      if(generatedKeys.has(c.lineage.key))issues.push({category:"generated_transfer_duplicate",severity:"active",detail:"同じrootに複数のactive生成問題",repairable:false});
+      generatedKeys.add(c.lineage.key);
+    }
+    for(const a of attempts.filter(a=>a.problem_id===p.problem_id))if(a.exam_score_eligible||a.evidence_strength!=="training"||a.source_type!=="generated")
+      issues.push({category:"generated_training_in_exam_kpi",severity:"active",attemptIds:[a.id],detail:"生成trainingの本番根拠への混入",repairable:false});
+  }
   const canonicalPastSessions=canonicalizePastExamSessions(pastSessions).current
     .map(session=>reconcilePastExamSessionEvidence(session,attempts,session.session_alias_ids));
   const labels=args.assessmentLabels||LEARNING_ASSESSMENT_LABELS;
@@ -299,7 +315,7 @@ export function runIntegrityAudit(args: {
       category:"exam_readiness_level_projection_mismatch",severity:"active",detail:"Dashboard/Pass Judgement diverges from canonical assessment",repairable:false});
   }
   if(args.currentReadiness?.evidence?.transfer){
-    const valid=new Set(deriveTransferEvidence(attempts).map(row=>`${row.sourceProblemId}|${row.skillId}`)).size;
+    const valid=new Set(deriveTransferEvidence(attempts).filter(r=>r.evidenceStrength==="strong").map(row=>`${row.sourceProblemId}|${row.skillId}`)).size;
     if(args.currentReadiness.evidence.transfer.numerator!==valid)issues.push({category:"false_transfer_evidence",severity:"active",
       detail:"Transfer KPI differs from reference-free different-problem skill evidence",repairable:false});
   }
@@ -523,8 +539,14 @@ export function runIntegrityAudit(args: {
       attemptIds:[candidate.sourceAttemptId],detail:`Required Whitebook candidate ${candidate.conceptId} has ${candidate.matchConfidence||"unknown"} match confidence`,repairable:false});
   }
   for(const candidate of repairCandidates.filter(row=>row.repairSuccessEvidenceId&&!row.transferEvidenceId)){
+    const training=candidate.transferTraining;
+    const jitCandidate=training&&training.lineage.matchConfidence==="high"&&
+      training.lineage.sourceProblemId===candidate.sourceProblemId&&
+      training.lineage.repairAttemptId&&training.lineage.retrievalAttemptId&&
+      training.key===`training:${training.lineage.rootSkillId}`&&
+      ["generated","pending"].includes(training.kind);
     if(!['transfer','transfer_wait'].includes(String(candidate.repairKind))||
-      (candidate.repairKind==='transfer'&&!candidate.transferProblemIds.length)||
+      (candidate.repairKind==='transfer'&&!candidate.transferProblemIds.length&&!jitCandidate&&!training?.existingProblemId)||
       (candidate.repairKind==='transfer_wait'&&(!candidate.reason||candidate.transferProblemIds.length)))issues.push({
       category:"transfer_required_but_no_candidate_generation",severity:"active",
       detail:`Repaired root ${candidate.rootWeaknessId} has neither an eligible different problem nor an explicit no-candidate outcome`,repairable:false});
@@ -1043,6 +1065,7 @@ export function runIntegrityAudit(args: {
     "exam_readiness_level_projection_mismatch", "exam_readiness_kpi_projection_mismatch",
     "required_whitebook_without_high_confidence_lineage", "transfer_required_but_no_candidate_generation",
     "false_transfer_evidence", "problem_mastery_exam_level_label_collision",
+    "generated_transfer_invalid", "generated_transfer_duplicate", "generated_training_in_exam_kpi",
   ];
   const counts = Object.fromEntries(categories.map((category) =>
     [category, issues.filter((issue) => issue.category === category).length])) as Record<IntegrityCategory, number>;

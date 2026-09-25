@@ -1,5 +1,6 @@
 export type Problem = {
-  id:number; problem_id:string; source_type:"whitebook"|"past_exam"; category:"S"|"A"|"past_exam";
+  id:number; problem_id:string; source_type:"whitebook"|"past_exam"|"generated"; category:"S"|"A"|"past_exam"|"generated";
+  generated_transfer?:import("./generatedTransfer.ts").GeneratedTransferContent;
   chapter:number|null; problem_number:number; title:string; theme:string; priority:string; role:string;
   recommended_mode:string; linked_past_exams:string; linked_s_problems:string; linked_a_problems:string;
   notes:string; completion_status:string;
@@ -168,6 +169,11 @@ export type ProblemContextPack={
   previousReviews:Array<{reviewId:number;status:string;reviewType:string;dueDate:string}>;verifiedRelations:ProblemRelation[];
 };
 export type Attempt = {
+  source_type?:Problem["source_type"];
+  evidence_strength?:"training"|"strong";
+  target_skill_prompted?:boolean;
+  target_skill_assessment?:{self_selected:boolean;major_calculation_success:boolean;no_major_error:boolean;evidence:string};
+  transfer_lineage?:import("./generatedTransfer.ts").TransferTrainingLineage;
   id:number; problem_id:string; date:string; mode:string; time_minutes:number; mark:string;
   score_label:string; error_type:string; error_point:string; next_action:string; memo:string;
   score_text?:string; score_numeric?:number|null; score_max?:number|null; result_summary?:string;
@@ -313,6 +319,7 @@ export type PastSession = Record<string, unknown> & {
   analysis_status?:"not_started"|"pending"|"completed"|"invalid";
 };
 export type Task = {
+  transfer_training_key?:string;
   id?:number; problem_id:string; title:string; kind:string; reason:string; mode:string;
   minutes:number; load:number; status?:string; error_type?:string; theme?:string;
   due_date?:string; review_type?:string; review_reason?:string; review_method?:string; review_instruction?:string;
@@ -424,6 +431,7 @@ export type ExamReferencePackStatus = {
   shadowStartedAt?:string;plannerMode:"legacy"|"shadow";
 };
 export type AdaptivePlanTask = {
+  transferTrainingKey?:string;
   taskKey:string;date:string;slot:"score_building"|"repair"|"maintenance_selection";
   kind:"whitebook"|"past_exam"|"scan5"|"full"|"timed"|"review"|"exposure_confirmation";
   label:string;problemId?:string;referenceProblemId?:string;conceptId?:string;
@@ -479,6 +487,7 @@ export type AdditionalStudyCandidate = {
   purposeLabel:string;reason:string;minutes:number;task:Task;
 };
 export type PastExamRepairCandidate = {
+  transferTraining?:import("./generatedTransfer.ts").TransferTrainingCandidate;
   repairSuccessEvidenceId?:number;transferEvidenceId?:string;
   sessionId:number;sourceAttemptId:number;sourceProblemId:string;sourceFindingId:string;
   conceptId:string;conceptLabel:string;materiality:"minor"|"major";recurrence:number;
@@ -624,7 +633,7 @@ export type StudyUpdate = {
   estimated_minutes?:number|string; mark:string; score_label:string;
   error_type:string; error_point:string; next_action:string; review_after_days?:number|string;
   linked_s_problem?:string; linked_past_exam?:string; theme?:string; correction_rule?:string;
-  display_label?:string; source_type?:"whitebook"|"past_exam"; category?:"S"|"A"|"past_exam";
+  display_label?:string; source_type?:Problem["source_type"]; category?:Problem["category"];
   chapter?:number|null; problem_number?:number; difficulty?:number|null; themes?:string[];
   related_s_problem_ids?:string[]; linked_s_problems?:string[]; linked_past_exams?:string[];
   parent_past_session_id?:number|string;

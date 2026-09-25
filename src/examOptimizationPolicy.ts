@@ -105,6 +105,7 @@ const partKeys=(review?:Partial<Review>)=>[...(review?.grading_contract?.gradedP
 
 /** React/selectors must distinguish a stage transition on the same problem. */
 export function currentActionFingerprint(task:Partial<Task>,review?:Partial<Review>){
+  if(task.transfer_training_key)return task.transfer_training_key;
   const purpose=review?.grading_contract?.learningPurpose||review?.learning_purpose||task.learning_purpose||task.purpose_label||task.kind||"";
   const mode=review?.grading_contract?.mode||review?.effective_mode||task.effective_mode||task.mode||"";
   const level=review?.grading_contract?.gradedParts?.map(part=>part.masteryLevel).filter(Boolean).sort().join(",")||task.mastery_level||"";

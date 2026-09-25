@@ -6,6 +6,8 @@ export function taskScoreForAttempt(attempt:Partial<Attempt>){
 }
 
 export function examScoreEligibility(attempt:Partial<Attempt>,problem?:Problem){
+  if(problem?.source_type==="generated"||attempt.source_type==="generated"||attempt.evidence_strength==="training")
+    return {eligible:false,timeLimitMinutes:0,examScore:null};
   const mode=String(attempt.mode||"");
   const eligibleMode=["full","timed_single","past_exam","exam_90min"].includes(mode)||problem?.category==="past_exam";
   const reference=Number(attempt.actual_reference_level??attempt.reference_level??0);

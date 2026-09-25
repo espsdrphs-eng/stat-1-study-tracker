@@ -43,6 +43,8 @@ export function qualifyingAttemptForTodayTask(args:{
   task:Task;attempts:Attempt[];snapshot:TodayPlanSnapshot;aliases?:ProblemAlias[];
 }){
   const aliases=args.aliases||[],taskProblem=resolveCanonicalProblemId(args.task.problem_id,aliases);
+  if(args.task.transfer_training_key)return args.attempts.find(a=>a.transfer_lineage?.key===args.task.transfer_training_key&&
+    !a.exclude_from_metrics&&!a.duplicate_of_attempt_id);
   return args.attempts.filter(attempt=>!attempt.duplicate_of_attempt_id&&
     resolveCanonicalProblemId(attempt.problem_id,aliases)===taskProblem&&attempt.date===args.snapshot.date&&
     savedAfterSnapshot(attempt,args.snapshot)&&attemptModeSatisfiesTask(args.task.mode,attempt.mode)&&

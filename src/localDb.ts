@@ -1,4 +1,6 @@
 import Dexie, { type EntityTable } from "dexie";
+import {transferTrainingRequest,generatedAttemptFields} from "./transferTrainingApi.ts";
+import {validateGeneratedContent} from "./generatedTransfer.ts";
 import type { AnswerIndexEntry, Attempt, Bootstrap, CoachDiagnosis, CorrectionLog, DataDiagnostic, GradingContractSnapshot, MasterImportLog, PastExamExposure, PastSession, Problem, ProblemAlias, ProblemRelation, Review, Roadmap, StudyUpdate, Task, TodayPlanSnapshot, WeakNote } from "./types";
 import { japaneseizeMathText } from "./mathJapanese.ts";
 import { analyzeWeaknesses } from "./weaknessAnalytics.ts";
@@ -846,7 +848,8 @@ async function reconcileProblemLearningState(problemId?:string,preview=false):Pr
     db.attempts.toArray(),db.reviews.toArray(),db.problemAliases.toArray(),db.problems.toArray(),db.meta.get("exam_date")
   ]);
   const audit=analyzeReviewReconciliation({attempts,reviews,aliases,today:todayString(),todayPlanSnapshots:snapshots});
-  const plans=problemId?[reconciliationForProblem(audit,problemId,aliases)].filter(Boolean):audit.problems;
+  const plans=(problemId?[reconciliationForProblem(audit,problemId,aliases)].filter(Boolean):audit.problems)
+    .filter(plan=>problems.find(p=>p.problem_id===plan?.problemId)?.source_type!=="generated");
   const details=plans.flatMap(plan=>plan?.reviewsToSupersede.length||plan?.replacementRequired||plan?.retentionCheckRequired?[{
     problemId:plan!.problemId,reviewIds:plan!.reviewsToSupersede.map(row=>row.reviewId),
     sourceAttemptId:plan!.desiredSourceAttemptId,
@@ -1017,6 +1020,17 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
   if(alreadySaved)return alreadySaved.id;
   const problem=await db.problems.get(input.problem_id);
   if(!problem) throw new Error(`未登録の問題IDです: ${input.problem_id}`);
+  const generatedFields=problem.source_type==="generated"?generatedAttemptFields(problem,input):undefined;
+  const trainingContext=await db.meta.get(`transfer-training-context:${problem.problem_id}`);
+  const intentionalTraining=trainingContext?JSON.parse(trainingContext.value) as import("./generatedTransfer.ts").TransferTrainingLineage:undefined;
+  if(generatedFields){
+    const existing=(await db.attempts.where("problem_id").equals(problem.problem_id).toArray()).find(a=>!a.exclude_from_metrics);
+    if(existing)return existing.id;
+    const contract=buildInitialGradingContract({problem,mode:"full"});
+    input={...input,...generatedFields,mode:"full",contract_id:contract.contractId,contract_hash:contract.contractHash,
+      contract_version:contract.contractVersion,review_scope:contract.reviewScope,generated_from_review_id:undefined,
+      graded_part_ids:contract.gradedParts.map(p=>p.id),submission_id:`generated:${problem.problem_id}`};
+  }
   if(input.requires_problem_confirmation) throw new Error("問題ID候補を確認してから保存してください");
   const answer=await db.answerIndex.get(problem.problem_id);
   input=finalizeStudyUpdateForSave(applyCanonicalMaster(input,problem,answer,await db.problems.toArray(),await db.answerIndex.toArray())) as StudyUpdate&Record<string,unknown>;
@@ -1206,6 +1220,21 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
      ,exclude_from_metrics:false
    }));
   await db.attempts.update(id,{canonical_attempt_id:id});
+  if(intentionalTraining){
+    // The initial full-answer contract still grades the whole answer. The
+    // planned exposure is training, never an unprompted exam transfer.
+    await db.attempts.update(id,{evidence_strength:"training",target_skill_prompted:true,
+      source_problem_id:intentionalTraining.sourceProblemId,transfer_lineage:intentionalTraining,
+      exam_score_eligible:false,exam_score:null});
+    await db.meta.delete(`transfer-training-context:${problem.problem_id}`);
+  }
+  if(generatedFields){
+    await db.attempts.update(id,{...generatedFields,canonical_attempt_id:id,submission_id:`generated:${problem.problem_id}`});
+    await db.problems.update(problem.problem_id,{generated_transfer:{...problem.generated_transfer!,lifecycle_status:"graded"}});
+    // Keep all findings in the ordinary Attempt. Do not spawn a new Review tree
+    // from a one-off training answer; the original root remains the repair unit.
+    return id;
+  }
   if(input.auto_corrected) pendingCorrectionLogs.push({
     auto_corrected:true,correction_fields:input.correction_fields||[],
     raw_gpt_problem_id:String(input.raw_gpt_problem_id||input.problem_id),corrected_problem_id:input.problem_id,
@@ -2913,7 +2942,10 @@ async function bootstrap():Promise<Bootstrap>{
   const conceptWeaknesses=analyzeConceptWeaknesses({record:referenceRecord,problems,attempts:activeAttempts,
     reviews,weakNotes,today});
   const pastExamRepairCandidates=buildPastExamRepairCandidates({record:referenceRecord,sessions:pastSessions,
-    attempts:activeAttempts,conceptWeaknesses,problems,answers:answerIndex,exposureOverrides});
+    attempts:activeAttempts,conceptWeaknesses,problems,answers:answerIndex,exposureOverrides,
+    generationStates:Object.fromEntries(metaEntries.filter(m=>m.key.startsWith("transfer-generation:")).flatMap(m=>{
+      try{const r=JSON.parse(m.value);return [[r.key,r.status]]}catch{return []}
+    }))});
   const plannerShadow=buildAdaptivePlannerShadow({record:referenceRecord,catalog:pastExamCatalog,
     weaknesses:conceptWeaknesses,problems,attempts:activeAttempts,reviews,pastSessions,
     currentTasks:plannerMode==="legacy"?baseTasks:(snapshot?.tasks||[]),today,examDate:settings.exam_date,
@@ -3545,8 +3577,17 @@ async function saveWholeAnswerRediagnosis(attemptId:number,text:string){
     original:{scoreLabel:attempt.score_label,scoreNumeric:attempt.score_numeric??null,mark:attempt.mark}};
 }
 
+let transferRequestQueue:Promise<unknown>=Promise.resolve();
 export async function localPost<T>(path:string,body:any):Promise<T>{
   await initialize();
+  if(path==="/api/transfer-training"){
+    const request=transferRequestQueue.catch(()=>{}).then(()=>transferTrainingRequest({db,body,current:bootstrap,
+      save:input=>db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.answerIndex,db.problemAliases,db.correctionLogs],()=>saveAttempt(input))}));
+    transferRequestQueue=request;
+    const result=await request;
+    if(!["view","grading-prompt","validation-prompt"].includes(String(body.action)))notifyStudyDataChanged({operation:"transfer-training"});
+    return result as T;
+  }
   if(path==="/api/database/repair"){
     return await repairDatabaseSchema() as T;
   } else if(path==="/api/integrity/audit"){
@@ -3670,6 +3711,8 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
   } else if(path==="/api/today/recalculate"){
     return await replaceTodayWithAdaptivePlan(false) as T;
   } else if(path==="/api/problems"){
+    if(body.source_type==="generated"||body.generated_transfer||String(body.problem_id||"").startsWith("GEN-"))
+      throw new Error("生成問題は独立検証後の専用登録だけを使用してください");
     const chapter=body.chapter?Number(body.chapter):null,number=Number(body.problem_number),difficulty=body.difficulty?Number(body.difficulty):null;
     const display=body.source_type==="past_exam"?body.title:labelFor(chapter,body.category,number,difficulty);
     await db.problems.add({...body,id:Date.now(),chapter,problem_number:number,difficulty,completion_status:"active",
@@ -3830,6 +3873,7 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
 
 export async function exportBackup(){
   await initialize();
+  for(const p of (await db.problems.toArray()).filter(p=>p.source_type==="generated"))await validateGeneratedContent(p);
   // Recompute against facts at export time, not the last repair's cached audit.
   const currentAudit=await integrityAudit();
   await db.meta.put({key:"integrity_audit_summary",value:JSON.stringify(currentAudit)});
@@ -3845,6 +3889,7 @@ export async function exportBackup(){
 export async function restoreBackup(data:any){
   const required=["problems","attempts","reviews","roadmap","weakNotes","pastSessions","sMemory"];
   if(!data||!required.every(k=>Array.isArray(data[k]))) throw new Error("バックアップ形式が正しくありません");
+  for(const p of data.problems.filter((p:Problem)=>p.source_type==="generated"||p.generated_transfer))await validateGeneratedContent(p);
   await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.roadmap,db.weakNotes,db.pastSessions,db.sMemory,db.meta,db.answerIndex,db.correctionLogs,db.problemAliases,db.importLogs],async()=>{
     await Promise.all([db.problems.clear(),db.attempts.clear(),db.reviews.clear(),db.roadmap.clear(),db.weakNotes.clear(),db.pastSessions.clear(),db.sMemory.clear(),db.answerIndex.clear(),db.correctionLogs.clear(),db.problemAliases.clear(),db.importLogs.clear()]);
     await db.problems.bulkAdd(data.problems);await db.attempts.bulkAdd(data.attempts);await db.reviews.bulkAdd(data.reviews);
@@ -3854,6 +3899,8 @@ export async function restoreBackup(data:any){
     if(Array.isArray(data.correctionLogs)) await db.correctionLogs.bulkAdd(data.correctionLogs);
     if(Array.isArray(data.problemAliases)) await db.problemAliases.bulkAdd(data.problemAliases);
     if(Array.isArray(data.importLogs)) await db.importLogs.bulkAdd(data.importLogs);
+    for(const row of await db.meta.where("key").startsWith("transfer-generation:").toArray())await db.meta.delete(row.key);
+    for(const row of await db.meta.where("key").startsWith("transfer-training-context:").toArray())await db.meta.delete(row.key);
     if(Array.isArray(data.meta)) await db.meta.bulkPut(data.meta);
     // A restore changes the current source state. Keep historical day plans, but
     // never let a pre-restore/stale plan for today override the reconciled

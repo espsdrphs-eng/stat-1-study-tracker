@@ -194,7 +194,7 @@ export function analyzeReviewReconciliation(args:{
   const aliases=args.aliases||[],catalog=partCatalog(args.attempts,args.reviews);
   const stableIndex=buildStableTargetIndex({attempts:args.attempts,reviews:args.reviews,aliases});
   const canonical=(value:string)=>resolveCanonicalProblemId(value,aliases);
-  const attempts=args.attempts.filter(validAttempt).map(row=>({...row,problem_id:canonical(row.problem_id)})).sort(attemptOrder);
+  const attempts=args.attempts.filter(a=>a.source_type!=="generated"&&validAttempt(a)).map(row=>({...row,problem_id:canonical(row.problem_id)})).sort(attemptOrder);
   const reviews=args.reviews.map(row=>({...row,problem_id:canonical(row.problem_id)}));
   const problemIds=new Set([...attempts.map(row=>row.problem_id),...reviews.map(row=>row.problem_id)]);
   const problems:ProblemReconciliation[]=[];

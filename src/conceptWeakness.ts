@@ -10,6 +10,7 @@ import {deriveFailureEpisode} from "./failureEpisode.ts";
 import {deriveTransferEvidence,findingSkillIds,problemSkillIds,rootProgress} from "./skillEvidence.ts";
 import {groundedWhitebookSkills} from "./groundedSkills.ts";
 import {buildStableTargetIndex} from "./stableTargetIdentity.ts";
+import {deriveTransferTrainingCandidates} from "./generatedTransfer.ts";
 
 type ConceptMapping={conceptIds:string[];confidence:"verified"|"candidate"};
 type EvidenceEvent={
@@ -180,10 +181,11 @@ export function analyzeConceptWeaknesses(args:{
 export function buildPastExamRepairCandidates(args:{
   record?:StoredExamReferencePack|null;sessions:PastSession[];attempts:Attempt[];
   conceptWeaknesses:ConceptWeaknessInsight[];problems?:Problem[];answers?:AnswerIndexEntry[];
-  exposureOverrides?:Record<string,PastExamExposure>;
+  exposureOverrides?:Record<string,PastExamExposure>;generationStates?:Record<string,string>;
 }):PastExamRepairCandidate[]{
   if(!args.record)return [];
   const targetIndex=buildStableTargetIndex({attempts:args.attempts,reviews:[]});
+  const training=deriveTransferTrainingCandidates({...args,record:args.record,problems:args.problems||[]});
   const references=new Map(args.record.data.pastExamProblems.map(problem=>[canonicalPastExamProblemId(problem),problem]));
   const weakness=new Map(args.conceptWeaknesses.map(row=>[row.conceptId,row]));
   const catalog=buildPastExamCatalog({record:args.record,sessions:args.sessions,attempts:args.attempts,exposureOverrides:args.exposureOverrides});
@@ -225,7 +227,7 @@ export function buildPastExamRepairCandidates(args:{
         const recentSuccess=(id:string)=>args.attempts.some(a=>a.problem_id===id&&a.id>attempt.id&&
           a.actual_reference_level===0&&(a.graded_findings||[]).length&&(a.graded_findings||[]).every(f=>f.resolved&&f.error_type==="none"));
         const overlap=(ids:string[]=[])=>ids.filter(id=>skills.includes(id)).length;
-        const matches=(args.problems||[]).filter(p=>p.source_type!=="past_exam"&&p.category!=="past_exam"&&
+        const matches=(args.problems||[]).filter(p=>p.source_type!=="generated"&&p.source_type!=="past_exam"&&p.category!=="past_exam"&&
           skills.length>0&&skills.every(id=>liveSkills(p).includes(id))&&!recentSuccess(p.problem_id))
           .sort((a,b)=>overlap(b.solution_operation_ids)-overlap(a.solution_operation_ids)||
             overlap(b.fine_concept_ids)-overlap(a.fine_concept_ids)||overlap(b.root_skill_ids)-overlap(a.root_skill_ids)||
@@ -244,11 +246,12 @@ export function buildPastExamRepairCandidates(args:{
           .map(canonicalPastExamProblemId).slice(0,3);
         const sameRootFailureCount=args.attempts.filter(other=>!other.exclude_from_metrics&&!other.duplicate_of_attempt_id&&other.problem_id===attempt.problem_id&&
           deriveFailureEpisode(other).rootWeaknesses.some(otherRoot=>otherRoot.rootWeaknessId===root.rootWeaknessId&&otherRoot.requiredRepair)).length;
-        const interventionChanged=sameRootFailureCount>=2;
-        const repairKind:PastExamRepairCandidate["repairKind"]=progress.repairSuccess?(transfer.length?"transfer":"transfer_wait"):linkedWhitebook.length?"whitebook":
+        const interventionChanged=sameRootFailureCount>=2||!!progress.transferFailure;
+        const transferTraining=training.find(t=>t.lineage.sourceAttemptId===attempt.id&&skills.includes(t.lineage.rootSkillId));
+        const repairKind:PastExamRepairCandidate["repairKind"]=progress.repairSuccess?(transferTraining||transfer.length?"transfer":"transfer_wait"):linkedWhitebook.length?"whitebook":
           interventionChanged?"rediagnosis":"concept_mini";
-        const interventionRequired=required&&repairKind!=="transfer_wait";
-        candidates.push({sessionId:session.id,sourceAttemptId:progress.latestFailure.id,sourceProblemId,
+        const interventionRequired=required&&repairKind!=="transfer_wait"&&transferTraining?.kind!=="pending";
+        candidates.push({sessionId:session.id,sourceAttemptId:progress.latestFailure.id,sourceProblemId,transferTraining,
           repairSuccessEvidenceId:progress.repairSuccess?.id,
           sourceFindingId:root.sourceFindingIds[0],sourceFindingIds:root.sourceFindingIds,
           rootWeaknessId:root.rootWeaknessId,conceptId,conceptLabel:root.title,
@@ -259,7 +262,8 @@ export function buildPastExamRepairCandidates(args:{
           matchReason:repairKind==="transfer_wait"?"一致する明示skillの別問題が未確認。章・テーマだけの候補を生成しない":
             linkedWhitebook.length?`source findingのfine concept / operation「${skills.join(" / ")}」と一致。根拠：${matches.slice(0,2).flatMap(p=>(tags.get(p.problem_id)||[]).filter(t=>t.confidence==="high"&&skills.includes(t.skillId)).map(t=>`${t.source}「${t.evidence}」`)).join(" / ")||"live masterの明示skill"}`:
             `exact skill/operation一致の白本がないため、${sourceProblemId}の該当部分を局所補修`,
-          reason:repairKind==="transfer_wait"?`Attempt ${progress.repairSuccess!.id}で補修成功。transfer候補なし：対象skillと別問題の対応を確認するまで任意・保留`:
+          reason:progress.transferFailure?`転移training Attempt ${progress.transferFailure.id}で対象能力を再現できなかったため、生成を繰り返さず元rootを再診断`:
+            repairKind==="transfer_wait"?`Attempt ${progress.repairSuccess!.id}で補修成功。transfer候補なし：対象skillと別問題の対応を確認するまで任意・保留`:
             progress.repairSuccess?`Attempt ${progress.repairSuccess.id}で参照なし補修成功。別問題で同じskillを確認`:
             interventionChanged?`${sameRootFailureCount}回失敗した同一形式を繰り返さず、${repairKind==="transfer"?"別問題transfer":"root cause再診断"}へ変更`:
             root.requiredRepair?`過去問 ${sourceProblemId} の本番得点を変える${root.errorTypes.join("/")} rootを最小補修`:

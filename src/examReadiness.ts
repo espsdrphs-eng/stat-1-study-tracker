@@ -42,7 +42,7 @@ export type MetricEvidence={value:number|null;numerator:number;denominator:numbe
 export type LearningMetricEvidence={
   selectedThree:MetricEvidence&{sessions:Array<{sessionId:number;year:number;score:number;attemptIds:number[]}>};
   individual:MetricEvidence;diagnostic:MetricEvidence;timed:MetricEvidence;selection:MetricEvidence;
-  transfer?:MetricEvidence;unseen?:MetricEvidence;repeatedMajor?:MetricEvidence;
+  transfer?:MetricEvidence;trainingTransfer?:MetricEvidence;unseen?:MetricEvidence;repeatedMajor?:MetricEvidence;
 };
 const metric=(numerator:number,denominator:number,count:number,rule:string,modes:string[],date:string|null,percent=false):MetricEvidence=>({
   value:denominator?numerator/denominator*(percent?100:1):null,numerator,denominator,evidenceCount:count,
@@ -126,10 +126,14 @@ export function calculateExamReadinessMetrics(args: {
     ...(s.selected_timed_attempt_ids||[]),...(s.counterfactual_calibration_attempt_ids||[])]));
   const skillProblems=new Map<string,Set<string>>();
   for(const p of problems)for(const id of problemSkillIds(p))skillProblems.set(id,new Set([...(skillProblems.get(id)||[]),p.problem_id]));
-  for(const a of attempts)for(const id of (a.graded_findings||[]).flatMap(f=>findingSkillIds(a,f)))
+  const examAttempts=attempts.filter(a=>a.source_type!=="generated"&&a.evidence_strength!=="training"&&
+    problems.find(p=>p.problem_id===a.problem_id)?.source_type!=="generated");
+  for(const a of examAttempts)for(const id of (a.graded_findings||[]).flatMap(f=>findingSkillIds(a,f)))
     skillProblems.set(id,new Set([...(skillProblems.get(id)||[]),a.problem_id]));
-  const transferRows=deriveTransferEvidence(attempts);
-  const transferOpportunities=new Set(attempts.filter(a=>!a.exclude_from_metrics&&!a.duplicate_of_attempt_id).flatMap(a=>
+  const allTransferRows=deriveTransferEvidence(attempts);
+  const transferRows=allTransferRows.filter(r=>r.evidenceStrength==="strong");
+  const trainingRows=allTransferRows.filter(r=>r.evidenceStrength==="training");
+  const transferOpportunities=new Set(examAttempts.filter(a=>!a.exclude_from_metrics&&!a.duplicate_of_attempt_id).flatMap(a=>
     (a.graded_findings||[]).filter(f=>findingPlanningEligible(a,f)&&!f.resolved&&f.error_type!=="none").flatMap(f=>
       findingSkillIds(a,f)
         .filter(id=>(skillProblems.get(id)?.size||0)>1).map(id=>`${a.problem_id}|${id}`))));
@@ -144,6 +148,7 @@ export function calculateExamReadinessMetrics(args: {
   const wGroups = new Map<string, number>();
 
   for (const attempt of sorted) {
+    if(!examAttempts.includes(attempt))continue;
     const canonicalId = resolveCanonicalProblemId(attempt.problem_id, aliases);
     const problem = problemMap.get(canonicalId);
     const previous = lastByProblem.get(canonicalId);
@@ -225,7 +230,7 @@ export function calculateExamReadinessMetrics(args: {
   const wDenominator = [...wGroups.values()].length;
   const evidence:LearningMetricEvidence={selectedThree:selectedEvidence,individual,timed,
       transfer:metric(transferred.size,transferOpportunities.size,new Set(transferRows.map(t=>t.successAttemptId)).size,
-        "別問題・明示skill一致・参照なし・関連finding成功・採点信頼度80%以上。比率は失敗root単位、標本と信頼度は独立した成功Attempt単位",["different_problem"],
+        "本番過去問・target事前提示なし・別問題・明示skill一致・参照なし・関連finding成功・採点信頼度80%以上。意図的trainingは別集計",["natural_past_exam"],
         transferRows.map(t=>t.date).sort().at(-1)||null,true),
       selection:metric(scanScores.reduce((a,b)=>a+b/100,0),scanScores.length,scanScores.length,
         "clean scanと選択3問・比較可能な採点が揃ったsessionのみ",["clean_scan5"],lastEvidenceDate(scanSessions.filter(s=>selectionSuccessRate(s)!=null),"all"),true),
@@ -238,6 +243,11 @@ export function calculateExamReadinessMetrics(args: {
   evidence.selection.eligibleEvidenceIds=sessionIds(scanSessions.filter(s=>selectionSuccessRate(s)!=null));
   evidence.diagnostic.eligibleEvidenceIds=[...new Set(pastSessions.flatMap(s=>(s.counterfactual_calibration_attempt_ids||[]).map(id=>`attempt:${id}`)))];
   evidence.transfer!.eligibleEvidenceIds=[...[...transferOpportunities].map(id=>`root:${id}`),...transferRows.map(row=>row.id)];
+  const trainingOpportunities=new Set([...transferOpportunities,...attempts.filter(a=>!!a.transfer_lineage)
+    .map(a=>`${a.transfer_lineage!.sourceProblemId}|${a.transfer_lineage!.rootSkillId}`),...trainingRows.map(r=>`${r.sourceProblemId}|${r.skillId}`)]);
+  evidence.trainingTransfer={...metric(new Set(trainingRows.map(r=>`${r.sourceProblemId}|${r.skillId}`)).size,
+    trainingOpportunities.size,new Set(trainingRows.map(r=>r.successAttemptId)).size,"意図的な別問題training。本番対応力Levelには使用しない",["training"],
+    trainingRows.map(r=>r.date).sort().at(-1)||null,true),eligibleEvidenceIds:trainingRows.map(r=>r.id)};
   evidence.unseen={...metric(transferAttempts.reduce((sum,a)=>sum+Number(a.score_numeric),0),transferAttempts.length,transferAttempts.length,
     "参照なし初回・30日以上未実施の個別full/timed。時間超過は得点から除外しない",["full","timed"],lastDate(transferAttempts)),
     eligibleEvidenceIds:attemptIds(transferAttempts)};

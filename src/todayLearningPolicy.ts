@@ -32,6 +32,7 @@ export function reviewDueState(review:Partial<Review|Task>,today:string):ReviewD
  * maintenance, not a new exam-performance event.
  */
 export function deriveCurrentActionClass(task:Partial<Task>):CurrentActionClass{
+  if(task.transfer_training_key)return "targeted_repair";
   const purpose=String(task.grading_contract?.learningPurpose||task.learning_purpose||"");
   if(isReviewTask(task)){
     if(task.review_planning_tier==="deferred_maintenance")return "maintenance";

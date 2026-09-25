@@ -72,10 +72,12 @@ export function adaptivePlanDayToTasks(args:{
     const mode=sessionTask?"exam_90min":(item.mode||taskMode(item.kind));
     const projected={
       problem_id:item.problemId,
-      title:sessionTask?item.label:(problem.display_label||problem.title||item.label),
-      theme:problem.theme,
-      canonical_problem_type:problem.canonical_problem_type||problem.theme,
-      canonical_keywords:problem.canonical_keywords||[],
+      title:sessionTask||item.transferTrainingKey?item.label:(problem.display_label||problem.title||item.label),
+      theme:item.transferTrainingKey?"":problem.theme,
+      canonical_problem_type:item.transferTrainingKey?"":problem.canonical_problem_type||problem.theme,
+      canonical_keywords:item.transferTrainingKey?[]:problem.canonical_keywords||[],
+      transfer_training_key:item.transferTrainingKey,
+      learning_purpose:item.transferTrainingKey?"transfer_check":undefined,
       kind:item.slot==="score_building"?"得点形成":"維持・選択",
       reason:item.reason,
       mode,

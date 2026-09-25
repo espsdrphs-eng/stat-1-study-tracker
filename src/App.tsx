@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import {TransferTrainingPanel} from "./TransferTrainingPanel";
 import { useRegisterSW } from "virtual:pwa-register/react";
 import {
   AlertTriangle, Archive, ArrowDown, BarChart3, BookOpen, CalendarCheck, CalendarClock, Check, ChevronRight, ClipboardPaste,
@@ -173,7 +174,7 @@ export default function App() {
       {needRefresh&&<div className="update-banner" role="alert"><div><strong>新しいバージョンがあります</strong><span>未保存内容を確認してから、安全に更新できます。</span></div><button className="primary small" onClick={safelyUpdateApp}>安全に更新</button><button className="ghost small" onClick={()=>setNeedRefresh(false)}>後で</button></div>}
       {!data.databaseStatus.valid&&<div className="update-banner database-required" role="alert"><div><strong>アプリのデータベース更新が必要です</strong><span>既存履歴は閲覧できますが、安全のため書き込み操作を一時停止しています。不足：{data.databaseStatus.missingStores.join("、")}</span></div><button className="primary small" disabled={busy} onClick={repairDatabase}>安全に更新</button></div>}
       <div className="content">
-        {selected?<ProblemDetail problem={selected} data={data} run={run} busy={busy} onBack={()=>setSelected(null)} onImport={()=>{setSelected(null);setPage("import")}}/>:
+        {selected?.generated_transfer?<><button onClick={()=>setSelected(null)}>戻る</button><TransferTrainingPanel trainingKey={selected.generated_transfer.lineage.key}/></>:selected?<ProblemDetail problem={selected} data={data} run={run} busy={busy} onBack={()=>setSelected(null)} onImport={()=>{setSelected(null);setPage("import")}}/>:
         page==="dashboard"?<DashboardView data={data} go={go} select={setSelected}/>:
         page==="today"?<TodayView data={data} busy={writeBusy} run={run} go={go} select={setSelected}/>:
         page==="problems"?<ProblemsView data={data} select={setSelected} run={run} busy={writeBusy}/>:
@@ -226,7 +227,7 @@ function DashboardView({data,go,select}:{data:Bootstrap;go:(p:Page)=>void;select
   const pmap=Object.fromEntries(data.problems.map(problem=>[problem.problem_id,problem]));
   const next=nextQueueTask(data);
   const nextTask=next.task;
-  const nextProblem=nextTask&&!nextTask.stable_session_key?pmap[nextTask.problem_id]:undefined;
+  const nextProblem=nextTask&&!nextTask.stable_session_key&&!nextTask.transfer_training_key?pmap[nextTask.problem_id]:undefined;
   const k=d.kpis!;
   const confidence=(value:string)=>value==="high"?"高":value==="medium"?"中":"低";
   return <>
@@ -253,7 +254,7 @@ function DashboardView({data,go,select}:{data:Bootstrap;go:(p:Page)=>void;select
       </div>
       <p className="stable-release-message">{d.stableRelease.message}</p>
       {d.readiness.evidence&&<details><summary>指標の母数・対象・更新日</summary>
-        {Object.entries(d.readiness.evidence).map(([key,e])=><p key={key}><b>{({selectedThree:"選択3問",individual:"個別答案",diagnostic:"非選択・診断",timed:"時間内完走",selection:"選題",transfer:"転移",unseen:"未見答案",repeatedMajor:"major root再発"} as Record<string,string>)[key]}</b>：{e.numerator.toFixed(1)} / {e.denominator}（標本{e.evidenceCount}・信頼度{confidence(e.confidence)}）<br/>{e.eligibleEvidenceRule}<br/>対象 {e.modeScope.join(" / ")}・更新 {e.lastUpdated||"未計測"}{e.missingEvidenceReason&&<small>{e.missingEvidenceReason}</small>}</p>)}
+        {Object.entries(d.readiness.evidence).map(([key,e])=><p key={key}><b>{({selectedThree:"選択3問",individual:"個別答案",diagnostic:"非選択・診断",timed:"時間内完走",selection:"選題",transfer:"本番での転移",trainingTransfer:"転移training（本番対応力とは別）",unseen:"未見答案",repeatedMajor:"major root再発"} as Record<string,string>)[key]}</b>：{e.numerator.toFixed(1)} / {e.denominator}（標本{e.evidenceCount}・信頼度{confidence(e.confidence)}）<br/>{e.eligibleEvidenceRule}<br/>対象 {e.modeScope.join(" / ")}・更新 {e.lastUpdated||"未計測"}{e.missingEvidenceReason&&<small>{e.missingEvidenceReason}</small>}</p>)}
       </details>}
       {!!d.stableRelease.blockingIssues.length&&<ul className="stable-blockers">{d.stableRelease.blockingIssues.map(item=><li key={item}>{item}</li>)}</ul>}
       <div className="weekly-soft-quota"><strong>今週の不足候補</strong>{d.weeklyQuota.candidates.length
@@ -733,6 +734,7 @@ function TodayTaskDetails({task,problem,onOpenProblem,onOpenPastExam,problemAlia
   </div>;
 }
 function TodayTaskRows({task:t,problem,data,busy,run,date,onReview,onOpenProblem,onOpenPastExam,onPostpone,examPhase}:{task:Task;problem?:Problem;data:Bootstrap;busy:boolean;run:(a:()=>Promise<unknown>,s:string)=>void;date:string;onReview:(task:Task)=>void;onOpenProblem:(problem:Problem)=>void;onOpenPastExam:()=>void;onPostpone:(task:Task,action:ScheduleAction)=>void;examPhase:ExamPhase}) {
+  if(t.transfer_training_key)return <tr><td colSpan={6}><TransferTrainingPanel trainingKey={t.transfer_training_key} onExisting={id=>{const p=data.problems.find(p=>p.problem_id===id);if(p)onOpenProblem(p)}}/></td></tr>;
   const resolved=resolveReviewCard({item:t,problems:data.problems,attempts:data.attempts,aliases:data.problemAliases,answers:data.answerIndex,today:data.dashboard.today,examDate:data.settings.exam_date});
   const isReview=!!t.id&&!!t.review_type;
   const persistedReview=isReview?data.reviews.find(review=>review.id===t.id):undefined;

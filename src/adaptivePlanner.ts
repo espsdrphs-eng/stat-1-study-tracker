@@ -261,14 +261,24 @@ function planDays(args:{
         "初見の得点形成と時間内の答案化を測るため"}):null;
   };
   const usedRepairRoots=new Set<string>();
-  const makeTargetedRepair=(date:string)=>{
-    const candidate=args.repairCandidates?.find(row=>row.required&&!usedRepairRoots.has(row.rootWeaknessId||row.conceptId)&&(
+  const makeTargetedRepair=(date:string,trainingOnly=false)=>{
+    const candidate=args.repairCandidates?.find(row=>row.required&&(!trainingOnly||!!row.transferTraining)&&!usedRepairRoots.has(row.rootWeaknessId||row.conceptId)&&(
+      !!row.transferTraining||
       row.repairKind==="transfer"&&row.transferProblemIds.some(id=>!usedProblems.has(id))||
       row.repairKind==="concept_mini"||row.repairKind==="same_problem"||row.repairKind==="rediagnosis"||
       row.repairKind==="whitebook"&&row.matchConfidence==="high"&&row.whitebookProblemIds.some(id=>!usedProblems.has(id))));
     if(!candidate)return args.repairCandidates?null:makeWhitebook(date,[2,4,5,6,7,8],"skeleton",
       "過去問で確認された高価値targetだけを局所補修","score_building",true);
     usedRepairRoots.add(candidate.rootWeaknessId||candidate.conceptId);
+    if(candidate.transferTraining){
+      const training=candidate.transferTraining;
+      const problemId=training.generatedProblemId||training.existingProblemId||candidate.sourceProblemId;
+      usedProblems.set(problemId,date);
+      return task({date,slot:"score_building",kind:"full",label:"転移確認",problemId,minutes:12,mode:"full",
+        transferTrainingKey:training.key,reason:"遅延確認後の別問題1問で確認。本番の転移証拠とは区別します。",
+        purpose:"transfer_check",purposeLabel:"転移確認（training）",requiresUserSelection:false,
+        todayCategory:"repair",actionClass:"targeted_repair",whyToday:"補修後に別問題1問で確認し、本番演習へ戻るため"});
+    }
     if(candidate.repairKind==="transfer"){
       const transferProblemId=candidate.transferProblemIds.find(id=>!usedProblems.has(id));
       const transferProblem=args.problems.find(row=>row.problem_id===transferProblemId);
@@ -466,6 +476,13 @@ function planDays(args:{
         makeWhitebook(date,[2,4,5,6,7,8],"skeleton","利用可能な過去問がない導入期の得点形成");
     }
     if(score&&tasks.reduce((sum,row)=>sum+row.minutes,0)+score.minutes<=args.targetMinutes)tasks.push(score);
+    // A single eligible training fits inside the existing repair budget; never
+    // evict an exam session or create drafts just to fill a quota.
+    const repairTasks=tasks.filter(t=>t.todayCategory==="repair");
+    if(repairTasks.length<2&&repairTasks.reduce((sum,t)=>sum+t.minutes,0)+12<=30&&
+      tasks.reduce((sum,t)=>sum+t.minutes,0)+12<=args.targetMinutes){
+      const training=makeTargetedRepair(date,true);if(training?.transferTrainingKey)tasks.push(training);
+    }
     const coreFloor=Math.min(90,Math.max(60,Math.round(args.targetMinutes*.4)));
     if(phase==="foundation_to_A"&&score&&score.kind!=="scan5"&&
       tasks.reduce((sum,row)=>sum+row.minutes,0)<coreFloor){
