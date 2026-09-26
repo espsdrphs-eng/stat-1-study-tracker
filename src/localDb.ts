@@ -919,7 +919,8 @@ async function reconcileProblemLearningState(problemId?:string,preview=false):Pr
         const prescription=resolveLearningPolicy({problemId:problem.problem_id,problem,
           source:{...source,error_types:["none"],effective_error_types:[],learning_purpose:"retrieval_check",
             assessment_timing:"delayed_retrieval"},learningPurpose:"retrieval_check",
-          learningStage:"maintenance",assessmentTiming:"delayed_retrieval"});
+          learningStage:"maintenance",assessmentTiming:"delayed_retrieval",
+          targetedParts:source.targeted_parts});
         const draft=taskDraftFromPrescription({prescription,sourceAttemptId:source.id,sourceDate:source.date,errors:[]});
         const interval=Math.max(0,differenceInCalendarDays(draft.dueDate,source.date)||0);
         const planFieldsValue=createAttemptReviewPlan({...source,error_types:["none"],error_type:"none"},[],0);
@@ -1295,7 +1296,9 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
   const delayedPrescription=nextPurpose?resolveLearningPolicy({problemId:input.problem_id,problem,source:{...input,
     error_types:effectiveErrors.length?effectiveErrors:["none"],learning_purpose:nextPurpose,
     assessment_timing:"delayed_retrieval"},learningPurpose:nextPurpose,
-    targetedParts:nextPurpose===sourcePrescription?.learningPurpose?input.targeted_parts:undefined}):undefined;
+    targetedParts:nextPurpose===sourcePrescription?.learningPurpose||
+      nextPurpose==="retrieval_check"&&sourceReview?.learning_purpose==="error_repair"?
+      input.targeted_parts:undefined}):undefined;
   const delayedDraft=delayedPrescription?taskDraftFromPrescription({prescription:delayedPrescription,sourceAttemptId:id,sourceDate:date,errors:effectiveErrors}):undefined;
   const delayedInterval=delayedDraft?Math.max(0,Math.round((Date.parse(delayedDraft.dueDate)-Date.parse(date))/86400000)):0;
   if(delayedPrescription&&delayedDraft&&!(problem.category==="S"&&!effectiveErrors.length))await addOrReplaceReview({
@@ -1312,6 +1315,10 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     policy_version:delayedPrescription.policyVersion,source_attempt_id:id,deduplication_key:delayedDraft.deduplicationKey,
     earliest_date:delayedDraft.window.earliestDate,preferred_date:delayedDraft.window.preferredDate,latest_date:delayedDraft.window.latestDate,
     retention_eligible:true,success_transition:delayedPrescription.successTransition,failure_transition:delayedPrescription.failureTransition,
+    ...(nextPurpose==="retrieval_check"&&sourceReview?.learning_purpose==="error_repair"&&
+      evaluation.reviewOutcome==="success"&&actualReferenceLevel===0?{
+        lifecycle_success_evidence_id:`attempt:${id}`,
+        lifecycle_transition_provenance:"qualifying_repair_attempt_success"}:{}),
     ...planFields(plan),interval_days:delayedInterval
   });
   // GPT feedback supplies the immediate correction. Do not automatically ask

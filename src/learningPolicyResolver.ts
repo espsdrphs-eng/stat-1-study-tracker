@@ -85,8 +85,14 @@ function sheet(mode:PolicyMode):PolicySheetType{
 function parts(input:LearningPolicyInput){
   const source=input.source;
   const structured=source?.graded_findings||[];
-  if(structured.length)return clean(structured.filter(row=>!row.resolved&&row.error_type!=="none")
-    .map(row=>row.evidence||row.graded_part_id));
+  if(structured.length){
+    const unresolved=clean(structured.filter(row=>!row.resolved&&row.error_type!=="none")
+      .map(row=>row.evidence||row.graded_part_id));
+    if(unresolved.length||input.learningPurpose!=="retrieval_check")return unresolved;
+    // The repaired target remains the delayed test even though the latest
+    // graded findings are all resolved. Do not use the old error_point.
+    return clean([input.targetedParts||[],source?.targeted_parts||[]]);
+  }
   // A legacy unstructured Attempt has one target in error_point. next_action
   // describes the correction and must never become another learning target.
   return clean([input.targetedParts||[],source?.targeted_parts||[],source?.unresolved_carryover||[],source?.error_point]);
@@ -165,7 +171,8 @@ export function resolveLearningPolicy(input:LearningPolicyInput):LearningPrescri
     if(reviewScope==="full_skeleton"||reviewScope==="full_answer")reviewScope="targeted_patch";
     if(mode==="full"||mode==="exam_90min")mode=primary==="W"?"main_calc":primary==="C"?"check":"skeleton";
   }
-  const targets=purpose==="retrieval_check"?[]:targetedParts.length?targetedParts:["前回指定された箇所"];
+  const targets=purpose==="retrieval_check"?targetedParts:
+    targetedParts.length?targetedParts:["前回指定された箇所"];
   const completionConditions=reviewScope==="targeted_patch"||reviewScope==="main_calc_target"
     ?[`${targets.join("／")}だけを参照を閉じて再現できた`]
     :reviewScope==="full_skeleton"?["方針・出発式・主役の量・条件・流れを参照なしで再現できた"]

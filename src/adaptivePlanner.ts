@@ -522,6 +522,25 @@ function planDays(args:{
     }
     result.push({date,tasks,totalMinutes:tasks.filter(row=>!row.requiresUserSelection).reduce((sum,row)=>sum+row.minutes,0)});
   }
+  // The weekday template is a starting allocation, not the phase target.
+  // Restore the exam share with a concrete, unused problem on a lighter day;
+  // keep today's confirmed session and the existing required repairs intact.
+  for(let start=0;start+7<=result.length;start+=7){
+    const policy=deriveLearningPolicy(Math.max(0,args.daysRemaining-start));
+    if(!policy.pastExamIsPrimary)continue;
+    const week=result.slice(start,start+7),tried=new Set<string>();
+    while(rollingPastExamShare(week)+1e-9<policy.pastExamShareMin){
+      const day=[...week].filter(row=>row.date!==args.startDate&&!tried.has(row.date)&&
+        !row.tasks.some(item=>["past_exam","scan5","timed"].includes(item.kind)&&!!item.referenceProblemId)&&
+        row.totalMinutes+35<=args.targetMinutes)
+        .sort((a,b)=>a.totalMinutes-b.totalMinutes||a.date.localeCompare(b.date))[0];
+      if(!day)break;
+      tried.add(day.date);
+      const exam=makePast(day.date,"past_exam",35,"週の本番演習比率を現在phaseの目標へ戻す");
+      if(!exam?.referenceProblemId)continue;
+      day.tasks.push(exam);day.totalMinutes+=exam.minutes;
+    }
+  }
   const retainedPlacements=reviewSchedule.placements.filter(row=>includedReviewIds.has(row.review.id));
   const scheduledMinutes=Object.fromEntries(retainedPlacements.reduce((rows,row)=>{
     rows.set(row.date,Number(rows.get(row.date)||0)+row.minutes);return rows;

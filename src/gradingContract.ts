@@ -180,10 +180,17 @@ export function buildGradingContractSnapshot(args:{
   if(learningPurpose==="retrieval_check"){
     mode="check";reviewScope="check_only";sheetType="check_sheet";
     estimatedMinutes=Math.max(3,Math.min(5,Number(review.duration_minutes||review.estimated_minutes||review.minutes||5)));
-    targetedParts=[];
+    const repairedParts=sourceAttempt?.learning_purpose==="error_repair"&&sourceAttempt.review_outcome==="success"&&
+      review.targeted_parts?.length?(sourceAttempt.grading_contract?.gradedParts||[]).filter(part=>
+        (sourceAttempt.graded_findings||[]).some(f=>f.graded_part_id===part.id&&f.resolved&&f.error_type==="none")):[];
+    targetedParts=repairedParts.map(part=>part.label);
     explicitlyOutOfScopeParts=["問題全体の骨格","全ての計算過程","最終結論の完全再現"];
-    completionConditions=["型、最初の一手、主役となる量、重要条件または注意点を短く想起できた"];
-    requiredEvidence=["上記4項目を参照なし、または許可された最小参照内で短く示す"];
+    completionConditions=repairedParts.length?
+      ["前回修復した対象だけを、参照なしで再現できた"]:
+      ["型、最初の一手、主役となる量、重要条件または注意点を短く想起できた"];
+    requiredEvidence=repairedParts.length?
+      ["前回修復した対象の根拠と主要計算を短く示す"]:
+      ["上記4項目を参照なし、または許可された最小参照内で短く示す"];
   }else if(learningPurpose==="integration_check"){
     mode="skeleton";reviewScope="full_skeleton";sheetType="skeleton_sheet";estimatedMinutes=12;allowedReferenceLevel=0;
     if(blueprint){

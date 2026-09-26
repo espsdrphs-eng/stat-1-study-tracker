@@ -371,6 +371,25 @@ export function analyzeReviewReconciliation(args:{
           reason:`最新の未解決証拠はAttempt ${desiredSource.id}`});
       }
     }
+    // Older delayed cards can point at a successful repair while checking
+    // unrelated generic slots. Rebuild only such active cards from the graded
+    // repair target; the Attempt and historical Review remain intact.
+    if(latestSuccessfulRepair?.learning_purpose==="error_repair"&&
+      latestSuccessfulRepair.review_outcome==="success"){
+      const succeeded=new Set((latestSuccessfulRepair.graded_findings||[])
+        .filter(f=>f.resolved&&f.error_type==="none").map(f=>{
+          const part=latestSuccessfulRepair.grading_contract?.gradedParts.find(row=>row.id===f.graded_part_id);
+          return part?.stableTargetKey||part?.stable_target_key||part?.id||"";
+        }).filter(Boolean));
+      for(const review of delayed.filter(row=>
+        Number(row.source_attempt_id||row.generated_from_attempt_id)===latestSuccessfulRepair.id&&
+        !row.lifecycle_success_evidence_id)){
+        const keys=new Set(partsFromContract(review).map(part=>part.stableTargetKey||part.stable_target_key||part.id));
+        if(succeeded.size&&![...keys].some(key=>succeeded.has(key)))supersedes.push({
+          reviewId:review.id,category:"stale_delayed_check",
+          reason:`Attempt ${latestSuccessfulRepair.id}の成功した局所targetと保持確認の採点対象が一致しない`});
+      }
+    }
     const normalized=uniqueSupersedes(supersedes);
     const remainingRepairs=purposeRows.filter(row=>!normalized.some(item=>item.reviewId===row.id));
     const remainingStableIds=remainingRepairs.length===1?stableIdsForReview(remainingRepairs[0]):[];
@@ -388,7 +407,10 @@ export function analyzeReviewReconciliation(args:{
         Number(remainingRepairs[0].source_attempt_id||remainingRepairs[0].generated_from_attempt_id)>=Number(desiredSource?.id||0));
     const oldestRepairSource=repairs.map(row=>attemptMap.get(Number(row.source_attempt_id||row.generated_from_attempt_id||0)))
       .filter((row):row is Attempt=>!!row).sort(attemptOrder)[0];
-    const retentionCheckRequired=!ambiguous.length&&!graduated&&desiredIds.length===0&&repairs.length>0&&delayed.length===0&&
+    const survivingDelayed=delayed.filter(row=>!normalized.some(item=>item.reviewId===row.id));
+    const displacedDelayed=delayed.some(row=>normalized.some(item=>item.reviewId===row.id));
+    const retentionCheckRequired=!ambiguous.length&&!graduated&&desiredIds.length===0&&
+      (repairs.length>0||displacedDelayed)&&survivingDelayed.length===0&&
       !!latestSuccessfulRepair&&(!oldestRepairSource||attemptAfter(latestSuccessfulRepair,oldestRepairSource));
     const activeRepairStableIds=purposeRows.flatMap(stableIdsForReview);
     const distinctActiveStableIds=new Set(activeRepairStableIds);

@@ -7,6 +7,10 @@ const rules=[
   {id:"moment_generating_function",named:/積率母関数|モーメント母関数|\bMGF\b/i,
     ambiguous:/存在しない|一意性|Taylor|テイラー|連続性定理|標準化極限|畳み込み/i},
   {id:"law_total_variance",named:/全分散(?:公式)?/,ambiguous:/帰納|周辺化/},
+  // Both expressions name the operation, rather than merely the chapter or
+  // problem topic. Keep the two required ideas together for covariance prose.
+  {id:"finite_population_correction",named:/有限母集団修正|(?=.*非復元抽出)(?=.*(?:負の共分散|共分散))/,
+    ambiguous:/適用できるか不明|どの補正を使うか不明/},
 ];
 function extract(text:string,source:string):GroundedSkillTag[]{
   return rules.filter(r=>r.named.test(text)).map(r=>({skillId:r.id,evidence:text,source,

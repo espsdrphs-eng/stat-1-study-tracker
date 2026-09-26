@@ -153,6 +153,14 @@ export function gradedPartContracts(args: {
 }): GradedPartContract[] {
   const stableKey=(id:string)=>`target:${args.problemId}:slot:${id}`;
   if (args.purpose === "retrieval_check") {
+    if(args.texts.length&&args.sourceAttempt?.learning_purpose==="error_repair"&&
+      args.sourceAttempt.review_outcome==="success"){
+      const succeeded=new Set((args.sourceAttempt.graded_findings||[])
+        .filter(f=>f.resolved&&f.error_type==="none").map(f=>f.graded_part_id));
+      const repaired=(args.sourceAttempt.grading_contract?.gradedParts||[])
+        .filter(part=>succeeded.has(part.id)&&args.texts.includes(part.label));
+      if(repaired.length)return repaired;
+    }
     return definitions
       .filter((row) => ["problem_type", "first_step", "focal_quantity", "critical_condition"].includes(row.id))
       .map((row) => ({

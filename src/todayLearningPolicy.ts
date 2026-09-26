@@ -2,6 +2,7 @@ import type {Attempt,ConceptWeaknessInsight,Problem,Review,Task,PastExamRepairCa
 import {isSuccessfulTransferForProblem} from "./examOptimizationPolicy.ts";
 import {resolvePersistedAttemptLifecycle} from "./reviewTransition.ts";
 import {deriveFailureEpisode} from "./failureEpisode.ts";
+import {confidentGrading,independentReferenceFree} from "./skillEvidence.ts";
 
 export type TodayLearningCategory="exam_practice"|"repair";
 export type CurrentActionClass="exam_practice"|"targeted_repair"|"maintenance";
@@ -131,8 +132,21 @@ export function reviewPlanningDecision(args:{
   const pastExamOrigin=!!review.generated_from_past_session_id||!!review.parent_past_session_id||
     !!source?.parent_past_session_id||problem?.source_type==="past_exam";
   const activeTargets=review.grading_contract?.gradedParts?.length||review.graded_part_ids?.length||review.targeted_parts?.length||0;
+  const provenRepairSource=pastExamOrigin&&purpose==="retrieval_check"&&source?.learning_purpose==="error_repair"&&
+    source.review_outcome==="success"&&source.minimum_pass_condition_met!==false&&
+    source.target_issue_resolved!==false&&independentReferenceFree(source)&&confidentGrading(source)&&(()=>{
+      const parts=new Map((source.grading_contract?.gradedParts||[]).map(part=>[part.id,part]));
+      const succeeded=new Set((source.graded_findings||[]).filter(f=>f.resolved&&f.error_type==="none")
+        .map(f=>parts.get(f.graded_part_id)).filter(Boolean)
+        .map(part=>part!.stableTargetKey||part!.stable_target_key||part!.id));
+      return succeeded.size>0&&args.attempts.some(previous=>previous.problem_id===source.problem_id&&previous.id<source.id&&
+        (previous.graded_findings||[]).some(f=>!f.resolved&&f.error_type!=="none"&&(()=>{
+          const part=previous.grading_contract?.gradedParts.find(row=>row.id===f.graded_part_id);
+          return !!part&&succeeded.has(part.stableTargetKey||part.stable_target_key||part.id);
+        })()));
+    })();
   const explicitRetentionEvidence=!!review.lifecycle_success_evidence_id||
-    /success|transfer|reproduction/.test(String(review.lifecycle_transition_provenance||""));
+    /success|transfer|reproduction/.test(String(review.lifecycle_transition_provenance||""))||!!provenRepairSource;
   const retentionPending=purpose==="retrieval_check"&&activeTargets>0&&
     explicitRetentionEvidence;
 

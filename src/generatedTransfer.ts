@@ -39,10 +39,24 @@ export function canonicalTrainingSkills(record:StoredExamReferencePack){
   return new Set(record.data.concepts.filter(c=>["active","verified"].includes(c.status)&&c.source_confidence==="high").map(c=>c.concept_id));
 }
 export function delayedTrainingPrerequisites(source:Attempt,root:RootWeakness,attempts:Attempt[]){
-  const relevant=(a:Attempt)=>root.skillIds.length>0&&root.skillIds.every(s=>successfulSkillIds(a).includes(s));
+  const sourceTargets=new Set((source.grading_contract?.gradedParts||[])
+    .filter(part=>root.sourceFindingIds.includes(part.id))
+    .map(part=>part.stableTargetKey||part.stable_target_key||part.id));
+  const targetFindings=(a:Attempt)=>{
+    const parts=new Map((a.grading_contract?.gradedParts||[]).map(part=>[part.id,part]));
+    return (a.graded_findings||[]).filter(f=>{
+      const part=parts.get(f.graded_part_id);
+      return !!part&&sourceTargets.has(part.stableTargetKey||part.stable_target_key||part.id);
+    });
+  };
+  // A successful graded reproduction of the exact stable target is evidence
+  // even when its feedback does not repeat the mathematical operation's name.
+  const relevant=(a:Attempt)=>root.skillIds.length>0&&sourceTargets.size>0&&
+    targetFindings(a).length===sourceTargets.size&&
+    targetFindings(a).every(f=>f.resolved&&f.error_type==="none");
   let repair:Attempt|undefined,retrieval:Attempt|undefined;
   for(const a of attempts.filter(a=>a.id>source.id&&a.problem_id===source.problem_id&&!a.exclude_from_metrics&&!a.duplicate_of_attempt_id).sort((a,b)=>a.id-b.id)){
-    const failed=(a.graded_findings||[]).some(f=>!f.resolved&&f.error_type!=="none"&&findingSkillIds(a,f).some(s=>root.skillIds.includes(s)));
+    const failed=targetFindings(a).some(f=>!f.resolved&&f.error_type!=="none");
     if(failed){repair=undefined;retrieval=undefined;continue;}
     if(!relevant(a)||!independentReferenceFree(a)||!confidentGrading(a))continue;
     if(a.learning_purpose==="error_repair"){repair=a;retrieval=undefined;}

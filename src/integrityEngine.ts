@@ -580,9 +580,14 @@ export function runIntegrityAudit(args: {
       detail:`rolling plan has ${requiredRepairMinutes} required repair minutes but no timed PastExam session`,repairable:false});
     if(currentPlanSummary.counts.pastExam>0&&share+1e-9<horizon.pastExamShareMin)issues.push({category:"past_exam_share_below_phase_target",severity:"active",
       detail:`rolling 7-day past-exam share ${Math.round(share*100)}% is below phase target ${Math.round(horizon.pastExamShareMin*100)}%`,repairable:false});
-    const whitebookReviews=active.filter(review=>problems.find(problem=>problem.problem_id===review.problem_id)?.source_type!=="past_exam");
-    if(currentPlanSummary.counts.pastExam>0&&share<horizon.pastExamShareMin&&whitebookReviews.length)issues.push({category:"whitebook_backlog_suppressing_past_exam",severity:"active",
-      reviewIds:whitebookReviews.map(review=>review.id),detail:"whitebook Review backlog is suppressing the exam-horizon past-exam floor",repairable:false});
+    const requiredWhitebookTasks=tasks.filter(task=>task.kind==="review"&&task.reviewId&&
+      problems.find(problem=>problem.problem_id===task.problemId)?.source_type==="whitebook");
+    const requiredWhitebookMinutes=requiredWhitebookTasks.reduce((sum,task)=>sum+task.minutes,0);
+    if(share<horizon.pastExamShareMin&&requiredWhitebookMinutes>0&&
+      past/Math.max(1,total-requiredWhitebookMinutes)>=horizon.pastExamShareMin)issues.push({
+      category:"whitebook_backlog_suppressing_past_exam",severity:"active",
+      reviewIds:requiredWhitebookTasks.map(task=>task.reviewId!),
+      detail:"required Whitebook Reviews occupy the minutes needed for the exam-horizon floor",repairable:false});
     const confirmations=week.flatMap(day=>day.tasks).filter(row=>row.kind==="exposure_confirmation");
     const remaining=daysUntilExam(today,args.examDate||"2026-11-15");
     const eligible=(args.pastExamCatalog||[]).filter(row=>row.availability==="verified_problem"&&row.schedulable&&row.gradable&&
