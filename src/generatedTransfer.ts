@@ -3,7 +3,7 @@ import type {StoredExamReferencePack} from "./examReferencePack.ts";
 import {canonicalPastExamProblemId} from "./examReferencePack.ts";
 import {deriveFailureEpisode} from "./failureEpisode.ts";
 import {findingSkillIds,successfulSkillIds,independentReferenceFree,confidentGrading,problemSkillIds} from "./skillEvidence.ts";
-import {groundedWhitebookSkills} from "./groundedSkills.ts";
+import {groundedWhitebookSkills,matchesFailureOperation} from "./groundedSkills.ts";
 
 export type TransferTrainingLineage={
   key:string;rootWeaknessId:string;rootSkillId:string;sourceProblemId:string;sourceAttemptId:number;
@@ -95,6 +95,7 @@ export function deriveTransferTrainingCandidates(args:{record:StoredExamReferenc
           ![2024,2025].includes(Number(p.problem_id.match(/^PY-(\d{4})/)?.[1]))&&
           !args.attempts.some(a=>a.problem_id===p.problem_id)&&
           !["answer_exposed","unknown"].includes(args.exposureOverrides?.[p.problem_id]||"")&&
+          matchesFailureOperation(root.description,skill,p,args.answers)&&
           (groundedWhitebookSkills(p,args.answers).some(t=>t.skillId===skill&&t.confidence==="high")||
             (p.classification_confidence==="high"&&problemSkillIds(p).includes(skill))||
             (references.get(p.problem_id)?.classification_confidence==="high"&&references.get(p.problem_id)?.fine_concept_ids.includes(skill))))

@@ -97,10 +97,10 @@ test("旧buildの当日planはprojection upgrade時だけ破棄しreloadでは�
     tasks:[{problem_id:"PY-2018-Q1",title:"2018年 本番型session",kind:"本番演習",mode:"timed",minutes:90,load:3,
       checked:false,past_exam_year:2018,stable_session_key:"stale-2018"}],created_at:"2026-08-31T00:00:00Z",
     planner_source:"adaptive",planner_version:"adaptive-v1"})});
-  await db.meta.delete(versionKey);
+  await db.meta.put({key:versionKey,value:"autonomous-coach-evidence-v4"});
 
   const upgraded=await localGet("/api/bootstrap");
-  assert.equal((await db.meta.get(versionKey))?.value,"autonomous-coach-evidence-v4");
+  assert.equal((await db.meta.get(versionKey))?.value,"autonomous-coach-evidence-v5");
   assert.equal(upgraded.today.tasks.some(task=>task.stable_session_key==="stale-2018"),false);
   const regenerated=(await db.meta.get(key))?.value;
   assert.ok(regenerated&&!regenerated.includes("stale-2018"));

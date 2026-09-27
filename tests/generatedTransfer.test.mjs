@@ -9,6 +9,9 @@ import {deriveTransferTrainingCandidates,acceptGenerationDraft,acceptGenerationV
 import {calculateExamReadinessMetrics} from '../src/examReadiness.ts';
 import {buildPastExamRepairCandidates} from '../src/conceptWeakness.ts';
 import {generatedAttemptFields} from '../src/transferTrainingApi.ts';
+import {findingSkillIds} from '../src/skillEvidence.ts';
+import {buildAdaptivePlannerShadow} from '../src/adaptivePlanner.ts';
+import {buildPastExamCatalog} from '../src/examReferencePack.ts';
 
 const pack=JSON.parse(await readFile(new URL('../src/data/examReferencePackV1.json',import.meta.url),'utf8'));
 
@@ -85,6 +88,82 @@ test('A/B: major root alone or repair alone cannot request generation',()=>{
 test('canonical taxonomy is mandatory; an invented skill stays pending',()=>{
   const changed=[source,repair,retrieval].map(a=>({...a,grading_contract:{gradedParts:[{id:'major_calculation',rootSkillIds:['invented_skill']}]}}));
   assert.deepEqual(candidates(changed),[]);
+});
+
+test('an explicitly observed conditional-density operation uses the existing canonical skill',()=>{
+  const a=fact(30,'PY-2017-Q4',false,{graded_findings:[{
+    graded_part_id:'major_calculation',error_type:'W',resolved:false,
+    evidence:'条件付き密度 f(X|Z) は Bayes公式 f(Z|X)f(X)/f(Z) から作れず停止した'}],
+    grading_contract:{gradedParts:[{id:'major_calculation'}]}});
+  assert.deepEqual(findingSkillIds(a,a.graded_findings[0]),['conditional_distribution']);
+});
+
+test('a failed conditional distribution conclusion and reciprocal risk coefficient retain their canonical skills',()=>{
+  const conditional=fact(31,'PY-2017-Q4',false,{graded_findings:[{graded_part_id:'answer_conclusion',error_type:'W',resolved:false,
+    evidence:'X|Z=z の条件付き分布 N(k(z-a)/(k²+1), 1/(k²+1)) を導けなかった'}],
+    grading_contract:{gradedParts:[{id:'answer_conclusion'}]}});
+  const risk=fact(32,'PY-2019-Q2',false,{graded_findings:[{graded_part_id:'major_calculation',error_type:'W',resolved:false,
+    evidence:'Xbar=U/2 から 1/Xbar=2/U の係数2を落とし、R(alpha)=alpha+1/alpha-2 と誤計算した'}],
+    grading_contract:{gradedParts:[{id:'major_calculation'}]}});
+  assert.deepEqual(findingSkillIds(conditional,conditional.graded_findings[0]),['conditional_distribution']);
+  assert.deepEqual(findingSkillIds(risk,risk.graded_findings[0]),['risk_function']);
+});
+
+test('individual PastExam source without a session still reaches the canonical transfer planner candidate',()=>{
+  const rows=buildPastExamRepairCandidates({record:pack,sessions:[],attempts:[source,repair,retrieval],
+    conceptWeaknesses:[],problems:[],answers:[]});
+  assert.ok(rows.some(row=>row.transferTraining?.key===eligible.key&&row.required));
+  const catalog=buildPastExamCatalog({record:pack,sessions:[],attempts:[source,repair,retrieval]});
+  const plannerRecord={...pack,validation:{valid:true},reconciliation:{pastExamConflicts:0}};
+  const plan=buildAdaptivePlannerShadow({record:plannerRecord,catalog,weaknesses:[],
+    problems:[{problem_id:source.problem_id,source_type:'past_exam',display_label:'2023年問5'}],
+    attempts:[source,repair,retrieval],reviews:[],pastSessions:[],currentTasks:[],
+    today:'2026-09-25',examDate:'2026-11-15',targetMinutes:150,repairCandidates:rows});
+  assert.ok(plan.plan7.plan.flatMap(day=>day.tasks).some(task=>task.transferTrainingKey===eligible.key));
+});
+
+test('a concrete exponential MGF exercise does not satisfy a general distribution derivative failure',()=>{
+  const a=fact(30,'PY-2023-Q3',false,{graded_findings:[{graded_part_id:'major_calculation',error_type:'W',resolved:false,
+    evidence:'一般の正値連続分布で積分と微分の交換からモーメント母関数の微分恒等式を示せなかった'}],
+    grading_contract:{gradedParts:[{id:'major_calculation',rootSkillIds:['moment_generating_function']}]}});
+  const b={...fact(31,a.problem_id,true,{learning_purpose:'error_repair',date:'2026-09-22'}),
+    grading_contract:a.grading_contract};
+  const c={...fact(32,a.problem_id,true,{learning_purpose:'retrieval_check',assessment_timing:'delayed_retrieval',date:'2026-09-25'}),
+    grading_contract:a.grading_contract};
+  const wb={problem_id:'WB-MGF-concrete',source_type:'whitebook',classification_confidence:'high',
+    root_skill_ids:['moment_generating_function']};
+  const answers=[{problem_id:wb.problem_id,document_key:'answer-book',page_start:1,
+    answer_excerpt:'f(x)=e^(-x), x>0 の積率母関数を直接積分で計算する'}];
+  const row=deriveTransferTrainingCandidates({record:pack,attempts:[a,b,c],problems:[wb],answers})[0];
+  assert.equal(row?.kind,'generated');
+});
+
+test('a failed density-substitution proof is not repaired by another exponential MGF calculation',()=>{
+  const a=fact(40,'PY-2023-Q3',false,{graded_findings:[{graded_part_id:'first_step',error_type:'N',resolved:false,
+    evidence:'g(x)を期待値定義へ代入する出発式を記載せず、指数分布の具体的MGF計算へ進んでいる'}],
+    grading_contract:{gradedParts:[{id:'first_step',rootSkillIds:['moment_generating_function']}]}});
+  const b={...fact(41,a.problem_id,true,{learning_purpose:'error_repair',date:'2026-09-22'}),
+    grading_contract:a.grading_contract,graded_findings:[{graded_part_id:'first_step',error_type:'none',resolved:true}]};
+  const c={...fact(42,a.problem_id,true,{learning_purpose:'retrieval_check',assessment_timing:'delayed_retrieval',date:'2026-09-25'}),
+    grading_contract:a.grading_contract,graded_findings:[{graded_part_id:'first_step',error_type:'none',resolved:true}]};
+  const wb={problem_id:'WB-MGF-concrete',source_type:'whitebook',classification_confidence:'high',
+    root_skill_ids:['moment_generating_function']};
+  const answers=[{problem_id:wb.problem_id,document_key:'answer-book',page_start:1,
+    answer_excerpt:'f(x)=e^(-x), x>0 の積率母関数を直接積分で計算する'}];
+  assert.equal(deriveTransferTrainingCandidates({record:pack,attempts:[a,b,c],problems:[wb],answers})[0]?.kind,'generated');
+});
+
+test('a broad conditional-distribution tag cannot certify Bayes inversion transfer',()=>{
+  const a=fact(50,'PY-2017-Q4',false,{graded_findings:[{graded_part_id:'answer_conclusion',error_type:'W',resolved:false,
+    evidence:'X|Z=z の条件付き分布を Bayes公式による逆条件付けから導けなかった'}],
+    grading_contract:{gradedParts:[{id:'answer_conclusion',rootSkillIds:['conditional_distribution']}]}});
+  const b={...fact(51,a.problem_id,true,{learning_purpose:'error_repair',date:'2026-09-22'}),
+    grading_contract:a.grading_contract,graded_findings:[{graded_part_id:'answer_conclusion',error_type:'none',resolved:true}]};
+  const c={...fact(52,a.problem_id,true,{learning_purpose:'retrieval_check',assessment_timing:'delayed_retrieval',date:'2026-09-25'}),
+    grading_contract:a.grading_contract,graded_findings:[{graded_part_id:'answer_conclusion',error_type:'none',resolved:true}]};
+  const broad={problem_id:'PY-2022-Q2',source_type:'past_exam',classification_confidence:'high',
+    fine_concept_ids:['conditional_distribution'],answer_available:false};
+  assert.equal(deriveTransferTrainingCandidates({record:pack,attempts:[a,b,c],problems:[broad]})[0]?.kind,'generated');
 });
 test('C: explicit high-confidence existing problem wins; chapter similarity does not',()=>{
   const wb={problem_id:'WB-fixture',source_type:'whitebook',classification_confidence:'high',root_skill_ids:['finite_population_correction']};

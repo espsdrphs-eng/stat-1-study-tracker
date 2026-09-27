@@ -71,7 +71,7 @@ import {canonicalizePastExamSessions,derivePastExamSessionState,pastExamSessionK
 
 const PLANNER_RUNTIME_MODE_META_KEY="planner-runtime-mode";
 const CURRENT_PLAN_PROJECTION_META_KEY="current-plan-projection-version";
-const CURRENT_PLAN_PROJECTION_VERSION="autonomous-coach-evidence-v4";
+const CURRENT_PLAN_PROJECTION_VERSION="autonomous-coach-evidence-v5";
 
 type SMemory = { problem_id:string; state:"stable"|"check"|"forgotten"|"collapsed"; last_touched?:string; k_trigger_count:number };
 type StoredAttempt = Attempt;

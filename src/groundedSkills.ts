@@ -4,6 +4,12 @@ export type GroundedSkillTag={skillId:string;evidence:string;confidence:"high"|"
 // Deliberately small, auditable vocabulary of explicitly named operations.
 // No chapter/theme inference, embeddings, or extrapolation from missing answers.
 const rules=[
+  // The assessed finding names a conditional law and its conditioned variables;
+  // candidate matching below checks the actual inverse-density operation.
+  {id:"conditional_distribution",named:/(?=.*(?:条件付き密度|条件付き分布|X\|Z.{0,8}分布))(?=.*(?:Bayes|ベイズ|X\|Z|f\([^)]*\|[^)]*\)))/i,
+    ambiguous:/条件付き期待値だけ|周辺密度の積だけ/},
+  {id:"risk_function",named:/(?=.*(?:R\((?:alpha|α)\)|リスク))(?=.*(?:係数.?2|1\/Xbar|逆数))/i,
+    ambiguous:/リスクが未定義|係数が不明/},
   {id:"moment_generating_function",named:/積率母関数|モーメント母関数|\bMGF\b/i,
     ambiguous:/存在しない|一意性|Taylor|テイラー|連続性定理|標準化極限|畳み込み/i},
   {id:"law_total_variance",named:/全分散(?:公式)?/,ambiguous:/帰納|周辺化/},
@@ -26,6 +32,19 @@ export function groundedWhitebookSkills(problem:Problem,answers:AnswerIndexEntry
   const answer=answers.find(a=>a.problem_id===problem.problem_id);
   if(!answer?.answer_excerpt||!answer.document_key||!answer.page_start)return [];
   return extract(answer.answer_excerpt,`${answer.document_key}:page:${answer.page_start}/${problem.problem_id}`);
+}
+
+/** A shared skill name is insufficient when the failed operation requires a
+ * general identity but the destination only calculates a named distribution. */
+export function matchesFailureOperation(failure:string,skill:string,problem:Problem,answers:AnswerIndexEntry[]=[]){
+  const answer=answers.find(row=>row.problem_id===problem.problem_id)?.answer_excerpt||"";
+  if(skill==="conditional_distribution"&&/(?:Bayes|ベイズ|逆条件付け|X\|Z)/i.test(failure))
+    return /(?:Bayes|ベイズ|条件付き密度.{0,40}周辺密度|周辺密度.{0,40}条件付き密度)/i.test(answer);
+  if(skill==="risk_function"&&/(?:係数.?2|1\/Xbar)/.test(failure))
+    return /(?:逆数.{0,40}係数|係数.{0,40}逆数|1\/[^\s]{1,30}.{0,40}係数)/.test(answer);
+  if(skill!=="moment_generating_function"||
+    !/(?:一般.{0,16}(?:分布|確率変数|連続)|積分と微分の交換|一般証明|g\(x\).{0,40}期待値定義|指数分布の具体的MGF)/.test(failure))return true;
+  return /(?:一般.{0,16}(?:分布|確率変数|連続)|積分と微分の交換|一般証明)/.test(answer);
 }
 export function deriveWhitebookSkillCoverage(problems:Problem[],answers:AnswerIndexEntry[]=[]){
   const rows=problems.filter(p=>p.source_type!=="generated"&&p.source_type!=="past_exam"&&p.category!=="past_exam").map(p=>{

@@ -8,7 +8,7 @@ import { planningErrorsForSource } from "./legacyKPolicy.ts";
 import { reviewExecutionState } from "./integrityEngine.ts";
 import {deriveFailureEpisode} from "./failureEpisode.ts";
 import {deriveTransferEvidence,findingSkillIds,problemSkillIds,rootProgress} from "./skillEvidence.ts";
-import {groundedWhitebookSkills} from "./groundedSkills.ts";
+import {groundedWhitebookSkills,matchesFailureOperation} from "./groundedSkills.ts";
 import {buildStableTargetIndex} from "./stableTargetIdentity.ts";
 import {deriveTransferTrainingCandidates} from "./generatedTransfer.ts";
 
@@ -194,25 +194,38 @@ export function buildPastExamRepairCandidates(args:{
     .filter(t=>t.confidence==="high").map(t=>t.skillId)]);
   const candidates:PastExamRepairCandidate[]=[],selectedBySession=new Map<number,Set<string>>(),
     selectedAttemptsBySession=new Map<number,Set<number>>();
-  for(const session of args.sessions){
-    if(session.session_kind==="scan_only")continue;
+  const linkedByAnySession=new Set(args.sessions.flatMap(session=>session.linked_attempt_ids||[]).map(Number));
+  const contexts:Array<{sessionId:number;sessionKind:string|undefined;selected:Set<string>;
+    selectedAttemptIds:Set<number>;attempts:Attempt[]}>=args.sessions.filter(session=>session.session_kind!=="scan_only").map(session=>{
     const linked=new Set((session.linked_attempt_ids||[]).map(Number));
     const selected=new Set((session.final_selected_problem_ids?.length?session.final_selected_problem_ids:session.initial_selected_problem_ids||[])
       .map(value=>resolvePastExamProblemId(session.year,value)));
-    selectedBySession.set(session.id,selected);
-    selectedAttemptsBySession.set(session.id,new Set(session.selected_timed_attempt_ids||[]));
-    const attempts=args.attempts.filter(attempt=>linked.has(attempt.id)||attempt.parent_past_session_id===session.id)
-      .sort((left,right)=>Number(selected.has(canonicalPastExamProblemId(right.problem_id)))-
-        Number(selected.has(canonicalPastExamProblemId(left.problem_id)))||Number(left.score_numeric??100)-Number(right.score_numeric??100)||left.id-right.id);
+    return {sessionId:session.id,sessionKind:session.session_kind,selected,
+      selectedAttemptIds:new Set(session.selected_timed_attempt_ids||[]),
+      attempts:args.attempts.filter(attempt=>linked.has(attempt.id)||attempt.parent_past_session_id===session.id)};
+  });
+  // A completed individual PastExam has no PastExamSession row. Its eligible
+  // transfer lineage still needs the same repair candidate and Planner path.
+  for(const source of args.attempts.filter(attempt=>!linkedByAnySession.has(attempt.id)&&
+    !attempt.parent_past_session_id&&training.some(row=>row.lineage.sourceAttemptId===attempt.id))){
+    contexts.push({sessionId:-source.id,sessionKind:"individual_full",selected:new Set<string>(),
+      selectedAttemptIds:new Set<number>(),attempts:[source]});
+  }
+  for(const context of contexts){
+    const selected=context.selected;
+    selectedBySession.set(context.sessionId,selected);
+    selectedAttemptsBySession.set(context.sessionId,context.selectedAttemptIds);
+    const attempts=context.attempts.sort((left,right)=>Number(selected.has(canonicalPastExamProblemId(right.problem_id)))-
+      Number(selected.has(canonicalPastExamProblemId(left.problem_id)))||Number(left.score_numeric??100)-Number(right.score_numeric??100)||left.id-right.id);
     for(const attempt of attempts){
-      if(!errorValues(attempt).length)continue;
+      const episode=deriveFailureEpisode(attempt);
+      if(!episode.rootWeaknesses.length)continue;
       const sourceProblemId=canonicalPastExamProblemId(attempt.problem_id);
       const reference=references.get(sourceProblemId);
       if(!reference)continue;
       const ranked=reference.fine_concept_ids.map(conceptId=>weakness.get(conceptId))
         .filter((row):row is ConceptWeaknessInsight=>!!row)
         .sort((a,b)=>b.priorityScore-a.priorityScore).slice(0,2);
-      const episode=deriveFailureEpisode(attempt);
       for(const originalRoot of episode.rootWeaknesses){
         // Current evidence for this root supersedes older failed payloads. A
         // resolved sibling does not erase a still-failed mathematical operation.
@@ -228,13 +241,14 @@ export function buildPastExamRepairCandidates(args:{
           a.actual_reference_level===0&&(a.graded_findings||[]).length&&(a.graded_findings||[]).every(f=>f.resolved&&f.error_type==="none"));
         const overlap=(ids:string[]=[])=>ids.filter(id=>skills.includes(id)).length;
         const matches=(args.problems||[]).filter(p=>p.source_type!=="generated"&&p.source_type!=="past_exam"&&p.category!=="past_exam"&&
-          skills.length>0&&skills.every(id=>liveSkills(p).includes(id))&&!recentSuccess(p.problem_id))
+          skills.length>0&&skills.every(id=>liveSkills(p).includes(id)&&
+            matchesFailureOperation(root.description,id,p,args.answers))&&!recentSuccess(p.problem_id))
           .sort((a,b)=>overlap(b.solution_operation_ids)-overlap(a.solution_operation_ids)||
             overlap(b.fine_concept_ids)-overlap(a.fine_concept_ids)||overlap(b.root_skill_ids)-overlap(a.root_skill_ids)||
             a.problem_id.localeCompare(b.problem_id));
         const linkedWhitebook=matches.slice(0,2).map(p=>p.problem_id);
         const matchConfidence:PastExamRepairCandidate["matchConfidence"]=linkedWhitebook.length?"high":"low";
-        const required=root.requiredRepair&&(session.session_kind!=="selected_three_timed"||
+        const required=root.requiredRepair&&(context.sessionKind!=="selected_three_timed"||
           selected.has(sourceProblemId)||root.recurrence>0);
         const transfer=args.record.data.pastExamProblems.filter(problem=>problem.schedulable&&problem.gradable&&
           !problem.simulation_protection_default&&![2024,2025].includes(problem.year)&&
@@ -251,7 +265,7 @@ export function buildPastExamRepairCandidates(args:{
         const repairKind:PastExamRepairCandidate["repairKind"]=progress.repairSuccess?(transferTraining||transfer.length?"transfer":"transfer_wait"):linkedWhitebook.length?"whitebook":
           interventionChanged?"rediagnosis":"concept_mini";
         const interventionRequired=required&&repairKind!=="transfer_wait"&&transferTraining?.kind!=="pending";
-        candidates.push({sessionId:session.id,sourceAttemptId:progress.latestFailure.id,sourceProblemId,transferTraining,
+        candidates.push({sessionId:context.sessionId,sourceAttemptId:progress.latestFailure.id,sourceProblemId,transferTraining,
           repairSuccessEvidenceId:progress.repairSuccess?.id,
           sourceFindingId:root.sourceFindingIds[0],sourceFindingIds:root.sourceFindingIds,
           rootWeaknessId:root.rootWeaknessId,conceptId,conceptLabel:root.title,

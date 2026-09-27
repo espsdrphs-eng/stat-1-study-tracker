@@ -385,7 +385,7 @@ export function analyzeReviewReconciliation(args:{
         Number(row.source_attempt_id||row.generated_from_attempt_id)===latestSuccessfulRepair.id&&
         !row.lifecycle_success_evidence_id)){
         const keys=new Set(partsFromContract(review).map(part=>part.stableTargetKey||part.stable_target_key||part.id));
-        if(succeeded.size&&![...keys].some(key=>succeeded.has(key)))supersedes.push({
+        if(succeeded.size&&[...succeeded].some(key=>!keys.has(key)))supersedes.push({
           reviewId:review.id,category:"stale_delayed_check",
           reason:`Attempt ${latestSuccessfulRepair.id}の成功した局所targetと保持確認の採点対象が一致しない`});
       }

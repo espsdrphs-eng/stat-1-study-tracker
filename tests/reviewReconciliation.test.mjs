@@ -116,6 +116,19 @@ test("a delayed check sourced from an unresolved Attempt is stale",()=>{
   assert.equal(plan.replacementRequired,true);
 });
 
+test("a delayed check must cover every repaired target, even when one generic slot overlaps",()=>{
+  const failed=attempt(1,"2026-09-12",[finding("critical_condition","C"),finding("major_calculation","W"),finding("answer_conclusion","W")]);
+  const repaired=attempt(2,"2026-09-17",[finding("critical_condition","none",true),finding("major_calculation","none",true),finding("answer_conclusion","none",true)],{
+    learning_purpose:"error_repair",review_outcome:"success",grading_contract:contract(["critical_condition","major_calculation","answer_conclusion"]),
+  });
+  const partial=review(12,2,["problem_type","first_step","critical_condition"],{
+    learning_purpose:"retrieval_check",grading_contract:contract(["problem_type","first_step","critical_condition"],"retrieval_check"),
+  });
+  const plan=analyzeReviewReconciliation({attempts:[failed,repaired],reviews:[partial],today:"2026-09-27"}).problems[0];
+  assert.equal(plan.reviewsToSupersede.some(row=>row.reviewId===12),true);
+  assert.equal(plan.retentionCheckRequired,true);
+});
+
 test("past exam major W/N with correction feedback remains error_repair until success evidence",()=>{
   const failed=attempt(223,"2026-08-29",[finding("major-calculation","W",false),finding("answer-conclusion","N",false)],{
     problem_id:"PY-2017-Q3",score_numeric:58,review_outcome:"partial",saved_gpt_feedback:true,
