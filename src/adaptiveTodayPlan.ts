@@ -90,6 +90,7 @@ export function adaptivePlanDayToTasks(args:{
       purpose_label:item.purposeLabel||(item.slot==="score_building"?"得点形成":"維持・選択"),
       past_exam_task_type:item.pastExamTaskType,
       past_exam_year:item.pastExamYear,
+      past_exam_year_role:item.pastExamYearRole,
       session_problem_ids:item.sessionProblemIds,
       clean_selection_evidence:item.cleanSelectionEvidence,
       stable_session_key:item.stableSessionKey,
@@ -98,6 +99,7 @@ export function adaptivePlanDayToTasks(args:{
       selected_year_reason:item.selectedYearReason,
       unseen_individual_problem_ids:item.unseenIndividualProblemIds,
       repair_lineage:item.repairLineage,
+      hard_blocker:item.hardBlocker,
       today_category:item.todayCategory,
       why_today:item.whyToday,
     } as Task;

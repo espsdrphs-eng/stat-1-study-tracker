@@ -1,6 +1,9 @@
 import type {AdaptivePlanTask,Attempt,ConceptWeaknessInsight,ExamReferenceCatalogItem,PastExamSessionPurpose,PastExamSessionState,PastSession,Task} from "./types.ts";
 import {attemptPlanningEligible} from "./legacyKPolicy.ts";
 import {resolvePastExamProblemId} from "./examReferencePack.ts";
+import {deriveLearningPolicy,pastExamYearRole,type PastExamYearRole} from "./examOptimizationPolicy.ts";
+import {deriveTransferEvidence,rootProgress} from "./skillEvidence.ts";
+import {deriveFailureEpisode} from "./failureEpisode.ts";
 
 export type PastExamTaskType="clean_scan5"|"practice_scan5"|"individual_full"|"timed_three_question_session"|"simulation";
 export type {PastExamSessionState} from "./types.ts";
@@ -157,6 +160,7 @@ export function canonicalizePastExamSessions(sessions:PastSession[]){
       selected_year_reason:richest("selected_year_reason")||winner.selected_year_reason||
         `${winner.year}年の未完了sessionを継続し、開始時点の${snapshot.classification==="clean"?"未露出":"一部露出"}証拠を保持するため`};
     current.push({...merged,stable_session_key:canonicalKey,session_instance_id:canonicalInstanceId,
+      past_exam_year_role:pastExamYearRole(winner.year),
       session_purpose:sessionPurpose,
       session_ordinal:Number(winner.session_ordinal||1),session_state:derivePastExamSessionState(merged),
       exposure_snapshot_at_start:snapshot,scan_evidence_kind:snapshot.classification,
@@ -263,6 +267,7 @@ export function reconcilePastExamSessionEvidence(session:PastSession,attempts:At
 
 export type PastExamYearCandidate={
   year:number;rows:ExamReferenceCatalogItem[];eligibleRows:ExamReferenceCatalogItem[];
+  yearRole:PastExamYearRole;completedTimed:boolean;
   exposure:"clean"|"nearly_clean"|"partial"|"used";cleanScanEligible:boolean;
   attemptedCount:number;recentlyUsed:boolean;transferValue:number;simulationProtected:boolean;
   exposedCount:number;
@@ -292,17 +297,49 @@ export function buildPastExamYearCandidates(args:{
     sessionsByYear.set(year,[...(sessionsByYear.get(year)||[]),session]);
   }
   const years=[...new Set(args.catalog.map(row=>row.year))];
+  const completed=(year:number)=>(sessionsByYear.get(year)||[]).filter(row=>
+    row.session_kind==="selected_three_timed"&&derivePastExamSessionState(row)==="completed")
+    .sort((a,b)=>String(b.simulation_completed_at||b.attempt_completed_at||b.date)
+      .localeCompare(String(a.simulation_completed_at||a.attempt_completed_at||a.date)))[0];
+  const cleanMeasurement=completed(2022);
+  const benchmark=completed(2024);
+  const selected2022=new Set(cleanMeasurement?.selected_timed_attempt_ids||[]);
+  const required2022Roots=args.attempts.filter(attempt=>selected2022.has(attempt.id))
+    .flatMap(attempt=>deriveFailureEpisode(attempt).rootWeaknesses.filter(root=>root.requiredRepair)
+      .map(root=>({attempt,root})))
+    .sort((a,b)=>Number(b.root.errorTypes.includes("W"))-Number(a.root.errorTypes.includes("W"))||
+      Number(a.attempt.score_numeric??100)-Number(b.attempt.score_numeric??100))
+    .slice(0,2);
+  // Most planning calls precede both milestones. Avoid re-deriving the entire
+  // Attempt transfer graph for every day in the 7/14/30-day forecasts.
+  const transferEvidence=benchmark||required2022Roots.length?deriveTransferEvidence(args.attempts):[];
+  const required2022RepairPending=required2022Roots.some(({attempt,root})=>
+    !rootProgress(attempt,root,args.attempts).repairSuccess&&
+    !transferEvidence.some(row=>row.sourceAttemptId===attempt.id&&root.skillIds.includes(row.skillId)));
+  const benchmarkDate=String(benchmark?.simulation_completed_at||benchmark?.attempt_completed_at||benchmark?.date||"").slice(0,10);
+  const laterExam=!!benchmarkDate&&args.pastSessions.some(row=>row.year!==2024&&
+    row.session_kind==="selected_three_timed"&&derivePastExamSessionState(row)==="completed"&&
+    String(row.simulation_completed_at||row.attempt_completed_at||row.date).slice(0,10)>benchmarkDate);
+  const laterTransfer=!!benchmarkDate&&transferEvidence.some(row=>row.date>benchmarkDate);
+  const holdout=deriveLearningPolicy(args.daysRemaining).holdoutPolicy;
   return years.map(year=>{
     const rows=args.catalog.filter(row=>row.year===year);
+    const yearRole=pastExamYearRole(year);
+    const roleReleased=yearRole==="current_benchmark_simulation"?
+      args.daysRemaining<=holdout.releaseWindowDaysByYear[2024]&&!!cleanMeasurement&&!required2022RepairPending:
+      yearRole==="historical_retest"?
+      args.daysRemaining<=holdout.releaseWindowDaysByYear[2025]&&!!benchmark&&(laterExam||laterTransfer):true;
     const eligibleRows=rows.filter(row=>row.availability==="verified_problem"&&row.schedulable&&row.gradable&&
-      !(args.daysRemaining>30&&row.simulationProtected));
+      (!row.simulationProtected||yearRole==="training_pool"&&args.daysRemaining<=30||
+        yearRole!=="training_pool"&&roleReleased));
     if(!eligibleRows.length)return null;
     const explicitUnseen=eligibleRows.filter(row=>row.exposure==="unseen").length;
     const untouched=eligibleRows.filter(row=>["unseen","unknown"].includes(row.exposure)).length;
     const attempted=(attemptsByYear.get(year)||[]).filter(row=>attemptPlanningEligible(row));
     const sessionRows=(sessionsByYear.get(year)||[]).filter(row=>!row.superseded_by_session_id);
     const exposedBySession=sessionRows.some(row=>!["planned","deferred","cancelled","invalidated"].includes(derivePastExamSessionState(row)));
-    const cleanScanEligible=eligibleRows.length>=5&&explicitUnseen===eligibleRows.length&&!attempted.length&&!exposedBySession;
+    const cleanScanEligible=yearRole!=="historical_retest"&&eligibleRows.length>=5&&
+      explicitUnseen===eligibleRows.length&&!attempted.length&&!exposedBySession;
     const exposure:PastExamYearCandidate["exposure"]=cleanScanEligible?"clean":
       eligibleRows.length>=5&&untouched>=eligibleRows.length-1&&!attempted.length&&!exposedBySession?"nearly_clean":
       untouched>0?"partial":"used";
@@ -313,22 +350,39 @@ export function buildPastExamYearCandidates(args:{
       const value=weakness.get(id);return value?value.priorityScore+(value.pastExamFailureCount?1000:0):0;
     })));
     const exposedCount=eligibleRows.filter(row=>!["unseen","unknown"].includes(row.exposure)).length;
-    return {year,rows,eligibleRows,exposure,cleanScanEligible,attemptedCount:attempted.length,recentlyUsed,transferValue,exposedCount,
+    return {year,yearRole,completedTimed:!!completed(year),rows,eligibleRows,exposure,cleanScanEligible,attemptedCount:attempted.length,recentlyUsed,transferValue,exposedCount,
       simulationProtected:eligibleRows.some(row=>row.simulationProtected)};
   }).filter((row):row is PastExamYearCandidate=>!!row);
 }
 
 export function selectPastExamYear(args:{candidates:PastExamYearCandidate[];taskType:PastExamTaskType;excludedYears?:Set<number>}){
-  const available=args.candidates.filter(row=>!args.excludedYears?.has(row.year));
+  const session=["clean_scan5","practice_scan5","timed_three_question_session","simulation"].includes(args.taskType);
+  const available=args.candidates.filter(row=>!args.excludedYears?.has(row.year)&&
+    (!session||!row.completedTimed)&&
+    (["training_pool","clean_exam_measurement"].includes(row.yearRole)||
+      ["timed_three_question_session","simulation"].includes(args.taskType))&&
+    (session||!row.simulationProtected));
   const protectedSimulation=available.filter(row=>row.simulationProtected);
   const rows=args.taskType==="simulation"&&protectedSimulation.length?protectedSimulation:available;
-  const session=["clean_scan5","practice_scan5","timed_three_question_session","simulation"].includes(args.taskType);
   return [...rows].sort((a,b)=>{
+    const roleRank=(row:PastExamYearCandidate)=>row.yearRole==="current_benchmark_simulation"?0:
+      row.yearRole==="historical_retest"?1:2;
     const sessionRank=(row:PastExamYearCandidate)=>row.cleanScanEligible?0:row.exposure==="nearly_clean"?1:row.exposure==="partial"?2:3;
     const individualRank=(row:PastExamYearCandidate)=>row.exposure==="partial"?0:row.exposure==="used"?1:row.exposure==="nearly_clean"?2:3;
-    return (session?sessionRank(a)-sessionRank(b):individualRank(a)-individualRank(b))||
+    return (session?roleRank(a)-roleRank(b):0)||
+      (session?sessionRank(a)-sessionRank(b):individualRank(a)-individualRank(b))||
       Number(a.recentlyUsed)-Number(b.recentlyUsed)||b.transferValue-a.transferValue||a.year-b.year;
   })[0];
+}
+
+export function explainPastExamYearSelection(year:PastExamYearCandidate,prior?:PastExamYearCandidate){
+  if(year.yearRole==="current_benchmark_simulation")return
+    `${year.year}年は2022年のclean本番測定後に使う近年型benchmark。開始前に対象弱点を提示せず、90分の答案と自然な転移を測るため`;
+  if(year.yearRole==="historical_retest")return
+    `${year.year}年は既習年度の再試験。2024年のbenchmarkと追加の本番・転移確認後、前年より最後まで答案化できるか測るため。clean未見証拠には含めない`;
+  return [prior?`${prior.year}年は${prior.exposedCount}/${prior.eligibleRows.length}問が既露出のためclean選題測定には使わない`:
+    "より古い利用可能年度にclean候補なし",
+    `${year.year}年は${year.exposedCount}/${year.eligibleRows.length}問露出でclean選題証拠を取得できるため`].join("。 ");
 }
 
 export function pastExamTaskTypeFor(args:{kind:"past_exam"|"scan5"|"timed";year:PastExamYearCandidate;daysRemaining:number}):PastExamTaskType{
@@ -364,13 +418,12 @@ export function derivePastExamWorkspace(args:{
   const completedPrior=canonicalSessions.filter(row=>derivePastExamSessionState(row)==="completed"&&row.year<year.year)
     .sort((a,b)=>b.year-a.year||String(b.attempt_completed_at||b.date).localeCompare(String(a.attempt_completed_at||a.date)))[0];
   const selectedYearReason=active?.selected_year_reason||[
-    completedPrior?`${completedPrior.year}年の本番型sessionが完了したため次の測定へ進む`:
-      prior?`${prior.year}年は${prior.exposedCount}/${prior.eligibleRows.length}問が既露出のためclean選題測定には使わない`:"より古い利用可能年度にclean候補なし",
-    `${year.year}年は${year.exposedCount}/${year.eligibleRows.length}問露出で、clean選題証拠を取得できるため`,
-    "2024/2025はsimulation保護を維持",
-  ].join("。 ");
-  const clean=active?.exposure_snapshot_at_start?.classification==="clean"||!active&&year.cleanScanEligible;
-  return {recommended:{year:year.year,taskType:chosenType,clean,
+    completedPrior?`${completedPrior.year}年の本番型sessionが完了したため次の測定へ進む`:"",
+    explainPastExamYearSelection(year,prior),
+  ].filter(Boolean).join("。 ");
+  const clean=year.yearRole!=="historical_retest"&&
+    (active?.exposure_snapshot_at_start?.classification==="clean"||!active&&year.cleanScanEligible);
+  return {recommended:{year:year.year,yearRole:year.yearRole,taskType:chosenType,clean,
     label:clean?"完全未見":"一部露出済み",selectedYearReason,stableSessionKey:active?pastExamSessionKey(active):undefined,
     workflow:["timed_three_question_session","simulation"].includes(chosenType)?
       "5問scan → 3問選択 → 3問答案 → 採点":"5問scan → 3問選択"},candidates,unseenIndividualPool,warning:null};

@@ -59,7 +59,8 @@ export function rootProgress(source:Attempt,root:RootWeakness,attempts:Attempt[]
     const relevant=(a.graded_findings||[]).filter(f=>findingPlanningEligible(a,f)&&parts.some(p=>p.id===f.graded_part_id&&
       (keys.has(identity(a,p))||findingSkillIds(a,f).some(id=>root.skillIds.includes(id)))));
     if(relevant.some(f=>!f.resolved&&f.error_type!=="none")){latestFailure=a;repairSuccess=undefined;}
-    else if(relevant.length&&relevant.every(f=>f.resolved&&f.error_type==="none")&&independentReferenceFree(a)&&confidentGrading(a))repairSuccess=a;
+    else if(a.learning_purpose!=="retrieval_check"&&relevant.length&&
+      relevant.every(f=>f.resolved&&f.error_type==="none")&&independentReferenceFree(a)&&confidentGrading(a))repairSuccess=a;
   }
   // A scaffold on another problem is still repair, not the independent test
   // after repair. Require explicit source lineage before it can unlock transfer.
@@ -83,6 +84,9 @@ export type TransferEvidence={id:string;sourceAttemptId:number;sourceProblemId:s
   successProblemId:string;skillId:string;date:string;evidenceStrength:"training"|"strong";
   lineage?:Attempt["transfer_lineage"]};
 export function transferEvidenceStrength(a:Attempt):"training"|"strong"{
+  // A previously studied exam year can measure improvement, but not blind
+  // transfer in a new exam context.
+  if(/^PY-2025-Q\d+$/.test(a.problem_id))return "training";
   const past=a.source_type==="past_exam"||(!a.source_type&&/^PY-\d{4}-Q\d+$/.test(a.problem_id));
   return past&&!a.target_skill_prompted&&!a.is_review_attempt&&
     !["error_repair","retrieval_check","transfer_check"].includes(String(a.learning_purpose))&&

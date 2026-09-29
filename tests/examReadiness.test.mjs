@@ -2,14 +2,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { calculateExamReadinessMetrics, resolveCanonicalProblemId } from "../src/examReadiness.ts";
 
-test("linked past Attempts are not counted again in exam score metrics",()=>{
+test("2025 historical sessionは主得点KPIへ混ぜず別枠で保持する",()=>{
   const attempts=[{id:10,problem_id:"PY-2025-Q1",date:"2026-07-20",mode:"full",time_minutes:30,time_limit_minutes:35,score_numeric:10,mark:"△",error_type:"W",error_types:["W"],actual_reference_level:0,parent_past_session_id:7,exam_score_eligible:true}];
   const questions=Array.from({length:5},(_,index)=>({problemId:`PY-2025-Q${index+1}`,questionLabel:`Q${index+1}`,predictedType:"",firstStep:"",predictedScore:null,predictedMinutes:index<3?30:null,sinkRisk:"low",selected:index<3,selectionReason:"",plannedOrder:index<3?index+1:null,actualScore:index<3?80:null,actualMinutes:index<3?30:null,completed:index<3,hintUsed:false,referenceUsed:false}));
   const pastSessions=[{id:7,year:2025,date:"2026-07-20",session_type:"scan5",session_kind:"selected_three_timed",stage:"calibration",scan_set_source:"past_exam_year",scan_minutes:5,actual_total_minutes:90,initial_selected_problem_ids:questions.slice(0,3).map(row=>row.problemId),questions,exam_score_eligible:true}];
   const metrics=calculateExamReadinessMetrics({problems,attempts,pastSessions,aliases:[],today:"2026-07-22"});
-  assert.equal(metrics.pastExamScoreRate,80);
-  assert.equal(metrics.sampleSizes.pastExams,1);
-  assert.equal(metrics.sampleSizes.timed,1);
+  assert.equal(metrics.pastExamScoreRate,null);
+  assert.equal(metrics.evidence.historicalRetest.value,80);
+  assert.equal(metrics.sampleSizes.pastExams,0);
+  assert.equal(metrics.sampleSizes.timed,0);
 });
 
 const problems = [
@@ -32,11 +33,11 @@ test("未見得点率と完走率を計算し、5問未評価の選題成功率�
     { id: 1, year: 2025, date: "2026-07-04", session_type: "scan_5_questions", selected_questions: "A;B;C", final_selected_problem_ids: "A;B;D" },
   ];
   const metrics = calculateExamReadinessMetrics({ problems, attempts, pastSessions, aliases, today: "2026-07-05" });
-  assert.equal(metrics.unseenScoreRate, 68);
-  assert.equal(metrics.timedCompletionRate, 67);
+  assert.equal(metrics.unseenScoreRate, 70);
+  assert.equal(metrics.timedCompletionRate, 100);
   assert.equal(metrics.selectionSuccessRate, null);
   assert.equal(metrics.sampleSizes.scans, 0);
-  assert.equal(metrics.kRecurrenceRate, 100);
+  assert.equal(metrics.kRecurrenceRate, null);
 });
 
 test("pastSessionsが0件なら本番指標は0%ではなく未計測値null", () => {

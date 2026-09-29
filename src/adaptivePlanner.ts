@@ -12,7 +12,7 @@ import { resolvePersistedAttemptLifecycle } from "./reviewTransition.ts";
 import { scheduleActiveReviews, type ScheduledReviewPlacement } from "./reviewScheduling.ts";
 import {deriveLearningPolicy,examHorizonPolicy} from "./examOptimizationPolicy.ts";
 import {buildPastExamYearCandidates,canonicalizePastExamSessions,derivePastExamSessionState,pastExamSessionKey,
-  pastExamSessionPurpose,pastExamTaskTypeFor,selectPastExamYear,stablePastExamSessionKey,
+  pastExamSessionPurpose,pastExamTaskTypeFor,selectPastExamYear,explainPastExamYearSelection,stablePastExamSessionKey,
   validatePastExamSessionIdentity,validatePastExamTaskIdentity,reconcilePastExamSessionEvidence} from "./pastExamPlanning.ts";
 import {reviewPlanningDecision} from "./todayLearningPolicy.ts";
 import {deriveFailureEpisode} from "./failureEpisode.ts";
@@ -112,14 +112,10 @@ function choosePastExam(args:{
   const planningTaskType=pastExamTaskTypeFor({kind:args.kind,year,daysRemaining:args.daysRemaining});
   if(args.kind!=="past_exam")args.usedSessionYears.add(year.year);
   const prior=candidates.filter(row=>row.year<year.year&&row.exposedCount>0).sort((a,b)=>b.year-a.year)[0];
-  const selectedYearReason=[
-    prior?`${prior.year}年は${prior.exposedCount}/${prior.eligibleRows.length}問が既露出のためclean選題測定には使わない`:"より古い利用可能年度にclean候補なし",
-    `${year.year}年は${year.exposedCount}/${year.eligibleRows.length}問露出でclean選題証拠を取得できるため`,
-    "2024/2025はsimulation保護を維持",
-  ].join("。 ");
+  const selectedYearReason=explainPastExamYearSelection(year,prior);
   const unseenIndividualProblemIds=candidates.filter(row=>row.year<year.year).flatMap(row=>row.eligibleRows
     .filter(item=>["unseen","unknown"].includes(item.exposure)).map(item=>item.canonicalProblemId));
-  return {...selected,planningTaskType,sessionProblemIds:year.eligibleRows.sort((a,b)=>a.questionNumber-b.questionNumber)
+  return {...selected,yearRole:year.yearRole,planningTaskType,sessionProblemIds:year.eligibleRows.sort((a,b)=>a.questionNumber-b.questionNumber)
     .map(row=>row.canonicalProblemId),cleanSelectionEvidence:year.cleanScanEligible,selectedYearReason,unseenIndividualProblemIds};
 }
 
@@ -193,11 +189,22 @@ function planDays(args:{
   const usedDeferredReviewIds=new Set<number>();
   const allActiveReviews=args.reviews.filter(review=>reviewExecutionState(review,args.startDate)==="actionable")
     .sort((a,b)=>a.due_date.localeCompare(b.due_date)||a.id-b.id);
-  const reviewDecisions=new Map(allActiveReviews.map(review=>[review.id,reviewPlanningDecision({
-    review,attempts:args.attempts,problems:args.problems,weaknesses:args.weaknesses,
-    pastExamIsPrimary:deriveLearningPolicy(args.daysRemaining).pastExamIsPrimary,
-    repairCandidates:args.repairCandidates,pastSessions:canonicalPastSessions
-  })]));
+  const reviewSource=(review:Review)=>args.attempts.find(attempt=>attempt.id===Number(
+    review.grading_contract?.sourceAttemptId||review.source_attempt_id||review.generated_from_attempt_id||0));
+  const changedIntervention=(review:Review)=>{
+    const source=reviewSource(review);
+    if(!source||review.triage_override==="must"||
+      !["full","main_calc"].includes(String(review.grading_contract?.mode||review.effective_mode||"")))return false;
+    const roots=new Set(deriveFailureEpisode(source).rootWeaknesses.map(root=>root.rootWeaknessId));
+    return !!args.repairCandidates?.some(candidate=>candidate.required&&candidate.interventionChanged&&
+      candidate.sourceProblemId===review.problem_id&&!!candidate.rootWeaknessId&&roots.has(candidate.rootWeaknessId));
+  };
+  const reviewDecisions=new Map(allActiveReviews.map(review=>[review.id,changedIntervention(review)?{
+    tier:"deferred_maintenance" as const,scheduleAsRequired:false,
+    reason:"同じrootの再失敗後は同形式Reviewを重ねず、再診断・別問題へ介入を変更"}:
+    reviewPlanningDecision({review,attempts:args.attempts,problems:args.problems,weaknesses:args.weaknesses,
+      pastExamIsPrimary:deriveLearningPolicy(args.daysRemaining).pastExamIsPrimary,
+      repairCandidates:args.repairCandidates,pastSessions:canonicalPastSessions})]));
   const activeReviews=allActiveReviews.filter(review=>reviewDecisions.get(review.id)?.scheduleAsRequired);
   const deferredReviews=allActiveReviews.filter(review=>!reviewDecisions.get(review.id)?.scheduleAsRequired);
   const reviewSchedule=scheduleActiveReviews({reviews:activeReviews,startDate:args.startDate,days:args.days,
@@ -210,8 +217,7 @@ function planDays(args:{
   const calibrationAttemptIds=new Set(canonicalPastSessions.flatMap(session=>session.counterfactual_calibration_attempt_ids||[]));
   const selectedProblemIds=new Set(canonicalPastSessions.flatMap(session=>
     session.final_selected_problem_ids?.length?session.final_selected_problem_ids:session.initial_selected_problem_ids||[]));
-  const sourceForReview=(review:Review)=>args.attempts.find(attempt=>attempt.id===Number(
-    review.grading_contract?.sourceAttemptId||review.source_attempt_id||review.generated_from_attempt_id||0));
+  const sourceForReview=reviewSource;
   const reviewSourceRank=(review:Review)=>{
     const source=sourceForReview(review);if(!source)return 6;
     if(source.session_role==="selected_timed"||selectedAttemptIds.has(source.id)||selectedProblemIds.has(source.problem_id))return 0;
@@ -219,13 +225,21 @@ function planDays(args:{
     if(source.parent_past_session_id)return calibrationAttemptIds.has(source.id)||source.session_role==="counterfactual_calibration"?3:2;
     return 5;
   };
+  const activeYear=pinnedPastSession?.year||selectPastExamYear({candidates:buildPastExamYearCandidates({
+    catalog:args.catalog,attempts:args.attempts,pastSessions:canonicalPastSessions,
+    weaknesses:args.weaknesses,today:args.startDate,daysRemaining:args.daysRemaining}),
+    taskType:"timed_three_question_session"})?.year;
+  const sessionSkills=new Set(args.catalog.filter(row=>row.year===activeYear).flatMap(row=>row.fineConceptIds));
   const isHardBlockerReview=(review:Review)=>{
-    if(review.triage_override==="must")return true;
     const source=sourceForReview(review),episode=source?deriveFailureEpisode(source):undefined;
-    return reviewSourceRank(review)===0&&!!episode?.rootWeaknesses.some(root=>root.requiredRepair&&root.masteryLevel===1);
+    return reviewSourceRank(review)===0&&!!source&&source.date>=addCalendarDays(args.startDate,-14)&&
+      !!episode?.rootWeaknesses.some(root=>root.requiredRepair&&root.materiality==="major"&&
+        root.errorTypes.includes("W")&&root.skillIds.some(id=>sessionSkills.has(id)));
   };
+  const changedProblemIds=new Set((args.repairCandidates||[]).filter(row=>row.required&&row.interventionChanged)
+    .map(row=>row.sourceProblemId));
   const activeReviewProblemIds=new Set(activeReviews.filter(review=>String(review.earliest_date||review.due_date)<=horizonEnd)
-    .map(review=>review.problem_id));
+    .map(review=>review.problem_id).concat([...changedProblemIds]));
   const allowNew=examHorizonPolicy(args.daysRemaining).allowNewWhitebook;
   const recentEligibleSuccesses=args.attempts.filter(attempt=>attempt.date>=addCalendarDays(args.startDate,-14)&&
     attempt.exam_score_eligible&&Number(attempt.score_numeric||0)>=70).length;
@@ -330,6 +344,8 @@ function planDays(args:{
         matchScore:candidate.matchScore,matchConfidence:candidate.matchConfidence}});
   };
   const makePast=(date:string,kind:"past_exam"|"scan5"|"timed",minutes:number,reason:string)=>{
+    const dayOffset=Math.round((Date.parse(`${date}T12:00:00Z`)-Date.parse(`${args.startDate}T12:00:00Z`))/86400000);
+    const dayRemaining=Math.max(0,args.daysRemaining-dayOffset);
     const requestedType=kind==="timed"?"timed_three_question_session":kind==="scan5"?"clean_scan5":"individual_full";
     const stickyTaskCandidate=date===args.startDate?args.currentTasks.find(current=>!current.checked&&current.past_exam_year&&
       current.past_exam_session_state!=="completed"&&current.past_exam_session_state!=="deferred"&&
@@ -338,16 +354,19 @@ function planDays(args:{
     const persistedCandidate=date===args.startDate?pinnedPastSession:undefined;
     const persisted=persistedCandidate&&validatePastExamSessionIdentity(persistedCandidate).valid?persistedCandidate:undefined;
     const stickyYear=persisted?.year||stickyTask?.past_exam_year;
+    const eligibleYears=buildPastExamYearCandidates({catalog:args.catalog,attempts:args.attempts,
+      pastSessions:args.pastSessions,weaknesses:args.weaknesses,today:date,daysRemaining:dayRemaining});
     const stickyRows=stickyYear?args.catalog.filter(row=>row.year===stickyYear&&row.schedulable&&row.gradable&&
-      (!row.simulationProtected||args.daysRemaining<=30)):[];
+      (!!persisted||eligibleYears.some(candidate=>candidate.year===stickyYear))):[];
     const stickyAnchor=stickyRows.find(row=>row.canonicalProblemId===stickyTask?.problem_id)||stickyRows[0];
     const stickyPurpose=persisted?pastExamSessionPurpose(persisted):stickyTask?.past_exam_task_type;
-    const selected=stickyAnchor?{...stickyAnchor,planningTaskType:stickyPurpose!,
+    const selected=stickyAnchor?{...stickyAnchor,yearRole:eligibleYears.find(candidate=>candidate.year===stickyYear)?.yearRole,
+      planningTaskType:stickyPurpose!,
       sessionProblemIds:stickyTask?.session_problem_ids?.length?stickyTask.session_problem_ids:stickyRows.sort((a,b)=>a.questionNumber-b.questionNumber)
         .map(row=>row.canonicalProblemId),cleanSelectionEvidence:persisted?
           persisted.exposure_snapshot_at_start?.classification==="clean":!!stickyTask?.clean_selection_evidence,
       selectedYearReason:persisted?.selected_year_reason||stickyTask?.selected_year_reason,
-      unseenIndividualProblemIds:stickyTask?.unseen_individual_problem_ids}:choosePastExam({catalog:args.catalog,daysRemaining:args.daysRemaining,used:usedPast,date,
+      unseenIndividualProblemIds:stickyTask?.unseen_individual_problem_ids}:choosePastExam({catalog:args.catalog,daysRemaining:dayRemaining,used:usedPast,date,
       attempts:args.attempts,weaknesses:args.weaknesses,avoidProblemIds:activeReviewProblemIds,
       pastSessions:args.pastSessions,kind,usedSessionYears});
     if(!selected)return task({date,slot:"maintenance_selection",kind:"exposure_confirmation",label:"過去問素材の露出状態を確認",
@@ -377,13 +396,14 @@ function planDays(args:{
     const priorExposed=priorRows.filter(row=>!["unseen","unknown"].includes(row.exposure)).length;
     const selectedYearReason=persisted?.selected_year_reason||stickyTask?.selected_year_reason||selected.selectedYearReason||
       (selected.cleanSelectionEvidence?
-        `${priorYear?`${priorYear}年は${priorExposed}/${priorRows.length}問が既露出。`:""}${selected.year}年はsession開始時に未露出で、未完了のclean選題・時間内完遂測定を継続するため。2024/2025はsimulation保護中。`:
+        `${priorYear?`${priorYear}年は${priorExposed}/${priorRows.length}問が既露出。`:""}${selected.year}年はsession開始時に未露出で、未完了のclean選題・時間内完遂測定を継続するため。`:
         `${selected.year}年の未完了sessionをcurrent stateとして継続するため。`);
     return task({date,slot:"score_building",kind,label:sessionLabel,
       referenceProblemId:selected.referenceProblemId,problemId:selected.canonicalProblemId,minutes,
       reason:`${reason}・${purposeLabel}`,purpose,purposeLabel,basis,exposure:selected.exposure,
       previousEventDate:latest?.date,simulationProtected:selected.simulationProtected,requiresUserSelection:false,
       pastExamTaskType:selected.planningTaskType,pastExamYear:selected.year,
+      pastExamYearRole:selected.yearRole,
       sessionProblemIds:selected.sessionProblemIds,cleanSelectionEvidence:selected.cleanSelectionEvidence,
       stableSessionKey,pastExamSessionState:persisted?derivePastExamSessionState(persisted):stickyTask?.past_exam_session_state||"planned",sessionWorkflow,
       selectedYearReason,
@@ -427,11 +447,14 @@ function planDays(args:{
     if(score&&timedSession){
       const repairBudget=Math.min(30,Math.max(0,args.targetMinutes-score.minutes));
       const selectedPlacements:ScheduledReviewPlacement[]=[];
-      let repairMinutes=0;
+      let repairMinutes=0;const selectedRoots=new Set<string>();
       for(const placement of dayPlacements){
         if(selectedPlacements.length>=2)break;
-        const hardBlocker=isHardBlockerReview(placement.review);
-        if(!hardBlocker&&repairMinutes+placement.minutes>repairBudget)continue;
+        const source=sourceForReview(placement.review);
+        const root=source?deriveFailureEpisode(source).rootWeaknesses[0]?.rootWeaknessId:undefined;
+        const rootKey=root||placement.review.problem_id;
+        if(selectedRoots.has(rootKey)||repairMinutes+placement.minutes>repairBudget)continue;
+        selectedRoots.add(rootKey);
         selectedPlacements.push(placement);repairMinutes+=placement.minutes;
       }
       dayPlacements=selectedPlacements;
@@ -462,7 +485,8 @@ function planDays(args:{
       return task({date,slot:"repair",kind:"review",
         label:`${placement.review.problem_id} 局所補修`,problemId:placement.review.problem_id,reviewId:placement.review.id,
         mode:placement.review.grading_contract?.mode||placement.review.effective_mode||placement.review.inferred_mode||"check",
-        minutes:placement.minutes,reason:placement.status==="overdue_recovery"?"期限超過Reviewを最優先で回収":"復習ウィンドウ内に配置",
+        minutes:placement.minutes,reason:hardBlocker?"この本番sessionに必要な直近major計算弱点を局所補修":
+          placement.status==="overdue_recovery"?"期限超過Reviewを本番演習の空き枠で確認":"復習ウィンドウ内に配置",
         requiresUserSelection:false,todayCategory:"repair",whyToday:reviewDecisions.get(placement.review.id)?.reason,
         reviewPlanningTier:reviewDecisions.get(placement.review.id)?.tier,repairLineage,
         hardBlocker,directExamLoss,diagnosticOnly,

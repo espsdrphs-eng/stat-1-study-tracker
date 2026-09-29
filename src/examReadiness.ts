@@ -42,6 +42,7 @@ export type MetricEvidence={value:number|null;numerator:number;denominator:numbe
 export type LearningMetricEvidence={
   selectedThree:MetricEvidence&{sessions:Array<{sessionId:number;year:number;score:number;attemptIds:number[]}>};
   individual:MetricEvidence;diagnostic:MetricEvidence;timed:MetricEvidence;selection:MetricEvidence;
+  historicalRetest?:MetricEvidence;
   transfer?:MetricEvidence;trainingTransfer?:MetricEvidence;unseen?:MetricEvidence;repeatedMajor?:MetricEvidence;
 };
 const metric=(numerator:number,denominator:number,count:number,rule:string,modes:string[],date:string|null,percent=false):MetricEvidence=>({
@@ -126,7 +127,8 @@ export function calculateExamReadinessMetrics(args: {
     ...(s.selected_timed_attempt_ids||[]),...(s.counterfactual_calibration_attempt_ids||[])]));
   const skillProblems=new Map<string,Set<string>>();
   for(const p of problems)for(const id of problemSkillIds(p))skillProblems.set(id,new Set([...(skillProblems.get(id)||[]),p.problem_id]));
-  const examAttempts=attempts.filter(a=>a.source_type!=="generated"&&a.evidence_strength!=="training"&&
+  const examAttempts=attempts.filter(a=>!/^PY-2025-Q\d+$/.test(a.problem_id)&&
+    a.source_type!=="generated"&&a.evidence_strength!=="training"&&
     problems.find(p=>p.problem_id===a.problem_id)?.source_type!=="generated");
   for(const a of examAttempts)for(const id of (a.graded_findings||[]).flatMap(f=>findingSkillIds(a,f)))
     skillProblems.set(id,new Set([...(skillProblems.get(id)||[]),a.problem_id]));
@@ -188,7 +190,8 @@ export function calculateExamReadinessMetrics(args: {
       attempt.conclusion_reached!==false;
   });
 
-  const scanSessions = pastSessions.filter(session => ["scan_5_questions", "scan5"].includes(session.session_type)||!!session.session_kind);
+  const scanSessions = pastSessions.filter(session => session.year!==2025&&
+    (["scan_5_questions", "scan5"].includes(session.session_type)||!!session.session_kind));
   const scanScores=scanSessions.map(selectionSuccessRate).filter((value):value is number=>value!=null);
   const scanRows=scanSessions.map(scanMetrics);
   const averageNullable=(values:Array<number|null>)=>{const rows=values.filter((value):value is number=>value!=null);return rows.length?Math.round(rows.reduce((a,b)=>a+b,0)/rows.length):null};
@@ -199,7 +202,7 @@ export function calculateExamReadinessMetrics(args: {
     return (session.questions||[]).filter(row=>ids.size?ids.has(resolvePastExamProblemId(session.year,row.problemId)):row.selected);
   };
   // Time overruns are a measured deficit, not a reason to erase the score.
-  const eligibleSessions=pastSessions.filter(session=>!session.superseded_by_session_id&&session.session_kind==="selected_three_timed"&&
+  const eligibleSessions=pastSessions.filter(session=>session.year!==2025&&!session.superseded_by_session_id&&session.session_kind==="selected_three_timed"&&
     Number(session.actual_reference_level||0)===0&&session.evaluation_scope!=="conditional_full"&&
     selectedRows(session).length===3&&selectedRows(session).every(row=>row.actualScore!=null&&Number.isFinite(row.actualScore)&&!row.referenceUsed&&!row.hintUsed));
   const elapsed=(session:PastSession)=>Number(session.session_elapsed_minutes??
@@ -208,6 +211,10 @@ export function calculateExamReadinessMetrics(args: {
   const timedSessionSuccesses=timedSessions.filter(session=>elapsed(session)<=Number(session.time_limit_minutes||90)&&
     (session.selected_timed_attempt_ids||[]).every(id=>attempts.find(a=>a.id===id)?.conclusion_reached!==false));
   const selectedScores=eligibleSessions.flatMap(s=>selectedRows(s).map(q=>Number(q.actualScore)));
+  const historicalSessions=pastSessions.filter(session=>session.year===2025&&!session.superseded_by_session_id&&
+    session.session_kind==="selected_three_timed"&&selectedRows(session).length===3&&
+    selectedRows(session).every(row=>row.actualScore!=null&&Number.isFinite(row.actualScore)));
+  const historicalScores=historicalSessions.flatMap(s=>selectedRows(s).map(q=>Number(q.actualScore)));
   const lastDate=(rows:Array<{date:string}>)=>rows.map(r=>r.date).sort().at(-1)||null;
   const lastEvidenceDate=(sessions:PastSession[],role:"selected"|"all"="selected")=>lastDate(sessions.flatMap(s=>{
     const ids=role==="selected"?s.selected_timed_attempt_ids:s.linked_attempt_ids;
@@ -229,6 +236,9 @@ export function calculateExamReadinessMetrics(args: {
   const kDenominator = [...kGroups.values()].length;
   const wDenominator = [...wGroups.values()].length;
   const evidence:LearningMetricEvidence={selectedThree:selectedEvidence,individual,timed,
+      historicalRetest:{...metric(historicalScores.reduce((sum,score)=>sum+score,0),historicalScores.length,
+        historicalSessions.length,"既習2025年の選択答案。clean/unseen・本番主KPIから分離",["historical_retest"],
+        lastEvidenceDate(historicalSessions)),eligibleEvidenceIds:historicalSessions.map(s=>`session:${s.id}`)},
       transfer:metric(transferred.size,transferOpportunities.size,new Set(transferRows.map(t=>t.successAttemptId)).size,
         "本番過去問・target事前提示なし・別問題・明示skill一致・参照なし・関連finding成功・採点信頼度80%以上。意図的trainingは別集計",["natural_past_exam"],
         transferRows.map(t=>t.date).sort().at(-1)||null,true),

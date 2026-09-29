@@ -1,4 +1,4 @@
-import type {Attempt,Problem,RootWeakness,AnswerIndexEntry} from "./types.ts";
+import type {Attempt,Problem,RootWeakness,AnswerIndexEntry,PastSession} from "./types.ts";
 import type {StoredExamReferencePack} from "./examReferencePack.ts";
 import {canonicalPastExamProblemId} from "./examReferencePack.ts";
 import {deriveFailureEpisode} from "./failureEpisode.ts";
@@ -66,7 +66,8 @@ export function delayedTrainingPrerequisites(source:Attempt,root:RootWeakness,at
 }
 
 export function deriveTransferTrainingCandidates(args:{record:StoredExamReferencePack;attempts:Attempt[];problems:Problem[];
-  answers?:AnswerIndexEntry[];exposureOverrides?:Record<string,string>;generationStates?:Record<string,string>}):TransferTrainingCandidate[]{
+  answers?:AnswerIndexEntry[];exposureOverrides?:Record<string,string>;generationStates?:Record<string,string>;
+  pastSessions?:PastSession[]}):TransferTrainingCandidate[]{
   const allowed=canonicalTrainingSkills(args.record),candidates=new Map<string,TransferTrainingCandidate>();
   const references=new Map(args.record.data.pastExamProblems.map(p=>[canonicalPastExamProblemId(p),p]));
   for(const source of [...args.attempts].sort((a,b)=>b.id-a.id)){
@@ -99,10 +100,18 @@ export function deriveTransferTrainingCandidates(args:{record:StoredExamReferenc
           (groundedWhitebookSkills(p,args.answers).some(t=>t.skillId===skill&&t.confidence==="high")||
             (p.classification_confidence==="high"&&problemSkillIds(p).includes(skill))||
             (references.get(p.problem_id)?.classification_confidence==="high"&&references.get(p.problem_id)?.fine_concept_ids.includes(skill))))
-          .sort((a,b)=>Number(b.source_type==="whitebook")-Number(a.source_type==="whitebook")||a.problem_id.localeCompare(b.problem_id));
-        candidates.set(key,{key,lineage,kind:prior?"generated":existing.length?"existing":args.generationStates?.[key]==="pending"?"pending":"generated",
+          .sort((a,b)=>Number(b.source_type==="past_exam")-Number(a.source_type==="past_exam")||
+            Number(b.source_type==="whitebook")-Number(a.source_type==="whitebook")||a.problem_id.localeCompare(b.problem_id));
+        const benchmarkComplete=args.pastSessions?.some(s=>s.year===2024&&s.session_kind==="selected_three_timed"&&
+          (!!s.simulation_completed_at||s.session_state==="completed"));
+        const repeatedFailure=args.attempts.filter(a=>a.problem_id===source.problem_id&&a.id<=source.id&&
+          deriveFailureEpisode(a).rootWeaknesses.some(r=>r.rootWeaknessId===root.rootWeaknessId&&r.requiredRepair)).length>=2;
+        const generationDeferred=!!args.pastSessions&&!benchmarkComplete&&!repeatedFailure;
+        candidates.set(key,{key,lineage,kind:prior?"generated":existing.length?"existing":
+          generationDeferred||args.generationStates?.[key]==="pending"?"pending":"generated",
           generatedProblemId:prior?.problem_id,existingProblemId:prior?undefined:existing[0]?.problem_id,
           reason:prior?"検証済みの同じ生成問題を継続":existing.length?"明示skillが一致する既存問題を優先":
+            generationDeferred?"2022/2024の本番測定を先に使い、別問題候補がないrootの生成はその後に再評価":
             "補修・遅延確認成功後の別問題確認。高信頼の既存候補がないため実行時に生成を依頼"});
       }
     }

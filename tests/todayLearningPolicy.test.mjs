@@ -91,10 +91,11 @@ test("本番演習はgeneric maintenanceよりcanonical priorityが高い",()=>{
   assert.ok(deriveActionPriority(exam,"2026-08-30")<deriveActionPriority(maintenance,"2026-08-30"));
 });
 
-test("hard overdue major repairだけは本番演習より先にできる",()=>{
+test("明示された真のhard blockerだけは本番演習より先にできる",()=>{
   const exam={problem_id:"PY-2018-Q5",kind:"past_exam",past_exam_task_type:"individual_full",mode:"full",triage:"must"};
   const repair={...review({learning_purpose:"error_repair",grading_contract:contract("error_repair"),
-    preferred_date:"2026-08-20",latest_date:"2026-08-25"}),review_planning_tier:"high_value_repair",triage:"must"};
+    preferred_date:"2026-08-20",latest_date:"2026-08-25"}),review_planning_tier:"high_value_repair",triage:"must",
+    hard_blocker:true};
   assert.ok(deriveActionPriority(repair,"2026-08-30")<deriveActionPriority(exam,"2026-08-30"));
 });
 

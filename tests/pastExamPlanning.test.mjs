@@ -125,12 +125,16 @@ test("未完了2018は次年度をblockし、completed後だけ理由付き2019�
   assert.equal(next.recommended.year,2019);assert.match(next.recommended.selectedYearReason,/2018.*2019/);
 });
 
-test("2024/2025は通常trainingから保護し最終simulationだけで選択可能",()=>{
+test("2024 benchmarkは2022完了後に解放し、2025 retestは2024完了まで保護",()=>{
   const catalog=buildPastExamCatalog({record:source,sessions:[],attempts:[],exposureOverrides:{}});
   const training=buildPastExamYearCandidates({catalog,attempts:[],pastSessions:[],today:"2026-08-27",daysRemaining:80});
   assert.equal(training.some(row=>[2024,2025].includes(row.year)),false);
   const final=buildPastExamYearCandidates({catalog,attempts:[],pastSessions:[],today:"2026-10-26",daysRemaining:20});
-  assert.equal(selectPastExamYear({candidates:final,taskType:"simulation"}).year,2024);
+  assert.equal(final.some(row=>[2024,2025].includes(row.year)),false);
+  const pastSessions=[{id:2022,year:2022,date:"2026-10-02",session_kind:"selected_three_timed",
+    session_type:"scan5",simulation_completed_at:"2026-10-02T12:00:00Z",questions:[]}];
+  const after2022=buildPastExamYearCandidates({catalog,attempts:[],pastSessions,today:"2026-10-10",daysRemaining:36});
+  assert.equal(selectPastExamYear({candidates:after2022,taskType:"timed_three_question_session"}).year,2024);
 });
 
 test("generated unseenは複数年度の本番証拠後だけtransfer訓練として10〜20%を許可する",()=>{

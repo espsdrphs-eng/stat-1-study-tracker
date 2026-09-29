@@ -306,6 +306,7 @@ export type PastSession = Record<string, unknown> & {
   /** Persistent logical instance. Schedule dates are deliberately not identity. */
   session_instance_id?:string;
   session_purpose?:PastExamSessionPurpose;session_ordinal?:number;stable_session_key?:string;
+  past_exam_year_role?:"clean_exam_measurement"|"current_benchmark_simulation"|"historical_retest"|"training_pool";
   session_state?:PastExamSessionState;
   exposure_snapshot_at_start?:{
     classification:"clean"|"practice";exposed_problem_ids:string[];total_problem_count:number;captured_at:string;
@@ -360,6 +361,7 @@ export type Task = {
   correction_provided?:boolean;retention_pending?:boolean;
   past_exam_task_type?:"clean_scan5"|"practice_scan5"|"individual_full"|"timed_three_question_session"|"simulation";
   past_exam_year?:number;session_problem_ids?:string[];clean_selection_evidence?:boolean;
+  past_exam_year_role?:PastSession["past_exam_year_role"];
   stable_session_key?:string;
   past_exam_session_state?:PastExamSessionState;
   session_workflow?:string;
@@ -443,6 +445,7 @@ export type AdaptivePlanTask = {
   reviewScheduleStatus?:"within_window"|"overdue_recovery";
   pastExamTaskType?:"clean_scan5"|"practice_scan5"|"individual_full"|"timed_three_question_session"|"simulation";
   pastExamYear?:number;sessionProblemIds?:string[];cleanSelectionEvidence?:boolean;
+  pastExamYearRole?:PastSession["past_exam_year_role"];
   stableSessionKey?:string;
   pastExamSessionState?:PastExamSessionState;
   sessionWorkflow?:string;

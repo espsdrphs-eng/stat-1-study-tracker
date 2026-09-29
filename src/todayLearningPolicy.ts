@@ -68,11 +68,8 @@ export function whyToday(task:Partial<Task>){
 export function deriveActionPriority(task:Partial<Task>,today:string){
   const actionClass=deriveCurrentActionClass(task);
   const purpose=String(task.grading_contract?.learningPurpose||task.learning_purpose||"");
-  const hardOverdue=isReviewTask(task)&&reviewDueState(task,today)==="hard_overdue";
-  const majorRepair=actionClass==="targeted_repair"&&(
-    purpose==="error_repair"||task.review_planning_tier==="high_value_repair"
-  );
-  if(hardOverdue&&majorRepair)return 100;
+  // A date window cannot certify that a Review blocks an exam session.
+  if(task.hard_blocker===true&&actionClass==="targeted_repair")return 100;
   if(actionClass==="exam_practice"&&purpose!=="transfer_check")return 200;
   if(actionClass==="targeted_repair"&&isReviewTask(task))return 300;
   if(purpose==="transfer_check")return 400;
@@ -149,6 +146,17 @@ export function reviewPlanningDecision(args:{
     /success|transfer|reproduction/.test(String(review.lifecycle_transition_provenance||""))||!!provenRepairSource;
   const retentionPending=purpose==="retrieval_check"&&activeTargets>0&&
     explicitRetentionEvidence;
+
+  // The lifecycle stays intact, but an old Whitebook check is not a required
+  // exam repair without a verified current PastExam -> skill -> problem match.
+  if(problem?.source_type==="whitebook"&&args.pastExamIsPrimary){
+    const verified=args.repairCandidates?.some(candidate=>candidate.required&&candidate.matchConfidence==="high"&&
+      candidate.sourceProblemId.startsWith("PY-")&&!!candidate.sourceFindingIds?.length&&
+      !!candidate.weaknessSkillIds?.length&&!!candidate.matchedSkillIds?.length&&
+      candidate.whitebookProblemIds.includes(review.problem_id));
+    if(!verified)return {tier:"deferred_maintenance",scheduleAsRequired:false,
+      reason:"本番由来のmajor失点と明示skillが一致する根拠がないため、白本の保持確認は任意"};
+  }
 
   if(review.triage_override==="must")return {tier:"high_value_repair",scheduleAsRequired:true,
     reason:"ユーザーが今日必須へ明示指定"};

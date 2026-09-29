@@ -10,7 +10,7 @@ import {deriveFailureEpisode} from "./failureEpisode.ts";
 import {deriveTransferEvidence,findingSkillIds,problemSkillIds,rootProgress} from "./skillEvidence.ts";
 import {groundedWhitebookSkills,matchesFailureOperation} from "./groundedSkills.ts";
 import {buildStableTargetIndex} from "./stableTargetIdentity.ts";
-import {deriveTransferTrainingCandidates} from "./generatedTransfer.ts";
+import {delayedTrainingPrerequisites,deriveTransferTrainingCandidates} from "./generatedTransfer.ts";
 
 type ConceptMapping={conceptIds:string[];confidence:"verified"|"candidate"};
 type EvidenceEvent={
@@ -185,7 +185,8 @@ export function buildPastExamRepairCandidates(args:{
 }):PastExamRepairCandidate[]{
   if(!args.record)return [];
   const targetIndex=buildStableTargetIndex({attempts:args.attempts,reviews:[]});
-  const training=deriveTransferTrainingCandidates({...args,record:args.record,problems:args.problems||[]});
+  const training=deriveTransferTrainingCandidates({...args,pastSessions:args.sessions,
+    record:args.record,problems:args.problems||[]});
   const references=new Map(args.record.data.pastExamProblems.map(problem=>[canonicalPastExamProblemId(problem),problem]));
   const weakness=new Map(args.conceptWeaknesses.map(row=>[row.conceptId,row]));
   const catalog=buildPastExamCatalog({record:args.record,sessions:args.sessions,attempts:args.attempts,exposureOverrides:args.exposureOverrides});
@@ -261,8 +262,12 @@ export function buildPastExamRepairCandidates(args:{
         const sameRootFailureCount=args.attempts.filter(other=>!other.exclude_from_metrics&&!other.duplicate_of_attempt_id&&other.problem_id===attempt.problem_id&&
           deriveFailureEpisode(other).rootWeaknesses.some(otherRoot=>otherRoot.rootWeaknessId===root.rootWeaknessId&&otherRoot.requiredRepair)).length;
         const interventionChanged=sameRootFailureCount>=2||!!progress.transferFailure;
-        const transferTraining=training.find(t=>t.lineage.sourceAttemptId===attempt.id&&skills.includes(t.lineage.rootSkillId));
-        const repairKind:PastExamRepairCandidate["repairKind"]=progress.repairSuccess?(transferTraining||transfer.length?"transfer":"transfer_wait"):linkedWhitebook.length?"whitebook":
+        const delayed=delayedTrainingPrerequisites(attempt,root,args.attempts);
+        const transferTraining=transfer.length?undefined:
+          training.find(t=>t.lineage.sourceAttemptId===attempt.id&&skills.includes(t.lineage.rootSkillId));
+        const repairKind:PastExamRepairCandidate["repairKind"]=progress.repairSuccess?
+          (delayed.retrieval&&(transferTraining||transfer.length)?"transfer":"transfer_wait"):
+          linkedWhitebook.length?"whitebook":
           interventionChanged?"rediagnosis":"concept_mini";
         const interventionRequired=required&&repairKind!=="transfer_wait"&&transferTraining?.kind!=="pending";
         candidates.push({sessionId:context.sessionId,sourceAttemptId:progress.latestFailure.id,sourceProblemId,transferTraining,
@@ -273,7 +278,9 @@ export function buildPastExamRepairCandidates(args:{
           whitebookProblemIds:repairKind==="whitebook"?linkedWhitebook:[],transferProblemIds:transfer,
           weaknessSkillIds:skills,matchedSkillIds:unique(matches.slice(0,2).flatMap(liveSkills).filter(id=>skills.includes(id))),
           matchScore:linkedWhitebook.length?100:0,matchConfidence,repairKind,sameRootFailureCount,interventionChanged,
-          matchReason:repairKind==="transfer_wait"?"一致する明示skillの別問題が未確認。章・テーマだけの候補を生成しない":
+          matchReason:repairKind==="transfer_wait"?delayed.retrieval?
+            "一致する明示skillの別問題が未確認。章・テーマだけの候補を生成しない":
+            "補修成功後の参照なし遅延確認を待ってから別問題へ進む":
             linkedWhitebook.length?`source findingのfine concept / operation「${skills.join(" / ")}」と一致。根拠：${matches.slice(0,2).flatMap(p=>(tags.get(p.problem_id)||[]).filter(t=>t.confidence==="high"&&skills.includes(t.skillId)).map(t=>`${t.source}「${t.evidence}」`)).join(" / ")||"live masterの明示skill"}`:
             `exact skill/operation一致の白本がないため、${sourceProblemId}の該当部分を局所補修`,
           reason:progress.transferFailure?`転移training Attempt ${progress.transferFailure.id}で対象能力を再現できなかったため、生成を繰り返さず元rootを再診断`:

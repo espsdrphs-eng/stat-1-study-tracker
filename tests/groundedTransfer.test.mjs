@@ -33,17 +33,21 @@ test('9/16 explicit finding operation bridges to a sourced Whitebook question, n
   assert.match(row.matchReason,/mathstat_answers_2025_03_07/);
   assert.equal(JSON.stringify(a),before,'raw finding/contract must not be rewritten');
 });
-test('no source text: mini repair then explicit success unlocks different-problem transfer',()=>{
+test('no source text: mini repair and delayed retrieval unlock different-problem transfer',()=>{
   const a=source();assert.equal(build([a])[0].repairKind,'concept_mini');
-  const success={...a,id:2,date:'2026-09-18',error_types:['none'],error_type:'none',review_outcome:'success',
+  const success={...a,id:2,date:'2026-09-18',learning_purpose:'error_repair',error_types:['none'],error_type:'none',review_outcome:'success',
     graded_findings:[{...a.graded_findings[0],error_type:'none',resolved:true,evidence:'MGFを期待値の離散和から正しく計算した。'}]};
-  const row=build([a,success])[0];
+  const waiting=build([a,success])[0];
+  assert.equal(waiting.repairKind,'transfer_wait');
+  const retrieval={...success,id:3,date:'2026-09-20',learning_purpose:'retrieval_check',assessment_timing:'delayed_retrieval'};
+  const row=build([a,success,retrieval])[0];
   assert.equal(row.repairKind,'transfer');assert.equal(row.repairSuccessEvidenceId,2);
   assert.deepEqual(row.transferProblemIds,['PY-2023-Q3']);
-  assert.equal(deriveTransferEvidence([a,success]).length,0);
-  const transfer={...success,id:3,problem_id:'PY-2023-Q3',date:'2026-09-20'};
-  assert.equal(deriveTransferEvidence([a,success,transfer])[0]?.successAttemptId,3);
-  assert.equal(build([a,success,transfer]).length,0);
+  assert.equal(deriveTransferEvidence([a,success,retrieval]).length,0);
+  const transfer={...success,id:4,problem_id:'PY-2023-Q3',date:'2026-09-22',learning_purpose:'exam_performance',
+    grading_contract:{gradedParts:[{id:'first_step',rootSkillIds:[skill],masteryLevel:1}]}};
+  assert.equal(deriveTransferEvidence([a,success,retrieval,transfer])[0]?.successAttemptId,4);
+  assert.equal(build([a,success,retrieval,transfer]).length,0);
 });
 test('two failures cannot bypass repair success and schedule unguided transfer',()=>{
   const a=source(),rows=build([a,{...a,id:2,date:'2026-09-17'}]);
@@ -61,11 +65,11 @@ test('live transfer prompt carries the canonical target without asserting a succ
   assert.match(prompt,/これは今回の成功を意味しない/);
   assert.match(prompt,/graded_findingsのevidence/);
 });
-test('explicit cross-problem scaffold success is repair, not the later transfer test',()=>{
+test('explicit cross-problem scaffold success is repair, not the delayed transfer test',()=>{
   const a=source(),scaffold={...a,id:2,problem_id:wb.problem_id,source_problem_id:a.problem_id,
     date:'2026-09-18',learning_purpose:'error_repair',graded_findings:[{...a.graded_findings[0],error_type:'none',resolved:true,
       evidence:'MGFを期待値の和から正しく計算した。'}]};
   assert.equal(deriveTransferEvidence([a,scaffold]).length,0);
   const row=build([a,scaffold])[0];
-  assert.equal(row.repairKind,'transfer');assert.equal(row.repairSuccessEvidenceId,2);
+  assert.equal(row.repairKind,'transfer_wait');assert.equal(row.repairSuccessEvidenceId,2);
 });

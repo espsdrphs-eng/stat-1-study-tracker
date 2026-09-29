@@ -15,8 +15,17 @@ export type LearningPolicy=ExamHorizonPolicy&{
   requiredRepairPolicy:"evidence_linked_major_only";
   maintenancePolicy:"required"|"optional_deferred";
   sessionPolicy:"problem_drill"|"scan_plus_individual"|"past_exam_session"|"simulation";
-  holdoutPolicy:{years:number[];released:boolean};
+  holdoutPolicy:{years:number[];released:boolean;yearRoles:Record<number,PastExamYearRole>;
+    releaseWindowDaysByYear:Record<number,number>};
 };
+
+export type PastExamYearRole="clean_exam_measurement"|"current_benchmark_simulation"|"historical_retest"|"training_pool";
+export function pastExamYearRole(year:number):PastExamYearRole{
+  if(year===2022)return "clean_exam_measurement";
+  if(year===2024)return "current_benchmark_simulation";
+  if(year===2025)return "historical_retest";
+  return "training_pool";
+}
 
 /** Canonical learning policy used by Today, all forecasts, Dashboard and audit. */
 export function deriveLearningPolicy(daysRemaining:number,_evidence?:unknown):LearningPolicy{
@@ -30,7 +39,9 @@ export function deriveLearningPolicy(daysRemaining:number,_evidence?:unknown):Le
   return {...base,pastExamShareMin:base.min,pastExamShareMax:base.max,
     examPracticeTargetRange:{min:base.min,max:base.max},requiredRepairPolicy:"evidence_linked_major_only",
     maintenancePolicy:base.pastExamIsPrimary?"optional_deferred":"required",
-    holdoutPolicy:{years:[2024,2025],released:daysRemaining<=30}};
+    holdoutPolicy:{years:[2024,2025],released:daysRemaining<=39,
+      yearRoles:{2022:"clean_exam_measurement",2024:"current_benchmark_simulation",2025:"historical_retest"},
+      releaseWindowDaysByYear:{2024:39,2025:24}}};
 }
 
 /** Backward-compatible facade. There is still only one underlying policy. */

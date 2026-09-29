@@ -1291,13 +1291,15 @@ function PastView({data,go,run,busy}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()
   const submitSession=async()=>{
     const selectedProblemIds=session.questions.filter(row=>row.selected).map(row=>row.problemId||row.questionLabel);
     const yearCandidate=workspace.candidates.find(row=>row.year===Number(session.year));
-    const classification=yearCandidate?.cleanScanEligible?"clean":"practice";
+    const classification=yearCandidate?.yearRole==="historical_retest"?"practice":
+      yearCandidate?.cleanScanEligible?"clean":"practice";
     const sessionPurpose=session.session_kind==="selected_three_timed"?"timed_three_question_session":
       session.session_kind==="scan_only"?(classification==="clean"?"clean_scan5":"practice_scan5"):"individual_full";
     const selectedYearReason=workspace.recommended?.year===Number(session.year)?workspace.recommended.selectedYearReason:
       `${session.year}年は${yearCandidate?.exposedCount||0}/${yearCandidate?.eligibleRows.length||5}問露出。現在選択した演習形式に利用。`;
     const payload={...session,year:Number(session.year),stage:stageForDays(days),scan_minutes:Number(session.scan_minutes||0),actual_total_minutes:Number(session.actual_total_minutes||0),
       session_purpose:sessionPurpose,session_ordinal:1,scan_evidence_kind:classification,
+      past_exam_year_role:yearCandidate?.yearRole,
       stable_session_key:workspace.recommended?.year===Number(session.year)&&workspace.recommended.stableSessionKey?
         workspace.recommended.stableSessionKey:undefined,selected_year_reason:selectedYearReason,
       exposure_snapshot_at_start:{classification,
@@ -1338,7 +1340,7 @@ function PastView({data,go,run,busy}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()
           <span>concept <strong>{data.adaptiveLearning.referencePack.counts.concepts}件</strong></span>
           <span>白本候補 <strong>{data.adaptiveLearning.referencePack.counts.whitebookLinks}件</strong></span>
         </div>
-        <p>2016〜2023年はtraining pool、2024・2025年はsimulation holdoutです。明示的な露出履歴は保持し、Attemptもsessionもない検証済み素材だけを未見候補として扱います。</p>
+        <p>2022年はclean本番測定、2024年は近年型benchmark、2025年は既習年度の再試験です。2025年の結果は未見証拠へ含めません。</p>
         <div className="reference-year-list">{catalogYears.map(year=><details key={year}><summary>{year}年（{referenceCatalog.filter(row=>row.year===year).length}問）</summary>
           {referenceCatalog.filter(row=>row.year===year).map(row=><div className="reference-question-row" key={row.referenceProblemId}>
             <div><strong>{year}年問{row.questionNumber}</strong><span>{row.title}</span>

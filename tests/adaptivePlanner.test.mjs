@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {buildAdaptivePlannerShadow,rollingPastExamShare} from "../src/adaptivePlanner.ts";
 import {buildPastExamCatalog} from "../src/examReferencePack.ts";
+import {deriveFailureEpisode} from "../src/failureEpisode.ts";
 import {pastProblem,problem,record} from "./adaptiveFixture.mjs";
 
 const whitebook=[
@@ -42,6 +43,24 @@ const reviewFixture=(id,problemId,{due="2026-08-14",earliest=due,latest=due,minu
     source_attempt_id:id,learning_purpose:"error_repair",effective_mode:"main_calc",review_scope:"main_calc_target",
     sheet_type:"main_calc_sheet",contract_id:contract.contractId,contract_hash:contract.contractHash,grading_contract:contract};
 };
+
+test("同じrootを再失敗したPastExamは旧main_calc Reviewを必須に重ねない",()=>{
+  const source={id:980,problem_id:"PY-2021-Q1",date:"2026-09-27",mode:"main_calc",time_minutes:12,
+    score_numeric:35,actual_reference_level:0,grading_confidence:.95,
+    grading_contract:{gradedParts:[{id:"major_calculation",rootSkillIds:["c1"],masteryLevel:2}]},
+    graded_findings:[{graded_part_id:"major_calculation",error_type:"W",resolved:false,evidence:"主要計算を完遂できない"}]};
+  const root=deriveFailureEpisode(source).rootWeaknesses[0];
+  const review={...reviewFixture(981,source.problem_id,{due:"2026-09-29",earliest:"2026-09-29",latest:"2026-10-02"}),
+    source_attempt_id:source.id,generated_from_attempt_id:source.id,
+    grading_contract:{...reviewFixture(981,source.problem_id).grading_contract,sourceAttemptId:source.id}};
+  const plan=buildAdaptivePlannerShadow({record:expandedRecord,catalog:expandedCatalog,weaknesses:[],problems:[],
+    attempts:[source],reviews:[review],pastSessions:[],currentTasks:[],today:"2026-09-29",examDate:"2026-11-15",
+    targetMinutes:150,repairCandidates:[{required:true,interventionChanged:true,sourceProblemId:source.problem_id,
+      rootWeaknessId:root.rootWeaknessId,repairKind:"rediagnosis",sourceAttemptId:source.id}]});
+  assert.ok(!plan.plan14.reviewSchedule.placements.some(row=>row.review.id===review.id));
+  assert.ok(plan.plan14.plan.flatMap(day=>day.tasks).filter(task=>task.reviewId===review.id)
+    .every(task=>task.requiresUserSelection));
+});
 
 test("残り91日以上の30日計画で第5・7章、scan5、fullが0件にならない",()=>{
   const shadow=build("2026-07-29");
@@ -372,7 +391,7 @@ test("低価値maintenance backlog 20件は必須枠へ置かず本番演習を�
   assert.equal(plan.plan14.reviewSchedule.placements.length,0);
 });
 
-test("major修復後の未確認retention Reviewは補修枠へ残す",()=>{
+test("白本retrievalはPastExam由来のhigh matchなしでは任意に保持する",()=>{
   const base=reviewFixture(950,"WB-6-A-01",{due:"2026-08-28",earliest:"2026-08-28",latest:"2026-08-30",minutes:7});
   const review={...base,learning_purpose:"retrieval_check",correction_provided:true,retention_pending:true,
     assessment_timing:"delayed_retrieval",review_scope:"check_only",effective_review_scope:"check_only",
@@ -384,8 +403,8 @@ test("major修復後の未確認retention Reviewは補修枠へ残す",()=>{
     attempts:[sourceAttempt],reviews:[review],pastSessions:[],currentTasks:[],today:"2026-08-28",examDate:"2026-11-15",targetMinutes:150});
   const placed=plan.plan14.plan.flatMap(day=>day.tasks).find(task=>task.reviewId===950);
   assert.equal(placed?.todayCategory,"repair");
-  assert.equal(placed?.reviewPlanningTier,"high_value_repair");
-  assert.match(placed?.whyToday||"",/過去問/);
+  assert.equal(placed?.reviewPlanningTier,"deferred_maintenance");
+  assert.match(placed?.whyToday||"",/明示skill/);
 });
 
 test("2019表示taskが2025 identityを持つstale snapshotを捨て2019 identityで再生成する",()=>{

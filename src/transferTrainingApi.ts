@@ -15,11 +15,11 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
   current:()=>Promise<Bootstrap>;save:(input:StudyUpdate&Record<string,unknown>)=>Promise<number>}){
   const {db,body}=args,key=String(body.key||""),action=String(body.action||"view");
   if(!key.startsWith("training:"))throw new Error("転移確認の計画キーが必要です");
-  const [problems,attempts,answers,meta,exposure]=await Promise.all([db.problems.toArray(),db.attempts.toArray(),
-    db.answerIndex.toArray(),db.meta.get(EXAM_REFERENCE_PACK_META_KEY),db.meta.get(EXAM_REFERENCE_EXPOSURE_META_KEY)]);
+  const [problems,attempts,pastSessions,answers,meta,exposure]=await Promise.all([db.problems.toArray(),db.attempts.toArray(),
+    db.pastSessions.toArray(),db.answerIndex.toArray(),db.meta.get(EXAM_REFERENCE_PACK_META_KEY),db.meta.get(EXAM_REFERENCE_EXPOSURE_META_KEY)]);
   if(!meta)throw new Error("canonical taxonomy未確認のため保留です");
   const candidates=deriveTransferTrainingCandidates({record:JSON.parse(meta.value) as StoredExamReferencePack,
-    problems,attempts,answers,exposureOverrides:JSON.parse(exposure?.value||"{}")});
+    problems,attempts,pastSessions,answers,exposureOverrides:JSON.parse(exposure?.value||"{}")});
   const candidate=candidates.find(c=>c.key===key);
   let record:TransferGenerationRecord|undefined;
   const stored=await db.meta.get(generationMetaKey(key));if(stored)record=JSON.parse(stored.value);

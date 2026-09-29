@@ -57,8 +57,9 @@ test("same-problem successful reproduction is repair, not different-problem tran
     attempts:[invalid],pastSessions:[],aliases:[],today:"2026-09-09"});
   assert.equal(result.evidence.transfer.denominator,0,"an invalid finding must not create a transfer obligation");
 });
-test("repair success generates a different-problem transfer, not the resolved original repair",()=>{
-  const attempts=[source,success(2,source.problem_id,"2026-09-03")];
+test("repairと遅延確認の成功後に別問題transferへ進む",()=>{
+  const attempts=[source,{...success(2,source.problem_id,"2026-09-03"),learning_purpose:"error_repair"},
+    {...success(3,source.problem_id,"2026-09-05"),learning_purpose:"retrieval_check",assessment_timing:"delayed_retrieval"}];
   const rows=buildPastExamRepairCandidates({record:record(),sessions:[session],attempts,conceptWeaknesses:analyze(attempts),
     problems:[problem(source.problem_id,null,"past_exam"),problem("PY-2022-Q1",null,"past_exam")]});
   assert.equal(rows[0].repairKind,"transfer");
@@ -116,8 +117,9 @@ test("whole-problem theme is not proof that a particular finding failed every co
   assert.equal(rows.find(r=>r.conceptId==="c2").strongFailures,0);
 });
 
-test("repair-to-transfer candidate is actually materialized by the Planner with source provenance",()=>{
-  const rec=record(),attempts=[source,success(2,source.problem_id,"2026-09-03")];
+test("repairと遅延確認後のtransfer candidateをPlannerがlineage付きで配置",()=>{
+  const rec=record(),attempts=[source,{...success(2,source.problem_id,"2026-09-03"),learning_purpose:"error_repair"},
+    {...success(3,source.problem_id,"2026-09-05"),learning_purpose:"retrieval_check",assessment_timing:"delayed_retrieval"}];
   const problems=[problem(source.problem_id,null,"past_exam"),problem("PY-2022-Q1",null,"past_exam")];
   const weaknesses=analyze(attempts),repairCandidates=buildPastExamRepairCandidates({record:rec,sessions:[session],attempts,
     conceptWeaknesses:weaknesses,problems});

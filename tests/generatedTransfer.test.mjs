@@ -109,17 +109,26 @@ test('a failed conditional distribution conclusion and reciprocal risk coefficie
   assert.deepEqual(findingSkillIds(risk,risk.graded_findings[0]),['risk_function']);
 });
 
-test('individual PastExam source without a session still reaches the canonical transfer planner candidate',()=>{
-  const rows=buildPastExamRepairCandidates({record:pack,sessions:[],attempts:[source,repair,retrieval],
+test('individual PastExam source reaches transfer planner after the benchmark window',()=>{
+  const pastSessions=[{id:900,year:2024,session_kind:'selected_three_timed',session_state:'completed',
+    simulation_completed_at:'2026-09-24',date:'2026-09-24',questions:[]}];
+  const rows=buildPastExamRepairCandidates({record:pack,sessions:pastSessions,attempts:[source,repair,retrieval],
     conceptWeaknesses:[],problems:[],answers:[]});
   assert.ok(rows.some(row=>row.transferTraining?.key===eligible.key&&row.required));
   const catalog=buildPastExamCatalog({record:pack,sessions:[],attempts:[source,repair,retrieval]});
   const plannerRecord={...pack,validation:{valid:true},reconciliation:{pastExamConflicts:0}};
   const plan=buildAdaptivePlannerShadow({record:plannerRecord,catalog,weaknesses:[],
     problems:[{problem_id:source.problem_id,source_type:'past_exam',display_label:'2023年問5'}],
-    attempts:[source,repair,retrieval],reviews:[],pastSessions:[],currentTasks:[],
+    attempts:[source,repair,retrieval],reviews:[],pastSessions,currentTasks:[],
     today:'2026-09-25',examDate:'2026-11-15',targetMinutes:150,repairCandidates:rows});
   assert.ok(plan.plan7.plan.flatMap(day=>day.tasks).some(task=>task.transferTrainingKey===eligible.key));
+});
+
+test('two same-root failures may request generated transfer before 2024 benchmark instead of another same-problem loop',()=>{
+  const prior=fact(9,source.problem_id,false,{date:'2026-09-19'});
+  const rows=deriveTransferTrainingCandidates({record:pack,attempts:[prior,source,repair,retrieval],problems:[],pastSessions:[]});
+  assert.equal(rows.find(row=>row.lineage.sourceAttemptId===source.id)?.kind,'generated');
+  assert.equal(deriveTransferTrainingCandidates({record:pack,attempts:[source,repair,retrieval],problems:[],pastSessions:[]})[0]?.kind,'pending');
 });
 
 test('a concrete exponential MGF exercise does not satisfy a general distribution derivative failure',()=>{

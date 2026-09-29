@@ -30,7 +30,16 @@ test('sandbox: canonical Planner selection → two-pass generation → blind Att
   await db.meta.put({key:'exam-reference-pack:exposure-overrides',value:JSON.stringify({'PY-2018-Q2':'answer_exposed'})});
   if(!(await db.attempts.where('problem_id').equals('PY-2018-Q2').count()))await db.attempts.put({...fact(8999,'2026-09-19','exam_performance',true),problem_id:'PY-2018-Q2'});
   await db.pastSessions.put({id:9001,year:2023,date:'2026-09-20',session_kind:'individual_full',linked_attempt_ids:[9001],
+    session_instance_id:'session-2023-1',stable_session_key:'past_exam_session:2023:individual_full:session-2023-1',
     initial_selected_problem_ids:[sourceId],final_selected_problem_ids:[sourceId],questions:[],execution_status:'completed'});
+  await db.attempts.bulkPut([1,2,3].map((q)=>({...fact(9010+q,'2026-09-24','exam_performance',true),
+    problem_id:`PY-2024-Q${q}`,mode:'timed',time_minutes:20,score_numeric:60,
+    graded_findings:[],grading_contract:{gradedParts:[]}})));
+  await db.pastSessions.put({id:9002,year:2024,date:'2026-09-24',session_kind:'selected_three_timed',
+    session_instance_id:'session-2024-1',stable_session_key:'past_exam_session:2024:timed_three_question_session:session-2024-1',
+    session_state:'completed',simulation_completed_at:'2026-09-24',scan_minutes:10,selected_answer_count:3,
+    final_selected_problem_ids:['PY-2024-Q1','PY-2024-Q2','PY-2024-Q3'],
+    questions:[1,2,3,4,5].map(q=>({questionLabel:`問${q}`,problemId:`PY-2024-Q${q}`,selected:q<=3}))});
   for(const row of await db.meta.where('key').startsWith('today-plan-snapshot:').toArray())await db.meta.delete(row.key);
   const call=(action,extra={})=>localPost('/api/transfer-training',{key,action,...extra});
   let state=await localGet('/api/bootstrap');
