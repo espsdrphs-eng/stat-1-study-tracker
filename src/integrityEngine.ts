@@ -367,7 +367,12 @@ export function runIntegrityAudit(args: {
       detail:`Session ${unfinished.id} (${unfinished.year}) is unfinished but ${premature[0].past_exam_year} is active`,repairable:true});
   }
   for(const session of canonicalPastSessions){
-    const count=repairCandidates.filter(row=>row.sessionId===session.id&&row.required).length;
+    const roots=new Set(repairCandidates.filter(row=>row.sessionId===session.id).map(row=>row.rootWeaknessId));
+    // Eligibility is not admission. Only executable required work consumes the
+    // daily cap; waiting eligible roots remain available for reevaluation.
+    const count=new Set((currentTodayTasks||[]).filter(task=>!task.checked&&task.triage==="must"&&
+      task.repair_lineage?.rootWeaknessId&&roots.has(task.repair_lineage.rootWeaknessId))
+      .map(task=>task.repair_lineage!.rootWeaknessId)).size;
     if(count>2)issues.push({category:"too_many_session_repairs_required",severity:"active",
       detail:`Session ${session.id} promoted ${count} required repairs`,repairable:false});
   }
@@ -701,10 +706,11 @@ export function runIntegrityAudit(args: {
     const cooldownEnd=addCalendarDays(attempt.date,45);
     const pending=active.filter(review=>resolveCanonicalProblemId(review.problem_id,aliases)===state.problemId&&
       ["error_repair","retrieval_check"].includes(String(review.grading_contract?.learningPurpose||review.learning_purpose||"")));
-    const currentGeneric=(currentTodayTasks||[]).filter(task=>!task.checked&&!task.review_type&&
+    const currentGeneric=(currentTodayTasks||[]).filter(task=>!task.checked&&!task.review_type&&!isPastExamSessionTask(task)&&!task.transfer_training_key&&
       resolveCanonicalProblemId(task.problem_id,aliases)===state.problemId&&today<=cooldownEnd);
     const plannedGeneric=(currentPlanSummary?.plan||[]).flatMap(day=>day.date<=cooldownEnd?day.tasks:[])
-      .filter(task=>task.problemId===state.problemId&&task.slot==="score_building"&&task.purpose!=="transfer_check");
+      .filter(task=>task.problemId===state.problemId&&task.slot==="score_building"&&task.purpose!=="transfer_check"&&
+        !isPastExamSessionTask({past_exam_task_type:task.pastExamTaskType}));
     if(pending.length||currentGeneric.length||plannedGeneric.length)issues.push({
       category:"graduated_but_rescheduled",severity:"active",attemptIds:[attempt.id],
       reviewIds:pending.map(review=>review.id),

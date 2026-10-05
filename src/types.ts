@@ -466,7 +466,8 @@ export type AdaptivePlanSummary = {
   days:number;plan:AdaptivePlanDay[];totalMinutes:number;
   counts:{scoreBuilding:number;repair:number;maintenance:number;scan5:number;full:number;timed:number;pastExam:number;chapter5:number;chapter7:number;chapter8:number};
   weeklyMinimumViolations:string[];dailyCapacityViolations:number;
-  reviewSchedule:{repairBudgetMinutes:number;placements:Array<{reviewId:number;problemId:string;date:string;latestDate:string;status:"within_window"|"overdue_recovery"}>;capacityConflicts:AdaptiveReviewScheduleConflict[]};
+  reviewSchedule:{repairBudgetMinutes:number;placements:Array<{reviewId:number;problemId:string;date:string;latestDate:string;status:"within_window"|"overdue_recovery"}>;capacityConflicts:AdaptiveReviewScheduleConflict[];
+    decisions?:Array<{reviewId:number;problemId:string;date:string;waitingDays:number;reason:string;admitted:boolean;reevaluateOn?:string}>};
 };
 export type AdaptivePlannerShadow = {
   available:boolean;mode:"unavailable"|"shadow"|"active";generatedAt:string;phase:string;daysRemaining:number;
@@ -501,9 +502,10 @@ export type PastExamRepairCandidate = {
   rootWeaknessId?:string;sourceFindingIds?:string[];weaknessSkillIds?:string[];
   matchedSkillIds?:string[];matchScore?:number;matchConfidence?:"low"|"medium"|"high";
   repairKind?:"whitebook"|"same_problem"|"concept_mini"|"transfer"|"transfer_wait"|"rediagnosis";
-  sameRootFailureCount?:number;interventionChanged?:boolean;
+  sameRootFailureCount?:number;interventionChanged?:boolean;observedFailure?:string;
 };
 export type RepairLineageProjection = {
+  intervention?:"rediagnosis";observedFailure?:string;
   sourceFindingIds?:string[];repairSuccessEvidenceId?:number;
   sourceAttemptId:number;sourceProblemId:string;sourceFindingId:string;
   rootConceptId:string;materiality:"minor"|"major";recurrence:number;

@@ -32,6 +32,7 @@ import { buildScan5Prompt, deriveExposure, scanMetrics, stageForDays, defaultSes
 import {derivePastExamSessionState,derivePastExamWorkspace} from "./pastExamPlanning.ts";
 import {attemptPlanningEligible} from "./legacyKPolicy.ts";
 import {deriveCurrentActionClass,reviewDueState,todayLearningCategory} from "./todayLearningPolicy.ts";
+import {isPastExamSessionTask} from "./examOptimizationPolicy.ts";
 import { CHAPTER_META } from "./officialMaster";
 import { isProblemPack, masterDiff, parseAliasesPayload, parseIntegratedMasterPayload, parseProblemMasterPayload } from "./masterData";
 import { isIndexedDbSchemaError, schemaErrorMessage, type IndexedDbSchemaDiagnostic } from "./dbSchema";
@@ -121,6 +122,7 @@ export default function App() {
   const [page,setPage]=useState<Page>("dashboard");
   const [menu,setMenu]=useState(false);
   const [selected,setSelected]=useState<Problem|null>(null);
+  const [startingPastTask,setStartingPastTask]=useState<Task|null>(null);
   const [busy,setBusy]=useState(false);
   const [refreshing,setRefreshing]=useState(false);
   const [message,setMessage]=useState("");
@@ -155,7 +157,7 @@ export default function App() {
     closeLocalDatabase();
     await updateServiceWorker(true);
   };
-  const go=(next:Page)=>{setPage(next);setMenu(false);setSelected(null)};
+  const go=(next:Page,task?:Task)=>{setPage(next);setMenu(false);setSelected(null);setStartingPastTask(next==="past"?task||null:null)};
   if(!data) return <div className="boot"><div className="spinner"/><strong>学習データを準備しています</strong>{error&&<p>{error}</p>}{schemaIssue&&<div className="boot-repair"><span>不足している保存先：{schemaIssue.missingStores.join("、")||"確認中"}</span><button className="primary" disabled={busy} onClick={repairDatabase}>データベースを安全に更新</button><button className="ghost" onClick={()=>navigator.clipboard.writeText(JSON.stringify(schemaIssue,null,2))}>診断情報をコピー</button></div>}</div>;
   const writeBusy=busy||!data.databaseStatus.valid;
   return <div className="app-shell">
@@ -182,7 +184,7 @@ export default function App() {
         page==="import"?<AdvancedImportView problems={data.problems} answerIndex={data.answerIndex} problemAliases={data.problemAliases} attempts={data.attempts} reviews={data.reviews} run={run} busy={writeBusy}/>:
         page==="reviews"?<ReviewsView data={data} run={run} busy={writeBusy}/>:
         page==="weak"?<WeakView data={data} run={run} busy={writeBusy}/>:
-        page==="past"?<PastView data={data} go={go} run={run} busy={writeBusy}/>:
+        page==="past"?<PastView data={data} go={go} run={run} busy={writeBusy} startingTask={startingPastTask}/>:
         page==="sheets"?<AnswerSheetsView/>:
         <SettingsView data={data} run={run} busy={busy}/>}
       </div>
@@ -552,7 +554,7 @@ function PostponeReviewModal({item,initial="tomorrow",busy,close,save}:{item:Par
     <small>「今日やる」は今日必須へ戻します。期限なしは今日の自動予定から外れますが、問題一覧からはいつでも開けます。</small>
   </div></Modal>;
 }
-function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a:()=>Promise<unknown>,s:string)=>void;go:(p:Page)=>void;select:(p:Problem)=>void}) {
+function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a:()=>Promise<unknown>,s:string)=>void;go:(p:Page,task?:Task)=>void;select:(p:Problem)=>void}) {
   const [reviewTask,setReviewTask]=useState<Task|null>(null);
   const [postponeTask,setPostponeTask]=useState<{item:Task;initial:ScheduleAction}|null>(null);
   const [todayFilter,setTodayFilter]=useState<"exam_practice"|"repair"|"maintenance"|"optional"|"completed"|"all">("all");
@@ -626,7 +628,7 @@ function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a
       </section>}
     <section className="panel">
       <div className="table-wrap"><table><thead><tr><th>種類</th><th>問題</th><th>推奨モード</th><th>予定時間</th><th>理由</th><th/></tr></thead>
-      {triageGroups.map(group=><tbody key={group.key} className={`triage-group ${group.key}`}><tr className="triage-heading"><td colSpan={6}><strong>{group.label}</strong>{group.description&&<span>{group.description}</span>}</td></tr>{group.tasks.map((t,i)=><TodayTaskRows key={t.stable_session_key||`${t.problem_id}-${i}`} task={t} problem={pmap[t.problem_id]} data={data} busy={busy} run={run} date={data.dashboard.today} onReview={setReviewTask} onOpenProblem={problem=>select(problem)} onOpenPastExam={()=>go("past")} onPostpone={(item,initial)=>setPostponeTask({item,initial})} examPhase={examPhase}/>)}</tbody>)}</table></div>
+      {triageGroups.map(group=><tbody key={group.key} className={`triage-group ${group.key}`}><tr className="triage-heading"><td colSpan={6}><strong>{group.label}</strong>{group.description&&<span>{group.description}</span>}</td></tr>{group.tasks.map((t,i)=><TodayTaskRows key={t.stable_session_key||`${t.problem_id}-${i}`} task={t} problem={pmap[t.problem_id]} data={data} busy={busy} run={run} date={data.dashboard.today} onReview={setReviewTask} onOpenProblem={problem=>select(problem)} onOpenPastExam={()=>go("past",t)} onPostpone={(item,initial)=>setPostponeTask({item,initial})} examPhase={examPhase}/>)}</tbody>)}</table></div>
       {todayFilter==="completed"&&<div className="completed-task-list">{data.today.completedTasks.map((task,index)=><div key={`${task.problem_id}-${index}`}><Check size={16}/><strong>{task.title}</strong><span>{task.minutes}分・{task.reason}</span></div>)}{!data.today.completedTasks.length&&<Empty>今日の完了記録はまだありません</Empty>}</div>}
       {todayFilter!=="completed"&&!triageGroups.length&&<Empty>この区分の課題はありません</Empty>}
     </section>
@@ -665,7 +667,8 @@ function StudyPromptButtons({item,resolved}:{item:Partial<Review&Task>;resolved?
   }):"";
   const repairPrompt=buildRepairPrompt({
     problemId:item.problem_id||"",displayLabel:item.title||item.problem_id,theme:item.theme,
-    canonicalProblemType:item.canonical_problem_type,mode:item.mode,estimatedMinutes:item.minutes||item.estimated_minutes
+    canonicalProblemType:item.canonical_problem_type,mode:item.mode,estimatedMinutes:item.minutes||item.estimated_minutes,
+    repairLineage:item.repair_lineage
   });
   const isFirst=(item.task_origin||"first_attempt")==="first_attempt"&&!item.id;
   return <div className="prompt-button-row">
@@ -693,6 +696,13 @@ function originLabel(origin:string){
   return origin==="review_attempt"?"復習":origin==="first_attempt"?"初回":origin==="linked_s_check"?"関連確認":origin==="related_drill"?"関連補修":origin==="past_exam_followup"?"過去問補修":origin||"未設定";
 }
 function TodayTaskDetails({task,problem,onOpenProblem,onOpenPastExam,problemAliases,examPhase,resolved}:{task:Task;problem?:Problem;onOpenProblem:(problem:Problem)=>void;onOpenPastExam:()=>void;problemAliases:ProblemAlias[];examPhase:ExamPhase;resolved?:ResolvedReviewCard}) {
+  if(isPastExamSessionTask(task))return <div className="today-task-detail">
+    <div className="task-detail-head"><div><h3>{task.title}</h3><p>{task.session_workflow}</p></div><span>{task.minutes}分</span></div>
+    <div className="today-specific-guide"><div><span>今日やる理由</span><strong>{task.why_today||task.reason}</strong></div>
+      <div><span>なぜこの年度</span><strong>{task.selected_year_reason}</strong></div>
+      <div><span>sessionの状態</span><strong>{task.past_exam_session_state||"planned"}（個別問題の復習履歴とは別）</strong></div></div>
+    <div className="today-card-actions"><button type="button" className="primary small" onClick={onOpenPastExam}><Play size={14}/>過去問演習を開く</button>
+      <SheetLink href={sheetHref("exam_90min")} label="90分解答シート"/></div></div>;
   const template=reviewTemplate(task);
   const origin=resolved?.taskOrigin||task.task_origin||((task.id||task.review_method)?"review_attempt":"first_attempt");
   const hasPrevious=resolved?!!resolved.targetAttempt:task.attempt_exists!==false&&!!(task.previous_date||task.previous_error_point);
@@ -747,7 +757,7 @@ function TodayTaskRows({task:t,problem,data,busy,run,date,onReview,onOpenProblem
   </td></tr>;
   const isPastSession=!!t.stable_session_key||t.past_exam_task_type==="timed_three_question_session"||t.past_exam_task_type==="simulation";
   return <><tr className={t.checked?"task-checked":""}><td><Badge tone={t.kind==="S確認"?"blue":t.error_type==="K"?"red":""}>{t.kind}</Badge></td><td>{!isPastSession&&<strong>{t.problem_id}</strong>}<small>{t.title}{t.checked&&<em className="grading-wait">採点待ち</em>}</small>{isPastSession&&<small>{t.session_workflow}</small>}</td><td>{modes[t.mode]||t.mode}</td><td>{t.minutes}分</td><td><strong className="why-today">なぜ今日：{t.why_today||t.reason}</strong>{t.selected_year_reason&&<small>なぜこの年度：{t.selected_year_reason}</small>}{t.reason!==t.why_today&&<small>{t.reason}</small>}{t.repair_lineage&&<small>補修元：{t.repair_lineage.sourceProblemId}／{t.repair_lineage.matchReason}{t.repair_lineage.matchConfidence?`（一致 ${t.repair_lineage.matchConfidence}）`:""}</small>}{t.postpone_count?` ・ 先送り${t.postpone_count}回（${t.postpone_reason}）`:""}</td><td><div className="task-actions"><SheetLink href={sheetHref(t.mode)} label="シート"/><label className="task-check"><input type="checkbox" checked={!!t.checked} disabled={busy} onChange={toggle}/><span>{isReview?"復習結果を記録":"解答済み"}</span></label></div><ScheduleQuickButtons item={t} busy={busy} select={action=>onPostpone(t,action)}/></td></tr>
-    <tr className="task-plan-row"><td colSpan={6}><TodayTaskDetails task={t} problem={problem} onOpenProblem={onOpenProblem} onOpenPastExam={onOpenPastExam} problemAliases={data.problemAliases} examPhase={examPhase} resolved={resolved}/>{(t.review_method||t.review_reason)&&<ReviewPlanDetails item={t} compact resolved={resolved}/>}</td></tr></>;
+    <tr className="task-plan-row"><td colSpan={6}><TodayTaskDetails task={t} problem={problem} onOpenProblem={onOpenProblem} onOpenPastExam={onOpenPastExam} problemAliases={data.problemAliases} examPhase={examPhase} resolved={resolved}/>{!isPastSession&&(t.review_method||t.review_reason)&&<ReviewPlanDetails item={t} compact resolved={resolved}/>}</td></tr></>;
 }
 
 function ProblemChip({problem,latest,rank,select}:{problem:Problem;latest?:Attempt;rank:string;select:(problem:Problem)=>void}){
@@ -1266,7 +1276,7 @@ function WeakView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:
   </>;
 }
 
-function PastView({data,go,run,busy}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()=>Promise<unknown>,s:string)=>Promise<boolean>;busy:boolean}) {
+function PastView({data,go,run,busy,startingTask}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()=>Promise<unknown>,s:string)=>Promise<boolean>;busy:boolean;startingTask?:Task|null}) {
   const days=data.dashboard.pace.daysRemaining;
   const referenceCatalog=data.adaptiveLearning.pastExamCatalog;
   const plannedReferenceIds=data.adaptiveLearning.plannerShadow.plan30.plan.flatMap(day=>
@@ -1279,6 +1289,14 @@ function PastView({data,go,run,busy}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()
   const [session,setSession]=useState<{session_kind:PastExamSessionKind;date:string;year:string;scan_set_source:string;scan_minutes:string;actual_total_minutes:string;selection_strategy:string;selection_change_reason:string;notes:string;answer_exposure:boolean;initial_selected_problem_ids:string[];questions:ScanQuestion[]}>({session_kind:workspace.recommended?.taskType==="timed_three_question_session"||workspace.recommended?.taskType==="simulation"?"selected_three_timed":defaultSessionKind(days),date:todayString(),year:String(workspace.recommended?.year||catalogYears[0]||""),scan_set_source:"past_exam_year",scan_minutes:"10",actual_total_minutes:"",selection_strategy:"",selection_change_reason:"",notes:"",answer_exposure:false,initial_selected_problem_ids:[],questions:blankQuestions()});
   const [analysisText,setAnalysisText]=useState<Record<number,string>>({});
   const [editingSessionId,setEditingSessionId]=useState<number|null>(null);
+  useEffect(()=>{
+    if(!startingTask||!isPastExamSessionTask(startingTask))return;
+    const saved=data.pastSessions.find(row=>row.stable_session_key===startingTask.stable_session_key);
+    if(saved){editPastSession(saved);return;}
+    setSession(previous=>({...previous,year:String(startingTask.past_exam_year),session_kind:
+      ["timed_three_question_session","simulation"].includes(String(startingTask.past_exam_task_type))?"selected_three_timed":"scan_only",
+      questions:blankQuestions()}));
+  },[startingTask?.stable_session_key]);
   const pastProblems=data.problems.filter(problem=>problem.category==="past_exam");
   const pmap=new Map(pastProblems.map(problem=>[problem.problem_id,problem]));
   const attempts=data.attempts.filter(attempt=>pmap.has(attempt.problem_id));
@@ -1300,7 +1318,8 @@ function PastView({data,go,run,busy}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()
     const payload={...session,year:Number(session.year),stage:stageForDays(days),scan_minutes:Number(session.scan_minutes||0),actual_total_minutes:Number(session.actual_total_minutes||0),
       session_purpose:sessionPurpose,session_ordinal:1,scan_evidence_kind:classification,
       past_exam_year_role:yearCandidate?.yearRole,
-      stable_session_key:workspace.recommended?.year===Number(session.year)&&workspace.recommended.stableSessionKey?
+      stable_session_key:startingTask?.past_exam_year===Number(session.year)?startingTask.stable_session_key:
+        workspace.recommended?.year===Number(session.year)&&workspace.recommended.stableSessionKey?
         workspace.recommended.stableSessionKey:undefined,selected_year_reason:selectedYearReason,
       exposure_snapshot_at_start:{classification,
         exposed_problem_ids:(yearCandidate?.eligibleRows||[]).filter(row=>!["unseen","unknown"].includes(row.exposure)).map(row=>row.canonicalProblemId),

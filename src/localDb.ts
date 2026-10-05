@@ -61,7 +61,7 @@ import {materializeObservedOutOfScopeFindings} from "./outOfScopeObservations.ts
 import {deriveCurrentTodayProjection} from "./currentTodayProjection.ts";
 import {matchingPastSessionForTodayTask} from "./todayTaskProjection.ts";
 import {resolveSemanticReviewGeneration} from "./reviewGeneration.ts";
-import {classifyFailureStrength,examHorizonPolicy,learningEventKind,masteryLevelForTargets} from "./examOptimizationPolicy.ts";
+import {classifyFailureStrength,examHorizonPolicy,isPastExamSessionTask,learningEventKind,masteryLevelForTargets} from "./examOptimizationPolicy.ts";
 import {parseWholeAnswerRediagnosis,WHOLE_ANSWER_DIAGNOSTIC_VERSION,wholeAnswerDiagnosticFingerprint} from "./wholeAnswerDiagnostic.ts";
 import {deriveDashboardKpis} from "./dashboardKpi.ts";
 import {deriveExamReadinessAssessment} from "./examCapability.ts";
@@ -3041,6 +3041,14 @@ async function bootstrap():Promise<Bootstrap>{
       triage:forcedMust?"must":snapshot!.initial_bucket?.[key]||saved.triage||"tomorrow",
       past_exam_session_state:saved.past_exam_year?derivePastExamSessionState(matchingPastSession):saved.past_exam_session_state,
     } as Task;
+    if(isPastExamSessionTask(projected)){
+      // Annual blind tasks have session history, not their anchor's solution.
+      projected.canonical_keywords=[];
+      projected.answer_excerpt="";
+      projected.official_answer_text="";
+      projected.canonical_problem_type="";
+      projected.theme="";
+    }
     if(review){
       const decision=reviewPlanningDecision({review,attempts:activeAttempts,problems,weaknesses:conceptWeaknesses,
         pastExamIsPrimary:!!referenceRecord&&dashboard.pace.daysRemaining<=80,repairCandidates:pastExamRepairCandidates,pastSessions});

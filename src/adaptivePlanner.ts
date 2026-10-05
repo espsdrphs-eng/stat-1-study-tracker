@@ -4,7 +4,7 @@ import type {
 } from "./types.ts";
 import type { StoredExamReferencePack } from "./examReferencePack.ts";
 import { canonicalPastExamProblemId } from "./examReferencePack.ts";
-import { addCalendarDays } from "./reviewSchedulePolicy.ts";
+import { addCalendarDays,differenceInCalendarDays } from "./reviewSchedulePolicy.ts";
 import { daysUntilExam } from "./studyProgress.ts";
 import { reviewExecutionState } from "./integrityEngine.ts";
 import { simulateThirtyDays } from "./learningSimulation.ts";
@@ -142,7 +142,8 @@ function planSummary(days:AdaptivePlanDay[],reviewSchedule?:ReturnType<typeof sc
     reviewSchedule:{repairBudgetMinutes:reviewSchedule?.repairBudgetMinutes||0,
       placements:(reviewSchedule?.placements||[]).map(row=>({reviewId:row.review.id,problemId:row.review.problem_id,
         date:row.date,latestDate:row.latestDate,status:row.status})),
-      capacityConflicts:reviewSchedule?.capacityConflicts||[]}};
+      capacityConflicts:reviewSchedule?.capacityConflicts||[],decisions:reviewSchedule&&"decisions" in reviewSchedule?
+        reviewSchedule.decisions as AdaptivePlanSummary["reviewSchedule"]["decisions"]:[]}};
 }
 
 function validateMinimums(summary:AdaptivePlanSummary,daysRemaining:number,targetMinutes:number){
@@ -207,22 +208,18 @@ function planDays(args:{
       repairCandidates:args.repairCandidates,pastSessions:canonicalPastSessions})]));
   const activeReviews=allActiveReviews.filter(review=>reviewDecisions.get(review.id)?.scheduleAsRequired);
   const deferredReviews=allActiveReviews.filter(review=>!reviewDecisions.get(review.id)?.scheduleAsRequired);
-  const reviewSchedule=scheduleActiveReviews({reviews:activeReviews,startDate:args.startDate,days:args.days,
-    dailyCapacity:args.targetMinutes});
-  const reviewsByDate=new Map<string,ScheduledReviewPlacement[]>();
-  for(const placement of reviewSchedule.placements)
-    reviewsByDate.set(placement.date,[...(reviewsByDate.get(placement.date)||[]),placement]);
   const horizonEnd=addCalendarDays(args.startDate,Math.max(0,args.days-1));
   const selectedAttemptIds=new Set(canonicalPastSessions.flatMap(session=>session.selected_timed_attempt_ids||[]));
   const calibrationAttemptIds=new Set(canonicalPastSessions.flatMap(session=>session.counterfactual_calibration_attempt_ids||[]));
   const selectedProblemIds=new Set(canonicalPastSessions.flatMap(session=>
-    session.final_selected_problem_ids?.length?session.final_selected_problem_ids:session.initial_selected_problem_ids||[]));
+    session.final_selected_problem_ids||[]));
   const sourceForReview=reviewSource;
   const reviewSourceRank=(review:Review)=>{
     const source=sourceForReview(review);if(!source)return 6;
     if(source.session_role==="selected_timed"||selectedAttemptIds.has(source.id)||selectedProblemIds.has(source.problem_id))return 0;
     if(source.session_role==="individual_transfer"||source.transfer_evidence)return 1;
-    if(source.parent_past_session_id)return calibrationAttemptIds.has(source.id)||source.session_role==="counterfactual_calibration"?3:2;
+    if(calibrationAttemptIds.has(source.id)||source.session_role==="counterfactual_calibration")return 3;
+    if(source.parent_past_session_id||source.problem_id.startsWith("PY-"))return 2;
     return 5;
   };
   const activeYear=pinnedPastSession?.year||selectPastExamYear({candidates:buildPastExamYearCandidates({
@@ -236,6 +233,18 @@ function planDays(args:{
       !!episode?.rootWeaknesses.some(root=>root.requiredRepair&&root.materiality==="major"&&
         root.errorTypes.includes("W")&&root.skillIds.some(id=>sessionSkills.has(id)));
   };
+  const compareReviews=(left:Review,right:Review)=>Number(isHardBlockerReview(right))-Number(isHardBlockerReview(left))||
+    reviewSourceRank(left)-reviewSourceRank(right)||
+    String(left.latest_date||left.due_date).localeCompare(String(right.latest_date||right.due_date))||
+    left.id-right.id;
+  const reviewSchedule=scheduleActiveReviews({reviews:activeReviews,startDate:args.startDate,days:args.days,
+    dailyCapacity:args.targetMinutes,compareReviews});
+  const reviewsByDate=new Map<string,ScheduledReviewPlacement[]>();
+  for(const placement of reviewSchedule.placements)
+    reviewsByDate.set(placement.date,[...(reviewsByDate.get(placement.date)||[]),placement]);
+  const decisions:NonNullable<AdaptivePlanSummary["reviewSchedule"]["decisions"]>=deferredReviews.map(review=>({
+    reviewId:review.id,problemId:review.problem_id,date:args.startDate,waitingDays:Math.max(0,differenceInCalendarDays(args.startDate,review.latest_date||review.due_date)??0),
+    reason:reviewDecisions.get(review.id)!.reason,admitted:false,reevaluateOn:addCalendarDays(args.startDate,1)}));
   const changedProblemIds=new Set((args.repairCandidates||[]).filter(row=>row.required&&row.interventionChanged)
     .map(row=>row.sourceProblemId));
   const activeReviewProblemIds=new Set(activeReviews.filter(review=>String(review.earliest_date||review.due_date)<=horizonEnd)
@@ -276,7 +285,11 @@ function planDays(args:{
   };
   const usedRepairRoots=new Set<string>();
   const makeTargetedRepair=(date:string,trainingOnly=false)=>{
-    const candidate=args.repairCandidates?.find(row=>row.required&&(!trainingOnly||!!row.transferTraining)&&!usedRepairRoots.has(row.rootWeaknessId||row.conceptId)&&(
+    const candidate=[...(args.repairCandidates||[])].sort((a,b)=>{
+      const rank=(c:PastExamRepairCandidate)=>selectedAttemptIds.has(c.sourceAttemptId)||selectedProblemIds.has(c.sourceProblemId)?0:2;
+      return rank(a)-rank(b)||String(args.attempts.find(x=>x.id===a.sourceAttemptId)?.date||"").localeCompare(
+        String(args.attempts.find(x=>x.id===b.sourceAttemptId)?.date||""))||a.sourceAttemptId-b.sourceAttemptId;
+    }).find(row=>row.required&&(!trainingOnly||!!row.transferTraining)&&!usedRepairRoots.has(row.rootWeaknessId||row.conceptId)&&(
       !!row.transferTraining||
       row.repairKind==="transfer"&&row.transferProblemIds.some(id=>!usedProblems.has(id))||
       row.repairKind==="concept_mini"||row.repairKind==="same_problem"||row.repairKind==="rediagnosis"||
@@ -319,6 +332,7 @@ function planDays(args:{
         requiresUserSelection:false,todayCategory:"repair",actionClass:"targeted_repair",
         whyToday:`${candidate.sourceProblemId}のmajor root weaknessだけを5〜10分で訂正するため`,
         repairLineage:{sourceAttemptId:candidate.sourceAttemptId,sourceProblemId:candidate.sourceProblemId,
+          intervention:candidate.interventionChanged?"rediagnosis":undefined,observedFailure:candidate.observedFailure||candidate.conceptLabel,
           sourceFindingIds:candidate.sourceFindingIds,
           sourceFindingId:candidate.sourceFindingId,rootConceptId:candidate.conceptId,materiality:candidate.materiality,
           recurrence:candidate.recurrence,examImpact:candidate.examImpact,repairProblemId:candidate.sourceProblemId,
@@ -409,6 +423,8 @@ function planDays(args:{
   };
   let materialConfirmationPlanned=false;
   const includedReviewIds=new Set<number>();
+  const admittedPlacements:ScheduledReviewPlacement[]=[];
+  let carriedPlacements:ScheduledReviewPlacement[]=[];
   for(let offset=0;offset<args.days;offset++){
     const date=addCalendarDays(args.startDate,offset),weekday=offset%7;
     if(offset>0&&offset%7===0)weekActual={chapter5:0,chapter7:0,chapter8:0,scan5:0,fullOrTimed:0,pastExam:0};
@@ -437,20 +453,28 @@ function planDays(args:{
       score=makePast(date,weekday===0||weekday===4?"timed":weekday===2?"scan5":"past_exam",
         weekday===0||weekday===4?90:weekday===2?10:35,"本番形式・3題選択・確認済み弱点を主軸に固定");
     }
-    let dayPlacements=[...(reviewsByDate.get(date)||[])].sort((left,right)=>
-      Number(isHardBlockerReview(right.review))-Number(isHardBlockerReview(left.review))||
-      reviewSourceRank(left.review)-reviewSourceRank(right.review)||left.review.id-right.review.id);
+    let dayPlacements=[...carriedPlacements,...(reviewsByDate.get(date)||[])].filter(p=>!includedReviewIds.has(p.review.id))
+      .sort((left,right)=>compareReviews(left.review,right.review));
+    carriedPlacements=[];
     const timedSession=score&&["timed_three_question_session","simulation"].includes(String(score.pastExamTaskType||""));
-    if(score&&timedSession){
-      const repairBudget=Math.min(30,Math.max(0,args.targetMinutes-score.minutes));
+    if(dayPlacements.length){
+      const repairBudget=Math.min(timedSession?30:reviewSchedule.repairBudgetMinutes,
+        Math.max(0,args.targetMinutes-(score?.minutes||0)));
       const selectedPlacements:ScheduledReviewPlacement[]=[];
       let repairMinutes=0;const selectedRoots=new Set<string>();
       for(const placement of dayPlacements){
-        if(selectedPlacements.length>=2)break;
         const source=sourceForReview(placement.review);
         const root=source?deriveFailureEpisode(source).rootWeaknesses[0]?.rootWeaknessId:undefined;
         const rootKey=root||placement.review.problem_id;
-        if(selectedRoots.has(rootKey)||repairMinutes+placement.minutes>repairBudget)continue;
+        const reason=selectedRoots.has(rootKey)?"duplicate_root":timedSession&&selectedPlacements.length>=2?"root_cap":
+          repairMinutes+placement.minutes>repairBudget?"budget":"";
+        if(reason){
+          carriedPlacements.push(placement);
+          decisions.push({reviewId:placement.review.id,problemId:placement.review.problem_id,date,
+            waitingDays:Math.max(0,differenceInCalendarDays(date,placement.latestDate)??0),reason,admitted:false,
+            reevaluateOn:addCalendarDays(date,1)});
+          continue;
+        }
         selectedRoots.add(rootKey);
         selectedPlacements.push(placement);repairMinutes+=placement.minutes;
       }
@@ -458,6 +482,9 @@ function planDays(args:{
     }
     const tasks:SlotTask[]=dayPlacements.map(placement=>{
       includedReviewIds.add(placement.review.id);
+      admittedPlacements.push({...placement,date,status:date>placement.latestDate?"overdue_recovery":"within_window"});
+      decisions.push({reviewId:placement.review.id,problemId:placement.review.problem_id,date,
+        waitingDays:Math.max(0,differenceInCalendarDays(date,placement.latestDate)??0),reason:"admitted",admitted:true});
       const sourceId=Number(placement.review.grading_contract?.sourceAttemptId||placement.review.source_attempt_id||
         placement.review.generated_from_attempt_id||0);
       const source=args.attempts.find(attempt=>attempt.id===sourceId);
@@ -562,11 +589,11 @@ function planDays(args:{
       day.tasks.push(exam);day.totalMinutes+=exam.minutes;
     }
   }
-  const retainedPlacements=reviewSchedule.placements.filter(row=>includedReviewIds.has(row.review.id));
+  const retainedPlacements=admittedPlacements;
   const scheduledMinutes=Object.fromEntries(retainedPlacements.reduce((rows,row)=>{
     rows.set(row.date,Number(rows.get(row.date)||0)+row.minutes);return rows;
   },new Map<string,number>()));
-  return {days:result,reviewSchedule:{...reviewSchedule,placements:retainedPlacements,scheduledMinutes}};
+  return {days:result,reviewSchedule:{...reviewSchedule,placements:retainedPlacements,scheduledMinutes,decisions}};
 }
 
 function weeklyActual(args:{startDate:string;attempts:Attempt[];pastSessions:PastSession[];problems:Problem[]}){

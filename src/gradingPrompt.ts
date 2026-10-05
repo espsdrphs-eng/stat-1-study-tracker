@@ -63,7 +63,8 @@ export function buildFirstAttemptGradingPrompt(context:FirstAttemptPromptContext
   const contractParts=contract?.gradedParts||[];
   const lineage=context.repairLineage;
   const linkedSkillTask=lineage?.sourceProblemId!==context.problemId&&lineage?.matchConfidence==="high"&&lineage?.weaknessSkillIds?.length;
-  const assignedPurpose=contract?.learningPurpose||(linkedSkillTask?(lineage?.repairSuccessEvidenceId?"transfer_check":"error_repair"):"integration_check");
+  const assignedPurpose=contract?.learningPurpose||(lineage?.intervention==="rediagnosis"?"error_repair":
+    linkedSkillTask?(lineage?.repairSuccessEvidenceId?"transfer_check":"error_repair"):"integration_check");
   const transferFocus=linkedSkillTask
     ?`【${lineage?.repairSuccessEvidenceId?"別問題transfer：採点済み補修からの確認対象":"Whitebook等のscaffold補修：まだtransfer成功ではない"}】
 source problem: ${lineage.sourceProblemId} / repair success Attempt: ${lineage.repairSuccessEvidenceId}
@@ -208,7 +209,18 @@ ${contractParts.length?contractParts.map(part=>`    - graded_part_id: "${part.id
 }
 
 export function buildRepairPrompt(context:FirstAttemptPromptContext){
+  const lineage=context.repairLineage;
+  const intervention=lineage?.intervention==="rediagnosis"?`
+【同root再失敗：教材確認と足場付き局所補修】
+source Attempt: ${lineage.sourceAttemptId}
+root: ${lineage.rootWeaknessId}
+source finding: ${(lineage.sourceFindingIds||[]).join(" / ")}
+観測対象: ${lineage.observedFailure||lineage.matchReason}
+同じフル答案を再要求せず、教材の該当原理を確認し、計算を最小の一段ずつへ分解してください。
+援助を使った実施は参照ありの補修として記録し、保持・transfer成功とは判定しないでください。
+後日、参照なしで対象部分を確認します。\n`:"";
   return `次の統計検定1級の問題について、解答を教えるのではなく、理解補修用の短いクイズを作ってください。
+${intervention}
 
 problem_id: ${context.problemId}
 display_label: ${context.displayLabel||context.problemId}

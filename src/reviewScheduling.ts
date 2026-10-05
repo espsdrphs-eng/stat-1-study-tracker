@@ -29,6 +29,7 @@ const reviewWindow=(review:Review)=>({
  */
 export function scheduleActiveReviews(args:{
   reviews:Review[];startDate:string;days:number;dailyCapacity:number;repairBudgetMinutes?:number;
+  compareReviews?:(left:Review,right:Review)=>number;
 }){
   const horizonEnd=addCalendarDays(args.startDate,Math.max(0,args.days-1));
   const repairBudgetMinutes=Math.min(args.dailyCapacity,Math.max(15,args.repairBudgetMinutes??Math.round(args.dailyCapacity*.3)));
@@ -38,7 +39,7 @@ export function scheduleActiveReviews(args:{
   const ordered=[...args.reviews].sort((left,right)=>{
     const l=reviewWindow(left),r=reviewWindow(right);
     const overdueL=Number(l.latestDate<args.startDate),overdueR=Number(r.latestDate<args.startDate);
-    return overdueR-overdueL||l.latestDate.localeCompare(r.latestDate)||l.preferredDate.localeCompare(r.preferredDate)||left.id-right.id;
+    return (args.compareReviews?.(left,right)||0)||overdueR-overdueL||l.latestDate.localeCompare(r.latestDate)||l.preferredDate.localeCompare(r.preferredDate)||left.id-right.id;
   });
   for(const review of ordered){
     const window=reviewWindow(review),minutes=reviewMinutes(review);

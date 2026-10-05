@@ -11,6 +11,7 @@ import {deriveTransferEvidence,findingSkillIds,problemSkillIds,rootProgress} fro
 import {groundedWhitebookSkills,matchesFailureOperation} from "./groundedSkills.ts";
 import {buildStableTargetIndex} from "./stableTargetIdentity.ts";
 import {delayedTrainingPrerequisites,deriveTransferTrainingCandidates} from "./generatedTransfer.ts";
+import {attemptPlanningEligible} from "./legacyKPolicy.ts";
 
 type ConceptMapping={conceptIds:string[];confidence:"verified"|"candidate"};
 type EvidenceEvent={
@@ -199,16 +200,19 @@ export function buildPastExamRepairCandidates(args:{
   const contexts:Array<{sessionId:number;sessionKind:string|undefined;selected:Set<string>;
     selectedAttemptIds:Set<number>;attempts:Attempt[]}>=args.sessions.filter(session=>session.session_kind!=="scan_only").map(session=>{
     const linked=new Set((session.linked_attempt_ids||[]).map(Number));
-    const selected=new Set((session.final_selected_problem_ids?.length?session.final_selected_problem_ids:session.initial_selected_problem_ids||[])
+    const selected=new Set((session.final_selected_problem_ids||[])
       .map(value=>resolvePastExamProblemId(session.year,value)));
     return {sessionId:session.id,sessionKind:session.session_kind,selected,
       selectedAttemptIds:new Set(session.selected_timed_attempt_ids||[]),
       attempts:args.attempts.filter(attempt=>linked.has(attempt.id)||attempt.parent_past_session_id===session.id)};
   });
-  // A completed individual PastExam has no PastExamSession row. Its eligible
-  // transfer lineage still needs the same repair candidate and Planner path.
+  // Individual failures need intervention before repair/retrieval succeeds.
+  // An absent session is unknown selection status, not non-selected evidence.
   for(const source of args.attempts.filter(attempt=>!linkedByAnySession.has(attempt.id)&&
-    !attempt.parent_past_session_id&&training.some(row=>row.lineage.sourceAttemptId===attempt.id))){
+    !attempt.parent_past_session_id&&attemptPlanningEligible(attempt)&&
+    !(attempt.exclude_from_planning&&attempt.policy_validity!=="invalid_legacy_k")&&
+    (!(attempt.graded_findings||[]).length||(attempt.graded_findings||[]).some(f=>!f.resolved&&f.error_type!=="none"))&&
+    deriveFailureEpisode(attempt).rootWeaknesses.length>0)){
     contexts.push({sessionId:-source.id,sessionKind:"individual_full",selected:new Set<string>(),
       selectedAttemptIds:new Set<number>(),attempts:[source]});
   }
@@ -250,7 +254,7 @@ export function buildPastExamRepairCandidates(args:{
         const linkedWhitebook=matches.slice(0,2).map(p=>p.problem_id);
         const matchConfidence:PastExamRepairCandidate["matchConfidence"]=linkedWhitebook.length?"high":"low";
         const required=root.requiredRepair&&(context.sessionKind!=="selected_three_timed"||
-          selected.has(sourceProblemId)||root.recurrence>0);
+          selected.has(sourceProblemId)||context.selectedAttemptIds.has(attempt.id)||root.recurrence>0);
         const transfer=args.record.data.pastExamProblems.filter(problem=>problem.schedulable&&problem.gradable&&
           !problem.simulation_protection_default&&![2024,2025].includes(problem.year)&&
           catalog.some(p=>p.canonicalProblemId===canonicalPastExamProblemId(problem)&&["unseen","prompt_scanned"].includes(p.exposure))&&
@@ -259,8 +263,12 @@ export function buildPastExamRepairCandidates(args:{
           .sort((a,b)=>Number(args.attempts.some(x=>x.problem_id===canonicalPastExamProblemId(a)))-
             Number(args.attempts.some(x=>x.problem_id===canonicalPastExamProblemId(b)))||a.year-b.year)
           .map(canonicalPastExamProblemId).slice(0,3);
-        const sameRootFailureCount=args.attempts.filter(other=>!other.exclude_from_metrics&&!other.duplicate_of_attempt_id&&other.problem_id===attempt.problem_id&&
-          deriveFailureEpisode(other).rootWeaknesses.some(otherRoot=>otherRoot.rootWeaknessId===root.rootWeaknessId&&otherRoot.requiredRepair)).length;
+        const sameRootFailureCount=new Set(args.attempts.filter(other=>!other.exclude_from_metrics&&
+          !other.exclude_from_recurrence_metrics&&!other.duplicate_of_attempt_id&&other.problem_id===attempt.problem_id&&
+          deriveFailureEpisode(other).rootWeaknesses.some(otherRoot=>otherRoot.rootWeaknessId===root.rootWeaknessId&&otherRoot.requiredRepair&&
+            otherRoot.sourceFindingIds.some(id=>!(other.graded_findings||[]).length||other.graded_findings?.some(f=>
+              f.graded_part_id===id&&f.recurrence_eligible!==false))))
+          .map(other=>`${other.date}|${root.rootWeaknessId}`)).size;
         const interventionChanged=sameRootFailureCount>=2||!!progress.transferFailure;
         const delayed=delayedTrainingPrerequisites(attempt,root,args.attempts);
         const transferTraining=transfer.length?undefined:
@@ -273,7 +281,7 @@ export function buildPastExamRepairCandidates(args:{
         candidates.push({sessionId:context.sessionId,sourceAttemptId:progress.latestFailure.id,sourceProblemId,transferTraining,
           repairSuccessEvidenceId:progress.repairSuccess?.id,
           sourceFindingId:root.sourceFindingIds[0],sourceFindingIds:root.sourceFindingIds,
-          rootWeaknessId:root.rootWeaknessId,conceptId,conceptLabel:root.title,
+          rootWeaknessId:root.rootWeaknessId,conceptId,conceptLabel:root.title,observedFailure:root.description,
           materiality:root.materiality,recurrence:root.recurrence,examImpact:root.examImpact,required:interventionRequired,
           whitebookProblemIds:repairKind==="whitebook"?linkedWhitebook:[],transferProblemIds:transfer,
           weaknessSkillIds:skills,matchedSkillIds:unique(matches.slice(0,2).flatMap(liveSkills).filter(id=>skills.includes(id))),
@@ -300,8 +308,10 @@ export function buildPastExamRepairCandidates(args:{
     Number(selectedEvidence(right))-Number(selectedEvidence(left))||
     Number(right.repairKind==="transfer")-Number(left.repairKind==="transfer")||
     Number(right.sourceAttemptId)-Number(left.sourceAttemptId))){
-    const key=`${row.sessionId}|${row.conceptId}`;
-    if(!dedup.has(key)&&[...dedup.values()].filter(item=>item.sessionId===row.sessionId).length<2)dedup.set(key,row);
+    // Eligibility is the complete current root pool. The day planner owns the
+    // 1–2 root/30-minute admission cap; it must not erase waiting major roots.
+    const key=row.rootWeaknessId||`${row.sourceProblemId}|${row.conceptId}`;
+    if(!dedup.has(key))dedup.set(key,row);
   }
   return [...dedup.values()];
 }

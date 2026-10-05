@@ -14,6 +14,7 @@ import {
 } from "./reviewExperience.ts";
 import { addCalendarDays, differenceInCalendarDays, resolveReviewSchedule } from "./reviewSchedulePolicy.ts";
 import {currentTargetDisplay} from "./currentTargetPayload.ts";
+import {isPastExamSessionTask} from "./examOptimizationPolicy.ts";
 
 export type ReviewMode="check"|"skeleton"|"main_calc"|"full"|"scan5";
 export type SheetType="check_sheet"|"skeleton_sheet"|"main_calc_sheet"|"full_answer_sheet"|"scan5_sheet";
@@ -177,6 +178,17 @@ export function resolveReviewCard({
   item,problems,attempts,aliases,answers,today,examDate="",now=new Date().toISOString(),
 }:{item:ReviewCardInput;problems:Problem[];attempts:Attempt[];aliases:ProblemAlias[];answers?:AnswerIndexEntry[];today:string;examDate?:string;now?:string}):ResolvedReviewCard{
   const warnings:ConsistencyWarning[]=[];
+  // A year-session anchor is navigation metadata, never a Review source.
+  // Keep this boundary safe even for callers outside the Today component.
+  if(isPastExamSessionTask(item)){
+    const neutral=resolveReviewCard({item:{problem_id:"session",mode:"full",minutes:item.minutes},
+      problems:[],attempts:[],aliases:[],today,examDate,now});
+    const field=<T,>(value:T)=>({value,provenance:{problemId:"session",masterVersion:"session",generatedAt:now}});
+    return {...neutral,taskId:String(item.stable_session_key||"session"),displayLabel:item.title||"本番型session",
+      theme:"",canonicalProblemType:"",targetAttempt:undefined,sourceAttempt:undefined,sourceProblem:undefined,
+      correctionTheme:field(""),entryHint:field(""),oneLineHint:field(""),todayActions:field<string[]>([]),
+      reviewNeeded:false,consistencyWarnings:[]};
+  }
   const canonicalId=resolveCanonicalProblemId(String(item.problem_id||""),aliases);
   const problem=problems.find(entry=>resolveCanonicalProblemId(entry.problem_id,aliases)===canonicalId);
   const sourceAttemptId=Number(item.source_attempt_id||item.generated_from_attempt_id||0);

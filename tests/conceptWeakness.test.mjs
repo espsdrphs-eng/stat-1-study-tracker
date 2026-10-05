@@ -119,8 +119,9 @@ test("selected threeのmajor weaknessを非選択の較正用Attemptより先に
     scan_set_source:"past_exam_year",questions:[],linked_attempt_ids:[1,2,3,4,5],selected_timed_attempt_ids:[1,3,5],
     counterfactual_calibration_attempt_ids:[2,4],initial_selected_problem_ids:["PY-2021-Q1","PY-2021-Q3","PY-2021-Q5"]};
   const rows=buildPastExamRepairCandidates({record:rec,sessions:[session],attempts,conceptWeaknesses:weaknesses});
-  assert.ok(rows.length<=2);
-  assert.ok(rows.every(row=>[1,3,5].includes(row.sourceAttemptId)),JSON.stringify(rows));
+  // Eligibility retains all roots; the day planner applies the two-root cap.
+  assert.equal(rows.filter(row=>row.required).length,3);
+  assert.ok(rows.slice(0,3).every(row=>[1,3,5].includes(row.sourceAttemptId)),JSON.stringify(rows));
 });
 
 test("same rootを2回失敗したら再診断へ介入変更し、成功前のtransferを要求しない",()=>{
