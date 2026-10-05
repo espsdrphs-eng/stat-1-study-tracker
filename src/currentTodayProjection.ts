@@ -2,6 +2,8 @@ import type {Attempt,PastSession,ProblemAlias,Review,Task,TodayPlanSnapshot} fro
 import {projectAdaptiveSnapshotTasks} from "./adaptiveTodayPlan.ts";
 import {deriveCurrentTodayState,qualifyingAttemptForTodayTask,qualifyingPastSessionForTodayTask} from "./todayTaskProjection.ts";
 import {reviewExecutionState} from "./reviewCurrentState.ts";
+import {resolveCurrentTaskSelection} from "./examOptimizationPolicy.ts";
+import {resolveCanonicalProblemId} from "./examReadiness.ts";
 
 /** Canonical read-time projection. The start-of-day snapshot is never mutated. */
 export function deriveCurrentTodayProjection(args:{
@@ -20,6 +22,7 @@ export function deriveCurrentTodayProjection(args:{
   const reviewMap=new Map(args.reviews.map(review=>[review.id,review]));
   const tasks=selected.filter(task=>(!task.id||!task.review_type||reviewExecutionState(reviewMap.get(task.id),args.today)==="actionable")&&
     (args.includeTask?.(task)??true)).map(task=>args.hydrateTask?.(task)||task);
-  return deriveCurrentTodayState({tasks,attempts:args.attempts,pastSessions:args.pastSessions,snapshot:args.snapshot,aliases:args.aliases,
-    manuallyChecked:args.manuallyChecked,completedMinutes:args.completedMinutes,targetMinutes:args.targetMinutes});
+  const exclusions=resolveCurrentTaskSelection(args.generatedTasks,id=>resolveCanonicalProblemId(id,args.aliases||[]),isCompleted).exclusions;
+  return {...deriveCurrentTodayState({tasks,attempts:args.attempts,pastSessions:args.pastSessions,snapshot:args.snapshot,aliases:args.aliases,
+    manuallyChecked:args.manuallyChecked,completedMinutes:args.completedMinutes,targetMinutes:args.targetMinutes}),exclusions};
 }

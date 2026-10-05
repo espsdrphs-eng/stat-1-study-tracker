@@ -4,6 +4,7 @@ export type GroundedSkillTag={skillId:string;evidence:string;confidence:"high"|"
 // Deliberately small, auditable vocabulary of explicitly named operations.
 // No chapter/theme inference, embeddings, or extrapolation from missing answers.
 const rules=[
+  {id:"coefficient_tracking_scale_reciprocal",named:/(?=.*(?:1\/Xbar|逆数))(?=.*(?:係数|定数倍))/,ambiguous:/係数が不明|操作が不明/},
   // The assessed finding names a conditional law and its conditioned variables;
   // candidate matching below checks the actual inverse-density operation.
   {id:"conditional_distribution",named:/(?=.*(?:条件付き密度|条件付き分布|X\|Z.{0,8}分布))(?=.*(?:Bayes|ベイズ|X\|Z|f\([^)]*\|[^)]*\)))/i,
@@ -19,13 +20,26 @@ const rules=[
     ambiguous:/適用できるか不明|どの補正を使うか不明/},
 ];
 function extract(text:string,source:string):GroundedSkillTag[]{
-  return rules.filter(r=>r.named.test(text)).map(r=>({skillId:r.id,evidence:text,source,
+  const matched=rules.filter(r=>r.named.test(text));
+  return matched.filter(r=>r.id!=="risk_function"||!matched.some(row=>row.id==="coefficient_tracking_scale_reciprocal"))
+    .map(r=>({skillId:r.id,evidence:text,source,
     confidence:r.ambiguous.test(text)?"medium":"high"}));
 }
 export function groundedFindingSkills(attempt:Attempt,finding:GradedFinding):GroundedSkillTag[]{
   // Recognition of a problem type alone is not execution of an operation.
   if(["problem_type","focal_quantity"].includes(finding.graded_part_id))return [];
-  return extract(finding.evidence||"",`attempt:${attempt.id}/finding:${finding.graded_part_id}`);
+  const own=extract(finding.evidence||"",`attempt:${attempt.id}/finding:${finding.graded_part_id}`);
+  if(own.length)return own;
+  // Only inherit an operation when both findings explicitly name the same lost
+  // coefficient. Distribution/theme similarity is not causal evidence.
+  const coefficient=(finding.evidence||"").match(/係数\s*([0-9]+)/)?.[1];
+  if(!coefficient||!/(?:欠落|落と|失|誤)/.test(finding.evidence||""))return [];
+  const supports=(attempt.graded_findings||[]).filter(row=>row!==finding&&
+    (row.evidence||"").match(/係数\s*([0-9]+)/)?.[1]===coefficient)
+    .flatMap(row=>extract(row.evidence||"",`attempt:${attempt.id}/finding:${row.graded_part_id}`))
+    .filter(tag=>tag.skillId==="coefficient_tracking_scale_reciprocal"&&tag.confidence==="high");
+  return supports.length?[{...supports[0],evidence:`${finding.evidence}\n${supports[0].evidence}`,
+    source:`attempt:${attempt.id}/finding:${finding.graded_part_id};${supports[0].source}`}]:[];
 }
 export function groundedWhitebookSkills(problem:Problem,answers:AnswerIndexEntry[]=[]):GroundedSkillTag[]{
   if(problem.source_type==="generated"||problem.source_type==="past_exam"||problem.category==="past_exam")return [];
@@ -38,6 +52,8 @@ export function groundedWhitebookSkills(problem:Problem,answers:AnswerIndexEntry
  * general identity but the destination only calculates a named distribution. */
 export function matchesFailureOperation(failure:string,skill:string,problem:Problem,answers:AnswerIndexEntry[]=[]){
   const answer=answers.find(row=>row.problem_id===problem.problem_id)?.answer_excerpt||"";
+  if(skill==="coefficient_tracking_scale_reciprocal")
+    return extract(answer,"candidate solution").some(tag=>tag.skillId===skill&&tag.confidence==="high");
   if(skill==="conditional_distribution"&&/(?:Bayes|ベイズ|逆条件付け|X\|Z)/i.test(failure))
     return /(?:Bayes|ベイズ|条件付き密度.{0,40}周辺密度|周辺密度.{0,40}条件付き密度)/i.test(answer);
   if(skill==="risk_function"&&/(?:係数.?2|1\/Xbar)/.test(failure))

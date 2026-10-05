@@ -12,7 +12,7 @@ import { resolvePersistedAttemptLifecycle } from "./reviewTransition.ts";
 import { scheduleActiveReviews, type ScheduledReviewPlacement } from "./reviewScheduling.ts";
 import {deriveLearningPolicy,examHorizonPolicy} from "./examOptimizationPolicy.ts";
 import {buildPastExamYearCandidates,canonicalizePastExamSessions,derivePastExamSessionState,pastExamSessionKey,
-  pastExamSessionPurpose,pastExamTaskTypeFor,selectPastExamYear,explainPastExamYearSelection,stablePastExamSessionKey,
+  pastExamSessionPurpose,pastExamTaskTypeFor,selectPastExamYear,explainPastExamYearSelection,pastExamMeasurementPurpose,stablePastExamSessionKey,
   validatePastExamSessionIdentity,validatePastExamTaskIdentity,reconcilePastExamSessionEvidence} from "./pastExamPlanning.ts";
 import {reviewPlanningDecision} from "./todayLearningPolicy.ts";
 import {deriveFailureEpisode} from "./failureEpisode.ts";
@@ -390,14 +390,11 @@ function planDays(args:{
       "5問scan → 3問選択 → 3問答案 → 採点":kind==="scan5"?"5問scan → 3問選択":"1問答案 → 採点";
     const stableSessionKey=persisted?pastExamSessionKey(persisted):stickyTask?.stable_session_key||stablePastExamSessionKey({year:selected.year,
       purpose:selected.planningTaskType,ordinal:1});
-    const priorYear=[...new Set(args.catalog.filter(row=>row.year<selected.year&&!row.simulationProtected).map(row=>row.year))]
-      .sort((a,b)=>b-a)[0];
-    const priorRows=priorYear?args.catalog.filter(row=>row.year===priorYear&&row.schedulable&&row.gradable):[];
-    const priorExposed=priorRows.filter(row=>!["unseen","unknown"].includes(row.exposure)).length;
-    const selectedYearReason=persisted?.selected_year_reason||stickyTask?.selected_year_reason||selected.selectedYearReason||
-      (selected.cleanSelectionEvidence?
-        `${priorYear?`${priorYear}年は${priorExposed}/${priorRows.length}問が既露出。`:""}${selected.year}年はsession開始時に未露出で、未完了のclean選題・時間内完遂測定を継続するため。`:
-        `${selected.year}年の未完了sessionをcurrent stateとして継続するため。`);
+    const selectedYearReason=explainPastExamYearSelection({year:selected.year,yearRole:selected.yearRole!,
+      cleanScanEligible:selected.cleanSelectionEvidence,eligibleRows:stickyRows.length?stickyRows:
+        args.catalog.filter(row=>row.year===selected.year&&row.schedulable&&row.gradable),
+      exposedCount:selected.cleanSelectionEvidence?0:args.catalog.filter(row=>row.year===selected.year&&row.schedulable&&row.gradable&&
+        !["unseen","unknown"].includes(row.exposure)).length});
     return task({date,slot:"score_building",kind,label:sessionLabel,
       referenceProblemId:selected.referenceProblemId,problemId:selected.canonicalProblemId,minutes,
       reason:`${reason}・${purposeLabel}`,purpose,purposeLabel,basis,exposure:selected.exposure,
@@ -408,7 +405,7 @@ function planDays(args:{
       stableSessionKey,pastExamSessionState:persisted?derivePastExamSessionState(persisted):stickyTask?.past_exam_session_state||"planned",sessionWorkflow,
       selectedYearReason,
       unseenIndividualProblemIds:stickyTask?.unseen_individual_problem_ids||selected.unseenIndividualProblemIds,
-      todayCategory:"exam_practice",whyToday:"初見・選題・時間内完遂・別問題への転移を測るため"});
+      todayCategory:"exam_practice",whyToday:pastExamMeasurementPurpose(selected.cleanSelectionEvidence,selected.yearRole)});
   };
   let materialConfirmationPlanned=false;
   const includedReviewIds=new Set<number>();

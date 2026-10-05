@@ -7,7 +7,7 @@ import {buildStableTargetIndex,isValidStableTargetKey} from "./stableTargetIdent
 import {currentTargetDisplay,currentTargetLabels} from "./currentTargetPayload.ts";
 import {projectTodayTaskChecked,selectNextCurrentTodayTask} from "./todayTaskProjection.ts";
 import {buildReviewGradingPrompt} from "./gradingPrompt.ts";
-import {currentActionFingerprint,deriveLearningPolicy,examHorizonPolicy,isSuccessfulTransferForProblem} from "./examOptimizationPolicy.ts";
+import {currentActionFingerprint,currentTaskIdentity,isPastExamSessionTask,resolveCurrentTaskSelection,deriveLearningPolicy,examHorizonPolicy,isSuccessfulTransferForProblem} from "./examOptimizationPolicy.ts";
 import {daysUntilExam} from "./studyProgress.ts";
 import {resolvePersistedAttemptLifecycle} from "./reviewTransition.ts";
 import {canonicalAttemptId,logicalReviewKey,reviewExecutionMessage,reviewExecutionState,type ReviewExecutionState} from "./reviewCurrentState.ts";
@@ -874,9 +874,12 @@ export function runIntegrityAudit(args: {
       openByProblem.set(key,[...(openByProblem.get(key)||[]),task]);
     }
     for(const [problemId,tasks] of openByProblem){
-      const generic=tasks.filter(task=>!task.review_type),reviewTasks=tasks.filter(task=>!!task.review_type);
+      const generic=tasks.filter(task=>!task.review_type&&!isPastExamSessionTask(task)&&!task.transfer_training_key),reviewTasks=tasks.filter(task=>!!task.review_type);
       const duplicateReviewIds=reviewTasks.filter((task,index)=>reviewTasks.findIndex(row=>row.id===task.id)!==index);
-      if(generic.length&&reviewTasks.length||generic.length>1||duplicateReviewIds.length)issues.push({
+      const independent=tasks.filter(task=>isPastExamSessionTask(task)||task.transfer_training_key);
+      const duplicateIndependent=independent.some((task,index)=>independent.findIndex(row=>
+        currentTaskIdentity(row)===currentTaskIdentity(task))!==index);
+      if(generic.length&&reviewTasks.length||generic.length>1||duplicateReviewIds.length||duplicateIndependent)issues.push({
         category:"duplicate_problem_task",severity:"active",
         reviewIds:reviewTasks.flatMap(task=>task.id?[task.id]:[]),
         detail:`${problemId} has duplicate generic/Review tasks in the current plan`,repairable:false});
@@ -942,18 +945,20 @@ export function runIntegrityAudit(args: {
       detail:`Review ${conflict.reviewId} could not be placed before score-building/optional work (${conflict.reason})`,repairable:false});
     if(dueConflicts.length&&additionalCandidates.length)issues.push({category:"optional_extra_priority_violation",severity:"active",
       reviewIds:dueConflicts.map(row=>row.reviewId),detail:"Optional extra is visible while a due Review remains unplaced",repairable:false});
-    const activeReviewProblems=new Set(currentProjectionReviews.filter(review=>reviewExecutionState(review,today)==="actionable"&&
-      String(review.earliest_date||review.due_date)<=today)
-      .map(review=>resolveCanonicalProblemId(review.problem_id,aliases)));
-    for(const task of currentTodayTasks.filter(row=>!row.checked&&!row.review_type&&activeReviewProblems.has(resolveCanonicalProblemId(row.problem_id,aliases))))
+    const activeReviewProblems=new Set(currentTodayTasks.filter(task=>!task.checked&&task.review_type&&task.triage==="must")
+      .map(task=>resolveCanonicalProblemId(task.problem_id,aliases)));
+    for(const task of currentTodayTasks.filter(row=>!row.checked&&!row.review_type&&!isPastExamSessionTask(row)&&!row.transfer_training_key&&activeReviewProblems.has(resolveCanonicalProblemId(row.problem_id,aliases))))
       issues.push({category:"current_planner_eligibility_mismatch",severity:"active",detail:
         `${task.problem_id} is a generic current task while an active Review exists`,repairable:false});
   }
   if(currentTodayTasks&&eligibleTodayTasks){
-    const eligibilityKey=(task:Task)=>task.id&&task.review_type?`review:${task.id}`:
-      `problem:${resolveCanonicalProblemId(task.problem_id,aliases)}`;
+    const eligibilityKey=(task:Task)=>currentTaskIdentity(task,resolveCanonicalProblemId(task.problem_id,aliases));
     const currentKeys=new Set(currentTodayTasks.filter(task=>task.plan_origin!=="adaptive_additional").map(eligibilityKey));
-    const eligibleKeys=new Set(eligibleTodayTasks.map(eligibilityKey));
+    const selection=resolveCurrentTaskSelection(eligibleTodayTasks,id=>resolveCanonicalProblemId(id,aliases),task=>!!task.checked);
+    // A replacement is intentional only if its admitted Review actually reaches
+    // Current Today. Otherwise the original omission remains a blocking issue.
+    const substituted=new Set(selection.exclusions.filter(e=>e.reason==="review_substitution"&&currentKeys.has(e.replacedBy)).map(e=>e.identity));
+    const eligibleKeys=new Set(eligibleTodayTasks.map(eligibilityKey).filter(key=>!substituted.has(key)));
     for(const key of eligibleKeys)if(!currentKeys.has(key)){
       issues.push({category:"current_planner_eligibility_mismatch",severity:"active",
         detail:`Eligible task ${key} is missing from the current projection`,repairable:false});

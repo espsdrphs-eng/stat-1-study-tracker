@@ -67,7 +67,7 @@ import {deriveDashboardKpis} from "./dashboardKpi.ts";
 import {deriveExamReadinessAssessment} from "./examCapability.ts";
 import {reviewDueState,reviewPlanningDecision} from "./todayLearningPolicy.ts";
 import {deriveCanonicalStudyPlan} from "./canonicalStudyPlan.ts";
-import {canonicalizePastExamSessions,derivePastExamSessionState,pastExamSessionKey,pastExamSessionPurpose,reconcilePastExamSessionEvidence,stablePastExamSessionKey,validatePastExamSessionIdentity,validatePastExamTaskIdentity} from "./pastExamPlanning.ts";
+import {canonicalizePastExamSessions,currentPastExamSessionExplanation,derivePastExamSessionState,pastExamSessionKey,pastExamSessionPurpose,reconcilePastExamSessionEvidence,stablePastExamSessionKey,validatePastExamSessionIdentity,validatePastExamTaskIdentity} from "./pastExamPlanning.ts";
 
 const PLANNER_RUNTIME_MODE_META_KEY="planner-runtime-mode";
 const CURRENT_PLAN_PROJECTION_META_KEY="current-plan-projection-version";
@@ -2558,18 +2558,32 @@ async function installExamReferencePack(args:{
   const current=await db.meta.get(EXAM_REFERENCE_PACK_META_KEY);
   let savedRecord:StoredExamReferencePack|null=null;
   if(current){
-    try{
-      savedRecord=JSON.parse(current.value) as StoredExamReferencePack;
-      if(args.origin==="built_in"&&savedRecord.packHash!==packHash){
-        const verifiedSupplement=savedRecord.data.pastExamProblems.filter(row=>
-          [2016,2017,2018].includes(row.year)&&row.availability==="verified_problem"&&row.schedulable
-        );
-        // Preserve an explicitly newer/manual record. The built-in update is applied only
-        // when the existing v1 record still has the former metadata-only 2016-2018 rows.
-        if(verifiedSupplement.length===15)
-          return {unchanged:true,status:buildReferencePackStatus(savedRecord)};
+    try{savedRecord=JSON.parse(current.value) as StoredExamReferencePack;}catch{savedRecord=null}
+  }
+  if(savedRecord&&args.origin==="built_in"&&savedRecord.packHash!==packHash){
+    const verifiedSupplement=savedRecord.data.pastExamProblems.filter(row=>
+      [2016,2017,2018].includes(row.year)&&row.availability==="verified_problem"&&row.schedulable);
+    if(verifiedSupplement.length===15){
+      // Preserve newer/manual problem metadata. A verified operation with its
+      // own algebraic evidence is an additive taxonomy supplement, not a pack
+      // replacement or a inferred skill tag for any existing problem.
+      const supplements=data.concepts.filter(concept=>concept.operation_evidence&&
+        concept.status==="verified"&&concept.source_confidence==="high"&&
+        !savedRecord!.data.concepts.some(existing=>existing.concept_id===concept.concept_id));
+      if(supplements.length){
+        const concepts=[...savedRecord.data.concepts,...supplements];
+        const nextHash=`${savedRecord.packHash}:operations:${supplements.map(c=>`${c.concept_id}@${c.id_stability}`).join(",")}`;
+        const next:StoredExamReferencePack={...savedRecord,packHash:nextHash,
+          validation:{...savedRecord.validation,packHash:nextHash},
+          data:{...savedRecord.data,concepts,manifest:{...savedRecord.data.manifest,
+            counts:{...savedRecord.data.manifest.counts,concepts:concepts.length}}}};
+        const validation=validateReferencePackData(next.data);
+        if(!validation.valid)throw new Error(`参照パックの操作補完が不正です。${validation.errors.join(" ")}`);
+        await db.meta.put({key:EXAM_REFERENCE_PACK_META_KEY,value:JSON.stringify(next)});
+        return {unchanged:false,status:buildReferencePackStatus(next)};
       }
-    }catch{savedRecord=null}
+      return {unchanged:true,status:buildReferencePackStatus(savedRecord)};
+    }
   }
   const [problems,aliases,attempts,pastSessions]=await Promise.all([
     db.problems.toArray(),db.problemAliases.toArray(),db.attempts.toArray(),db.pastSessions.toArray()
@@ -2752,6 +2766,7 @@ async function bootstrap():Promise<Bootstrap>{
     studyDays14,actualMinutes14,delayed3,dailyTargetMinutes:settings.daily_study_minutes
   });
   const pastExamCatalog=buildPastExamCatalog({record:referenceRecord,sessions:pastSessions,attempts:activeAttempts,exposureOverrides});
+  for(const session of pastSessions)session.current_selected_year_reason=currentPastExamSessionExplanation(session,pastExamCatalog);
   const availablePastYearOrder=orderCorePastExamYears({
     catalog:pastExamCatalog,daysRemaining:progress.daysRemaining
   });
@@ -3003,6 +3018,10 @@ async function bootstrap():Promise<Bootstrap>{
     const contractFields=contract?taskFieldsFromContract(contract):{};
     const matchingPastSession=saved.past_exam_year?matchingPastSessionForTodayTask({task:saved,pastSessions,snapshot:snapshot!}):undefined;
     const projected={...current,...saved,...(review||{}),...contractFields,
+      selected_year_reason:current?.selected_year_reason||saved.selected_year_reason,
+      why_today:current?.why_today||saved.why_today,
+      past_exam_year_role:current?.past_exam_year_role||saved.past_exam_year_role,
+      clean_selection_evidence:current?.clean_selection_evidence??saved.clean_selection_evidence,
       kind:saved.kind,reason:review&&review.id!==saved.id?"最新の復習状態へ同期":saved.reason,
       title:saved.stable_session_key?saved.title:(pmap.get(saved.problem_id)?.display_label||pmap.get(saved.problem_id)?.title||saved.title),
       theme:pmap.get(saved.problem_id)?.theme||saved.theme,
@@ -3139,7 +3158,7 @@ async function bootstrap():Promise<Bootstrap>{
   const masteryByProblem=deriveMasteryByProblem({problemIds:problems.map(problem=>problem.problem_id),attempts:activeAttempts,reviews});
   return {problems:problems.sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.category.localeCompare(b.category)||a.problem_number-b.problem_number),attempts,reviews,roadmap,weakNotes,pastSessions,answerIndex,problemAliases,dashboard:dashboardWithKpis,settings,masterStatus,databaseStatus,adaptiveLearning,
     coach,masteryByProblem,
-    today:{tasks,currentTask:canonicalStudyPlan.primaryAction||undefined,canonicalStudyPlan,totalLoad,plannedMinutes:plannedTotal,remainingMinutes,actualMinutes,targetMinutes:settings.daily_study_minutes,capacityPercent,warning,guidance,
+    today:{tasks,selectionExclusions:currentToday.exclusions,currentTask:canonicalStudyPlan.primaryAction||undefined,canonicalStudyPlan,totalLoad,plannedMinutes:plannedTotal,remainingMinutes,actualMinutes,targetMinutes:settings.daily_study_minutes,capacityPercent,warning,guidance,
       planned_minutes_total:plannedTotal,completed_minutes_today:actualMinutes,remaining_minutes_today:remainingMinutes,
       postponed_minutes_today:postponedMinutes,target_minutes_today:settings.daily_study_minutes,
       start_of_day_planned_minutes:snapshot.start_of_day_planned_minutes,active_remaining_minutes:activeRemainingMinutes,

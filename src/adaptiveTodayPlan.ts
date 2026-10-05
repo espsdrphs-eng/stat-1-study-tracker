@@ -1,8 +1,8 @@
 import type { AdaptivePlanDay, Problem, ProblemAlias, Review, Task } from "./types.ts";
 import { taskFieldsFromContract } from "./gradingContract.ts";
-import { reviewExecutionState } from "./integrityEngine.ts";
+import { reviewExecutionState } from "./reviewCurrentState.ts";
 import { resolveCanonicalProblemId } from "./examReadiness.ts";
-import {currentActionFingerprint} from "./examOptimizationPolicy.ts";
+import {currentActionFingerprint,resolveCurrentTaskSelection,isPastExamSessionTask} from "./examOptimizationPolicy.ts";
 import {todayLearningCategory,whyToday} from "./todayLearningPolicy.ts";
 import {validatePastExamTaskIdentity} from "./pastExamPlanning.ts";
 
@@ -67,8 +67,7 @@ export function adaptivePlanDayToTasks(args:{
     if(!item.problemId)continue;
     const problem=problemMap.get(item.problemId);
     if(!problem)continue;
-    const sessionTask=!!item.stableSessionKey||item.pastExamTaskType==="timed_three_question_session"||
-      item.pastExamTaskType==="simulation";
+    const sessionTask=isPastExamSessionTask({past_exam_task_type:item.pastExamTaskType});
     const mode=sessionTask?"exam_90min":(item.mode||taskMode(item.kind));
     const projected={
       problem_id:item.problemId,
@@ -131,10 +130,7 @@ export function projectAdaptiveSnapshotTasks(args:{
 }){
   const aliases=args.aliases||[];
   const canonical=(id:string)=>resolveCanonicalProblemId(id,aliases);
-  const activeReviews=args.reviews.filter(review=>reviewExecutionState(review,args.today)==="actionable"&&
-    String(review.earliest_date||review.due_date)<=args.today);
-  const activeReviewProblems=new Set(activeReviews.map(review=>canonical(review.problem_id)));
-  const generated=[...args.generatedTasks],used=new Set<string>();
+  const generated=resolveCurrentTaskSelection(args.generatedTasks,canonical,args.isCompleted).tasks,used=new Set<string>();
   const take=(predicate:(task:Task)=>boolean)=>{
     const row=generated.find(task=>!used.has(projectionKey(task))&&predicate(task));
     if(row)used.add(projectionKey(row));
@@ -151,11 +147,9 @@ export function projectAdaptiveSnapshotTasks(args:{
     if(args.isCompleted?.(saved)||saved.plan_origin==="adaptive_additional"){
       projected.push(saved);continue;
     }
-    const conflictsWithReview=activeReviewProblems.has(canonical(saved.problem_id));
     const exact=take(task=>projectionKey(task)===projectionKey(saved));
-    if(exact&&!conflictsWithReview){projected.push(exact);continue;}
-    const replacement=take(task=>projectionSlot(task)===projectionSlot(saved)&&
-      !activeReviewProblems.has(canonical(task.problem_id)));
+    if(exact){projected.push(exact);continue;}
+    const replacement=take(task=>projectionSlot(task)===projectionSlot(saved));
     if(replacement)projected.push(replacement);
   }
   // A newly urgent Review is current state, even if the morning snapshot had
@@ -166,18 +160,5 @@ export function projectAdaptiveSnapshotTasks(args:{
     if(generatedTask.id&&generatedTask.review_type)projected.unshift(generatedTask);
     else projected.push(generatedTask);
   }
-  const openReviewProblems=new Set(projected.filter(task=>!args.isCompleted?.(task)&&task.id&&task.review_type)
-    .map(task=>canonical(task.problem_id)));
-  const seenGenericProblems=new Set<string>(),seenReviewIds=new Set<number>();
-  return projected.filter(task=>{
-    if(args.isCompleted?.(task))return true;
-    const problemId=canonical(task.problem_id);
-    if(task.id&&task.review_type){
-      if(seenReviewIds.has(task.id))return false;
-      seenReviewIds.add(task.id);return true;
-    }
-    if(openReviewProblems.has(problemId)||seenGenericProblems.has(problemId))return false;
-    seenGenericProblems.add(problemId);
-    return true;
-  });
+  return resolveCurrentTaskSelection(projected,canonical,args.isCompleted).tasks;
 }

@@ -312,6 +312,7 @@ export type PastSession = Record<string, unknown> & {
     classification:"clean"|"practice";exposed_problem_ids:string[];total_problem_count:number;captured_at:string;
   };
   selected_year_reason?:string;superseded_by_session_id?:number;superseded_reason?:string;
+  current_selected_year_reason?:string;
   /** Current-evidence projection. Raw Attempts and duplicate session rows remain unchanged. */
   session_alias_ids?:number[];selected_timed_attempt_ids?:number[];counterfactual_calibration_attempt_ids?:number[];
   selected_solve_minutes?:number;session_elapsed_minutes?:number;selected_answer_count?:number;
@@ -615,7 +616,7 @@ export type Bootstrap = {
     buildVersion:string;migrationVersion:string;valid:boolean;lastMigration:string;migrationResult:string;migratedAt:string;
     counts:{attempts:number;evaluations:number;reviewPlans:number};
   };
-  today:{tasks:Task[];currentTask?:Task;totalLoad:number;plannedMinutes:number;remainingMinutes:number;actualMinutes:number;
+  today:{tasks:Task[];selectionExclusions?:Array<{identity:string;reason:string;replacedBy:string}>;currentTask?:Task;totalLoad:number;plannedMinutes:number;remainingMinutes:number;actualMinutes:number;
     canonicalStudyPlan:CanonicalStudyPlan;
     targetMinutes:number;capacityPercent:number;warning:string;guidance:string;
     triageMinutes?:{must:number;if_time:number;tomorrow:number};

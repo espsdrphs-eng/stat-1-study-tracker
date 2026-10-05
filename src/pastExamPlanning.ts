@@ -375,14 +375,31 @@ export function selectPastExamYear(args:{candidates:PastExamYearCandidate[];task
   })[0];
 }
 
-export function explainPastExamYearSelection(year:PastExamYearCandidate,prior?:PastExamYearCandidate){
-  if(year.yearRole==="current_benchmark_simulation")return
-    `${year.year}年は2022年のclean本番測定後に使う近年型benchmark。開始前に対象弱点を提示せず、90分の答案と自然な転移を測るため`;
-  if(year.yearRole==="historical_retest")return
-    `${year.year}年は既習年度の再試験。2024年のbenchmarkと追加の本番・転移確認後、前年より最後まで答案化できるか測るため。clean未見証拠には含めない`;
+export function explainPastExamYearSelection(year:Pick<PastExamYearCandidate,"year"|"yearRole"|"cleanScanEligible"|"exposedCount"|"eligibleRows">,prior?:PastExamYearCandidate){
+  if(year.yearRole==="current_benchmark_simulation")return (
+    `${year.year}年は2022年のclean本番測定後に使う近年型benchmark。開始前に対象弱点を提示せず、90分の答案と自然な転移を測るため`);
+  if(year.yearRole==="historical_retest")return (
+    `${year.year}年は既習年度の再試験。2024年のbenchmarkと追加の本番・転移確認後、前年より最後まで答案化できるか測るため。clean未見証拠には含めない`);
+  if(!year.cleanScanEligible)return `${year.year}年は${year.exposedCount}/${year.eligibleRows.length}問が既露出。training/retestとして選題・時間内完遂を確認するため。初見・clean選題証拠には含めない`;
   return [prior?`${prior.year}年は${prior.exposedCount}/${prior.eligibleRows.length}問が既露出のためclean選題測定には使わない`:
     "より古い利用可能年度にclean候補なし",
     `${year.year}年は${year.exposedCount}/${year.eligibleRows.length}問露出でclean選題証拠を取得できるため`].join("。 ");
+}
+
+export function pastExamMeasurementPurpose(clean:boolean,role?:PastExamYearRole){
+  if(role==="historical_retest")return "既習年度の選題・時間内完遂・前年からの改善を測るため（clean未見証拠ではない）";
+  return clean?"初見・選題・時間内完遂・別問題への転移を測るため":
+    "既露出問題で選題・時間内完遂を確認するため（初見測定ではない）";
+}
+
+/** Read-only explanation; historical selected_year_reason remains untouched. */
+export function currentPastExamSessionExplanation(session:PastSession,catalog:ExamReferenceCatalogItem[]){
+  const rows=catalog.filter(row=>row.year===session.year&&row.schedulable&&row.gradable);
+  const role=pastExamYearRole(session.year);
+  const clean=role!=="historical_retest"&&(session.exposure_snapshot_at_start?.classification=== "clean"||
+    !session.exposure_snapshot_at_start&&session.scan_evidence_kind==="clean");
+  return explainPastExamYearSelection({year:session.year,yearRole:role,cleanScanEligible:clean,eligibleRows:rows,
+    exposedCount:clean?0:rows.filter(row=>!["unseen","unknown"].includes(row.exposure)).length});
 }
 
 export function pastExamTaskTypeFor(args:{kind:"past_exam"|"scan5"|"timed";year:PastExamYearCandidate;daysRemaining:number}):PastExamTaskType{
@@ -417,12 +434,12 @@ export function derivePastExamWorkspace(args:{
   const prior=candidates.filter(row=>row.year<year.year&&row.exposedCount>0).sort((a,b)=>b.year-a.year)[0];
   const completedPrior=canonicalSessions.filter(row=>derivePastExamSessionState(row)==="completed"&&row.year<year.year)
     .sort((a,b)=>b.year-a.year||String(b.attempt_completed_at||b.date).localeCompare(String(a.attempt_completed_at||a.date)))[0];
-  const selectedYearReason=active?.selected_year_reason||[
-    completedPrior?`${completedPrior.year}年の本番型sessionが完了したため次の測定へ進む`:"",
-    explainPastExamYearSelection(year,prior),
-  ].filter(Boolean).join("。 ");
   const clean=year.yearRole!=="historical_retest"&&
     (active?.exposure_snapshot_at_start?.classification==="clean"||!active&&year.cleanScanEligible);
+  const selectedYearReason=[
+    completedPrior?`${completedPrior.year}年の本番型sessionが完了したため次の測定へ進む`:"",
+    explainPastExamYearSelection({...year,cleanScanEligible:clean,exposedCount:clean?0:year.exposedCount},prior),
+  ].filter(Boolean).join("。 ");
   return {recommended:{year:year.year,yearRole:year.yearRole,taskType:chosenType,clean,
     label:clean?"完全未見":"一部露出済み",selectedYearReason,stableSessionKey:active?pastExamSessionKey(active):undefined,
     workflow:["timed_three_question_session","simulation"].includes(chosenType)?

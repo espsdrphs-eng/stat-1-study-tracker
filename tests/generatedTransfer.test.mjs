@@ -106,7 +106,7 @@ test('a failed conditional distribution conclusion and reciprocal risk coefficie
     evidence:'Xbar=U/2 から 1/Xbar=2/U の係数2を落とし、R(alpha)=alpha+1/alpha-2 と誤計算した'}],
     grading_contract:{gradedParts:[{id:'major_calculation'}]}});
   assert.deepEqual(findingSkillIds(conditional,conditional.graded_findings[0]),['conditional_distribution']);
-  assert.deepEqual(findingSkillIds(risk,risk.graded_findings[0]),['risk_function']);
+  assert.deepEqual(findingSkillIds(risk,risk.graded_findings[0]),['coefficient_tracking_scale_reciprocal']);
 });
 
 test('individual PastExam source reaches transfer planner after the benchmark window',()=>{

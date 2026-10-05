@@ -5,6 +5,35 @@ import {partSkillIds,successfulSkillIds} from "./skillEvidence.ts";
 export type ExamHorizonPhase="foundation_to_A"|"A_and_past_parallel"|"past_exam_main"|"final_stabilization";
 export type FailureStrength="standard"|"strong"|"level1_collapse";
 
+export function isPastExamSessionTask(task:Partial<Task>){
+  return ["clean_scan5","practice_scan5","timed_three_question_session","simulation"].includes(String(task.past_exam_task_type));
+}
+export function currentTaskIdentity(task:Partial<Task>,canonicalId=task.problem_id||""){
+  if(task.id&&task.review_type)return `review:${task.id}`;
+  if(task.transfer_training_key)return `transfer:${task.transfer_training_key}`;
+  if(isPastExamSessionTask(task))return `session:${task.stable_session_key||`${task.past_exam_year}:${task.past_exam_task_type}`}`;
+  return `problem:${canonicalId}`;
+}
+export type TaskSelectionExclusion={identity:string;reason:"review_substitution"|"duplicate_identity";replacedBy:string};
+/** Only an admitted required Review can replace individual work. Session anchors
+ * are navigation metadata, not the identity of the 90-minute activity. */
+export function resolveCurrentTaskSelection(tasks:Task[],canonical:(id:string)=>string=id=>id,
+  isCompleted:(task:Task)=>boolean=()=>false){
+  const reviews=new Map(tasks.filter(t=>!isCompleted(t)&&t.id&&t.review_type&&t.triage==="must")
+    .map(t=>[canonical(t.problem_id),t]));
+  const seen=new Set<string>(),exclusions:TaskSelectionExclusion[]=[];
+  const selected=tasks.filter(task=>{
+    if(isCompleted(task))return true;
+    const identity=currentTaskIdentity(task,canonical(task.problem_id));
+    const replacement=!task.review_type&&!isPastExamSessionTask(task)&&!task.transfer_training_key?
+      reviews.get(canonical(task.problem_id)):undefined;
+    if(replacement){exclusions.push({identity,reason:"review_substitution",replacedBy:currentTaskIdentity(replacement)});return false;}
+    if(seen.has(identity)){exclusions.push({identity,reason:"duplicate_identity",replacedBy:identity});return false;}
+    seen.add(identity);return true;
+  });
+  return {tasks:selected,exclusions};
+}
+
 export type ExamHorizonPolicy={
   phase:ExamHorizonPhase;pastExamShareMin:number;pastExamShareMax:number;
   allowNewWhitebook:boolean;pastExamIsPrimary:boolean;

@@ -1383,7 +1383,7 @@ function PastView({data,go,run,busy}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()
       const selectedScoreEligible=!!data.dashboard.readiness.evidence?.selectedThree.sessions.some(row=>row.sessionId===saved.id);
       return <article className="panel past-result-card" key={saved.id}>
         <div className="past-result-head"><div><h3>{sessionTitle}</h3><span>{saved.date} ・ 露出：{exposure} ・ {state==="completed"?"完了":"進行中"}</span></div><Badge tone={selectedScoreEligible?"green":""}>{selectedScoreEligible?"選択3問得点の対象":"学習指標"}</Badge></div>
-        {saved.selected_year_reason&&<p className="past-session-reason"><b>なぜこの年度：</b>{saved.selected_year_reason}</p>}
+        {(saved.current_selected_year_reason||saved.selected_year_reason)&&<p className="past-session-reason"><b>なぜこの年度：</b>{saved.current_selected_year_reason||saved.selected_year_reason}</p>}
         {saved.session_kind==="selected_three_timed"&&<p className="past-session-flow">5問scan → 3問選択 → 3問答案 → 採点</p>}
         <div className="past-result-body">
           <div><span>型判断</span><p>{typeCalibration?"要較正":metrics.typeIdentificationAccuracy==null?(saved.analysis_status==="completed"?"分析済み":"分析待ち"):`${metrics.typeIdentificationAccuracy}%`}</p></div>

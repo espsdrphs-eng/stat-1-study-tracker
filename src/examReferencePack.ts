@@ -30,6 +30,7 @@ export type ConceptReference={
   concept_id:string;display_name:string;whitebook_chapter_number:number;
   whitebook_chapter_title:string;past_exam_problem_ids:string[];
   status:string;id_stability:string;source_confidence:string;
+  operation_evidence?:string;
 };
 export type WhitebookExamLinkReference={
   past_exam_problem_id:string;whitebook_problem_id:string;

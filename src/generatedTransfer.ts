@@ -4,6 +4,7 @@ import {canonicalPastExamProblemId} from "./examReferencePack.ts";
 import {deriveFailureEpisode} from "./failureEpisode.ts";
 import {findingSkillIds,successfulSkillIds,independentReferenceFree,confidentGrading,problemSkillIds} from "./skillEvidence.ts";
 import {groundedWhitebookSkills,matchesFailureOperation} from "./groundedSkills.ts";
+import {findingPlanningEligible} from "./legacyKPolicy.ts";
 
 export type TransferTrainingLineage={
   key:string;rootWeaknessId:string;rootSkillId:string;sourceProblemId:string;sourceAttemptId:number;
@@ -46,12 +47,12 @@ export function delayedTrainingPrerequisites(source:Attempt,root:RootWeakness,at
     const parts=new Map((a.grading_contract?.gradedParts||[]).map(part=>[part.id,part]));
     return (a.graded_findings||[]).filter(f=>{
       const part=parts.get(f.graded_part_id);
-      return !!part&&sourceTargets.has(part.stableTargetKey||part.stable_target_key||part.id);
+      return findingPlanningEligible(a,f)&&!!part&&sourceTargets.has(part.stableTargetKey||part.stable_target_key||part.id);
     });
   };
   // A successful graded reproduction of the exact stable target is evidence
   // even when its feedback does not repeat the mathematical operation's name.
-  const relevant=(a:Attempt)=>root.skillIds.length>0&&sourceTargets.size>0&&
+  const relevant=(a:Attempt)=>sourceTargets.size>0&&
     targetFindings(a).length===sourceTargets.size&&
     targetFindings(a).every(f=>f.resolved&&f.error_type==="none");
   let repair:Attempt|undefined,retrieval:Attempt|undefined;
