@@ -67,7 +67,7 @@ import {deriveDashboardKpis} from "./dashboardKpi.ts";
 import {deriveExamReadinessAssessment} from "./examCapability.ts";
 import {reviewDueState,reviewPlanningDecision} from "./todayLearningPolicy.ts";
 import {deriveCanonicalStudyPlan} from "./canonicalStudyPlan.ts";
-import {canonicalizePastExamSessions,currentPastExamSessionExplanation,derivePastExamSessionState,pastExamSessionKey,pastExamSessionPurpose,reconcilePastExamSessionEvidence,stablePastExamSessionKey,validatePastExamSessionIdentity,validatePastExamTaskIdentity} from "./pastExamPlanning.ts";
+import {canonicalizePastExamSessions,currentPastExamSessionExplanation,derivePastExamSessionState,pastExamSessionKey,pastExamSessionPurpose,reconcilePastExamSessionEvidence,stablePastExamSessionKey,validatePastExamSessionIdentity,validatePastExamTaskIdentity,projectPastExamSessionAdmissions} from "./pastExamPlanning.ts";
 
 const PLANNER_RUNTIME_MODE_META_KEY="planner-runtime-mode";
 const CURRENT_PLAN_PROJECTION_META_KEY="current-plan-projection-version";
@@ -2684,7 +2684,7 @@ async function bootstrap():Promise<Bootstrap>{
     db.answerIndex.toArray(),db.answerPdfs.toArray(),db.problemAliases.toArray()
   ]);
   const canonicalPastSessions=canonicalizePastExamSessions(rawPastSessions).current;
-  const pastSessions=canonicalPastSessions.map(session=>reconcilePastExamSessionEvidence(session,attempts,session.session_alias_ids));
+  let pastSessions=canonicalPastSessions.map(session=>reconcilePastExamSessionEvidence(session,attempts,session.session_alias_ids));
   const today=todayString(),week=addDays(today,-6),fortnight=addDays(today,-13);
   const pmap=new Map(problems.map(p=>[resolveCanonicalProblemId(p.problem_id,problemAliases),p]));
   const problemForId=(problemId:string)=>pmap.get(resolveCanonicalProblemId(problemId,problemAliases));
@@ -2766,6 +2766,7 @@ async function bootstrap():Promise<Bootstrap>{
     studyDays14,actualMinutes14,delayed3,dailyTargetMinutes:settings.daily_study_minutes
   });
   const pastExamCatalog=buildPastExamCatalog({record:referenceRecord,sessions:pastSessions,attempts:activeAttempts,exposureOverrides});
+  pastSessions=projectPastExamSessionAdmissions({catalog:pastExamCatalog,pastSessions,today,daysRemaining:progress.daysRemaining,attempts:activeAttempts});
   for(const session of pastSessions)session.current_selected_year_reason=currentPastExamSessionExplanation(session,pastExamCatalog);
   const availablePastYearOrder=orderCorePastExamYears({
     catalog:pastExamCatalog,daysRemaining:progress.daysRemaining
@@ -3038,7 +3039,8 @@ async function bootstrap():Promise<Bootstrap>{
       answer_document_key:answer?.document_key,
       // Snapshot selection/order/triage/minutes stay fixed. Current Review content is a read-only overlay.
       minutes:Number(snapshot!.initial_estimated_minutes?.[key]??saved.minutes),
-      triage:forcedMust?"must":snapshot!.initial_bucket?.[key]||saved.triage||"tomorrow",
+      triage:isPastExamSessionTask(saved)&&current?current.triage:
+        forcedMust?"must":snapshot!.initial_bucket?.[key]||saved.triage||"tomorrow",
       past_exam_session_state:saved.past_exam_year?derivePastExamSessionState(matchingPastSession):saved.past_exam_session_state,
     } as Task;
     if(isPastExamSessionTask(projected)){
@@ -3223,7 +3225,12 @@ async function savePastExamSession(body:Record<string,unknown>,existingId?:numbe
     if(existingId&&!previous)throw new Error("過去問セッションが見つかりません");
     const preliminary=normalizePastExamSession({...previous,...body,id:existingId||0});
     const purpose=pastExamSessionPurpose(preliminary),logicalPurpose=["clean_scan5","practice_scan5"].includes(purpose)?"scan5":purpose;
-    const canonical=canonicalizePastExamSessions(all).current;
+    const sessionAttempts=await db.attempts.toArray(),sessionMeta=await db.meta.toArray();
+    const sessionCatalog=buildPastExamCatalog({record:storedExamReferencePack(sessionMeta),sessions:all,attempts:sessionAttempts,
+      exposureOverrides:jsonMetaValue<Record<string,PastExamExposure>>(sessionMeta,EXAM_REFERENCE_EXPOSURE_META_KEY,{})});
+    const canonical=projectPastExamSessionAdmissions({catalog:sessionCatalog,today:todayString(),attempts:sessionAttempts,
+      daysRemaining:daysUntilExam(todayString(),sessionMeta.find(row=>row.key==="exam_date")?.value||"2026-11-15"),
+      pastSessions:canonicalizePastExamSessions(all).current.map(row=>reconcilePastExamSessionEvidence(row,sessionAttempts,row.session_alias_ids))});
     const previousPurpose=previous?pastExamSessionPurpose(previous):undefined;
     const previousLogical=previousPurpose&&["clean_scan5","practice_scan5"].includes(previousPurpose)?"scan5":previousPurpose;
     const identityChanged=!!previous&&(Number(previous.year)!==Number(preliminary.year)||previousLogical!==logicalPurpose);

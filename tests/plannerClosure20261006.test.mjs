@@ -105,7 +105,7 @@ test('multi-day admission rescues comparable old eligible roots without evicting
     args.problems.push({...problem(row.canonicalProblemId,null,'past_exam'),source_type:'past_exam'});
   assert.ok(reviews.every(r=>reviewExecutionState(r,'2026-10-06')==='actionable'));
   const admitted=new Set(),trace=[];
-  for(let offset=0;offset<4;offset++){
+  for(let offset=0;offset<14;offset++){
     const today=addCalendarDays('2026-10-06',offset);
     const shadow=buildAdaptivePlannerShadow({...args,catalog,reviews,pastSessions:[],weaknesses:[],
       currentTasks:[session],today,examDate:'2026-11-15',targetMinutes:120,repairCandidates:[]});

@@ -13,7 +13,8 @@ import { scheduleActiveReviews, type ScheduledReviewPlacement } from "./reviewSc
 import {deriveLearningPolicy,examHorizonPolicy} from "./examOptimizationPolicy.ts";
 import {buildPastExamYearCandidates,canonicalizePastExamSessions,derivePastExamSessionState,pastExamSessionKey,
   pastExamSessionPurpose,pastExamTaskTypeFor,selectPastExamYear,explainPastExamYearSelection,pastExamMeasurementPurpose,stablePastExamSessionKey,
-  validatePastExamSessionIdentity,validatePastExamTaskIdentity,reconcilePastExamSessionEvidence} from "./pastExamPlanning.ts";
+  validatePastExamSessionIdentity,validatePastExamTaskIdentity,reconcilePastExamSessionEvidence,
+  derivePastExamSessionAdmission,projectPastExamSessionAdmissions,preferredPastExamMeasurementYear} from "./pastExamPlanning.ts";
 import {reviewPlanningDecision} from "./todayLearningPolicy.ts";
 import {deriveFailureEpisode} from "./failureEpisode.ts";
 
@@ -123,7 +124,8 @@ function task(args:Omit<SlotTask,"taskKey">):SlotTask{
   return {...args,taskKey:args.stableSessionKey||[args.date,args.slot,args.kind,args.problemId||args.referenceProblemId||args.conceptId||args.label].join("|")};
 }
 
-function planSummary(days:AdaptivePlanDay[],reviewSchedule?:ReturnType<typeof scheduleActiveReviews>):AdaptivePlanSummary{
+function planSummary(days:AdaptivePlanDay[],reviewSchedule?:ReturnType<typeof scheduleActiveReviews>,
+  sessionDecisions:AdaptivePlanSummary["sessionDecisions"]=[]):AdaptivePlanSummary{
   const tasks=days.flatMap(day=>day.tasks),counts={scoreBuilding:0,repair:0,maintenance:0,scan5:0,full:0,timed:0,pastExam:0,chapter5:0,chapter7:0,chapter8:0};
   for(const row of tasks){
     if(row.slot==="score_building")counts.scoreBuilding++;
@@ -137,7 +139,7 @@ function planSummary(days:AdaptivePlanDay[],reviewSchedule?:ReturnType<typeof sc
     if(row.reason.includes("第7章"))counts.chapter7++;
     if(row.reason.includes("第8章"))counts.chapter8++;
   }
-  return {days:days.length,plan:days,totalMinutes:days.reduce((sum,day)=>sum+day.totalMinutes,0),counts,
+  return {days:days.length,plan:days,totalMinutes:days.reduce((sum,day)=>sum+day.totalMinutes,0),counts,sessionDecisions,
     weeklyMinimumViolations:[],dailyCapacityViolations:0,
     reviewSchedule:{repairBudgetMinutes:reviewSchedule?.repairBudgetMinutes||0,
       placements:(reviewSchedule?.placements||[]).map(row=>({reviewId:row.review.id,problemId:row.review.problem_id,
@@ -182,11 +184,32 @@ function planDays(args:{
   weaknesses:ConceptWeaknessInsight[];currentTasks:Task[];repairCandidates?:PastExamRepairCandidate[];
 }){
   const result:AdaptivePlanDay[]=[],usedProblems=new Map<string,string>(),usedPast=new Map<string,string>(),usedSessionYears=new Set<number>();
-  const canonicalPastSessions=canonicalizePastExamSessions(args.pastSessions).current
-    .map(session=>reconcilePastExamSessionEvidence(session,args.attempts,session.session_alias_ids));
+  const canonicalPastSessions=projectPastExamSessionAdmissions({catalog:args.catalog,today:args.startDate,daysRemaining:args.daysRemaining,attempts:args.attempts,
+    pastSessions:canonicalizePastExamSessions(args.pastSessions).current
+      .map(session=>reconcilePastExamSessionEvidence(session,args.attempts,session.session_alias_ids))});
   const pinnedPastSession=canonicalPastSessions.find(session=>
     !["completed","deferred","cancelled","invalidated"].includes(derivePastExamSessionState(session))&&
     ["clean_scan5","practice_scan5","timed_three_question_session","simulation"].includes(pastExamSessionPurpose(session)));
+  const preferredMeasurementYear=preferredPastExamMeasurementYear({catalog:args.catalog,pastSessions:canonicalPastSessions,
+    attempts:args.attempts,today:args.startDate,daysRemaining:args.daysRemaining});
+  const sessionDecisions:NonNullable<AdaptivePlanSummary["sessionDecisions"]>=[];
+  for(const current of args.currentTasks.filter(row=>row.stable_session_key&&row.past_exam_year&&!row.checked)){
+    const session=canonicalPastSessions.find(row=>pastExamSessionKey(row)===current.stable_session_key);
+    const decision=derivePastExamSessionAdmission({year:current.past_exam_year!,catalog:args.catalog,
+      pastSessions:canonicalPastSessions,today:args.startDate,session,clean:current.clean_selection_evidence,preferredMeasurementYear});
+    sessionDecisions.push({...decision,sessionKey:current.stable_session_key!,year:current.past_exam_year!,
+      date:args.startDate,reevaluateOn:addCalendarDays(args.startDate,1)});
+  }
+  // The final shadow can be re-derived from the admitted Today tasks. Keep
+  // read-time policy deferrals visible after the old snapshot task is replaced.
+  for(const session of canonicalPastSessions.filter(row=>row.planning_defer_reason)){
+    const sessionKey=pastExamSessionKey(session);
+    if(sessionDecisions.some(row=>row.sessionKey===sessionKey))continue;
+    const decision=derivePastExamSessionAdmission({year:session.year,catalog:args.catalog,
+      pastSessions:canonicalPastSessions,today:args.startDate,session,preferredMeasurementYear});
+    sessionDecisions.push({...decision,sessionKey,year:session.year,date:args.startDate,
+      reevaluateOn:addCalendarDays(args.startDate,1)});
+  }
   const usedDeferredReviewIds=new Set<number>();
   const allActiveReviews=args.reviews.filter(review=>reviewExecutionState(review,args.startDate)==="actionable")
     .sort((a,b)=>a.due_date.localeCompare(b.due_date)||a.id-b.id);
@@ -237,8 +260,10 @@ function planDays(args:{
     reviewSourceRank(left)-reviewSourceRank(right)||
     String(left.latest_date||left.due_date).localeCompare(String(right.latest_date||right.due_date))||
     left.id-right.id;
+  const blockerCapacity=activeReviews.filter(isHardBlockerReview).sort(compareReviews).slice(0,2)
+    .reduce((sum,review)=>sum+Math.max(1,Number(review.grading_contract?.estimatedMinutes||review.estimated_minutes||5)),0);
   const reviewSchedule=scheduleActiveReviews({reviews:activeReviews,startDate:args.startDate,days:args.days,
-    dailyCapacity:args.targetMinutes,compareReviews});
+    dailyCapacity:args.targetMinutes,repairBudgetMinutes:Math.max(Math.round(args.targetMinutes*.3),blockerCapacity),compareReviews});
   const reviewsByDate=new Map<string,ScheduledReviewPlacement[]>();
   for(const placement of reviewSchedule.placements)
     reviewsByDate.set(placement.date,[...(reviewsByDate.get(placement.date)||[]),placement]);
@@ -284,12 +309,16 @@ function planDays(args:{
         "初見の得点形成と時間内の答案化を測るため"}):null;
   };
   const usedRepairRoots=new Set<string>();
-  const makeTargetedRepair=(date:string,trainingOnly=false)=>{
+  const makeTargetedRepair=(date:string,trainingOnly=false,maxMinutes=Infinity,maxRepairMinutes=maxMinutes)=>{
+    const candidateMinutes=(row:PastExamRepairCandidate)=>row.transferTraining?12:row.repairKind==="transfer"?35:
+      row.repairKind==="whitebook"?modeMinutes("skeleton"):7;
     const candidate=[...(args.repairCandidates||[])].sort((a,b)=>{
       const rank=(c:PastExamRepairCandidate)=>selectedAttemptIds.has(c.sourceAttemptId)||selectedProblemIds.has(c.sourceProblemId)?0:2;
       return rank(a)-rank(b)||String(args.attempts.find(x=>x.id===a.sourceAttemptId)?.date||"").localeCompare(
         String(args.attempts.find(x=>x.id===b.sourceAttemptId)?.date||""))||a.sourceAttemptId-b.sourceAttemptId;
-    }).find(row=>row.required&&(!trainingOnly||!!row.transferTraining)&&!usedRepairRoots.has(row.rootWeaknessId||row.conceptId)&&(
+    }).find(row=>row.required&&candidateMinutes(row)<=
+      (row.repairKind==="transfer"&&!row.transferTraining?maxMinutes:Math.min(maxMinutes,maxRepairMinutes))&&
+      (!trainingOnly||!!row.transferTraining)&&!usedRepairRoots.has(row.rootWeaknessId||row.conceptId)&&(
       !!row.transferTraining||
       row.repairKind==="transfer"&&row.transferProblemIds.some(id=>!usedProblems.has(id))||
       row.repairKind==="concept_mini"||row.repairKind==="same_problem"||row.repairKind==="rediagnosis"||
@@ -364,7 +393,12 @@ function planDays(args:{
     const stickyTaskCandidate=date===args.startDate?args.currentTasks.find(current=>!current.checked&&current.past_exam_year&&
       current.past_exam_session_state!=="completed"&&current.past_exam_session_state!=="deferred"&&
       (current.past_exam_task_type===requestedType||kind==="scan5"&&current.past_exam_task_type==="practice_scan5")):undefined;
-    const stickyTask=stickyTaskCandidate&&validatePastExamTaskIdentity(stickyTaskCandidate).valid?stickyTaskCandidate:undefined;
+    const stickyAdmission=stickyTaskCandidate?derivePastExamSessionAdmission({year:stickyTaskCandidate.past_exam_year!,
+      catalog:args.catalog,pastSessions:canonicalPastSessions,today:date,clean:stickyTaskCandidate.clean_selection_evidence,
+      preferredMeasurementYear:preferredPastExamMeasurementYear({catalog:args.catalog,pastSessions:canonicalPastSessions,
+        attempts:args.attempts,today:date,daysRemaining:dayRemaining}),
+      session:canonicalPastSessions.find(row=>pastExamSessionKey(row)===stickyTaskCandidate.stable_session_key)}):undefined;
+    const stickyTask=stickyTaskCandidate&&validatePastExamTaskIdentity(stickyTaskCandidate).valid&&stickyAdmission?.required?stickyTaskCandidate:undefined;
     const persistedCandidate=date===args.startDate?pinnedPastSession:undefined;
     const persisted=persistedCandidate&&validatePastExamSessionIdentity(persistedCandidate).valid?persistedCandidate:undefined;
     const stickyYear=persisted?.year||stickyTask?.past_exam_year;
@@ -419,7 +453,8 @@ function planDays(args:{
       stableSessionKey,pastExamSessionState:persisted?derivePastExamSessionState(persisted):stickyTask?.past_exam_session_state||"planned",sessionWorkflow,
       selectedYearReason,
       unseenIndividualProblemIds:stickyTask?.unseen_individual_problem_ids||selected.unseenIndividualProblemIds,
-      todayCategory:"exam_practice",whyToday:pastExamMeasurementPurpose(selected.cleanSelectionEvidence,selected.yearRole)});
+      todayCategory:"exam_practice",whyToday:stickyAdmission?.required&&stickyTask?stickyAdmission.reason:
+        pastExamMeasurementPurpose(selected.cleanSelectionEvidence,selected.yearRole)});
   };
   let materialConfirmationPlanned=false;
   const includedReviewIds=new Set<number>();
@@ -458,16 +493,21 @@ function planDays(args:{
     carriedPlacements=[];
     const timedSession=score&&["timed_three_question_session","simulation"].includes(String(score.pastExamTaskType||""));
     if(dayPlacements.length){
+      const blockerMinutes=dayPlacements.filter(p=>isHardBlockerReview(p.review)).reduce((sum,p)=>sum+p.minutes,0);
+      // Reserve actual prerequisite repair before fitting a long measurement.
+      // A 90-minute session is deferred when it and its blocker cannot fit;
+      // the blocker is not silently dropped because the session consumed the budget.
       const repairBudget=Math.min(timedSession?30:reviewSchedule.repairBudgetMinutes,
-        Math.max(0,args.targetMinutes-(score?.minutes||0)));
+        Math.max(Math.min(blockerMinutes,args.targetMinutes),args.targetMinutes-(score?.minutes||0)));
       const selectedPlacements:ScheduledReviewPlacement[]=[];
       let repairMinutes=0;const selectedRoots=new Set<string>();
       for(const placement of dayPlacements){
         const source=sourceForReview(placement.review);
         const root=source?deriveFailureEpisode(source).rootWeaknesses[0]?.rootWeaknessId:undefined;
         const rootKey=root||placement.review.problem_id;
+        const placementBudget=isHardBlockerReview(placement.review)?args.targetMinutes:repairBudget;
         const reason=selectedRoots.has(rootKey)?"duplicate_root":timedSession&&selectedPlacements.length>=2?"root_cap":
-          repairMinutes+placement.minutes>repairBudget?"budget":"";
+          repairMinutes+placement.minutes>placementBudget?"budget":"";
         if(reason){
           carriedPlacements.push(placement);
           decisions.push({reviewId:placement.review.id,problemId:placement.review.problem_id,date,
@@ -476,6 +516,7 @@ function planDays(args:{
           continue;
         }
         selectedRoots.add(rootKey);
+        if(root)usedRepairRoots.add(root);
         selectedPlacements.push(placement);repairMinutes+=placement.minutes;
       }
       dayPlacements=selectedPlacements;
@@ -523,13 +564,28 @@ function planDays(args:{
       score=deriveLearningPolicy(Math.max(0,args.daysRemaining-offset)).pastExamIsPrimary?null:
         makeWhitebook(date,[2,4,5,6,7,8],"skeleton","利用可能な過去問がない導入期の得点形成");
     }
-    if(score&&tasks.reduce((sum,row)=>sum+row.minutes,0)+score.minutes<=args.targetMinutes)tasks.push(score);
+    const overPreSessionRepairCap=timedSession&&tasks.filter(t=>t.slot==="repair")
+      .reduce((sum,t)=>sum+t.minutes,0)>30;
+    if(score&&!overPreSessionRepairCap&&tasks.reduce((sum,row)=>sum+row.minutes,0)+score.minutes<=args.targetMinutes)tasks.push(score);
+    else if(score?.stableSessionKey&&score.pastExamYear&&date===args.startDate){
+      const deferred={sessionKey:score.stableSessionKey,year:score.pastExamYear,date,required:false,
+        disposition:"deferred" as const,evidenceIds:tasks.filter(t=>t.hardBlocker).map(t=>`review:${t.reviewId}`),
+        reason:overPreSessionRepairCap?"真の重大blockerを先に補修するため、本番前補修の30分上限を超えるsessionは延期。年度は完了扱いにせず次回再評価":
+          "本日の必要補修と本番sessionが日次予算に収まらないため延期。年度は完了扱いにせず次回再評価",
+        reevaluateOn:addCalendarDays(date,1)};
+      const index=sessionDecisions.findIndex(row=>row.sessionKey===score.stableSessionKey);
+      if(index>=0)sessionDecisions[index]=deferred;else sessionDecisions.push(deferred);
+    }
     // A single eligible training fits inside the existing repair budget; never
     // evict an exam session or create drafts just to fill a quota.
     const repairTasks=tasks.filter(t=>t.todayCategory==="repair");
-    if(repairTasks.length<2&&repairTasks.reduce((sum,t)=>sum+t.minutes,0)+12<=30&&
-      tasks.reduce((sum,t)=>sum+t.minutes,0)+12<=args.targetMinutes){
-      const training=makeTargetedRepair(date,true);if(training?.transferTrainingKey)tasks.push(training);
+    if(deriveLearningPolicy(Math.max(0,args.daysRemaining-offset)).pastExamIsPrimary&&args.repairCandidates?.length&&
+      repairTasks.length<2&&repairTasks.reduce((sum,t)=>sum+t.minutes,0)+7<=30&&
+      tasks.reduce((sum,t)=>sum+t.minutes,0)+7<=args.targetMinutes){
+      const remaining=args.targetMinutes-tasks.reduce((sum,t)=>sum+t.minutes,0);
+      const repairRemaining=30-repairTasks.reduce((sum,t)=>sum+t.minutes,0);
+      const intervention=makeTargetedRepair(date,false,remaining,repairRemaining);
+      if(intervention)tasks.push(intervention);
     }
     const coreFloor=Math.min(90,Math.max(60,Math.round(args.targetMinutes*.4)));
     if(phase==="foundation_to_A"&&score&&score.kind!=="scan5"&&
@@ -593,22 +649,27 @@ function planDays(args:{
   const scheduledMinutes=Object.fromEntries(retainedPlacements.reduce((rows,row)=>{
     rows.set(row.date,Number(rows.get(row.date)||0)+row.minutes);return rows;
   },new Map<string,number>()));
-  return {days:result,reviewSchedule:{...reviewSchedule,placements:retainedPlacements,scheduledMinutes,decisions}};
+  return {days:result,sessionDecisions,reviewSchedule:{...reviewSchedule,placements:retainedPlacements,scheduledMinutes,decisions}};
 }
 
 function weeklyActual(args:{startDate:string;attempts:Attempt[];pastSessions:PastSession[];problems:Problem[]}){
   const start=addCalendarDays(args.startDate,-6),problemMap=new Map(args.problems.map(problem=>[problem.problem_id,problem]));
   const attempts=args.attempts.filter(attempt=>attempt.date>=start&&attempt.date<=args.startDate);
+  // A planned/carry-over row is not execution evidence. Keep actual scan and
+  // answer completion separate, even when both belong to the same session.
   const sessions=args.pastSessions.filter(session=>String(session.date)>=start&&String(session.date)<=args.startDate);
+  const scanned=sessions.filter(session=>session.prompt_scanned_at||Number(session.scan_minutes||0)>0);
+  const completed=sessions.filter(session=>session.simulation_completed_at||session.attempt_completed_at);
   return {
     chapter5:attempts.filter(attempt=>problemMap.get(attempt.problem_id)?.chapter===5).length,
     chapter7:attempts.filter(attempt=>problemMap.get(attempt.problem_id)?.chapter===7).length,
     chapter8:attempts.filter(attempt=>problemMap.get(attempt.problem_id)?.chapter===8).length,
-    scan5:sessions.filter(session=>["scan_only","scan_plus_one","selected_three_timed"].includes(String(session.session_kind))).length,
+    scan5:scanned.filter(session=>["scan_only","scan_plus_one","selected_three_timed"].includes(String(session.session_kind))).length,
     fullOrTimed:attempts.filter(attempt=>attempt.mode==="full"||attempt.exam_score_eligible).length+
-      sessions.filter(session=>session.session_kind==="selected_three_timed").length,
+      completed.filter(session=>session.session_kind==="selected_three_timed").length,
     pastExam:attempts.filter(attempt=>problemMap.get(attempt.problem_id)?.category==="past_exam").length+
-      sessions.filter(session=>["scan_only","scan_plus_one","selected_three_timed"].includes(String(session.session_kind))).length
+      sessions.filter(session=>(scanned.includes(session)||completed.includes(session))&&
+        ["scan_only","scan_plus_one","selected_three_timed"].includes(String(session.session_kind))).length
   };
 }
 
@@ -627,9 +688,9 @@ export function buildAdaptivePlannerShadow(args:{
   const planned7=planDays({...args,startDate:args.today,days:7,daysRemaining});
   const planned14=planDays({...args,startDate:args.today,days:14,daysRemaining});
   const planned30=planDays({...args,startDate:args.today,days:30,daysRemaining});
-  const plan7=validateMinimums(planSummary(planned7.days,planned7.reviewSchedule),daysRemaining,args.targetMinutes);
-  const plan14=validateMinimums(planSummary(planned14.days,planned14.reviewSchedule),daysRemaining,args.targetMinutes);
-  const plan30=validateMinimums(planSummary(planned30.days,planned30.reviewSchedule),daysRemaining,args.targetMinutes);
+  const plan7=validateMinimums(planSummary(planned7.days,planned7.reviewSchedule,planned7.sessionDecisions),daysRemaining,args.targetMinutes);
+  const plan14=validateMinimums(planSummary(planned14.days,planned14.reviewSchedule,planned14.sessionDecisions),daysRemaining,args.targetMinutes);
+  const plan30=validateMinimums(planSummary(planned30.days,planned30.reviewSchedule,planned30.sessionDecisions),daysRemaining,args.targetMinutes);
   const legacy=simulateThirtyDays({startDate:args.today,tasks:args.currentTasks,problems:args.problems,targetMinutes:args.targetMinutes,
     pastSessions:args.pastSessions as unknown as Array<Record<string,unknown>>});
   const policy=deriveLearningPolicy(daysRemaining),weekly=weeklyActual({startDate:args.today,attempts:args.attempts,pastSessions:args.pastSessions,problems:args.problems});

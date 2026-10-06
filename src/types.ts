@@ -463,6 +463,8 @@ export type AdaptiveReviewScheduleConflict = {
   minutes:number;reason:"capacity"|"outside_horizon";
 };
 export type AdaptivePlanSummary = {
+  sessionDecisions?:Array<{sessionKey:string;year:number;date:string;disposition:"required"|"deferred";
+    reason:string;evidenceIds:string[];reevaluateOn:string}>;
   days:number;plan:AdaptivePlanDay[];totalMinutes:number;
   counts:{scoreBuilding:number;repair:number;maintenance:number;scan5:number;full:number;timed:number;pastExam:number;chapter5:number;chapter7:number;chapter8:number};
   weeklyMinimumViolations:string[];dailyCapacityViolations:number;

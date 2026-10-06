@@ -597,6 +597,9 @@ function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a
       "合格逆算プランとの差分を確認しました"
     )}><RefreshCw size={15}/>今日の計画を現行方式で再作成</button></div></div><div className={`load-pill ${data.today.warning?"over":""}`}><Gauge/><div><span>確定計画／目標</span><strong>{data.today.confirmed_plan_minutes} / {data.today.target_minutes_today}分</strong><small>完了 {data.today.completed_minutes_today}分 + 確定課題の残り {data.today.confirmed_remaining_minutes}分</small><small>追加可能 最大{data.today.additional_capacity_minutes}分・先送り候補は未計上</small></div></div></div>
     {primaryAction&&<div className="time-guidance" aria-label="今日の最優先課題"><Play size={16}/><div><strong>最初に：{primaryAction.title}・{primaryAction.minutes}分</strong><p>{primaryAction.why_today||primaryAction.reason}</p></div></div>}
+    {data.adaptiveLearning.plannerShadow.plan14.sessionDecisions?.filter(row=>row.disposition==="deferred").map(row=>
+      <div className="time-guidance" key={row.sessionKey}><Clock3 size={16}/><div><strong>{row.year}年の年度再演習は後回し</strong>
+        <p>{row.reason}</p><small>次回評価：{row.reevaluateOn}（本番形式の失敗証拠が増えれば再評価）</small></div></div>)}
     {data.today.warning&&<div className="warning"><AlertTriangle/><div><strong>今日の実行見込みが目標を超えています</strong><p>{data.today.warning}</p></div></div>}
     <div className="today-time-ledger">
       <span>今日の目標<strong>{data.today.target_minutes_today}分</strong></span>
@@ -1401,7 +1404,8 @@ function PastView({data,go,run,busy,startingTask}:{data:Bootstrap;go:(p:Page)=>v
       const sessionTitle=saved.session_kind==="selected_three_timed"?`${saved.year}年 本番型session`:`${saved.year||saved.source_label||"カスタム"}・${saved.session_kind||saved.session_type}`;
       const selectedScoreEligible=!!data.dashboard.readiness.evidence?.selectedThree.sessions.some(row=>row.sessionId===saved.id);
       return <article className="panel past-result-card" key={saved.id}>
-        <div className="past-result-head"><div><h3>{sessionTitle}</h3><span>{saved.date} ・ 露出：{exposure} ・ {state==="completed"?"完了":"進行中"}</span></div><Badge tone={selectedScoreEligible?"green":""}>{selectedScoreEligible?"選択3問得点の対象":"学習指標"}</Badge></div>
+        <div className="past-result-head"><div><h3>{sessionTitle}</h3><span>{saved.date} ・ 露出：{exposure} ・ {state==="completed"?"完了":state==="deferred"?"後回し":state==="planned"?"未開始":"進行中"}</span></div><Badge tone={selectedScoreEligible?"green":""}>{selectedScoreEligible?"選択3問得点の対象":"学習指標"}</Badge></div>
+        {typeof saved.planning_defer_reason==="string"&&saved.planning_defer_reason&&<p className="subtle">{saved.planning_defer_reason}</p>}
         {(saved.current_selected_year_reason||saved.selected_year_reason)&&<p className="past-session-reason"><b>なぜこの年度：</b>{saved.current_selected_year_reason||saved.selected_year_reason}</p>}
         {saved.session_kind==="selected_three_timed"&&<p className="past-session-flow">5問scan → 3問選択 → 3問答案 → 採点</p>}
         <div className="past-result-body">

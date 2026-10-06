@@ -173,7 +173,7 @@ test("未実施の本番型sessionはreplanだけで年度・identityを変更�
   const saved={problem_id:session.problemId,title:session.label,kind:"得点形成",reason:session.reason,mode:"full",
     minutes:90,load:0,triage:"must",past_exam_task_type:session.pastExamTaskType,past_exam_year:session.pastExamYear,
     session_problem_ids:session.sessionProblemIds,stable_session_key:session.stableSessionKey,past_exam_session_state:"planned",
-    selected_year_reason:session.selectedYearReason};
+    selected_year_reason:session.selectedYearReason,clean_selection_evidence:session.cleanSelectionEvidence};
   const changedCatalog=fresh.map(row=>row.year===2018?{...row,exposure:"prompt_scanned"}:row);
   const rerun=buildAdaptivePlannerShadow({record:source,catalog:changedCatalog,weaknesses:[repairWeakness],problems:repairWhitebook,
     attempts:[],reviews:[],pastSessions:[],currentTasks:[saved],today:"2026-08-30",examDate:"2026-11-15",targetMinutes:150});
@@ -250,7 +250,10 @@ test("同じ過去問を根拠のない同一目的で再配置せず、配置�
 });
 
 test("D90・D60・D30診断は純粋にフェーズを切り替え、D60以降にtimedを確保する",()=>{
-  const shadow=buildAdaptivePlannerShadow({record:expandedRecord,catalog:expandedCatalog,weaknesses:[],problems:whitebook,
+  // Minimum timed coverage requires real measurement value, not a quota filled
+  // by fully exposed years with no observed session-level deficit.
+  const cleanCatalog=expandedCatalog.map(row=>({...row,exposure:"unseen"}));
+  const shadow=buildAdaptivePlannerShadow({record:expandedRecord,catalog:cleanCatalog,weaknesses:[],problems:whitebook,
     attempts:[],reviews:[],pastSessions:[],currentTasks:[],today:"2026-08-01",examDate:"2026-11-15",targetMinutes:150});
   const d90=shadow.phaseDiagnostics.find(row=>row.checkpoint==="D90");
   const d60=shadow.phaseDiagnostics.find(row=>row.checkpoint==="D60");
@@ -291,7 +294,7 @@ test("正式順位はraw weakNoteではなくconcept evidenceの強い証拠を�
   });
   const plan=buildAdaptivePlannerShadow({record:baseRecord,catalog,problems:candidates,attempts:[{
     id:90,problem_id:"WB-4-A-99",date:"2026-08-04",mode:"full",error_types:["none"],exam_score_eligible:false
-  }],reviews:[],pastSessions:[{id:91,date:"2026-08-04",session_kind:"scan_only",questions:[]}],
+  }],reviews:[],pastSessions:[{id:91,date:"2026-08-04",session_kind:"scan_only",scan_minutes:10,questions:[]}],
     currentTasks:[],today:"2026-08-04",examDate:"2026-11-15",targetMinutes:150,
     weaknesses:[weakness("concept-low","resolved",200,0,2),weakness("concept-strong","confirmed",50,2)]});
   const score=plan.plan14.plan[0].tasks.find(task=>task.slot==="score_building");
@@ -321,7 +324,7 @@ test("直近7日の実績不足を翌日の正式候補へ優先し、実績が�
   assert.ok(firstThree.some(task=>task.reason.includes("第7章実績不足")));
   const attempts=[5,7].map((chapter,index)=>({id:600+index,problem_id:`WB-${chapter}-A-01`,date:"2026-08-03",mode:"skeleton",error_types:["none"]}));
   const satisfied=buildAdaptivePlannerShadow({record:baseRecord,catalog,weaknesses:[],problems:whitebook,attempts,reviews:[],
-    pastSessions:[{id:610,date:"2026-08-03",session_kind:"scan_only",questions:[]}],currentTasks:[],
+    pastSessions:[{id:610,date:"2026-08-03",session_kind:"scan_only",scan_minutes:10,questions:[]}],currentTasks:[],
     today:"2026-08-04",examDate:"2026-11-15",targetMinutes:150});
   assert.equal(satisfied.plan14.plan[0].tasks.some(task=>/(scan5|第5章|第7章)実績不足/.test(task.reason)),false);
 });
@@ -358,7 +361,7 @@ test("同一問題を卒業したconceptは別問題のtransfer_checkへ展開�
     evidenceConfidence:"medium",nextRecommendedAction:"別問題",latestEvidenceDate:"2026-08-03",evidenceSummary:[]};
   const plan=buildAdaptivePlannerShadow({record:baseRecord,catalog,weaknesses:[weakness],problems:candidates,
     attempts:[graduated,{id:702,problem_id:"WB-4-A-99",date:"2026-08-03",mode:"full",error_types:["none"]}],
-    reviews:[],pastSessions:[{id:703,date:"2026-08-03",session_kind:"scan_only",questions:[]}],currentTasks:[],
+    reviews:[],pastSessions:[{id:703,date:"2026-08-03",session_kind:"scan_only",scan_minutes:10,questions:[]}],currentTasks:[],
     today:"2026-08-04",examDate:"2026-11-15",targetMinutes:150});
   const transfer=plan.plan14.plan[0].tasks.find(task=>task.problemId==="WB-2-A-02");
   assert.equal(transfer?.purpose,"transfer_check");

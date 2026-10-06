@@ -14,7 +14,7 @@ import {canonicalAttemptId,logicalReviewKey,reviewExecutionMessage,reviewExecuti
 import {resolveSemanticReviewGeneration} from "./reviewGeneration.ts";
 import {WHOLE_ANSWER_DIAGNOSTIC_VERSION,wholeAnswerDiagnosticIssues} from "./wholeAnswerDiagnostic.ts";
 import {reviewDueState} from "./todayLearningPolicy.ts";
-import {buildPastExamYearCandidates,canonicalizePastExamSessions,derivePastExamSessionState,pastExamSessionKey,pastExamSessionPurpose,reconcilePastExamSessionEvidence,selectPastExamYear,stablePastExamSessionKey,validatePastExamSessionIdentity,validatePastExamTaskIdentity,type PastExamTaskType} from "./pastExamPlanning.ts";
+import {buildPastExamYearCandidates,canonicalizePastExamSessions,derivePastExamSessionState,pastExamSessionKey,pastExamSessionPurpose,reconcilePastExamSessionEvidence,selectPastExamYear,stablePastExamSessionKey,validatePastExamSessionIdentity,validatePastExamTaskIdentity,derivePastExamSessionAdmission,projectPastExamSessionAdmissions,preferredPastExamMeasurementYear,derivePastExamWorkspace,type PastExamTaskType} from "./pastExamPlanning.ts";
 import {deriveFailureEpisode} from "./failureEpisode.ts";
 import type {CoachDiagnosisState,DashboardKpiProjection} from "./types.ts";
 import type {ExamReadinessMetrics} from "./examReadiness.ts";
@@ -180,7 +180,7 @@ export type IntegrityCategory =
   | "transfer_success_not_recognized" | "stale_current_audit"
   | "coach_update_parse_failed" | "coach_update_schema_invalid" | "coach_diff_generated_from_invalid_update"
   | "selected_attempt_missing_from_session" | "session_answer_count_mismatch" | "coach_kpi_projection_mismatch"
-  | "pass_outlook_truncated" | "transfer_false_positive";
+  | "pass_outlook_truncated" | "transfer_false_positive" | "unsupported_exposed_session_required";
 
 export type IntegrityIssue = {
   category: IntegrityCategory;
@@ -268,8 +268,19 @@ export function runIntegrityAudit(args: {
     for(const a of attempts.filter(a=>a.problem_id===p.problem_id))if(a.exam_score_eligible||a.evidence_strength!=="training"||a.source_type!=="generated")
       issues.push({category:"generated_training_in_exam_kpi",severity:"active",attemptIds:[a.id],detail:"生成trainingの本番根拠への混入",repairable:false});
   }
-  const canonicalPastSessions=canonicalizePastExamSessions(pastSessions).current
-    .map(session=>reconcilePastExamSessionEvidence(session,attempts,session.session_alias_ids));
+  const canonicalPastSessions=projectPastExamSessionAdmissions({catalog:args.pastExamCatalog||[],today,attempts,
+    daysRemaining:daysUntilExam(today,args.examDate||"2026-11-15"),
+    pastSessions:canonicalizePastExamSessions(pastSessions).current
+      .map(session=>reconcilePastExamSessionEvidence(session,attempts,session.session_alias_ids))});
+  const preferredMeasurementYear=preferredPastExamMeasurementYear({catalog:args.pastExamCatalog||[],pastSessions:canonicalPastSessions,
+    today,attempts,daysRemaining:daysUntilExam(today,args.examDate||"2026-11-15")});
+  for(const task of (currentTodayTasks||[]).filter(row=>row.triage==="must"&&row.stable_session_key&&row.past_exam_year&&!row.checked)){
+    const session=canonicalPastSessions.find(row=>pastExamSessionKey(row)===task.stable_session_key);
+    const decision=derivePastExamSessionAdmission({year:task.past_exam_year!,catalog:args.pastExamCatalog||[],
+      pastSessions:canonicalPastSessions,today,session,clean:task.clean_selection_evidence,preferredMeasurementYear});
+    if(!decision.required)issues.push({category:"unsupported_exposed_session_required",severity:"active",
+      detail:`${task.stable_session_key}: ${decision.reason}`,repairable:true});
+  }
   const labels=args.assessmentLabels||LEARNING_ASSESSMENT_LABELS;
   if(labels.exam===labels.problem||/本番|Level\s*[123]/i.test(labels.problem))issues.push({category:"problem_mastery_exam_level_label_collision",
     severity:"active",detail:"Problem mastery must be named separately from exam readiness",repairable:false});
@@ -632,11 +643,10 @@ export function runIntegrityAudit(args: {
     if(new Set(sessionKeys).size!==sessionKeys.length)issues.push({category:"duplicate_past_exam_session",severity:"active",
       detail:"rolling plan contains duplicate stable PastExamSession identities",repairable:false});
     const firstSession=tasks.find(row=>["clean_scan5","timed_three_question_session"].includes(String(row.pastExamTaskType||"")));
-    const expectedCleanYear=selectPastExamYear({
-      candidates:buildPastExamYearCandidates({catalog:args.pastExamCatalog||[],attempts,pastSessions:canonicalPastSessions,
-        weaknesses:args.conceptWeaknesses,today,daysRemaining:remaining}),
-      taskType:(firstSession?.pastExamTaskType||"timed_three_question_session") as PastExamTaskType,
-    })?.year;
+    // The current workspace pins the same active instance after its own scan.
+    // A fresh year ranking would mistake that exposure for a skipped clean year.
+    const expectedCleanYear=derivePastExamWorkspace({catalog:args.pastExamCatalog||[],attempts,
+      pastSessions:canonicalPastSessions,weaknesses:args.conceptWeaknesses,today,daysRemaining:remaining}).recommended?.year;
     if(remaining<=80&&expectedCleanYear&&firstSession?.pastExamYear!==expectedCleanYear)issues.push({category:"clean_scan_year_skipped",severity:"active",
       detail:`clean year ${expectedCleanYear} was skipped for ${firstSession?.pastExamYear||"no session"}`,repairable:false});
     const genericWhitebook=tasks.filter(row=>horizon.pastExamIsPrimary&&row.kind==="whitebook"&&!row.conceptId);
@@ -927,7 +937,11 @@ export function runIntegrityAudit(args: {
       `${savedSession.past_exam_year}|${savedSession.past_exam_task_type}|${snapshot?.date}`:"");
     const currentSessionIdentity=savedSession?.stable_session_key?currentSession?.stableSessionKey||"":currentSession?
       `${currentSession.pastExamYear}|${currentSession.pastExamTaskType}|${today}`:"";
-    if(savedSessionIdentity&&currentSessionIdentity&&savedSessionIdentity!==currentSessionIdentity)issues.push({
+    const savedAdmission=savedSession?.past_exam_year?derivePastExamSessionAdmission({year:savedSession.past_exam_year,
+      catalog:args.pastExamCatalog||[],pastSessions:canonicalPastSessions,today,
+      session:canonicalPastSessions.find(row=>pastExamSessionKey(row)===savedSessionIdentity),
+      clean:savedSession.clean_selection_evidence,preferredMeasurementYear}):undefined;
+    if(savedSessionIdentity&&currentSessionIdentity&&savedSessionIdentity!==currentSessionIdentity&&savedAdmission?.required!==false)issues.push({
       category:"unexecuted_past_session_replaced",severity:"active",
       detail:`unexecuted session ${savedSessionIdentity} was replaced by ${currentSessionIdentity}`,repairable:false});
     const todayPlacements=currentPlanSummary.reviewSchedule.placements.filter(row=>row.date===today);
@@ -1081,7 +1095,7 @@ export function runIntegrityAudit(args: {
     "exam_readiness_level_projection_mismatch", "exam_readiness_kpi_projection_mismatch",
     "required_whitebook_without_high_confidence_lineage", "transfer_required_but_no_candidate_generation",
     "false_transfer_evidence", "problem_mastery_exam_level_label_collision",
-    "generated_transfer_invalid", "generated_transfer_duplicate", "generated_training_in_exam_kpi",
+    "generated_transfer_invalid", "generated_transfer_duplicate", "generated_training_in_exam_kpi", "unsupported_exposed_session_required",
   ];
   const counts = Object.fromEntries(categories.map((category) =>
     [category, issues.filter((issue) => issue.category === category).length])) as Record<IntegrityCategory, number>;
@@ -1089,7 +1103,7 @@ export function runIntegrityAudit(args: {
     "generic_whitebook_in_past_exam_main","future_exam_practice_share_below_target","missing_timed_session",
     "whitebook_backlog_suppressing_past_exam","past_exam_share_below_target_due_to_low_value_review",
     "unexecuted_past_session_replaced","duplicate_past_exam_session","required_whitebook_without_lineage",
-    "whitebook_match_low_confidence_required","year_selection_reason_missing"
+    "whitebook_match_low_confidence_required","year_selection_reason_missing","unsupported_exposed_session_required"
     ,"completed_session_rescheduled_as_active","next_session_created_before_previous_terminal",
     "past_exam_starved_by_repairs","too_many_pre_session_required_repairs","selected_major_deprioritized_by_nonselected"
   ]);

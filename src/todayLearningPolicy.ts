@@ -57,6 +57,7 @@ export function todayLearningCategory(task:Partial<Task>):TodayLearningCategory{
 }
 
 export function whyToday(task:Partial<Task>){
+  if(task.stable_session_key&&task.plan_origin==="adaptive_planner"&&task.why_today)return task.why_today;
   const actionClass=deriveCurrentActionClass(task);
   if(actionClass==="exam_practice")return "初見・選題・時間内完遂・別問題への転移を測るため";
   if(actionClass==="maintenance")return "現在の本番演習と重要補修の後に、余力があれば保持を確認するため";
