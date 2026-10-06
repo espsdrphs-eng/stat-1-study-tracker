@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import 'fake-indexeddb/auto';
-import {writeFile} from 'node:fs/promises';
+import {mkdir,writeFile} from 'node:fs/promises';
 import {EXAM_REFERENCE_EXPOSURE_META_KEY} from '../src/examReferencePack.ts';
 const {db,localGet,localPost,exportBackup,restoreBackup}=await import('../src/localDb.ts');
 
@@ -39,6 +39,7 @@ test('unsupported exposed session is deferred without editing its raw row or mor
   const backup=await exportBackup();
   // A generated test artifact for browser upload. This is explicitly synthetic,
   // not the latest complete production export.
+  await mkdir('outputs',{recursive:true});
   await writeFile('outputs/session-value-browser-fixture.json',JSON.stringify(backup));
   await restoreBackup(backup);
   const restored=await localGet('/api/bootstrap');
