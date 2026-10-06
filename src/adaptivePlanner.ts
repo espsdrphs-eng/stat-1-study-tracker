@@ -10,11 +10,11 @@ import { reviewExecutionState } from "./integrityEngine.ts";
 import { simulateThirtyDays } from "./learningSimulation.ts";
 import { resolvePersistedAttemptLifecycle } from "./reviewTransition.ts";
 import { scheduleActiveReviews, type ScheduledReviewPlacement } from "./reviewScheduling.ts";
-import {deriveLearningPolicy,examHorizonPolicy} from "./examOptimizationPolicy.ts";
+import {deriveLearningPolicy,examHorizonPolicy,pastExamYearRole} from "./examOptimizationPolicy.ts";
 import {buildPastExamYearCandidates,canonicalizePastExamSessions,derivePastExamSessionState,pastExamSessionKey,
   pastExamSessionPurpose,pastExamTaskTypeFor,selectPastExamYear,explainPastExamYearSelection,pastExamMeasurementPurpose,stablePastExamSessionKey,
   validatePastExamSessionIdentity,validatePastExamTaskIdentity,reconcilePastExamSessionEvidence,
-  derivePastExamSessionAdmission,projectPastExamSessionAdmissions,preferredPastExamMeasurementYear} from "./pastExamPlanning.ts";
+  derivePastExamSessionAdmission,derivePastExamShortCorrection,projectPastExamSessionAdmissions,preferredPastExamMeasurementYear} from "./pastExamPlanning.ts";
 import {reviewPlanningDecision} from "./todayLearningPolicy.ts";
 import {deriveFailureEpisode} from "./failureEpisode.ts";
 
@@ -166,7 +166,12 @@ function validateMinimums(summary:AdaptivePlanSummary,daysRemaining:number,targe
       if(share<horizon.pastExamShareMin)
         violations.push(`${start/7+1}週目: 過去問比率${Math.round(share*100)}%（目標30〜40%）`);
     }else if(weekDaysRemaining>=31){
-      if(!week.counts.timed)violations.push(`${start/7+1}週目: 90分演習なし`);
+      // A forecast placement is not execution. Do not demand another full
+      // rehearsal while the protected benchmark already planned in an earlier
+      // week still awaits its result; replan after the real outcome.
+      const pendingBenchmark=summary.plan.slice(0,start).flatMap(day=>day.tasks).some(t=>
+        t.pastExamYearRole==="current_benchmark_simulation"&&t.kind==="timed");
+      if(!week.counts.timed&&!pendingBenchmark)violations.push(`${start/7+1}週目: 90分演習なし`);
       if(share<horizon.pastExamShareMin)
         violations.push(`${start/7+1}週目: 過去問・本番型比率${Math.round(share*100)}%（目標${Math.round(horizon.pastExamShareMin*100)}〜${Math.round(horizon.pastExamShareMax*100)}%）`);
     }else if(share<horizon.pastExamShareMin){
@@ -196,7 +201,7 @@ function planDays(args:{
   for(const current of args.currentTasks.filter(row=>row.stable_session_key&&row.past_exam_year&&!row.checked)){
     const session=canonicalPastSessions.find(row=>pastExamSessionKey(row)===current.stable_session_key);
     const decision=derivePastExamSessionAdmission({year:current.past_exam_year!,catalog:args.catalog,
-      pastSessions:canonicalPastSessions,today:args.startDate,session,clean:current.clean_selection_evidence,preferredMeasurementYear});
+      pastSessions:canonicalPastSessions,attempts:args.attempts,today:args.startDate,session,clean:current.clean_selection_evidence,preferredMeasurementYear});
     sessionDecisions.push({...decision,sessionKey:current.stable_session_key!,year:current.past_exam_year!,
       date:args.startDate,reevaluateOn:addCalendarDays(args.startDate,1)});
   }
@@ -206,7 +211,7 @@ function planDays(args:{
     const sessionKey=pastExamSessionKey(session);
     if(sessionDecisions.some(row=>row.sessionKey===sessionKey))continue;
     const decision=derivePastExamSessionAdmission({year:session.year,catalog:args.catalog,
-      pastSessions:canonicalPastSessions,today:args.startDate,session,preferredMeasurementYear});
+      pastSessions:canonicalPastSessions,attempts:args.attempts,today:args.startDate,session,preferredMeasurementYear});
     sessionDecisions.push({...decision,sessionKey,year:session.year,date:args.startDate,
       reevaluateOn:addCalendarDays(args.startDate,1)});
   }
@@ -386,7 +391,7 @@ function planDays(args:{
         weaknessSkillIds:candidate.weaknessSkillIds,matchedSkillIds:candidate.matchedSkillIds,
         matchScore:candidate.matchScore,matchConfidence:candidate.matchConfidence}});
   };
-  const makePast=(date:string,kind:"past_exam"|"scan5"|"timed",minutes:number,reason:string)=>{
+  const makePast=(date:string,kind:"past_exam"|"scan5"|"timed",minutes:number,reason:string):SlotTask=>{
     const dayOffset=Math.round((Date.parse(`${date}T12:00:00Z`)-Date.parse(`${args.startDate}T12:00:00Z`))/86400000);
     const dayRemaining=Math.max(0,args.daysRemaining-dayOffset);
     const requestedType=kind==="timed"?"timed_three_question_session":kind==="scan5"?"clean_scan5":"individual_full";
@@ -394,7 +399,7 @@ function planDays(args:{
       current.past_exam_session_state!=="completed"&&current.past_exam_session_state!=="deferred"&&
       (current.past_exam_task_type===requestedType||kind==="scan5"&&current.past_exam_task_type==="practice_scan5")):undefined;
     const stickyAdmission=stickyTaskCandidate?derivePastExamSessionAdmission({year:stickyTaskCandidate.past_exam_year!,
-      catalog:args.catalog,pastSessions:canonicalPastSessions,today:date,clean:stickyTaskCandidate.clean_selection_evidence,
+      catalog:args.catalog,pastSessions:canonicalPastSessions,attempts:args.attempts,today:date,clean:stickyTaskCandidate.clean_selection_evidence,
       preferredMeasurementYear:preferredPastExamMeasurementYear({catalog:args.catalog,pastSessions:canonicalPastSessions,
         attempts:args.attempts,today:date,daysRemaining:dayRemaining}),
       session:canonicalPastSessions.find(row=>pastExamSessionKey(row)===stickyTaskCandidate.stable_session_key)}):undefined;
@@ -417,6 +422,27 @@ function planDays(args:{
       unseenIndividualProblemIds:stickyTask?.unseen_individual_problem_ids}:choosePastExam({catalog:args.catalog,daysRemaining:dayRemaining,used:usedPast,date,
       attempts:args.attempts,weaknesses:args.weaknesses,avoidProblemIds:activeReviewProblemIds,
       pastSessions:args.pastSessions,kind,usedSessionYears});
+    if(!selected&&kind!=="past_exam"){
+      const correction=derivePastExamShortCorrection({pastSessions:canonicalPastSessions,attempts:args.attempts,today:date});
+      const rows=correction?args.catalog.filter(r=>r.year===correction.year&&r.schedulable&&r.gradable)
+        .sort((a,b)=>a.questionNumber-b.questionNumber):[];
+      if(correction&&rows.length===5&&!result.some(day=>day.tasks.some(t=>t.stableSessionKey===correction.stableSessionKey))){
+        return task({date,slot:"score_building",kind:"scan5",label:`${correction.year}年 practice scan・時間配分較正`,
+          referenceProblemId:rows[0].referenceProblemId,problemId:rows[0].canonicalProblemId,minutes:10,
+          purpose:"selection_scan",purposeLabel:"時間配分・得点予測の較正",reason:correction.reason,whyToday:correction.reason,
+          basis:`source session: ${correction.sourceSessionKey}`,exposure:rows[0].exposure,requiresUserSelection:false,
+          pastExamTaskType:"practice_scan5",pastExamYear:correction.year,pastExamYearRole:pastExamYearRole(correction.year),
+          sessionProblemIds:rows.map(r=>r.canonicalProblemId),cleanSelectionEvidence:false,
+          stableSessionKey:correction.stableSessionKey,pastExamSessionState:"planned",
+          sessionWorkflow:"5問practice scan → scan込み90分の時間配分・得点予測を補正",
+          selectedYearReason:correction.reason,todayCategory:"exam_practice"});
+      }
+      // A declined full format does not mean the registered exam material is
+      // missing. Continue with an existing local intervention/individual task,
+      // rather than resurrecting the old full or requesting material registration.
+      return makeTargetedRepair(date)||makePast(date,"past_exam",35,
+        "full再演習は未承認のため、必要な局所補修・別問題を使い、次のbenchmarkで本番形式を再測定");
+    }
     if(!selected)return task({date,slot:"maintenance_selection",kind:"exposure_confirmation",label:"過去問素材の露出状態を確認",
       minutes:0,reason:"具体的に利用できる過去問がないため、設定画面で素材登録状態を確認してください。",
       purpose:"material_selection_confirmation",purposeLabel:"素材選択確認",
@@ -431,11 +457,12 @@ function planDays(args:{
     const purposeLabel=purpose==="selection_scan"?"5問scan・3問選択":purpose==="timed_reconfirmation"?"時間制限再確認":
       purpose==="initial_diagnosis"?"初回診断":purpose==="first_answer"?"初回答案":"補修後の遅延再挑戦";
     const basis=`露出状態：${selected.exposure}${latest?`／前回Attempt：${latest.date}`:"／対象問題のAttemptなし"}`;
+    const scanSession=["clean_scan5","practice_scan5"].includes(selected.planningTaskType);
     const sessionLabel=selected.planningTaskType==="timed_three_question_session"?`${selected.year}年 本番型session`:
       selected.planningTaskType==="simulation"?`${selected.year}年 本番simulation（5問scan・3問90分）`:
-      kind==="scan5"?`${selected.year}年 ${selected.cleanSelectionEvidence?"clean":"practice"} scan5・3問選択`:`${selected.year}年問${selected.questionNumber}`;
+      scanSession?`${selected.year}年 ${selected.cleanSelectionEvidence?"clean":"practice"} scan5・3問選択`:`${selected.year}年問${selected.questionNumber}`;
     const sessionWorkflow=selected.planningTaskType==="timed_three_question_session"||selected.planningTaskType==="simulation"?
-      "5問scan → 3問選択 → 3問答案 → 採点":kind==="scan5"?"5問scan → 3問選択":"1問答案 → 採点";
+      "5問scan → 3問選択 → 3問答案 → 採点":scanSession?"5問scan → 3問選択":"1問答案 → 採点";
     const stableSessionKey=persisted?pastExamSessionKey(persisted):stickyTask?.stable_session_key||stablePastExamSessionKey({year:selected.year,
       purpose:selected.planningTaskType,ordinal:1});
     const selectedYearReason=explainPastExamYearSelection({year:selected.year,yearRole:selected.yearRole!,
@@ -443,8 +470,14 @@ function planDays(args:{
         args.catalog.filter(row=>row.year===selected.year&&row.schedulable&&row.gradable),
       exposedCount:selected.cleanSelectionEvidence?0:args.catalog.filter(row=>row.year===selected.year&&row.schedulable&&row.gradable&&
         !["unseen","unknown"].includes(row.exposure)).length});
-    return task({date,slot:"score_building",kind,label:sessionLabel,
-      referenceProblemId:selected.referenceProblemId,problemId:selected.canonicalProblemId,minutes,
+    const correction=derivePastExamShortCorrection({pastSessions:canonicalPastSessions,attempts:args.attempts,today:date});
+    const correctionReason=correction?.stableSessionKey===stableSessionKey?correction.reason:undefined;
+    const fullReason=["timed_three_question_session","simulation"].includes(selected.planningTaskType)?
+      derivePastExamSessionAdmission({year:selected.year,catalog:args.catalog,pastSessions:canonicalPastSessions,
+        attempts:args.attempts,today:date,session:persisted,clean:selected.cleanSelectionEvidence}).reason:undefined;
+    return task({date,slot:"score_building",kind:scanSession?"scan5":kind,label:sessionLabel,
+      referenceProblemId:selected.referenceProblemId,problemId:selected.canonicalProblemId,
+      minutes:scanSession&&(kind!=="scan5"||correctionReason)?10:minutes,
       reason:`${reason}・${purposeLabel}`,purpose,purposeLabel,basis,exposure:selected.exposure,
       previousEventDate:latest?.date,simulationProtected:selected.simulationProtected,requiresUserSelection:false,
       pastExamTaskType:selected.planningTaskType,pastExamYear:selected.year,
@@ -453,8 +486,8 @@ function planDays(args:{
       stableSessionKey,pastExamSessionState:persisted?derivePastExamSessionState(persisted):stickyTask?.past_exam_session_state||"planned",sessionWorkflow,
       selectedYearReason,
       unseenIndividualProblemIds:stickyTask?.unseen_individual_problem_ids||selected.unseenIndividualProblemIds,
-      todayCategory:"exam_practice",whyToday:stickyAdmission?.required&&stickyTask?stickyAdmission.reason:
-        pastExamMeasurementPurpose(selected.cleanSelectionEvidence,selected.yearRole)});
+      todayCategory:"exam_practice",whyToday:correctionReason||fullReason|| (stickyAdmission?.required&&stickyTask?stickyAdmission.reason:
+        pastExamMeasurementPurpose(selected.cleanSelectionEvidence,selected.yearRole))});
   };
   let materialConfirmationPlanned=false;
   const includedReviewIds=new Set<number>();
@@ -480,7 +513,11 @@ function planDays(args:{
       else if(weekActual.chapter7<1)phaseMaintenance=makeWhitebook(date,[7],"skeleton","直近7日の第7章実績不足を優先補完","maintenance_selection");
       else if(weekActual.chapter8<1)phaseMaintenance=makeWhitebook(date,[8],"skeleton","第8章を20〜25%維持","maintenance_selection");
     }else if(phase==="past_exam_main"){
-      if(weekday===0)score=makePast(date,"timed",90,"5問scan・3問選択・3問答案を一つの本番型sessionで実施");
+      const benchmark=preferredPastExamMeasurementYear({catalog:args.catalog,pastSessions:canonicalPastSessions,
+        attempts:args.attempts,today:date,daysRemaining:Math.max(0,args.daysRemaining-offset)});
+      const releasedBenchmark=benchmark!=null&&pastExamYearRole(benchmark)==="current_benchmark_simulation"&&
+        !usedSessionYears.has(benchmark);
+      if(weekday===0||releasedBenchmark)score=makePast(date,"timed",90,"5問scan・3問選択・3問答案を一つの本番型sessionで実施");
       else if([2,4].includes(weekday))score=makePast(date,"past_exam",35,"未見・過去問で得点形成とtransferを測定");
       else if(weekday===6)score=makePast(date,"past_exam",35,"別の未見問題でtransferを測定");
       else score=makeTargetedRepair(date)||makePast(date,"past_exam",35,"必要な補修がなければ、別問題の本番答案で再測定する");

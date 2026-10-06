@@ -68,7 +68,8 @@ export function adaptivePlanDayToTasks(args:{
     const problem=problemMap.get(item.problemId);
     if(!problem)continue;
     const sessionTask=isPastExamSessionTask({past_exam_task_type:item.pastExamTaskType});
-    const mode=sessionTask?"exam_90min":(item.mode||taskMode(item.kind));
+    const mode=sessionTask&&["timed_three_question_session","simulation"].includes(String(item.pastExamTaskType))?
+      "exam_90min":(item.mode||taskMode(item.kind));
     const projected={
       problem_id:item.problemId,
       title:sessionTask||item.transferTrainingKey?item.label:(problem.display_label||problem.title||item.label),

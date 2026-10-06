@@ -30,39 +30,121 @@ export function pastExamSessionKey(session:Partial<PastSession>){
 
 const terminalSessionStates=new Set<PastExamSessionState>(["completed","deferred","cancelled","invalidated"]);
 
+export type SessionDeficit={
+  kind:"total_timing"|"completion"|"selection"|"sink"|"score_calibration"|"timed_degradation";
+  sourceSessionKey:string;sourceDate:string;sourceField:string;unresolved:boolean;
+  resolution?:"resolved"|"superseded";
+  minimumIntervention:"practice_scan5"|"timed_three_question_session";
+  elapsedMinutes?:number;scanMinutes?:number;overrunMinutes?:number;
+};
+
+/** Observations and intervention strength are separate. A scan consumes part
+ * of the same 90-minute budget; a modest overrun is not proof that another
+ * complete exposed-year rehearsal is the smallest sufficient intervention. */
+export function derivePastExamSessionDeficits(args:{pastSessions:PastSession[];today:string;attempts?:Attempt[]}){
+  const executed=args.pastSessions.filter(s=>s.session_kind==="selected_three_timed"&&
+    !!(s.attempt_completed_at||s.simulation_completed_at)).filter(s=>{
+      const date=String(s.attempt_completed_at||s.simulation_completed_at).slice(0,10);
+      return date<=args.today&&date>=cutoffDate(args.today,30);
+    }).sort((a,b)=>String(a.attempt_completed_at||a.simulation_completed_at).localeCompare(String(b.attempt_completed_at||b.simulation_completed_at)));
+  const deficits:SessionDeficit[]=[];
+  for(const [index,prior] of executed.entries()){
+    const selected=(prior.questions||[]).filter(q=>q.selected),ended=selected.length===3;
+    const minutes=Number(prior.session_elapsed_minutes??prior.actual_total_minutes);
+    const sourceSessionKey=pastExamSessionKey(prior),sourceDate=String(prior.attempt_completed_at||prior.simulation_completed_at).slice(0,10);
+    const add=(kind:SessionDeficit["kind"],field:string,full:boolean)=>{
+      // A later successful full measurement, not mere planning or GPT advice,
+      // can supersede the corresponding earlier deficit.
+      const successor=executed.slice(index+1).find(later=>{
+        const qs=(later.questions||[]).filter(q=>q.selected);
+        if(qs.length!==3||!qs.every(q=>q.completed===true))return false;
+        if(kind==="total_timing")return Number(later.session_elapsed_minutes??later.actual_total_minutes)>0;
+        if(kind==="sink")return qs.every(q=>q.sank===false);
+        if(kind==="completion")return true;
+        if(kind==="selection")return later.selection_evaluation_status==="complete"&&Number(later.selection_success_rate)===1;
+        if(kind==="timed_degradation")return qs.every(q=>Number(q.actualScore)>=70);
+        return false;
+      });
+      const resolution=successor?kind==="total_timing"&&Number(successor.session_elapsed_minutes??successor.actual_total_minutes)>90?
+        "superseded" as const:"resolved" as const:undefined;
+      deficits.push({kind,sourceSessionKey,sourceDate,sourceField:field,unresolved:!successor,resolution,
+        minimumIntervention:full?"timed_three_question_session":"practice_scan5",
+        ...(kind==="total_timing"?{elapsedMinutes:minutes,scanMinutes:Number(prior.scan_minutes||0),overrunMinutes:minutes-90}:{})});
+    };
+    if(ended&&Number.isFinite(minutes)&&minutes>90){
+      const correctedBefore=executed.slice(0,index).some(earlier=>
+        Number(earlier.session_elapsed_minutes??earlier.actual_total_minutes)>90&&args.pastSessions.some(s=>
+          pastExamSessionKey(s)===pastExamCorrectionKey(pastExamSessionKey(earlier),earlier.year)&&
+          s.session_kind==="scan_only"&&derivePastExamSessionState(s)==="completed"&&String(s.date)<sourceDate));
+      // At least 15 minutes (one short intervention) beyond the entire exam
+      // budget, or renewed failure after an executed correction, merits full retesting.
+      add("total_timing","session_elapsed_minutes",minutes-90>=15||correctedBefore);
+    }
+    if(ended&&selected.some(q=>q.completed===false))add("completion","questions.completed",true);
+    if(prior.selection_evaluation_status==="complete"&&Number(prior.selection_success_count)<3)
+      add("selection","selection_success_count",false);
+    if(ended&&selected.some(q=>q.sank===true&&Number(q.actualMinutes)>0))add("sink","questions.sank",true);
+    if(prior.analysis?.primary_selection_error==="score_overconfidence")add("score_calibration","analysis.primary_selection_error",false);
+    // Paired, unreferenced outcomes are required: low timed scores alone do
+    // not prove a context-specific collapse.
+    const degraded=selected.filter(q=>{
+      const timed=args.attempts?.find(a=>a.id===q.sourceAttemptId);
+      return timed&&attemptPlanningEligible(timed)&&Number(timed.actual_reference_level??timed.reference_level)===0&&
+        args.attempts?.some(a=>a.problem_id===timed.problem_id&&a.date<sourceDate&&a.mode==="full"&&
+          attemptPlanningEligible(a)&&Number(a.actual_reference_level??a.reference_level)===0&&
+          Number(a.score_numeric)>=70&&Number(a.score_numeric)-Number(timed.score_numeric)>=25);
+    });
+    if(degraded.length>=2)add("timed_degradation","selected graded Attempts vs prior unreferenced full Attempts",true);
+  }
+  return deficits;
+}
+
+export function pastExamCorrectionKey(sourceSessionKey:string,year:number){
+  return stablePastExamSessionKey({year,purpose:"practice_scan5",sessionInstanceId:`correction-${sourceSessionKey.split(":").slice(3).join("-")}`});
+}
+
+export function derivePastExamShortCorrection(args:{pastSessions:PastSession[];today:string;attempts?:Attempt[]}){
+  const deficits=derivePastExamSessionDeficits(args).filter(d=>d.unresolved);
+  if(deficits.some(d=>d.minimumIntervention==="timed_three_question_session"))return undefined;
+  const source=deficits.at(-1);
+  if(!source)return undefined;
+  const session=args.pastSessions.find(s=>pastExamSessionKey(s)===source.sourceSessionKey);
+  if(!session)return undefined;
+  const key=pastExamCorrectionKey(source.sourceSessionKey,session.year);
+  if(args.pastSessions.some(s=>pastExamSessionKey(s)===key&&derivePastExamSessionState(s)==="completed"))return undefined;
+  const timing=deficits.find(d=>d.sourceSessionKey===source.sourceSessionKey&&d.kind==="total_timing");
+  const reason=timing?`5問scanを含めると${timing.elapsedMinutes}分で、本番90分に対して${timing.overrunMinutes}分超過。scan${timing.scanMinutes}分後の答案時間は${90-Number(timing.scanMinutes)}分として、時間配分と得点予測を短いpractice scanで補正`:
+    source.kind==="selection"?"実測上位3問との選択差を、短いpractice scanで較正":
+      "選択問題の得点予測が楽観的だったため、短いpractice scanで実測との較正を行う";
+  return {year:session.year,stableSessionKey:key,sourceSessionKey:source.sourceSessionKey,deficits,reason};
+}
+
 /** Scheduling value, not mastery: a low score or a pending Review is not a
  * demonstrated need to repeat an entire exposed year under time pressure. */
 export function derivePastExamSessionAdmission(args:{year:number;catalog:ExamReferenceCatalogItem[];
-  pastSessions:PastSession[];today:string;session?:Partial<PastSession>;clean?:boolean;preferredMeasurementYear?:number}){
+  pastSessions:PastSession[];today:string;session?:Partial<PastSession>;clean?:boolean;preferredMeasurementYear?:number;attempts?:Attempt[]}){
   const role=pastExamYearRole(args.year),session=args.session;
   const rows=args.catalog.filter(row=>row.year===args.year&&row.schedulable&&row.gradable);
   const clean=session?.exposure_snapshot_at_start?.classification==="clean"||args.clean===true;
   const fullyExposed=rows.length>=5&&rows.every(row=>!["unseen","unknown"].includes(row.exposure));
-  const evidenceIds:string[]=[];
-  for(const prior of args.pastSessions){
-    if(prior.session_kind!=="selected_three_timed"||!prior.attempt_completed_at&&!prior.simulation_completed_at)continue;
-    const date=String(prior.attempt_completed_at||prior.simulation_completed_at).slice(0,10);
-    if(date>args.today||date<cutoffDate(args.today,30))continue;
-    const selected=(prior.questions||[]).filter(q=>q.selected);
-    const minutes=Number(prior.session_elapsed_minutes??prior.actual_total_minutes);
-    const ended=selected.length===3;
-    const overrun=ended&&Number.isFinite(minutes)&&minutes>90;
-    const unfinished=ended&&selected.some(q=>q.completed===false);
-    const selectionFailure=prior.selection_evaluation_status==="complete"&&
-      Number(prior.selection_success_count)<3;
-    const sunk=ended&&selected.some(q=>q.sank===true&&Number(q.actualMinutes)>0);
-    if(overrun||unfinished||selectionFailure||sunk)evidenceIds.push(pastExamSessionKey(prior));
-  }
+  const deficits=derivePastExamSessionDeficits(args),unresolved=deficits.filter(d=>d.unresolved);
+  const evidenceIds=[...new Set(unresolved.map(d=>d.sourceSessionKey))];
+  const fullEvidence=unresolved.filter(d=>d.minimumIntervention==="timed_three_question_session");
+  const fullSessionApproved=fullEvidence.length>0;
+  const correction=derivePastExamShortCorrection(args);
   const started=!!session&&!["planned","deferred","completed","cancelled","invalidated"].includes(derivePastExamSessionState(session));
   const higherMeasurement=role==="training_pool"&&fullyExposed&&!clean&&!!args.preferredMeasurementYear&&args.preferredMeasurementYear!==args.year&&!started;
   const deferred=session?.deferred===true;
-  const required=!deferred&&!higherMeasurement&&(role!=="training_pool"||clean||!fullyExposed||evidenceIds.length>0||started);
+  const shortSession=session?.session_kind==="scan_only";
+  const required=!deferred&&!higherMeasurement&&(role!=="training_pool"||clean||!fullyExposed||
+    (shortSession?!!correction:fullSessionApproved)||started);
   const reason=deferred?String(session.planning_defer_reason||"延期済みsessionは本日の必須枠へ戻さない"):
     higherMeasurement?`${args.preferredMeasurementYear}年のclean測定・current benchmarkを先に使うため、未開始の既露出年度再演習は延期`:
-    !required?"全問既露出で、本番形式の選題・時間配分・完遂の失敗証拠がないため年度再演習を延期。局所補修・別問題・新しい本番測定を優先":
-    evidenceIds.length?"直近の本番形式で選題・時間配分・完遂の失敗を確認したため、時間制限で再測定":
+    !required?correction?.reason||"全問既露出で、full形式での再測定を必要とする未解決証拠がないため年度再演習を延期。局所補修・別問題・新しい本番測定を優先":
+    fullSessionApproved?`本番形式で確認した未解決の${fullEvidence.map(d=>({total_timing:"大幅な総時間超過",completion:"3問答案の未完",sink:"選択問題でのsink",timed_degradation:"時間制限下での得点崩壊",selection:"選題",score_calibration:"得点較正"}[d.kind])).join("・")}をfull形式で再測定`:
     started?"開始済みsessionを同じidentityで継続":pastExamMeasurementPurpose(clean,role);
-  return {required,disposition:required?"required" as const:"deferred" as const,reason,evidenceIds};
+  return {required,disposition:required?"required" as const:"deferred" as const,reason,evidenceIds,deficits,fullSessionApproved,
+    minimumIntervention:fullSessionApproved?"timed_three_question_session" as const:unresolved.length?"practice_scan5" as const:undefined};
 }
 
 /** Read-time scheduling projection. Raw sessions and historical snapshots are untouched. */
@@ -483,7 +565,15 @@ export function derivePastExamWorkspace(args:{
   const unseenIndividualPool=candidates.flatMap(candidate=>candidate.eligibleRows.filter(row=>
     ["unseen","unknown"].includes(row.exposure)&&!args.attempts.some(attempt=>canonicalYear(attempt.problem_id)===candidate.year&&
       attempt.problem_id===row.canonicalProblemId)));
-  if(!year)return {recommended:null,candidates,unseenIndividualPool,warning:"利用可能な過去問がありません"};
+  if(!year){
+    const correction=derivePastExamShortCorrection({...args,pastSessions:canonicalSessions});
+    if(correction&&args.catalog.filter(row=>row.year===correction.year&&row.schedulable&&row.gradable).length>=5)
+      return {recommended:{year:correction.year,yearRole:pastExamYearRole(correction.year),taskType:"practice_scan5" as const,
+        clean:false,label:"時間配分・得点予測の較正",selectedYearReason:correction.reason,
+        stableSessionKey:correction.stableSessionKey,workflow:"5問practice scan → scan込み90分の時間配分・得点予測を補正"},
+        candidates,unseenIndividualPool,warning:null};
+    return {recommended:null,candidates,unseenIndividualPool,warning:"利用可能な過去問がありません"};
+  }
   const effectiveType:PastExamTaskType=taskType==="clean_scan5"&&!year.cleanScanEligible?"practice_scan5":taskType;
   const chosenType=active?pastExamSessionPurpose(active):effectiveType;
   const prior=candidates.filter(row=>row.year<year.year&&row.exposedCount>0).sort((a,b)=>b.year-a.year)[0];

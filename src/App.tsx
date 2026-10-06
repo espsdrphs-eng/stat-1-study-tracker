@@ -1318,12 +1318,13 @@ function PastView({data,go,run,busy,startingTask}:{data:Bootstrap;go:(p:Page)=>v
       session.session_kind==="scan_only"?(classification==="clean"?"clean_scan5":"practice_scan5"):"individual_full";
     const selectedYearReason=workspace.recommended?.year===Number(session.year)?workspace.recommended.selectedYearReason:
       `${session.year}年は${yearCandidate?.exposedCount||0}/${yearCandidate?.eligibleRows.length||5}問露出。現在選択した演習形式に利用。`;
+    const sessionKey=startingTask?.past_exam_year===Number(session.year)?startingTask.stable_session_key:
+      workspace.recommended?.year===Number(session.year)?workspace.recommended.stableSessionKey:undefined;
     const payload={...session,year:Number(session.year),stage:stageForDays(days),scan_minutes:Number(session.scan_minutes||0),actual_total_minutes:Number(session.actual_total_minutes||0),
       session_purpose:sessionPurpose,session_ordinal:1,scan_evidence_kind:classification,
       past_exam_year_role:yearCandidate?.yearRole,
-      stable_session_key:startingTask?.past_exam_year===Number(session.year)?startingTask.stable_session_key:
-        workspace.recommended?.year===Number(session.year)&&workspace.recommended.stableSessionKey?
-        workspace.recommended.stableSessionKey:undefined,selected_year_reason:selectedYearReason,
+      stable_session_key:sessionKey,session_instance_id:sessionKey?.split(":").slice(3).join(":"),
+      selected_year_reason:selectedYearReason,
       exposure_snapshot_at_start:{classification,
         exposed_problem_ids:(yearCandidate?.eligibleRows||[]).filter(row=>!["unseen","unknown"].includes(row.exposure)).map(row=>row.canonicalProblemId),
         total_problem_count:yearCandidate?.eligibleRows.length||5,captured_at:new Date().toISOString()},

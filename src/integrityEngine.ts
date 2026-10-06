@@ -274,11 +274,41 @@ export function runIntegrityAudit(args: {
       .map(session=>reconcilePastExamSessionEvidence(session,attempts,session.session_alias_ids))});
   const preferredMeasurementYear=preferredPastExamMeasurementYear({catalog:args.pastExamCatalog||[],pastSessions:canonicalPastSessions,
     today,attempts,daysRemaining:daysUntilExam(today,args.examDate||"2026-11-15")});
-  for(const task of (currentTodayTasks||[]).filter(row=>row.triage==="must"&&row.stable_session_key&&row.past_exam_year&&!row.checked)){
+  for(const task of (currentTodayTasks||[]).filter(row=>row.triage==="must"&&isPastExamSessionTask(row)&&row.stable_session_key&&row.past_exam_year&&!row.checked)){
     const session=canonicalPastSessions.find(row=>pastExamSessionKey(row)===task.stable_session_key);
     const decision=derivePastExamSessionAdmission({year:task.past_exam_year!,catalog:args.pastExamCatalog||[],
-      pastSessions:canonicalPastSessions,today,session,clean:task.clean_selection_evidence,preferredMeasurementYear});
-    if(!decision.required)issues.push({category:"unsupported_exposed_session_required",severity:"active",
+      pastSessions:canonicalPastSessions,today,session,attempts,clean:task.clean_selection_evidence,preferredMeasurementYear});
+    const full=["timed_three_question_session","simulation"].includes(String(task.past_exam_task_type));
+    const rows=(args.pastExamCatalog||[]).filter(r=>r.year===task.past_exam_year&&r.schedulable&&r.gradable);
+    const exposedTraining=task.past_exam_year_role==="training_pool"&&!task.clean_selection_evidence&&
+      rows.length>=5&&rows.every(r=>!["unseen","unknown"].includes(r.exposure));
+    const continuing=!!session&&!["planned","deferred","completed","cancelled","invalidated"].includes(derivePastExamSessionState(session));
+    // Inspect the source facts, not merely the planner's required/approval
+    // boolean: a modest timing or calibration observation cannot justify full.
+    const verifiedFullSource=decision.deficits.some(d=>{
+      if(!d.unresolved||d.minimumIntervention!=="timed_three_question_session")return false;
+      const source=canonicalPastSessions.find(s=>pastExamSessionKey(s)===d.sourceSessionKey);
+      if(!source?.attempt_completed_at&&!source?.simulation_completed_at)return false;
+      const qs=(source?.questions||[]).filter(q=>q.selected);
+      if(d.kind==="completion")return qs.length===3&&qs.some(q=>q.completed===false);
+      if(d.kind==="sink")return qs.some(q=>q.sank===true&&Number(q.actualMinutes)>0);
+      if(d.kind==="total_timing")return Number(source?.session_elapsed_minutes??source?.actual_total_minutes)>=105||
+        canonicalPastSessions.some(earlier=>earlier.session_kind==="selected_three_timed"&&
+          !!(earlier.attempt_completed_at||earlier.simulation_completed_at)&&
+          Number(earlier.session_elapsed_minutes??earlier.actual_total_minutes)>90&&
+          canonicalPastSessions.some(s=>s.session_kind==="scan_only"&&
+            s.session_instance_id===`correction-${pastExamSessionKey(earlier).split(":").slice(3).join("-")}`&&
+            s.year===earlier.year&&derivePastExamSessionState(s)==="completed"&&String(s.date)<d.sourceDate));
+      if(d.kind==="timed_degradation")return qs.filter(q=>{
+        const timed=attempts.find(a=>a.id===q.sourceAttemptId);
+        return timed&&Number(timed.actual_reference_level??timed.reference_level)===0&&attempts.some(a=>
+          a.problem_id===timed.problem_id&&a.date<d.sourceDate&&a.mode==="full"&&a.policy_validity!=="invalid_legacy_k"&&
+          Number(a.actual_reference_level??a.reference_level)===0&&Number(a.score_numeric)>=70&&
+          Number(a.score_numeric)-Number(timed.score_numeric)>=25);
+      }).length>=2;
+      return false;
+    });
+    if(!decision.required||full&&exposedTraining&&!continuing&&!verifiedFullSource)issues.push({category:"unsupported_exposed_session_required",severity:"active",
       detail:`${task.stable_session_key}: ${decision.reason}`,repairable:true});
   }
   const labels=args.assessmentLabels||LEARNING_ASSESSMENT_LABELS;
@@ -622,7 +652,11 @@ export function runIntegrityAudit(args: {
     }
     const catalogByReference=new Map((args.pastExamCatalog||[]).map(row=>[row.referenceProblemId,row]));
     const protectedRows=concrete.filter(task=>{
-      const row=catalogByReference.get(task.referenceProblemId!);return !!row?.simulationProtected&&remaining>30;
+      const row=catalogByReference.get(task.referenceProblemId!);
+      if(!row?.simulationProtected)return false;
+      const candidate=buildPastExamYearCandidates({catalog:args.pastExamCatalog||[],attempts,pastSessions:canonicalPastSessions,
+        today:task.date,daysRemaining:daysUntilExam(task.date,args.examDate||"2026-11-15")}).find(c=>c.year===row.year);
+      return !candidate?.eligibleRows.some(r=>r.referenceProblemId===row.referenceProblemId);
     });
     if(protectedRows.length)issues.push({category:"protected_past_exam_scheduled_without_release",severity:"active",
       detail:`${protectedRows.length} protected past-exam tasks were scheduled before the release phase`,repairable:false});
@@ -645,8 +679,10 @@ export function runIntegrityAudit(args: {
     const firstSession=tasks.find(row=>["clean_scan5","timed_three_question_session"].includes(String(row.pastExamTaskType||"")));
     // The current workspace pins the same active instance after its own scan.
     // A fresh year ranking would mistake that exposure for a skipped clean year.
-    const expectedCleanYear=derivePastExamWorkspace({catalog:args.pastExamCatalog||[],attempts,
-      pastSessions:canonicalPastSessions,weaknesses:args.conceptWeaknesses,today,daysRemaining:remaining}).recommended?.year;
+    const recommended=derivePastExamWorkspace({catalog:args.pastExamCatalog||[],attempts,
+      pastSessions:canonicalPastSessions,weaknesses:args.conceptWeaknesses,today,daysRemaining:remaining}).recommended;
+    // Practice scan correction is intentionally not a clean-year measurement.
+    const expectedCleanYear=recommended?.taskType!=="practice_scan5"?recommended?.year:undefined;
     if(remaining<=80&&expectedCleanYear&&firstSession?.pastExamYear!==expectedCleanYear)issues.push({category:"clean_scan_year_skipped",severity:"active",
       detail:`clean year ${expectedCleanYear} was skipped for ${firstSession?.pastExamYear||"no session"}`,repairable:false});
     const genericWhitebook=tasks.filter(row=>horizon.pastExamIsPrimary&&row.kind==="whitebook"&&!row.conceptId);
