@@ -1623,14 +1623,15 @@ async function completeReview(id:number,body:Record<string,unknown>){
   const plan=linkedS?createSReviewPlan(evaluation.reviewOutcome==="success"?"stable":evaluation.reviewOutcome==="partial"?"check":"forgotten"):
     createAdaptiveReviewPlan(source,review,outcome,[]);
   const sourceErrors=linkedS?[]:currentPrescription.effectiveErrorTypes;
-  const errors=evaluation.reviewOutcome==="success"?[]:sourceErrors.length?sourceErrors:["K"];
+  const findingErrors=[...new Set(objectiveFindings.filter(f=>!f.resolved&&f.error_type!=="none").map(f=>f.error_type))];
+  const errors=evaluation.reviewOutcome==="success"?[]:findingErrors.length?findingErrors:sourceErrors.length?sourceErrors:["K"];
   const date=todayString(),mark=evaluation.mark;
   const attemptId=Number(await db.attempts.add({
     ...source,id:undefined as unknown as number,problem_id:review.problem_id,date,
     mode:currentPrescription.mode==="exam_90min"?"full":currentPrescription.mode,
     time_minutes:outcome.time_minutes,mark,score_label:successful?"A":outcome.result==="partial"?"B":"C",
     error_type:errors[0]||"none",primary_error_type:errors[0]||"none",secondary_error_type:errors[1]||"",
-    error_types:errors,error_point:successful?"":linkedS?"関連S確認で基礎型を再現できなかった":source.error_point,
+    error_types:errors,effective_error_types:errors,error_point:successful?"":linkedS?"関連S確認で基礎型を再現できなかった":source.error_point,
     next_action:plan.review_instruction||"",memo:"復習結果から自動記録",
     score_text:"",score_numeric:null,score_max:null,result_summary:`復習結果：${outcome.result}${outcome.hint_used?"・ヒント使用":""}`,
     improvement_guidance:linkedS?"":source.improvement_guidance,required_derivation:linkedS?"":source.required_derivation,
@@ -2971,7 +2972,10 @@ async function bootstrap():Promise<Bootstrap>{
     }))});
   const plannerShadow=buildAdaptivePlannerShadow({record:referenceRecord,catalog:pastExamCatalog,
     weaknesses:conceptWeaknesses,problems,attempts:activeAttempts,reviews,pastSessions,
-    currentTasks:plannerMode==="legacy"?baseTasks:(snapshot?.tasks||[]),today,examDate:settings.exam_date,
+    currentTasks:plannerMode==="legacy"?baseTasks:(snapshot?.tasks||[]),
+    taskPostponements:[...taskPostponements.values()].map(row=>({problem_id:String(row.problem_id||""),
+      kind:String(row.kind||""),mode:String(row.mode||""),stable_session_key:row.stable_session_key?String(row.stable_session_key):undefined,
+      postponed_to:String(row.postponed_to||""),postpone_reason:String(row.postpone_reason||"")})),today,examDate:settings.exam_date,
     targetMinutes:settings.daily_study_minutes,repairCandidates:pastExamRepairCandidates});
   const adaptiveTodayTasks=adaptivePlanDayToTasks({
     day:plannerShadow.plan14.plan.find(day=>day.date===today),problems,reviews,today
@@ -3813,7 +3817,7 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     notifyStudyDataChanged({operation:"delete-attempt"});
   } else if(/^\/api\/reviews\/\d+\/complete$/.test(path)) {
     await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.problemAliases],
-      ()=>completeReview(Number(path.split("/")[3]),body));
+      async()=>completeReview(Number(path.split("/")[3]),body));
     notifyStudyDataChanged({operation:"complete-review",reviewId:Number(path.split("/")[3])});
   } else if(/^\/api\/reviews\/\d+\/contract-lock$/.test(path)) {
     const id=Number(path.split("/")[3]),review=await db.reviews.get(id);

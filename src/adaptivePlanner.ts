@@ -14,11 +14,12 @@ import {deriveLearningPolicy,examHorizonPolicy,pastExamYearRole} from "./examOpt
 import {buildPastExamYearCandidates,canonicalizePastExamSessions,derivePastExamSessionState,pastExamSessionKey,
   pastExamSessionPurpose,pastExamTaskTypeFor,selectPastExamYear,explainPastExamYearSelection,pastExamMeasurementPurpose,stablePastExamSessionKey,
   validatePastExamSessionIdentity,validatePastExamTaskIdentity,reconcilePastExamSessionEvidence,
-  derivePastExamSessionAdmission,derivePastExamShortCorrection,projectPastExamSessionAdmissions,preferredPastExamMeasurementYear} from "./pastExamPlanning.ts";
+  derivePastExamSessionAdmission,derivePastExamShortCorrection,projectPastExamSessionAdmissions,preferredPastExamMeasurementYear,selectedProblemIds} from "./pastExamPlanning.ts";
 import {reviewPlanningDecision} from "./todayLearningPolicy.ts";
 import {deriveFailureEpisode} from "./failureEpisode.ts";
 
 type SlotTask=AdaptivePlanDay["tasks"][number];
+type TaskPostponement=Pick<Task,"problem_id"|"kind"|"postponed_to"|"postpone_reason"|"mode"|"stable_session_key">;
 export const GRADUATED_SAME_PROBLEM_COOLDOWN_DAYS=45;
 const unique=<T,>(values:T[])=>[...new Set(values)];
 const attemptedDateMap=(attempts:Attempt[])=>{
@@ -175,7 +176,7 @@ function validateMinimums(summary:AdaptivePlanSummary,daysRemaining:number,targe
       if(share<horizon.pastExamShareMin)
         violations.push(`${start/7+1}週目: 過去問・本番型比率${Math.round(share*100)}%（目標${Math.round(horizon.pastExamShareMin*100)}〜${Math.round(horizon.pastExamShareMax*100)}%）`);
     }else if(share<horizon.pastExamShareMin){
-      violations.push(`${start/7+1}週目: 本番形式比率${Math.round(share*100)}%（目標60%以上）`);
+      violations.push(`${start/7+1}週目: 本番形式比率${Math.round(share*100)}%（目標${Math.round(horizon.pastExamShareMin*100)}%以上）`);
     }
   }
   summary.weeklyMinimumViolations=violations;
@@ -187,6 +188,7 @@ function planDays(args:{
   startDate:string;days:number;daysRemaining:number;targetMinutes:number;record?:StoredExamReferencePack|null;
   catalog:ExamReferenceCatalogItem[];problems:Problem[];attempts:Attempt[];reviews:Review[];pastSessions:PastSession[];
   weaknesses:ConceptWeaknessInsight[];currentTasks:Task[];repairCandidates?:PastExamRepairCandidate[];
+  taskPostponements?:TaskPostponement[];
 }){
   const result:AdaptivePlanDay[]=[],usedProblems=new Map<string,string>(),usedPast=new Map<string,string>(),usedSessionYears=new Set<number>();
   const canonicalPastSessions=projectPastExamSessionAdmissions({catalog:args.catalog,today:args.startDate,daysRemaining:args.daysRemaining,attempts:args.attempts,
@@ -239,12 +241,12 @@ function planDays(args:{
   const horizonEnd=addCalendarDays(args.startDate,Math.max(0,args.days-1));
   const selectedAttemptIds=new Set(canonicalPastSessions.flatMap(session=>session.selected_timed_attempt_ids||[]));
   const calibrationAttemptIds=new Set(canonicalPastSessions.flatMap(session=>session.counterfactual_calibration_attempt_ids||[]));
-  const selectedProblemIds=new Set(canonicalPastSessions.flatMap(session=>
-    session.final_selected_problem_ids||[]));
+  const selectedProblems=new Set(canonicalPastSessions.filter(session=>session.session_kind==="selected_three_timed")
+    .flatMap(selectedProblemIds));
   const sourceForReview=reviewSource;
   const reviewSourceRank=(review:Review)=>{
     const source=sourceForReview(review);if(!source)return 6;
-    if(source.session_role==="selected_timed"||selectedAttemptIds.has(source.id)||selectedProblemIds.has(source.problem_id))return 0;
+    if(source.session_role==="selected_timed"||selectedAttemptIds.has(source.id)||selectedProblems.has(source.problem_id))return 0;
     if(source.session_role==="individual_transfer"||source.transfer_evidence)return 1;
     if(calibrationAttemptIds.has(source.id)||source.session_role==="counterfactual_calibration")return 3;
     if(source.parent_past_session_id||source.problem_id.startsWith("PY-"))return 2;
@@ -285,7 +287,9 @@ function planDays(args:{
   const acceleratePast=recentEligibleSuccesses>=2;
   const recentGraduatedProblems=new Set(args.attempts.filter(attempt=>
     attempt.date>=addCalendarDays(args.startDate,-GRADUATED_SAME_PROBLEM_COOLDOWN_DAYS)&&
-    resolvePersistedAttemptLifecycle(attempt).graduated
+    resolvePersistedAttemptLifecycle(attempt).graduated&&!args.attempts.some(later=>
+      later.problem_id===attempt.problem_id&&later.id>attempt.id&&
+      deriveFailureEpisode(later).rootWeaknesses.some(root=>root.requiredRepair))
   ).map(attempt=>attempt.problem_id));
   const actualAtStart=weeklyActual({startDate:args.startDate,attempts:args.attempts,
     pastSessions:args.pastSessions,problems:args.problems});
@@ -318,7 +322,7 @@ function planDays(args:{
     const candidateMinutes=(row:PastExamRepairCandidate)=>row.transferTraining?12:row.repairKind==="transfer"?35:
       row.repairKind==="whitebook"?modeMinutes("skeleton"):7;
     const candidate=[...(args.repairCandidates||[])].sort((a,b)=>{
-      const rank=(c:PastExamRepairCandidate)=>selectedAttemptIds.has(c.sourceAttemptId)||selectedProblemIds.has(c.sourceProblemId)?0:2;
+      const rank=(c:PastExamRepairCandidate)=>selectedAttemptIds.has(c.sourceAttemptId)||selectedProblems.has(c.sourceProblemId)?0:2;
       return rank(a)-rank(b)||String(args.attempts.find(x=>x.id===a.sourceAttemptId)?.date||"").localeCompare(
         String(args.attempts.find(x=>x.id===b.sourceAttemptId)?.date||""))||a.sourceAttemptId-b.sourceAttemptId;
     }).find(row=>row.required&&candidateMinutes(row)<=
@@ -395,6 +399,20 @@ function planDays(args:{
     const dayOffset=Math.round((Date.parse(`${date}T12:00:00Z`)-Date.parse(`${args.startDate}T12:00:00Z`))/86400000);
     const dayRemaining=Math.max(0,args.daysRemaining-dayOffset);
     const requestedType=kind==="timed"?"timed_three_question_session":kind==="scan5"?"clean_scan5":"individual_full";
+    const annual=requestedType!=="individual_full";
+    // The same persisted postponement must apply before candidate/budget
+    // selection, not only after Formal tasks reach the Today projection.
+    const catalog=args.catalog.filter(row=>!(args.taskPostponements||[]).some(move=>{
+      if(move.kind!=="得点形成"||!move.postponed_to||move.postponed_to!=="unscheduled"&&move.postponed_to<=date)return false;
+      const annualMove=move.mode==="exam_90min"||!!move.stable_session_key;
+      if(annualMove!==annual)return false;
+      if(annualMove){
+        if(move.stable_session_key)return move.stable_session_key===stablePastExamSessionKey({year:row.year,
+          purpose:requestedType,sessionInstanceId:pinnedPastSession?.year===row.year?pinnedPastSession.session_instance_id||`session-${row.year}-1`:`session-${row.year}-1`});
+        return Number(move.problem_id.match(/(?:PY-|PE-)(\d{4})/)?.[1])===row.year;
+      }
+      return canonicalPastExamProblemId(move.problem_id)===row.canonicalProblemId;
+    }));
     const stickyTaskCandidate=date===args.startDate?args.currentTasks.find(current=>!current.checked&&current.past_exam_year&&
       current.past_exam_session_state!=="completed"&&current.past_exam_session_state!=="deferred"&&
       (current.past_exam_task_type===requestedType||kind==="scan5"&&current.past_exam_task_type==="practice_scan5")):undefined;
@@ -407,10 +425,10 @@ function planDays(args:{
     const persistedCandidate=date===args.startDate?pinnedPastSession:undefined;
     const persisted=persistedCandidate&&validatePastExamSessionIdentity(persistedCandidate).valid?persistedCandidate:undefined;
     const stickyYear=persisted?.year||stickyTask?.past_exam_year;
-    const eligibleYears=buildPastExamYearCandidates({catalog:args.catalog,attempts:args.attempts,
+    const eligibleYears=buildPastExamYearCandidates({catalog,attempts:args.attempts,
       pastSessions:args.pastSessions,weaknesses:args.weaknesses,today:date,daysRemaining:dayRemaining});
-    const stickyRows=stickyYear?args.catalog.filter(row=>row.year===stickyYear&&row.schedulable&&row.gradable&&
-      (!!persisted||eligibleYears.some(candidate=>candidate.year===stickyYear))):[];
+    const stickyRows=stickyYear?catalog.filter(row=>row.year===stickyYear&&row.schedulable&&row.gradable&&
+      eligibleYears.some(candidate=>candidate.year===stickyYear)):[];
     const stickyAnchor=stickyRows.find(row=>row.canonicalProblemId===stickyTask?.problem_id)||stickyRows[0];
     const stickyPurpose=persisted?pastExamSessionPurpose(persisted):stickyTask?.past_exam_task_type;
     const selected=stickyAnchor?{...stickyAnchor,yearRole:eligibleYears.find(candidate=>candidate.year===stickyYear)?.yearRole,
@@ -419,8 +437,8 @@ function planDays(args:{
         .map(row=>row.canonicalProblemId),cleanSelectionEvidence:persisted?
           persisted.exposure_snapshot_at_start?.classification==="clean":!!stickyTask?.clean_selection_evidence,
       selectedYearReason:persisted?.selected_year_reason||stickyTask?.selected_year_reason,
-      unseenIndividualProblemIds:stickyTask?.unseen_individual_problem_ids}:choosePastExam({catalog:args.catalog,daysRemaining:dayRemaining,used:usedPast,date,
-      attempts:args.attempts,weaknesses:args.weaknesses,avoidProblemIds:activeReviewProblemIds,
+      unseenIndividualProblemIds:stickyTask?.unseen_individual_problem_ids}:choosePastExam({catalog,daysRemaining:dayRemaining,used:usedPast,date,
+      attempts:args.attempts,weaknesses:args.weaknesses,avoidProblemIds:new Set([...activeReviewProblemIds,...recentGraduatedProblems]),
       pastSessions:args.pastSessions,kind,usedSessionYears});
     if(!selected&&kind!=="past_exam"){
       const correction=derivePastExamShortCorrection({pastSessions:canonicalPastSessions,attempts:args.attempts,today:date});
@@ -571,7 +589,7 @@ function planDays(args:{
       const errors=new Set([...(source?.error_types||[]),source?.primary_error_type||source?.error_type||""].filter(Boolean));
       const episode=source?deriveFailureEpisode(source):undefined;
       const root=episode?.rootWeaknesses.find(row=>row.sourceFindingIds.includes(part?.id||""))||episode?.rootWeaknesses[0];
-      const directExamLoss=!!source&&(source.session_role==="selected_timed"||selectedAttemptIds.has(source.id)||selectedProblemIds.has(source.problem_id));
+      const directExamLoss=!!source&&(source.session_role==="selected_timed"||selectedAttemptIds.has(source.id)||selectedProblems.has(source.problem_id));
       const diagnosticOnly=!!source&&(source.session_role==="counterfactual_calibration"||calibrationAttemptIds.has(source.id));
       const hardBlocker=isHardBlockerReview(placement.review);
       const major=root?.materiality==="major"||reviewDecisions.get(placement.review.id)?.tier==="high_value_repair"||
@@ -603,7 +621,13 @@ function planDays(args:{
     }
     const overPreSessionRepairCap=timedSession&&tasks.filter(t=>t.slot==="repair")
       .reduce((sum,t)=>sum+t.minutes,0)>30;
-    if(score&&!overPreSessionRepairCap&&tasks.reduce((sum,row)=>sum+row.minutes,0)+score.minutes<=args.targetMinutes)tasks.push(score);
+    if(score&&!overPreSessionRepairCap&&tasks.reduce((sum,row)=>sum+row.minutes,0)+score.minutes<=args.targetMinutes){
+      tasks.push(score);
+      // Sticky/persisted sessions bypass choosePastExam, but still consume the
+      // same identity/year in this forecast. Planning is not execution.
+      if(score.stableSessionKey&&score.pastExamYear&&
+        ["clean_scan5","practice_scan5","timed_three_question_session","simulation"].includes(String(score.pastExamTaskType)))usedSessionYears.add(score.pastExamYear);
+    }
     else if(score?.stableSessionKey&&score.pastExamYear&&date===args.startDate){
       const deferred={sessionKey:score.stableSessionKey,year:score.pastExamYear,date,required:false,
         disposition:"deferred" as const,evidenceIds:tasks.filter(t=>t.hardBlocker).map(t=>`review:${t.reviewId}`),
@@ -715,6 +739,7 @@ export function buildAdaptivePlannerShadow(args:{
   problems:Problem[];attempts:Attempt[];reviews:Review[];pastSessions:PastSession[];
   currentTasks:Task[];today:string;examDate:string;targetMinutes:number;
   repairCandidates?:PastExamRepairCandidate[];
+  taskPostponements?:TaskPostponement[];
 }):AdaptivePlannerShadow{
   const daysRemaining=daysUntilExam(args.today,args.examDate),phase=phaseName(daysRemaining),generatedAt=new Date().toISOString();
   const empty=validateMinimums(planSummary([]),daysRemaining,args.targetMinutes);

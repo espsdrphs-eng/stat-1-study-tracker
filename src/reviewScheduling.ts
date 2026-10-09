@@ -16,7 +16,11 @@ export type ScheduledReviewPlacement={
 };
 
 const reviewMinutes=(review:Review)=>Math.max(1,Number(review.grading_contract?.estimatedMinutes||review.estimated_minutes||5));
-const reviewWindow=(review:Review)=>({
+// A manual date supersedes the policy window for planning only. Keep the
+// persisted policy dates as evidence; postponement must never schedule early.
+const reviewWindow=(review:Review)=>review.schedule_origin==="manual"?{
+  earliestDate:review.due_date,preferredDate:review.due_date,latestDate:review.due_date,
+}:({
   earliestDate:String(review.earliest_date||review.preferred_date||review.due_date),
   preferredDate:String(review.preferred_date||review.due_date),
   latestDate:String(review.latest_date||review.preferred_date||review.due_date),

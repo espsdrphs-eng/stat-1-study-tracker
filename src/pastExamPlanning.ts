@@ -311,7 +311,7 @@ const uniqueNumbers=(values:number[])=>[...new Set(values)];
 const attemptIsUsable=(attempt:Attempt)=>!attempt.invalidated_at&&!attempt.superseded_by_attempt_id&&
   !attempt.duplicate_of_attempt_id&&!attempt.exclude_from_metrics&&attempt.score_numeric!=null;
 const problemYear=(problemId:string)=>Number(String(problemId).match(/(?:PY-|PE-)(\d{4})/i)?.[1]||0);
-const selectedProblemIds=(session:PastSession)=>{
+export const selectedProblemIds=(session:PastSession)=>{
   const explicit=(session.final_selected_problem_ids?.length?session.final_selected_problem_ids:session.initial_selected_problem_ids)||[];
   return [...new Set((explicit.length?explicit:(session.questions||[]).filter(row=>row.selected).map(row=>row.problemId||row.questionLabel))
     .filter(Boolean).map(value=>resolvePastExamProblemId(session.year,value)))];
@@ -444,7 +444,8 @@ export function buildPastExamYearCandidates(args:{
     .flatMap(attempt=>deriveFailureEpisode(attempt).rootWeaknesses.filter(root=>root.requiredRepair)
       .map(root=>({attempt,root})))
     .sort((a,b)=>Number(b.root.errorTypes.includes("W"))-Number(a.root.errorTypes.includes("W"))||
-      Number(a.attempt.score_numeric??100)-Number(b.attempt.score_numeric??100))
+      Number(a.attempt.score_numeric??100)-Number(b.attempt.score_numeric??100)||
+      a.attempt.id-b.attempt.id||a.root.rootWeaknessId.localeCompare(b.root.rootWeaknessId))
     .slice(0,2);
   // Most planning calls precede both milestones. Avoid re-deriving the entire
   // Attempt transfer graph for every day in the 7/14/30-day forecasts.

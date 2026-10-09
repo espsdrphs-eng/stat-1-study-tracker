@@ -6,7 +6,10 @@ import {EXAM_REFERENCE_EXPOSURE_META_KEY} from '../src/examReferencePack.ts';
 import {addCalendarDays} from '../src/reviewSchedulePolicy.ts';
 const {db,localGet,localPost,exportBackup,restoreBackup}=await import('../src/localDb.ts');
 
-test('fixture storage E2E: fresh derivation → short scan → save → reload → export/restore; no old full resurrection',async()=>{
+test('fixture storage E2E: fresh derivation → short scan → save → reload → export/restore; no old full resurrection',async t=>{
+  // This fixture tests pacing correction before the D39 benchmark release.
+  // Wall-clock time must not silently turn it into a released-benchmark case.
+  t.mock.timers.enable({apis:['Date'],now:Date.parse('2026-10-06T05:00:00Z')});
   const initial=await localGet('/api/bootstrap'),today=initial.dashboard.today,date=addCalendarDays(today,-5);
   // Isolated fake IndexedDB. Supplemented IDs, grading, taxonomy and exposure,
   // not a production-copy E2E and not evidence of actual user execution.

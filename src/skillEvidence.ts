@@ -51,6 +51,15 @@ export function rootProgress(source:Attempt,root:RootWeakness,attempts:Attempt[]
   const sourceParts=(source.grading_contract?.gradedParts||[]).filter(p=>root.sourceFindingIds.includes(p.id));
   const identity=(a:Attempt,p:GradedPartContract)=>index?.attemptPart(a.id,p.id)?.identityKey||p.stableTargetKey||p.stable_target_key||p.id;
   const keys=new Set(sourceParts.map(p=>identity(source,p)));
+  // Historical unstructured failures acquired an explicit target when a
+  // Review was issued. The dynamic part ID encodes its source Attempt, not
+  // a guessed skill or similar error text. Reuse that persisted lineage.
+  if(!sourceParts.length&&root.sourceFindingIds.some(id=>id.startsWith(`attempt:${source.id}:legacy:`))){
+    const prefix=`part:${source.problem_id}:${source.id}:`;
+    for(const a of attempts.filter(a=>a.problem_id===source.problem_id))
+      for(const p of a.grading_contract?.gradedParts||[])
+        if(p.id.startsWith(prefix)&&/^\d+$/.test(p.id.slice(prefix.length)))keys.add(identity(a,p));
+  }
   const later=attempts.filter(a=>a.id>source.id&&!a.exclude_from_metrics&&!a.duplicate_of_attempt_id).sort((a,b)=>a.id-b.id);
   let repairSuccess:Attempt|undefined;
   let latestFailure=source;

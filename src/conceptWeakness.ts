@@ -12,6 +12,7 @@ import {groundedWhitebookSkills,matchesFailureOperation} from "./groundedSkills.
 import {buildStableTargetIndex} from "./stableTargetIdentity.ts";
 import {delayedTrainingPrerequisites,deriveTransferTrainingCandidates} from "./generatedTransfer.ts";
 import {attemptPlanningEligible} from "./legacyKPolicy.ts";
+import {selectedProblemIds} from "./pastExamPlanning.ts";
 
 type ConceptMapping={conceptIds:string[];confidence:"verified"|"candidate"};
 type EvidenceEvent={
@@ -200,8 +201,7 @@ export function buildPastExamRepairCandidates(args:{
   const contexts:Array<{sessionId:number;sessionKind:string|undefined;selected:Set<string>;
     selectedAttemptIds:Set<number>;attempts:Attempt[]}>=args.sessions.filter(session=>session.session_kind!=="scan_only").map(session=>{
     const linked=new Set((session.linked_attempt_ids||[]).map(Number));
-    const selected=new Set((session.final_selected_problem_ids||[])
-      .map(value=>resolvePastExamProblemId(session.year,value)));
+    const selected=new Set(selectedProblemIds(session));
     return {sessionId:session.id,sessionKind:session.session_kind,selected,
       selectedAttemptIds:new Set(session.selected_timed_attempt_ids||[]),
       attempts:args.attempts.filter(attempt=>linked.has(attempt.id)||attempt.parent_past_session_id===session.id)};
