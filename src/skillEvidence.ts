@@ -6,6 +6,15 @@ import {findingPlanningEligible} from "./legacyKPolicy.ts";
 import type {StableTargetIndex} from "./stableTargetIdentity.ts";
 
 const unique=(values:string[])=>[...new Set(values.filter(Boolean))];
+type EvidenceMemo={findings:WeakMap<Attempt,WeakMap<GradedFinding,string[]>>;
+  successes:WeakMap<Attempt,string[]>;transfers:WeakMap<Attempt[],TransferEvidence[]>};
+let activeMemo:EvidenceMemo|undefined;
+/** Ephemeral, synchronous derivation scope. Never retained across saves or awaits. */
+export function withSkillEvidenceMemo<T>(derive:()=>T):T{
+  if(activeMemo)return derive();
+  activeMemo={findings:new WeakMap(),successes:new WeakMap(),transfers:new WeakMap()};
+  try{return derive();}finally{activeMemo=undefined;}
+}
 export function partSkillIds(part?:GradedPartContract){
   return unique([...(part?.fineConceptIds||[]),...(part?.solutionOperationIds||[]),...(part?.rootSkillIds||[]),
     // A stable target slot is identity, not a mathematical operation.
@@ -16,8 +25,11 @@ export function problemSkillIds(problem?:Problem){
 }
 /** Shared derived scope; raw contracts and historical findings remain unchanged. */
 export function findingSkillIds(attempt:Attempt,finding:GradedFinding){
-  return unique([...partSkillIds(attempt.grading_contract?.gradedParts.find(p=>p.id===finding.graded_part_id)),
+  const cached=activeMemo?.findings.get(attempt)?.get(finding);if(cached)return cached;
+  const result=unique([...partSkillIds(attempt.grading_contract?.gradedParts.find(p=>p.id===finding.graded_part_id)),
     ...groundedFindingSkills(attempt,finding).filter(t=>t.confidence==="high").map(t=>t.skillId)]);
+  if(activeMemo){let rows=activeMemo.findings.get(attempt);if(!rows){rows=new WeakMap();activeMemo.findings.set(attempt,rows);}rows.set(finding,result);}
+  return result;
 }
 export function referenceSkills(record:StoredExamReferencePack|null|undefined,problemId:string,problems:Problem[]=[]){
   const canonical=canonicalPastExamProblemId(problemId);
@@ -35,6 +47,10 @@ export function confidentGrading(attempt:Attempt){
   return Number.isFinite(normalized)&&normalized>=.8&&normalized<=1;
 }
 export function successfulSkillIds(attempt:Attempt){
+  const cached=activeMemo?.successes.get(attempt);if(cached)return cached;
+  const result=calculateSuccessfulSkillIds(attempt);activeMemo?.successes.set(attempt,result);return result;
+}
+function calculateSuccessfulSkillIds(attempt:Attempt){
   if(!independentReferenceFree(attempt)||!confidentGrading(attempt))return [];
   if(attempt.source_type==="generated"){
     const target=attempt.target_skill_assessment;
@@ -102,6 +118,10 @@ export function transferEvidenceStrength(a:Attempt):"training"|"strong"{
     ["full","timed","timed_single","exam_90min","past_exam"].includes(a.mode)&&a.evidence_strength!=="training"?"strong":"training";
 }
 export function deriveTransferEvidence(attempts:Attempt[]):TransferEvidence[]{
+  const cached=activeMemo?.transfers.get(attempts);if(cached)return cached;
+  const result=calculateTransferEvidence(attempts);activeMemo?.transfers.set(attempts,result);return result;
+}
+function calculateTransferEvidence(attempts:Attempt[]):TransferEvidence[]{
   // A skill can be unresolved on several independent source problems. Keeping
   // only one global failure loses the other roots when a later problem fails.
   const rows:TransferEvidence[]=[],latestFailures=new Map<string,Map<string,Attempt>>();

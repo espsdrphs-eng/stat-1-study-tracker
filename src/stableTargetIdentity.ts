@@ -147,14 +147,17 @@ export function buildStableTargetIndex(args:{
     });
   }
   const parent=new Map(nodes.map(node=>[node.nodeId,node.nodeId]));
+  // Component anchors are immutable node metadata. Maintain their union when
+  // merging, instead of scanning every historical node twice for each merge.
+  const rootAnchors=new Map<string,Set<string>>(nodes.map(node=>[node.nodeId,
+    new Set([node.validPersistedKey,node.knownKey].filter((value):value is string=>!!value))]));
   const conflicts=new Map<string,Set<string>>();
   const find=(id:string):string=>{
     const current=parent.get(id)!;
     if(current===id)return id;
     const root=find(current);parent.set(id,root);return root;
   };
-  const anchors=(root:string)=>nodes.filter(node=>find(node.nodeId)===root)
-    .flatMap(node=>[node.validPersistedKey,node.knownKey].filter((value):value is string=>!!value));
+  const anchors=(root:string)=>rootAnchors.get(root)!;
   const recordConflict=(left:string,right:string,keys:Set<string>)=>{
     const message=`conflicting stable target keys: ${[...keys].sort().join(", ")}`;
     for(const root of [left,right])conflicts.set(root,new Set([...(conflicts.get(root)||[]),message]));
@@ -165,6 +168,7 @@ export function buildStableTargetIndex(args:{
     const keys=new Set([...anchors(a),...anchors(b)]);
     if(keys.size>1){recordConflict(a,b,keys);return;}
     parent.set(b,a);
+    rootAnchors.set(a,keys);rootAnchors.delete(b);
     if(conflicts.has(b))conflicts.set(a,new Set([...(conflicts.get(a)||[]),...conflicts.get(b)!]));
   };
   const byProblemRaw=new Map<string,Node[]>();

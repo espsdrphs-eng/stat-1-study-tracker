@@ -17,6 +17,7 @@ import {buildPastExamYearCandidates,canonicalizePastExamSessions,derivePastExamS
   derivePastExamSessionAdmission,derivePastExamShortCorrection,projectPastExamSessionAdmissions,preferredPastExamMeasurementYear,selectedProblemIds} from "./pastExamPlanning.ts";
 import {reviewPlanningDecision} from "./todayLearningPolicy.ts";
 import {deriveFailureEpisode} from "./failureEpisode.ts";
+import {withSkillEvidenceMemo} from "./skillEvidence.ts";
 
 type SlotTask=AdaptivePlanDay["tasks"][number];
 type TaskPostponement=Pick<Task,"problem_id"|"kind"|"postponed_to"|"postpone_reason"|"mode"|"stable_session_key">;
@@ -734,7 +735,10 @@ function weeklyActual(args:{startDate:string;attempts:Attempt[];pastSessions:Pas
   };
 }
 
-export function buildAdaptivePlannerShadow(args:{
+export function buildAdaptivePlannerShadow(args:Parameters<typeof calculateAdaptivePlannerShadow>[0]):AdaptivePlannerShadow{
+  return withSkillEvidenceMemo(()=>calculateAdaptivePlannerShadow(args));
+}
+function calculateAdaptivePlannerShadow(args:{
   record?:StoredExamReferencePack|null;catalog:ExamReferenceCatalogItem[];weaknesses:ConceptWeaknessInsight[];
   problems:Problem[];attempts:Attempt[];reviews:Review[];pastSessions:PastSession[];
   currentTasks:Task[];today:string;examDate:string;targetMinutes:number;

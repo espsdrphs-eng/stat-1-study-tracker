@@ -6,10 +6,13 @@ export type StudyDataChanged={
   attemptId?:number;
   reviewId?:number;
   occurredAt:string;
+  eventId?:string;
 };
+let sequence=0;
+const origin=`${Date.now()}:${Math.random()}`;
 
 export function notifyStudyDataChanged(event:Omit<StudyDataChanged,"type"|"occurredAt">){
-  const payload:StudyDataChanged={type:"study-data-changed",occurredAt:new Date().toISOString(),...event};
+  const payload:StudyDataChanged={type:"study-data-changed",occurredAt:new Date().toISOString(),...event,eventId:`${origin}:${++sequence}`};
   if(typeof BroadcastChannel!=="undefined"){
     const channel=new BroadcastChannel(STUDY_DATA_CHANNEL);
     channel.postMessage(payload);
@@ -19,9 +22,15 @@ export function notifyStudyDataChanged(event:Omit<StudyDataChanged,"type"|"occur
 }
 
 export function subscribeStudyDataChanged(listener:(event:StudyDataChanged)=>void){
+  const seen=new Set<string>();
+  const deliver=(event:StudyDataChanged)=>{
+    if(event.eventId){if(seen.has(event.eventId))return;seen.add(event.eventId);
+      if(seen.size>128)seen.delete(seen.values().next().value!);}
+    listener(event);
+  };
   const channel=typeof BroadcastChannel!=="undefined"?new BroadcastChannel(STUDY_DATA_CHANNEL):null;
-  if(channel)channel.onmessage=event=>listener(event.data as StudyDataChanged);
-  const local=(event:Event)=>listener((event as CustomEvent<StudyDataChanged>).detail);
+  if(channel)channel.onmessage=event=>deliver(event.data as StudyDataChanged);
+  const local=(event:Event)=>deliver((event as CustomEvent<StudyDataChanged>).detail);
   if(typeof window!=="undefined")window.addEventListener(STUDY_DATA_CHANNEL,local);
   return ()=>{
     channel?.close();

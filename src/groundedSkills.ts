@@ -3,24 +3,28 @@ import type {AnswerIndexEntry,Attempt,GradedFinding,Problem} from "./types.ts";
 export type GroundedSkillTag={skillId:string;evidence:string;confidence:"high"|"medium";source:string};
 // Deliberately small, auditable vocabulary of explicitly named operations.
 // No chapter/theme inference, embeddings, or extrapolation from missing answers.
-const rules=[
-  {id:"coefficient_tracking_scale_reciprocal",named:/(?=.*(?:1\/Xbar|逆数))(?=.*(?:係数|定数倍))/,ambiguous:/係数が不明|操作が不明/},
+type SkillRule={id:string;named?:RegExp;all?:RegExp[];ambiguous:RegExp};
+const rules:SkillRule[]=[
+  {id:"coefficient_tracking_scale_reciprocal",all:[/1\/Xbar|逆数/,/係数|定数倍/],ambiguous:/係数が不明|操作が不明/},
   // The assessed finding names a conditional law and its conditioned variables;
   // candidate matching below checks the actual inverse-density operation.
-  {id:"conditional_distribution",named:/(?=.*(?:条件付き密度|条件付き分布|X\|Z.{0,8}分布))(?=.*(?:Bayes|ベイズ|X\|Z|f\([^)]*\|[^)]*\)))/i,
+  {id:"conditional_distribution",all:[/条件付き密度|条件付き分布|X\|Z.{0,8}分布/i,/Bayes|ベイズ|X\|Z|f\([^)]*\|[^)]*\)/i],
     ambiguous:/条件付き期待値だけ|周辺密度の積だけ/},
-  {id:"risk_function",named:/(?=.*(?:R\((?:alpha|α)\)|リスク))(?=.*(?:係数.?2|1\/Xbar|逆数))/i,
+  {id:"risk_function",all:[/R\((?:alpha|α)\)|リスク/i,/係数.?2|1\/Xbar|逆数/i],
     ambiguous:/リスクが未定義|係数が不明/},
   {id:"moment_generating_function",named:/積率母関数|モーメント母関数|\bMGF\b/i,
     ambiguous:/存在しない|一意性|Taylor|テイラー|連続性定理|標準化極限|畳み込み/i},
   {id:"law_total_variance",named:/全分散(?:公式)?/,ambiguous:/帰納|周辺化/},
   // Both expressions name the operation, rather than merely the chapter or
   // problem topic. Keep the two required ideas together for covariance prose.
-  {id:"finite_population_correction",named:/有限母集団修正|(?=.*非復元抽出)(?=.*(?:負の共分散|共分散))/,
+  {id:"finite_population_correction",named:/有限母集団修正/,all:[/非復元抽出/,/負の共分散|共分散/],
     ambiguous:/適用できるか不明|どの補正を使うか不明/},
 ];
 function extract(text:string,source:string):GroundedSkillTag[]{
-  const matched=rules.filter(r=>r.named.test(text));
+  // Preserve the old non-dotAll, same-line conjunction without testing every
+  // suffix with greedy lookaheads (quadratic on nonmatching evidence).
+  const lines=text.split(/[\r\n\u2028\u2029]/);
+  const matched=rules.filter(r=>r.named?.test(text)||r.all&&lines.some(line=>r.all!.every(pattern=>pattern.test(line))));
   return matched.filter(r=>r.id!=="risk_function"||!matched.some(row=>row.id==="coefficient_tracking_scale_reciprocal"))
     .map(r=>({skillId:r.id,evidence:text,source,
     confidence:r.ambiguous.test(text)?"medium":"high"}));

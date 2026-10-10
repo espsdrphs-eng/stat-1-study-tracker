@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
+import {createStateReloadCoordinator} from "./stateReload.ts";
 import {TransferTrainingPanel} from "./TransferTrainingPanel";
 import { useRegisterSW } from "virtual:pwa-register/react";
 import {
@@ -133,20 +134,23 @@ export default function App() {
     if(isIndexedDbSchemaError(reason))setSchemaIssue(reason.diagnostic);
     setError(schemaErrorMessage(reason));
   };
-  const load=async()=>{setError("");try{setData(await api<Bootstrap>("/api/bootstrap"));}catch(e){handleFailure(e)}};
-  const refresh=async()=>{setRefreshing(true);setError("");try{setData(await api<Bootstrap>("/api/bootstrap"));setMessage("最新データを再読み込みしました")}catch(e){handleFailure(e)}finally{setRefreshing(false)}};
+  const reloadRef=useRef<ReturnType<typeof createStateReloadCoordinator<Bootstrap>>|null>(null);
+  if(!reloadRef.current)reloadRef.current=createStateReloadCoordinator({read:()=>api<Bootstrap>("/api/bootstrap"),publish:setData});
+  const reload=reloadRef.current;
+  const load=async()=>{setError("");try{await reload.load();}catch(e){handleFailure(e)}};
+  const refresh=async()=>{setRefreshing(true);setError("");try{reload.invalidate();await reload.load();setMessage("最新データを再読み込みしました")}catch(e){handleFailure(e)}finally{setRefreshing(false)}};
   useEffect(()=>{
     load();
     const blocked=(event:Event)=>setDatabaseNotice({...((event as CustomEvent).detail||{}),reload:false});
     const changed=(event:Event)=>setDatabaseNotice({...((event as CustomEvent).detail||{}),reload:true});
     window.addEventListener("stat1-db-blocked",blocked);window.addEventListener("stat1-db-versionchange",changed);
-    const unsubscribe=subscribeStudyDataChanged(()=>void load());
-    const resume=()=>{if(document.visibilityState==="visible")void load()};
+    const unsubscribe=subscribeStudyDataChanged(()=>{reload.invalidate();void load();});
+    const resume=()=>{if(document.visibilityState==="visible"){reload.invalidate();void load();}};
     window.addEventListener("pageshow",resume);document.addEventListener("visibilitychange",resume);
     return()=>{window.removeEventListener("stat1-db-blocked",blocked);window.removeEventListener("stat1-db-versionchange",changed);
       window.removeEventListener("pageshow",resume);document.removeEventListener("visibilitychange",resume);unsubscribe()};
   },[]);
-  const run=async(action:()=>Promise<unknown>,success:string)=>{setBusy(true);setError("");try{await action();setMessage(success);await load();return true}catch(e){handleFailure(e);return false}finally{setBusy(false)}};
+  const run=async(action:()=>Promise<unknown>,success:string)=>{setBusy(true);setError("");try{await reload.mutate(action);setMessage(success);await load();return true}catch(e){handleFailure(e);return false}finally{setBusy(false)}};
   const repairDatabase=async()=>{
     const ok=await run(()=>post("/api/database/repair",{}),"データベースを安全に更新しました");
     if(ok)setSchemaIssue(null);

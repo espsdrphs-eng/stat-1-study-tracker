@@ -18,7 +18,7 @@ import {buildPastExamYearCandidates,canonicalizePastExamSessions,derivePastExamS
 import {deriveFailureEpisode} from "./failureEpisode.ts";
 import type {CoachDiagnosisState,DashboardKpiProjection} from "./types.ts";
 import type {ExamReadinessMetrics} from "./examReadiness.ts";
-import {deriveTransferEvidence} from "./skillEvidence.ts";
+import {deriveTransferEvidence,withSkillEvidenceMemo} from "./skillEvidence.ts";
 import {legacyTruncatedOutlook} from "./coachDiagnosis.ts";
 import {deriveExamReadinessAssessment,LEARNING_ASSESSMENT_LABELS} from "./examCapability.ts";
 
@@ -214,7 +214,10 @@ export function deriveSystemHealth(audit:Pick<IntegrityAudit,"generatedAt"|"issu
     historicalCategories:categories("history"),informationalCategories:categories("informational")};
 }
 
-export function runIntegrityAudit(args: {
+export function runIntegrityAudit(args:Parameters<typeof calculateIntegrityAudit>[0]):ReturnType<typeof calculateIntegrityAudit>{
+  return withSkillEvidenceMemo(()=>calculateIntegrityAudit(args));
+}
+function calculateIntegrityAudit(args: {
   attempts: Attempt[];
   reviews: Review[];
   problems?: Problem[];

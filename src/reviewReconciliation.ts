@@ -7,7 +7,7 @@ import {currentTargetPayloadMatches,withCurrentFindingPayload} from "./currentTa
 import {resolvePersistedAttemptLifecycle} from "./reviewTransition.ts";
 import {correctiveFeedbackAvailable,isSuccessfulTransferForProblem} from "./examOptimizationPolicy.ts";
 import {attemptPlanningEligible,findingPlanningEligible,planningErrorsForSource} from "./legacyKPolicy.ts";
-import {deriveTransferEvidence,partSkillIds,findingSkillIds} from "./skillEvidence.ts";
+import {deriveTransferEvidence,partSkillIds,findingSkillIds,withSkillEvidenceMemo} from "./skillEvidence.ts";
 import {deriveFailureEpisode} from "./failureEpisode.ts";
 
 const ACTIVE_STATUSES=new Set(["pending","overdue"]);
@@ -188,7 +188,10 @@ function uniqueSupersedes(rows:ProblemReconciliation["reviewsToSupersede"]){
   return rows.filter(row=>!seen.has(row.reviewId)&&(seen.add(row.reviewId),true));
 }
 
-export function analyzeReviewReconciliation(args:{
+export function analyzeReviewReconciliation(args:Parameters<typeof calculateReviewReconciliation>[0]):ReconciliationAudit{
+  return withSkillEvidenceMemo(()=>calculateReviewReconciliation(args));
+}
+function calculateReviewReconciliation(args:{
   attempts:Attempt[];reviews:Review[];aliases?:ProblemAlias[];today:string;todayPlanSnapshots?:TodayPlanSnapshot[];
 }):ReconciliationAudit{
   const aliases=args.aliases||[],catalog=partCatalog(args.attempts,args.reviews);
@@ -198,6 +201,7 @@ export function analyzeReviewReconciliation(args:{
   const reviews=args.reviews.map(row=>({...row,problem_id:canonical(row.problem_id)}));
   const problemIds=new Set([...attempts.map(row=>row.problem_id),...reviews.map(row=>row.problem_id)]);
   const problems:ProblemReconciliation[]=[];
+  const transferEvidence=deriveTransferEvidence(args.attempts);
 
   for(const problemId of problemIds){
     const problemAttempts=attempts.filter(row=>row.problem_id===problemId);
@@ -263,7 +267,7 @@ export function analyzeReviewReconciliation(args:{
           evidence:source.error_point||"",observedOutOfScope:false});
       }
     }
-    const skillTransfers=deriveTransferEvidence(args.attempts).filter(t=>t.sourceProblemId===problemId);
+    const skillTransfers=transferEvidence.filter(t=>t.sourceProblemId===problemId);
     for(const [key,event] of desired){
       const source=attemptMap.get(event.attemptId);
       const finding=source?.graded_findings?.find(f=>f.graded_part_id===event.part.id);
