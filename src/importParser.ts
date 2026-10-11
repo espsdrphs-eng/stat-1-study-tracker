@@ -373,6 +373,13 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
 }
 
 function extractStructured(text:string){
+  const json=text.trim().replace(/^```json\s*\n/i,"").replace(/\n```\s*$/,"").trim();
+  if(json.startsWith("{")){
+    try{
+      const value=JSON.parse(json);
+      if(value&&typeof value==="object"&&(value.study_update||value.study_updates))return value;
+    }catch{throw new Error("採点JSONの形式が不正です。ChatGPTの出力全体をコピーし直してください。");}
+  }
   const marker=text.search(/(?:^|\n)study_updates?:\s*(?:\n|$)/m);
   if(marker<0) return null;
   const source=text.slice(marker).trim().replace(/[“”]/g,'"').replace(/[‘’]/g,"'")

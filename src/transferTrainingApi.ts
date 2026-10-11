@@ -9,6 +9,15 @@ import {buildInitialGradingContract} from "./gradingContract.ts";
 import {buildFirstAttemptGradingPrompt} from "./gradingPrompt.ts";
 import {parseStudyText} from "./importParser.ts";
 import {deriveTransferEvidence,transferTrainingOutcome} from "./skillEvidence.ts";
+import {optionalNetMinutes,imageGradingPrompt} from "./learningFeedback.ts";
+
+export function transferAnswerSubmission(body:any){
+  const text=String(body.answer||"").trim(),paper=body.answer_medium==="paper_image";
+  if(paper&&!body.answer_completed||!paper&&!text)throw new Error("紙／Goodnotesの答案完成を確認してください");
+  const minutes=optionalNetMinutes(body.minutes),referenceLevel=Number(body.referenceLevel);
+  if(minutes!=null&&minutes>180||!Number.isInteger(referenceLevel)||referenceLevel<0||referenceLevel>5)throw new Error("正味時間と参照段階を確認してください");
+  return {text:paper?"":text,minutes,referenceLevel,submittedAt:new Date().toISOString(),...(paper?{medium:"paper_image" as const}:{})};
+}
 
 function savedTrainingFeedback(a:Attempt|undefined,success:boolean,criterion:string){
   if(!a)return undefined;
@@ -61,16 +70,14 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
     const lineage=context||savedAttempt!.transfer_lineage!;
     if(action==="submit"){
       if(!context||context.answer_submission||savedAttempt)throw new Error("答案提出済みです");
-      const text=String(body.answer||"").trim(),minutes=Number(body.minutes),referenceLevel=Number(body.referenceLevel);
-      if(!text||!Number.isFinite(minutes)||minutes<=0||minutes>180||!Number.isInteger(referenceLevel)||referenceLevel<0||referenceLevel>5)throw new Error("答案・実時間・参照段階を確認してください");
-      context={...context,answer_submission:{text,minutes,referenceLevel,submittedAt:new Date().toISOString()}};
+      context={...context,answer_submission:transferAnswerSubmission(body)};
       await db.meta.put({key:`transfer-training-context:${existingId}`,value:JSON.stringify(context)});
     }else if(action==="grading-prompt"){
       const submission=context?.answer_submission||(lineage as typeof context)?.answer_submission;
       if(!submission)throw new Error("先に参照状況と答案を確定してください");
       const contract=buildInitialGradingContract({problem:existing,mode:"full"});
       return {status:"submitted",prompt:buildFirstAttemptGradingPrompt({problemId:existingId,mode:"full",gradingContract:contract})+
-        `\n確定答案：${JSON.stringify(submission)}\n公式の問題文・解答を添付して照合すること。資料がなければ推測採点しない。`+
+        imageGradingPrompt(`\n答案完成記録：${JSON.stringify(submission)}\n公式の問題文・解答と本人の答案画像を添付して照合すること。資料がなければ推測採点しない。`,submission.referenceLevel,submission.minutes)+
         `\n出力はJSONのstudy_updateを1件だけ（YAMLではない）。grading_confidenceは既存採点契約の0〜100。`+
         `\n対象=${lineage.rootSkillId}。study_update内にtarget_skill_assessment: {self_selected:boolean,major_calculation_success:boolean,no_major_error:boolean,evidence:string}を必ず含める。総合点ではなく実答案の対象操作を独立判定。target外minorは対象失敗にしない。`};
     }else if(action==="grade"&&!savedAttempt){
@@ -78,7 +85,8 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
       const raw=transferJson(String(body.text||""));validateTransferGrade(raw,existingId);
       const parsed=parseStudyText(yaml.dump(raw),problems,answers,await db.problemAliases.toArray());
       if(parsed.updates.length!==1||parsed.updates[0].problem_id!==existingId)throw new Error("この問題の採点1件だけを保存してください");
-      await args.save({...parsed.updates[0],memo:[typeof raw.study_update?.memo==="string"?raw.study_update.memo:"","採点方法：手動ChatGPT（モデル採点・訓練証拠）"].filter(Boolean).join("\n"),target_skill_assessment:raw.study_update?.target_skill_assessment,submission_id:`training:${key}:${existingId}`});
+      const minutes=context.answer_submission.medium==="paper_image"?optionalNetMinutes(body.minutes):context.answer_submission.minutes;
+      await args.save({...parsed.updates[0],actual_minutes:minutes,time_minutes:minutes,memo:[typeof raw.study_update?.memo==="string"?raw.study_update.memo:"","答案：紙／Goodnotes画像、採点方法：手動ChatGPT（モデル採点・訓練証拠）"].filter(Boolean).join("\n"),target_skill_assessment:raw.study_update?.target_skill_assessment,submission_id:`training:${key}:${existingId}`});
     }else if(!["view","start","grade"].includes(action))throw new Error("不明な既存転移操作です");
     const facts=await db.attempts.toArray(),attempt=facts.find(a=>a.transfer_lineage?.key===key&&a.problem_id===existingId&&!a.exclude_from_metrics);
     return {status:attempt?"graded":context?.answer_submission?"submitted":"existing_ready",existingProblemId:existingId,
@@ -114,10 +122,7 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
   }else if(action==="submit"){
     const content=problem?.generated_transfer;
     if(!content||content.answer_submission)throw new Error("問題未登録、または答案提出済みです");
-    const text=String(body.answer||"").trim(),minutes=Number(body.minutes),referenceLevel=Number(body.referenceLevel);
-    if(!text||!Number.isFinite(minutes)||minutes<=0||minutes>180||!Number.isInteger(referenceLevel)||referenceLevel<0||referenceLevel>5)
-      throw new Error("答案・実時間・参照段階を確認してください");
-    problem={...problem!,generated_transfer:{...content,lifecycle_status:"submitted",answer_submission:{text,minutes,referenceLevel,submittedAt:new Date().toISOString()}}};
+    problem={...problem!,generated_transfer:{...content,lifecycle_status:"submitted",answer_submission:transferAnswerSubmission(body)}};
     await db.problems.put(problem);
   }else if(action==="grading-prompt"){
     const content=problem?.generated_transfer,submission=content?.answer_submission;
@@ -128,7 +133,7 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
       (content.input_format?`\n新しい会話で問題を独立に解き直し、条件不足・解答不能・採点不能がないか検算してから採点する。study_updateと並べてmathematical_reviewを必ず返す：`+
         JSON.stringify({problem_id:problem!.problem_id,content_hash:content.content_hash,reference_solution:"完全な導出",grading_rubric:"得点配分・対象操作の採点基準",checks:{well_defined:{pass:false,evidence:"条件と解答可能性の具体的根拠"},solution_correct:{pass:false,evidence:"独立検算の具体的根拠"},rubric_aligned:{pass:false,evidence:"解答と採点基準の対応"}}})+
         `\n不確実ならpass=falseとし、成功の採点を捏造しない。解答は今の提出後に初めて取り込む。`:"")+
-      `\n出力はJSONのstudy_updateを1件。actual_reference_level=${submission.referenceLevel}、time_minutes=${submission.minutes}。`+
+      imageGradingPrompt(`\n出力はJSONのstudy_updateを1件。actual_reference_level=${submission.referenceLevel}。`,submission.referenceLevel,submission.minutes)+
       `\nstudy_update内にtarget_skill_assessment: {self_selected:boolean,major_calculation_success:boolean,no_major_error:boolean,evidence:string}を必ず含める。`+
       `対象=${content.root_skill_id}。総合点とは独立に、初手と主要計算の実答案から判定。target外minorでは対象失敗にしない。模範解答の内容を本人の答案と混同しない。`};
   }else if(action==="grade"){
@@ -137,7 +142,9 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
     const reference=problem.generated_transfer.input_format?validateManualGradingReference(problem,raw.mathematical_review):undefined;
     const parsed=parseStudyText(yaml.dump(raw),problems,answers,await db.problemAliases.toArray());
     if(parsed.updates.length!==1||parsed.updates[0].problem_id!==problem.problem_id)throw new Error("この問題の採点1件だけを保存してください");
-    await args.save({...parsed.updates[0],memo:[typeof raw.study_update?.memo==="string"?raw.study_update.memo:"","採点方法：手動ChatGPT（モデル採点・訓練証拠）"].filter(Boolean).join("\n"),target_skill_assessment:raw.study_update?.target_skill_assessment,
+    const submission=problem.generated_transfer.answer_submission;
+    const minutes=submission.medium==="paper_image"?optionalNetMinutes(body.minutes):submission.minutes;
+    await args.save({...parsed.updates[0],actual_minutes:minutes,time_minutes:minutes,memo:[typeof raw.study_update?.memo==="string"?raw.study_update.memo:"","答案：紙／Goodnotes画像、採点方法：手動ChatGPT（モデル採点・訓練証拠）"].filter(Boolean).join("\n"),target_skill_assessment:raw.study_update?.target_skill_assessment,
       manual_generated_reference:reference,
       submission_id:`generated:${problem.problem_id}`});
     problem=await db.problems.get(problem.problem_id);
@@ -167,7 +174,7 @@ export function generatedAttemptFields(problem:Problem,input:Record<string,unkno
     source_problem_id:c.lineage.sourceProblemId,memo:[input.memo,`今回の確定答案:\n${s.text}`,"手動生成プロンプトの閲覧は未検証。本番の独立転移とは区別。"].filter(Boolean).join("\n\n"),
     target_skill_assessment:target,transfer_lineage:c.lineage,exam_score_eligible:false,
     learning_purpose:"transfer_check" as const,learning_stage:"transfer" as const,
-    actual_reference_level:Math.max(s.referenceLevel,input.hint_used?3:0,Number(input.actual_reference_level??input.reference_level??0)),time_minutes:s.minutes,exam_score:null};
+    actual_reference_level:Math.max(s.referenceLevel,input.hint_used?3:0,Number(input.actual_reference_level??input.reference_level??0)),time_minutes:input.actual_minutes===null?null:input.actual_minutes!=null?Number(input.actual_minutes):s.minutes,exam_score:null};
 }
 
 export function validateTransferGrade(raw:any,problemId:string){

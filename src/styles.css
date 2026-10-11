@@ -373,3 +373,17 @@ header h1{font-size:28px;font-weight:700;letter-spacing:-.02em;color:var(--text-
 .ranked-study-card header>strong{flex:1;min-width:160px}
 .ranked-study-card .button-row{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
 .ranked-study-card details{margin-top:12px}
+.problem-state-list{display:grid;gap:12px}
+.problem-state-head{display:flex;justify-content:space-between;align-items:start;gap:12px;flex-wrap:wrap}
+.problem-state-row{min-width:0;overflow-wrap:anywhere}
+.problem-state-row h3{margin:0 0 6px}
+.problem-state-row details{margin-top:14px}
+.problem-toolbar{flex-wrap:wrap}
+.problem-toolbar label{min-width:0;max-width:100%}
+.problem-toolbar select,.problem-toolbar input{max-width:100%}
+.task-introduction,.problem-reference{margin:16px 0;padding:16px;border:1px solid var(--border);border-radius:12px;min-width:0;overflow-wrap:anywhere}
+.task-introduction dl{display:grid;grid-template-columns:minmax(100px,140px) minmax(0,1fr);gap:10px 16px;margin:12px 0}
+.task-introduction dt{font-weight:600}.task-introduction dd{margin:0;min-width:0;white-space:pre-wrap}
+.task-introduction dd small{display:block;margin-top:6px}
+.problem-reference summary{cursor:pointer;font-weight:600;min-height:32px}
+@media(max-width:850px){.task-introduction dl{grid-template-columns:1fr;gap:6px}.task-introduction dd{margin-bottom:12px}}

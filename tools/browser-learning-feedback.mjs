@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {chromium} from 'playwright-core';
 import yaml from 'js-yaml';
 const base=process.env.APP_URL||'http://127.0.0.1:4186/';
+const outputRoot=process.env.BROWSER_OUTPUT||'outputs/paper-learning-20261011';
 const browser=await chromium.launch({executablePath:'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',headless:true});
 const context=await browser.newContext({viewport:{width:1180,height:820},permissions:['clipboard-read','clipboard-write'],serviceWorkers:'block'});
 const page=await context.newPage();page.setDefaultTimeout(90000);
@@ -19,27 +20,51 @@ const draft={problem_text:'正の確率変数Zは0<z<1で密度3z²を持つ。�
 try{
   await page.goto(base,{waitUntil:'domcontentloaded'});await nav('設定');
   page.on('dialog',d=>d.accept());
-  await page.locator('.restore-button input[type=file]').setInputFiles('outputs/learning-flow-20261011/latest-full.json');
+  await page.locator('.restore-button input[type=file]').setInputFiles(process.env.STUDY_EXPORT||'C:/Users/saki/.codex/codex-remote-attachments/019f13a4-a5ab-7f51-824e-cd5066e3fcc5/57C3F1CB-F764-4BA3-B4FD-9BF51E4903E3/1-stat-study-2026-10-11_minified_lossless.json');
   await page.getByText('バックアップを復元しました',{exact:true}).waitFor();
   const initial=await state();results.restore={attempts:initial.attempts.length,reviews:initial.reviews.length};results.transferStatus=initial.dashboard.readiness.evidence.transfer.statusCounts;
   results.rankComparison=initial.today.tasks.filter(t=>['PY-2019-Q3','PY-2018-Q4','PY-2018-Q2','PY-2022-Q2','PY-2022-Q4'].includes(t.problem_id)&&t.ranking).map(t=>({problem:t.problem_id,rank:t.ranking.rank,purpose:t.learning_purpose}));console.log('RESTORE PASS');
+  await nav('ダッシュボード');
+  const current=await page.evaluate(async()=>{const d=await (await import('/src/localDb.ts')).localGet('/api/bootstrap');const {deriveTaskIntroduction}=await import('/src/learningFeedback.ts');const t=d.today.currentTask;return {task:t,intro:deriveTaskIntroduction(d,d.problems.find(p=>p.problem_id===t.problem_id),t),refs:d.reviews.map(r=>[r.id,r.actual_reference_level,r.hint_used])}});
+  assert.ok(!current.task.stable_session_key&&!current.task.transfer_training_key,'real Next Action is an individual task');
+  await page.locator('.dashboard-kpi-action').getByRole('button',{name:'問題を開く',exact:true}).click();
+  await page.locator('.task-introduction').waitFor();assert.equal(await page.locator('.task-introduction').getAttribute('data-task-identity'),current.intro.taskIdentity);
+  assert.match(await page.locator('.task-introduction').innerText(),/前回のつまずき|回収目標/);
+  await page.locator('.problem-reference > summary').click();assert.match(await page.locator('.problem-reference').innerText(),/原問題の参照|未登録/);
+  const refsNow=await page.evaluate(async()=>{const d=await (await import('/src/localDb.ts')).localGet('/api/bootstrap');return d.reviews.map(r=>[r.id,r.actual_reference_level,r.hint_used])});assert.deepEqual(refsNow,current.refs,'task briefing and problem access never change hint history');
+  for(const viewport of [{width:820,height:1180},{width:1180,height:820}]){await page.setViewportSize(viewport);await settleMenu();assert.ok(await page.getByRole('button',{name:'答案完成・採点へ進む',exact:true}).isVisible());assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),false);await page.screenshot({path:`${outputRoot}/next-action-${viewport.width}.png`})}
+  results.nextAction={status:'PASS',problem:current.task.problem_id,identity:current.intro.taskIdentity,introduction:current.intro,problemReference:'source locator (original problem/PDF unavailable)',hintFlag:'unchanged',ipad:'portrait + landscape PASS'};
+  await page.getByRole('button',{name:'← 戻る',exact:true}).click();
   await nav('今日やること');while(await page.getByRole('button',{name:/続きを表示/}).count())await page.getByRole('button',{name:/続きを表示/}).click();
   const task=initial.today.tasks.find(t=>t.problem_id==='PY-2018-Q5'&&!t.stable_session_key);assert.ok(task);
   const card=page.locator('.ranked-study-card').filter({has:page.getByText(task.title,{exact:true})}).first();
   assert.doesNotMatch(await card.innerText(),/Y3|Jacobian|逆変換|fZ\(/);
   await card.getByRole('button',{name:'学習開始',exact:true}).click();
-  const pre=await page.locator('main').innerText();assert.doesNotMatch(pre,/前回の|最新評価|修正|Y3|Jacobian|fZ\(/);assert.ok(await page.getByRole('button',{name:'解答を開始',exact:true}).isVisible());
-  await page.screenshot({path:'outputs/learning-flow-20261011/detail-after.png'});
-  await page.getByRole('button',{name:'解答を開始',exact:true}).click();await page.locator('.blind-problem textarea').fill('独立答案の検証用入力（数学的採点はfixtureで代替）');
+  const pre=await page.locator('main').innerText();assert.match(pre,/前回のつまずき|今回の回収目標/);assert.doesNotMatch(pre,/最新評価|Y3|Jacobian|fZ\(/);assert.ok(await page.getByRole('button',{name:'解答作成を開始',exact:true}).isVisible());
+  await page.screenshot({path:`${outputRoot}/detail-after.png`});
+  await page.getByRole('button',{name:'解答作成を開始',exact:true}).click();
+  await page.getByText('作業状態：解答作成中・採点準備中',{exact:true}).waitFor();
+  assert.equal(await page.locator('.blind-problem textarea').count(),0);assert.equal((await state()).attempts.length,initial.attempts.length);
   assert.doesNotMatch(await page.locator('main').innerText(),/Y3|Jacobian|fZ\(/);
-  await page.getByRole('button',{name:'答案を書き終えた（採点へ）',exact:true}).click();
+  await page.getByRole('button',{name:'答案完成・採点へ進む',exact:true}).click();
   assert.match(await page.locator('.answer-summary').innerText(),/採点結果はまだ保存/);
+  await page.locator('.answer-summary').getByRole('button',{name:'採点プロンプトをコピー',exact:true}).click();
+  await page.locator('.answer-summary').getByRole('button',{name:'コピー済み',exact:true}).waitFor();
+  assert.match(await page.evaluate(()=>navigator.clipboard.readText()),/答案画像/);
+  assert.equal((await state()).attempts.length,initial.attempts.length,'copy is not grading');
+  await page.reload();await nav('問題一覧');
+  await page.getByRole('combobox',{name:'学習状況',exact:true}).selectOption('awaiting_grading');
+  await page.getByPlaceholder('問題ID・問題名で検索').fill(task.problem_id);
+  const waitingRow=page.locator(`[data-problem-id="${task.problem_id}"]`);
+  assert.match(await waitingRow.innerText(),/採点待ち/);
+  await waitingRow.getByRole('button',{name:'採点を続ける',exact:true}).click();
+  await page.locator('.answer-summary').waitFor();
   await page.locator('.post-answer-details > summary').click();assert.match(await page.locator('.post-answer-details').innerText(),/解答履歴|主要計算/);
   await page.getByRole('button',{name:'GPT採点結果を取り込む',exact:true}).first().click();
   const normalGrade=await page.evaluate(t=>{
     const c=t.grading_contract;
     return {study_update:{problem_id:t.problem_id,problem_id_confirmed:true,date:'auto_today',mode:c.mode,
-      task_origin:'review_attempt',actual_minutes:12,mark:'○',score_numeric:100,score_text:'100',error_type:'none',error_types:['none'],primary_error_type:'none',
+      task_origin:'review_attempt',actual_minutes:null,time_minutes:null,mark:'○',score_numeric:100,score_text:'100',error_type:'none',error_types:['none'],primary_error_type:'none',
       next_action:'後日の参照なし保持確認',review_after_days:7,reference_level:0,actual_reference_level:0,hint_used:false,grading_confidence:.99,
       source_review_id:t.id||c.reviewId,generated_from_review_id:t.id||c.reviewId,source_attempt_id:c.sourceAttemptId,target_kind:c.targetKind,
       learning_purpose:c.learningPurpose,learning_stage:c.learningStage,review_scope:c.reviewScope,assessment_timing:'delayed_retrieval',allowed_reference_level:c.allowedReferenceLevel,
@@ -53,23 +78,33 @@ try{
   await page.waitForFunction(()=>document.querySelector('.answer-summary')?.textContent.includes('今回：100点')||document.querySelector('.toast')?.textContent.includes('画面に表示した課題'));
   assert.doesNotMatch(await page.locator('main').innerText(),/画面に表示した課題とGPT採点範囲が一致しません/);
   await page.locator('.answer-summary').getByText(/今回：100点/).waitFor();
-  assert.ok((await state()).attempts.some(a=>a.problem_id===task.problem_id&&a.memo?.includes('独立答案の検証用入力')));
-  results.blind={status:'PASS',scope:'Today → detail → timed answer → post-answer expandable history'};
+  assert.ok((await state()).attempts.some(a=>a.problem_id===task.problem_id&&a.memo?.includes('紙／Goodnotes')));
+  const latest=await page.evaluate(async id=>(await (await import('/src/localDb.ts')).db.attempts.where('problem_id').equals(id).toArray()).at(-1),task.problem_id);assert.equal(latest.time_minutes,null);
+  results.blind={status:'PASS',scope:'Today → detail → paper completion → image grading fixture → post-answer history',unknownTime:null};
   results.normalGrading='PASS: actual import UI and storage; grading JSON is FIXTURE';console.log('ANSWER/SAVE PASS');
+  await nav('問題一覧');await page.getByPlaceholder('問題ID・問題名で検索').fill(task.problem_id);
+  const gradedRow=page.locator(`[data-problem-id="${task.problem_id}"]`);assert.match(await gradedRow.innerText(),/採点済み/);
+  await gradedRow.locator('summary').click();assert.match(await gradedRow.innerText(),/100点/);
+  for(const width of [820,1180]){
+    await page.setViewportSize({width,height:width===820?1180:820});await settleMenu();
+    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth+1));
+    await page.screenshot({path:`${outputRoot}/problem-list-${width}.png`});
+  }
+  results.problemList='PASS: awaiting → reload → grading from list → graded, same evidence as Today; iPad portrait/landscape';
   await nav('弱点傾向');const diagnosis=page.locator('.current-learning-diagnosis');assert.ok(await diagnosis.isVisible());assert.match(await diagnosis.innerText(),/本番対応力 2.5/);assert.equal(await diagnosis.locator('article.card').count(),3);
   assert.doesNotMatch(await diagnosis.innerText(),/640件|合格確率\s*\d/);results.deficits=(await diagnosis.innerText()).slice(0,1500);
   assert.doesNotMatch(await diagnosis.innerText(),/\[object Object\]/);
   for(const viewport of [{width:820,height:1180},{width:1180,height:820},{width:390,height:844}]){
     await page.setViewportSize(viewport);const dims=await page.evaluate(()=>({width:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth}));assert.ok(dims.scroll<=dims.width+1,JSON.stringify(dims));
     await settleMenu();
-    await page.screenshot({path:`outputs/learning-flow-20261011/diagnosis-${viewport.width}.png`});results[`ipad${viewport.width}`]='PASS';
+    await page.screenshot({path:`${outputRoot}/diagnosis-${viewport.width}.png`});results[`ipad${viewport.width}`]='PASS';
   }
   await nav('今日やること');while(await page.getByRole('button',{name:/続きを表示/}).count())await page.getByRole('button',{name:/続きを表示/}).click();
   const training=page.getByRole('region',{name:'転移確認',exact:true}).first();
   // Candidate is from actual source 251 / repair 269 / retrieval 307. No synthetic prerequisites.
   await page.setViewportSize({width:820,height:1180});await settleMenu();
-  assert.ok(await training.getByRole('button',{name:'生成プロンプトをコピー',exact:true}).isVisible());
-  await training.getByRole('button',{name:'生成プロンプトをコピー',exact:true}).click();
+  assert.ok(await training.getByRole('button',{name:'問題生成プロンプトをコピー',exact:true}).isVisible());
+  await training.getByRole('button',{name:'問題生成プロンプトをコピー',exact:true}).click();
   await training.getByRole('status').filter({hasText:'コピーしました'}).waitFor();
   const prompt=await page.evaluate(()=>navigator.clipboard.readText());assert.match(prompt,/coefficient_tracking_scale_reciprocal/);
   assert.doesNotMatch(prompt,/reference_solution|grading_rubric/);
@@ -80,12 +115,13 @@ try{
   const validation=await page.evaluate(async()=>{const {db}=await import('/src/localDb.ts');const {GENERATION_CHECKS}=await import('/src/generatedTransfer.ts');const r=JSON.parse((await db.meta.get('transfer-generation:training:coefficient_tracking_scale_reciprocal')).value);
     return {draft_hash:r.rounds.at(-1).hash,validator_pass_id:'browser-independent-fixture-validation',checks:Object.fromEntries(GENERATION_CHECKS.map(k=>[k,{pass:true,evidence:'FIXTURE: 新しい会話で解答可能性と技能対応を独立に検算'}]))}});
   await training.locator('textarea').fill(JSON.stringify(validation));await training.getByRole('button',{name:'品質確認して問題を登録',exact:true}).click();
-  await training.getByRole('button',{name:/答案を確定する/}).waitFor();
+  await training.getByRole('button',{name:'答案完成・採点へ進む',exact:true}).waitFor();
   const blind=(await state()).problems.find(p=>p.generated_transfer);assert.ok(blind);
   assert.doesNotMatch(await training.innerText(),/coefficient_tracking|source：|対象能力|1\/\(5Z\)/);
   assert.equal(blind.generated_transfer.reference_solution,'');assert.equal(blind.generated_transfer.grading_rubric,'');
-  await page.screenshot({path:'outputs/learning-flow-20261011/manual-transfer-ipad.png'});
-  await training.locator('textarea').first().fill('A^{-1}=1/(5Z)、A>tはZ>t/5。F(t)=(3/5)∫_{t/5}^1 z dz=(3/10)(1-t²/25)。');await training.getByRole('button',{name:/答案を確定する/}).click();
+  await page.screenshot({path:`${outputRoot}/manual-transfer-ipad.png`});
+  assert.equal(await training.locator('textarea').count(),0);
+  await training.getByRole('button',{name:'答案完成・採点へ進む',exact:true}).click();
   await training.getByRole('button',{name:'採点プロンプトをコピー',exact:true}).waitFor();
   await training.getByRole('button',{name:'採点プロンプトをコピー',exact:true}).click();
   await training.getByRole('status').filter({hasText:'コピーしました'}).waitFor();
@@ -113,6 +149,12 @@ try{
   assert.equal(after.problems.find(p=>p.problem_id===blind.problem_id).generated_transfer.input_format,'statement_only_v1');
   assert.ok(after.problems.find(p=>p.problem_id===blind.problem_id).generated_transfer.grading_reference);
   assert.match(a.memo,/手動ChatGPT/);
+  const generatedAttempt=await page.evaluate(async id=>(await (await import('/src/localDb.ts')).db.attempts.where('problem_id').equals(id).toArray()).at(-1),blind.problem_id);
+  assert.equal(generatedAttempt.time_minutes,null);assert.equal(after.problems.find(p=>p.problem_id===blind.problem_id).generated_transfer.answer_submission.medium,'paper_image');
+  await nav('問題一覧');await page.getByRole('combobox',{name:'出典',exact:true}).selectOption('generated');
+  const generatedRow=page.locator(`[data-problem-id="${blind.problem_id}"]`);assert.match(await generatedRow.innerText(),/採点済み/);
+  await generatedRow.locator('summary').click();assert.doesNotMatch(await generatedRow.innerText(),/本番転移確認済み/);
+  await generatedRow.getByRole('button',{name:'問題を開く',exact:true}).click();await page.getByText('今回の得点：100 / 100',{exact:true}).waitFor();
   assert.deepEqual(after.dashboard.readiness.evidence.selectedThree,initial.dashboard.readiness.evidence.selectedThree);assert.deepEqual(after.dashboard.readiness.evidence.transfer,initial.dashboard.readiness.evidence.transfer);
   await nav('弱点傾向');assert.match(await page.locator('.current-learning-diagnosis').innerText(),/訓練成功 1件/);assert.match(await page.locator('.current-learning-diagnosis').innerText(),/転移成功 0件/);
   await page.reload();const reloaded=await state();assert.equal(reloaded.problems.find(p=>p.generated_transfer)?.problem_id,blind.problem_id);assert.equal(reloaded.attempts.find(a=>a.problem_id===blind.problem_id).transfer_lineage.key,a.transfer_lineage.key);

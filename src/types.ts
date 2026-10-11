@@ -174,7 +174,7 @@ export type Attempt = {
   target_skill_prompted?:boolean;
   target_skill_assessment?:{self_selected:boolean;major_calculation_success:boolean;no_major_error:boolean;evidence:string};
   transfer_lineage?:import("./generatedTransfer.ts").TransferTrainingLineage;
-  id:number; problem_id:string; date:string; mode:string; time_minutes:number; mark:string;
+  id:number; problem_id:string; date:string; mode:string; time_minutes:number|null; mark:string;
   score_label:string; error_type:string; error_point:string; next_action:string; memo:string;
   score_text?:string; score_numeric?:number|null; score_max?:number|null; result_summary?:string;
   improvement_guidance?:string; required_derivation?:string; corrected_answer?:string;
@@ -240,7 +240,7 @@ export type Review = {
   official_answer?:boolean; gpt_explanation?:boolean;
   allowed_reference_level?:number; actual_reference_level?:number;
   reference_closed_reproduction?:boolean; saved_gpt_feedback?:boolean; external_reference?:boolean;
-  completion_time_minutes?:number; completed_at?:string;
+  completion_time_minutes?:number|null; completed_at?:string;
   manual_order?:number; postponed_count?:number; postpone_count?:number; last_postponed_at?:string;
   postponed_at?:string; postponed_to?:string; postpone_reason?:string; triage_override?:"must";
   task_origin?:"first_attempt"|"review_attempt"|"linked_s_check"|"related_drill"|"past_exam_followup";
@@ -416,7 +416,7 @@ export type CoachDiagnosisState = {
   prompt:string;lastReviewedAt:string|null;
 };
 export type ExamReferenceCatalogItem = {
-  referenceProblemId:string;canonicalProblemId:string;year:number;questionNumber:number;
+  referenceProblemId:string;canonicalProblemId:string;year:number;questionNumber:number;subject?:string;
   title:string;availability:"verified_problem"|"metadata_only";schedulable:boolean;gradable:boolean;
   fineConceptIds:string[];coarseTopics:string[];exposure:PastExamExposure;
   exposureSource?:"explicit"|"session"|"attempt"|"inferred_unseen"|"reference_default";
@@ -581,7 +581,9 @@ export type Dashboard = {
     suggestion:string;dangerCriteria:string[];phase:string;phaseLabel:string;summary:string;allocation:string;nextPhase:string;daysRemaining:number;examDateIsEstimate:boolean};
   kpis?:DashboardKpiProjection;
 };
+export type LearningWork={id:string;problemId:string;mode:string;reviewId?:number;baselineAttemptId:number;stage:"preparing"|"awaiting_grading";referenceLevel:number;updatedAt:string;task?:Task};
 export type Bootstrap = {
+  learningWorkByProblem?:Record<string,LearningWork>;
   problems:Problem[]; attempts:Attempt[]; reviews:Review[]; roadmap:Roadmap[];
   weakNotes:WeakNote[]; pastSessions:PastSession[]; answerIndex:AnswerIndexEntry[]; problemAliases:ProblemAlias[]; dashboard:Dashboard;
   adaptiveLearning:AdaptiveLearning;
@@ -638,7 +640,7 @@ export type Bootstrap = {
     additionalCandidates:AdditionalStudyCandidate[]};
 };
 export type StudyUpdate = {
-  problem_id:string; date:string; mode:string; time_minutes?:number|string; actual_minutes?:number|string;
+  problem_id:string; date:string; mode:string; time_minutes?:number|string|null; actual_minutes?:number|string|null;
   source_problem_id?:string;
   estimated_minutes?:number|string; mark:string; score_label:string;
   error_type:string; error_point:string; next_action:string; review_after_days?:number|string;

@@ -10,7 +10,7 @@ import { finalizeStudyUpdateForSave, prepareImportedStudyUpdate } from "./studyC
 import { projectStudyUpdateLifecycle } from "./studyUpdateLifecycle";
 import { reviewExecutionMessage, reviewExecutionState, selectCurrentReviewsForProblem, type ReviewExecutionState } from "./integrityEngine";
 import {resolveSemanticReviewGeneration} from "./reviewGeneration.ts";
-import {attachSubmittedAnswer,type SubmittedAnswer} from "./learningFeedback.ts";
+import {attachSubmittedAnswer,imageGradingPrompt,type SubmittedAnswer} from "./learningFeedback.ts";
 import type { AnswerIndexEntry, Attempt, Problem, ProblemAlias, Review, StudyUpdate } from "./types";
 import { wholeAnswerScanSummary } from "./wholeAnswerDiagnostic.ts";
 
@@ -50,7 +50,7 @@ const missingRequiredFields=(update:StudyUpdate):MissingField[]=>{
     !update.date?{key:"date",field:"date",message:missingHelp.date}:null,
     !update.task_origin?{key:"task_origin",field:"task_origin",message:missingHelp.task_origin}:null,
     !update.mode?{key:"mode",field:"mode",message:missingHelp.mode}:null,
-    !Number.isFinite(actualMinutes)||actualMinutes<=0?{key:"actual_minutes",field:"actual_minutes",message:missingHelp.actual_minutes}:null,
+    (update.actual_minutes??update.time_minutes)!=null&&(!Number.isFinite(actualMinutes)||actualMinutes<=0)?{key:"actual_minutes",field:"actual_minutes",message:"正味解答時間は正の分数で入力するか、空欄にしてください"}:null,
     !update.mark?{key:"mark",field:"mark",message:missingHelp.mark}:null,
     update.score_numeric==null||Number.isNaN(Number(update.score_numeric))?{key:"score_numeric",field:"score_numeric",message:missingHelp.score_numeric}:null,
     !errors.length?{key:"error_types",field:"error_types",message:missingHelp.error_types}:null,
@@ -99,7 +99,7 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
   const [saved,setSaved]=useState<{count:number;ids:string[];at:string}|null>(null);
   const [highlightedField,setHighlightedField]=useState("");
   const [saveFailed,setSaveFailed]=useState(false);
-  const gradingPrompt=buildGradingPrompt(todayString());
+  const gradingPrompt=imageGradingPrompt(buildGradingPrompt(todayString()));
   const newSubmissionId=()=>globalThis.crypto?.randomUUID?.()||`submission-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const projectForPreview=(update:StudyUpdate)=>{
     const sourceReview=update.generated_from_review_id?reviews.find(row=>row.id===update.generated_from_review_id):undefined;
@@ -224,8 +224,8 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
   return <div className="import-layout advanced-import">
     <section className="panel">
       <div className="panel-title"><div><span className="eyebrow">PASTE FROM GPT</span><h3>GPT回答取り込み</h3></div><Pill>API不使用</Pill></div>
-      <p className="muted">YAMLがあれば優先して解析します。旧キーは保存前に新キーへ自動補正します。</p>
-      <textarea className="paste-area" value={text} onChange={event=>{setText(event.target.value);setSaved(null)}} placeholder={"ChatGPTの採点結果を貼り付けてください。\n\nstudy_update / study_updates のYAMLに対応します。"} />
+      <p className="muted">採点JSON / YAMLを解析します。旧キーは保存前に新キーへ自動補正します。</p>
+      <textarea className="paste-area" value={text} onChange={event=>{setText(event.target.value);setSaved(null)}} placeholder={"ChatGPTの採点結果を貼り付けてください。\n\nstudy_update / study_updates のJSON・YAMLに対応します。"} />
       <button className="primary wide-btn" onClick={parse}><ClipboardPaste size={17}/>内容を解析する</button>
       {error&&<p className="field-error">{error}</p>}
       <div className="parser-note"><strong>旧キーの自動変換</strong><span>time_minutes → actual_minutes / score_label → score_text / reference_closed_reproduction → after_reference_reproduced</span></div>
@@ -240,7 +240,7 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
 
     <section className="panel preview">
       <div className="panel-title"><div><span className="eyebrow">CONFIRM BEFORE SAVE</span><h3>取り込み確認</h3></div>
-        {updates.length>0&&<Pill tone={structured?"green":"orange"}>{structured?"YAML":"文章抽出"}・{updates.length}件</Pill>}
+        {updates.length>0&&<Pill tone={structured?"green":"orange"}>{structured?"JSON / YAML":"文章抽出"}・{updates.length}件</Pill>}
       </div>
       {!updates.length?(saved?<div className="import-saved">
         <div className="import-saved-icon"><Check size={30}/></div>
@@ -288,7 +288,7 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
               </select></Field>
               <Field label="今回の答案形式" fieldId={`import-${index}-mode`} highlighted={highlightedField===`import-${index}-mode`}><select disabled={!editing} value={update.mode} onChange={event=>change(index,"mode",event.target.value)}>{Object.entries(modes).map(([key,label])=><option value={key} key={key}>{label}</option>)}</select></Field>
               <Field label="学習日" fieldId={`import-${index}-date`} highlighted={highlightedField===`import-${index}-date`}><input readOnly={!editing} type="date" value={update.date} onChange={event=>change(index,"date",event.target.value)}/></Field>
-              <Field label="実際に使った時間（分）" fieldId={`import-${index}-actual_minutes`} highlighted={highlightedField===`import-${index}-actual_minutes`} help="今日の完了時間に加算されます。予定時間とは別です。"><input readOnly={!editing} placeholder="実際に使った分数" type="number" value={update.actual_minutes??update.time_minutes??""} onChange={event=>{const value=event.target.value===""?undefined:Number(event.target.value);change(index,"actual_minutes",value);change(index,"time_minutes",value)}}/></Field>
+              <Field label="正味解答時間（分・任意）" fieldId={`import-${index}-actual_minutes`} highlighted={highlightedField===`import-${index}-actual_minutes`} help="中断時間を除く分数です。空欄は時間不明となり、時間内完答の証拠には使いません。"><input min="0.1" step="any" placeholder="空欄：時間不明" type="number" value={update.actual_minutes??update.time_minutes??""} onChange={event=>{const value=event.target.value===""?null:Number(event.target.value);change(index,"actual_minutes",value);change(index,"time_minutes",value)}}/></Field>
               <Field label="段階評価"><input readOnly={!editing} placeholder="例：A / B+" value={update.score_text||(update.score_numeric!=null?update.score_label:"")} onChange={event=>change(index,"score_text",event.target.value)}/></Field>
               <Field label="点数" fieldId={`import-${index}-score_numeric`} highlighted={highlightedField===`import-${index}-score_numeric`}><input readOnly={!editing} placeholder="例：78" type="number" value={update.score_numeric??""} onChange={event=>change(index,"score_numeric",event.target.value===""?null:Number(event.target.value))}/></Field>
               <Field label="mark" fieldId={`import-${index}-mark`} highlighted={highlightedField===`import-${index}-mark`}><select disabled={!editing} value={update.mark} onChange={event=>change(index,"mark",event.target.value)}>{["◎","○","△","×"].map(mark=><option key={mark}>{mark}</option>)}</select></Field>

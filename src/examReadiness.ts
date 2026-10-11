@@ -206,8 +206,12 @@ export function calculateExamReadinessMetrics(args: {
   const eligibleSessions=pastSessions.filter(session=>session.year!==2025&&!session.superseded_by_session_id&&session.session_kind==="selected_three_timed"&&
     Number(session.actual_reference_level||0)===0&&session.evaluation_scope!=="conditional_full"&&
     selectedRows(session).length===3&&selectedRows(session).every(row=>row.actualScore!=null&&Number.isFinite(row.actualScore)&&!row.referenceUsed&&!row.hintUsed));
-  const elapsed=(session:PastSession)=>Number(session.session_elapsed_minutes??
-    (Number(session.actual_total_minutes||session.actual_minutes||0)+Number(session.scan_minutes||0)));
+  const elapsed=(session:PastSession)=>{
+    if(session.session_elapsed_minutes!=null)return Number(session.session_elapsed_minutes);
+    const recorded=Number(session.actual_total_minutes||session.actual_minutes||0);
+    // A known scan duration alone cannot establish the duration of three answers.
+    return recorded>0?recorded+Number(session.scan_minutes||0):0;
+  };
   const timedSessions=eligibleSessions.filter(session=>elapsed(session)>0);
   const timedSessionSuccesses=timedSessions.filter(session=>elapsed(session)<=Number(session.time_limit_minutes||90)&&
     (session.selected_timed_attempt_ids||[]).every(id=>attempts.find(a=>a.id===id)?.conclusion_reached!==false));

@@ -362,15 +362,16 @@ export function reconcilePastExamSessionEvidence(session:PastSession,attempts:At
     const manualMinutes=question.actualMinutesSource==="manual_override"&&typeof question.actualMinutes==="number"&&
       Number.isFinite(question.actualMinutes)&&question.actualMinutes>0;
     return {...question,actualScore:manualScore?question.actualScore:Number(attempt.score_numeric),
-      actualMinutes:manualMinutes?question.actualMinutes:Number(attempt.time_minutes||0),
+      actualMinutes:manualMinutes?question.actualMinutes:attempt.time_minutes==null?null:Number(attempt.time_minutes),
       actualScoreSource:manualScore?"manual_override" as const:"attempt" as const,
       actualMinutesSource:manualMinutes?"manual_override" as const:"attempt" as const,
-      sourceAttemptId:attempt.id,attemptScore:Number(attempt.score_numeric),attemptMinutes:Number(attempt.time_minutes||0),
+      sourceAttemptId:attempt.id,attemptScore:Number(attempt.score_numeric),attemptMinutes:attempt.time_minutes==null?null:Number(attempt.time_minutes),
       referenceUsed:Number(attempt.actual_reference_level??attempt.reference_level??0)>0,
       completed:selectedSet.has(question.problemId||"")};
   });
-  const selectedSolveMinutes=selected.reduce((sum,id)=>sum+Number(questions.find(row=>row.problemId===id)?.actualMinutes||0),0);
-  const scanMinutes=Number(session.scan_minutes||0),sessionElapsedMinutes=scanMinutes+selectedSolveMinutes;
+  const timingUnknown=selected.some(id=>{const q=questions.find(row=>row.problemId===id);return !!q?.sourceAttemptId&&q.actualMinutes==null});
+  const selectedSolveMinutes=timingUnknown?undefined:selected.reduce((sum,id)=>sum+Number(questions.find(row=>row.problemId===id)?.actualMinutes||0),0);
+  const scanMinutes=Number(session.scan_minutes||0),sessionElapsedMinutes=selectedSolveMinutes==null?undefined:scanMinutes+selectedSolveMinutes;
   const selectedComplete=selected.length===3&&selectedAttempts.length===3;
   const allComparable=questions.length===5&&questions.every(row=>row.actualScore!=null);
   const optimal=allComparable?[...questions].sort((a,b)=>Number(b.actualScore)-Number(a.actualScore)).slice(0,3).map(row=>row.problemId||row.questionLabel):[];
@@ -390,7 +391,7 @@ export function reconcilePastExamSessionEvidence(session:PastSession,attempts:At
     actual_total_minutes:selectedComplete?sessionElapsedMinutes:Number(session.actual_total_minutes||0),
     selected_answer_count:selectedAttempts.length,attempt_started_at:selectedAttempts.length?session.attempt_started_at||`${selectedAttempts[0].date}T00:00:00`:session.attempt_started_at,
     attempt_completed_at:completedAt,simulation_completed_at:selectedComplete?session.simulation_completed_at||completedAt:session.simulation_completed_at,
-    exam_score_eligible:selectedComplete&&noReference&&sessionElapsedMinutes<=90,
+    exam_score_eligible:selectedComplete&&noReference&&sessionElapsedMinutes!=null&&sessionElapsedMinutes<=90,
     selection_evaluation_eligible:allComparable,selection_evaluation_status:allComparable?"complete":"pending",
     optimal_selected_problem_ids:allComparable?optimal:session.optimal_selected_problem_ids,
     optimal_selection_basis:allComparable?"全5問の有効な採点結果による得点上位3問":session.optimal_selection_basis,

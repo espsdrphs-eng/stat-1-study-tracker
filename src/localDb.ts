@@ -1025,13 +1025,13 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
   const trainingContext=await db.meta.get(`transfer-training-context:${problem.problem_id}`);
   const intentionalTraining=trainingContext?JSON.parse(trainingContext.value) as import("./generatedTransfer.ts").TransferTrainingLineage:undefined;
   if(intentionalTraining){
-    const submission=(JSON.parse(trainingContext!.value) as {answer_submission?:{minutes:number;referenceLevel:number}}).answer_submission;
+    const submission=(JSON.parse(trainingContext!.value) as {answer_submission?:{minutes:number|null;referenceLevel:number}}).answer_submission;
     const target=input.target_skill_assessment as Attempt["target_skill_assessment"];
     if(!submission||!target||[target.self_selected,target.major_calculation_success,target.no_major_error].some(v=>typeof v!=="boolean")||!target.evidence?.trim())
       throw new Error("転移答案の確定と対象能力の独立採点が必要です");
     const contract=buildInitialGradingContract({problem,mode:"full"});
     input={...input,learning_purpose:contract.learningPurpose,learning_stage:contract.learningStage,review_scope:contract.reviewScope,assessment_timing:"independent_performance",mode:"full",
-      time_minutes:submission.minutes,actual_minutes:submission.minutes,actual_reference_level:Math.max(submission.referenceLevel,Number(input.actual_reference_level??input.reference_level??0)),
+      time_minutes:input.actual_minutes===null?null:input.actual_minutes??submission.minutes,actual_minutes:input.actual_minutes===null?null:input.actual_minutes??submission.minutes,actual_reference_level:Math.max(submission.referenceLevel,Number(input.actual_reference_level??input.reference_level??0)),
       generated_from_review_id:undefined,target_skill_assessment:target};
   }
   if(generatedFields){
@@ -1064,7 +1064,22 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
   }
   const requestedContractId=String(input.contract_id||"");
   const requestedInitialContract=requestedContractId.startsWith(`initial:${problem.problem_id}:`);
-  if(!sourceReview&&requestedContractId&&!requestedInitialContract)
+  // Root-level interventions have a contract but no Review ID. Only an app-
+  // validated, started task snapshot may authorize that contract; never GPT IDs.
+  const startedRow=await db.meta.get(`learning-work:${problem.problem_id}`);
+  const started=startedRow?JSON.parse(startedRow.value) as import("./types.ts").LearningWork:undefined;
+  const startedTask=!sourceReview&&!requestedInitialContract&&started?.task?.grading_contract?.contractId===requestedContractId?started.task:undefined;
+  if(startedTask){
+    const c=startedTask.grading_contract!,attempts=await db.attempts.where("problem_id").equals(problem.problem_id).toArray();
+    const source=attempts.find(a=>a.id===c.sourceAttemptId);
+    if(started?.problemId!==problem.problem_id||started.stage!=="awaiting_grading"||c.problemId!==problem.problem_id||startedTask.id||
+      !source||!attemptPlanningEligible(source)||source.exclude_from_planning||
+      attempts.some(a=>a.id>started!.baselineAttemptId&&!a.exclude_from_metrics&&!a.duplicate_of_attempt_id))
+      throw new Error("この局所補修は終了または更新されています。現在の課題から採点プロンプトを再生成してください");
+    input={...input,task_origin:"review_attempt",mode:c.mode,learning_purpose:c.learningPurpose,learning_stage:c.learningStage,
+      assessment_timing:startedTask.assessment_timing||"same_session_correction",allowed_reference_level:c.allowedReferenceLevel};
+  }
+  if(!sourceReview&&requestedContractId&&!requestedInitialContract&&!startedTask)
     throw new Error("Review採点契約には対象Reviewが必要です。現在の採点プロンプトを再生成してください");
   if(requestedInitialContract){
     const [existingAttempts,existingReviews]=await Promise.all([
@@ -1080,7 +1095,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
   const initialContract=requestedInitialContract
     ?buildInitialGradingContract({problem,mode:String(input.mode||problem.recommended_mode),createdAt:String(input.date||todayString())})
     :undefined;
-  const gradingContract=sourceReview?.grading_contract||initialContract;
+  const gradingContract=sourceReview?.grading_contract||initialContract||startedTask?.grading_contract;
   if(gradingContract){
     const supplied={
       contractId:String(input.contract_id||""),contractVersion:String(input.contract_version||""),
@@ -1125,7 +1140,20 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     if(staleReason)throw new Error(`この復習課題は最新答案により終了または更新されています。${staleReason}`);
   }
   const date=input.date||todayString();
-  const actualMinutes=Number(input.actual_minutes??input.time_minutes??0);
+  const rawMinutes=input.actual_minutes??input.time_minutes;
+  const actualMinutes=rawMinutes==null||rawMinutes===""?null:Number(rawMinutes);
+  // A root-based task has no Review ID. Its explicit aid is stored in the
+  // existing paper-work record and must survive any grading import entrypoint.
+  const workRow=await db.meta.get(`learning-work:${problem.problem_id}`);
+  if(workRow){
+    const work=JSON.parse(workRow.value) as import("./types.ts").LearningWork;
+    if(work.problemId!==problem.problem_id||!Number.isFinite(work.baselineAttemptId)||!Number.isFinite(work.referenceLevel)||work.referenceLevel<0||work.referenceLevel>5)
+      throw new Error("作業の参照記録が不正です。保存済みデータを確認してください");
+    const consumed=(await db.attempts.where("problem_id").equals(problem.problem_id).toArray()).some(a=>a.id>work.baselineAttemptId&&!a.exclude_from_metrics&&!a.duplicate_of_attempt_id);
+    if(!consumed&&work.referenceLevel>0)input={...input,
+      actual_reference_level:Math.max(work.referenceLevel,Number(input.actual_reference_level??input.reference_level??0)),
+      hint_used:true,no_hint:false};
+  }
   const actualReferenceLevel=Math.min(5,Math.max(Number(sourceReview?.actual_reference_level||0),0,Number(input.actual_reference_level??input.reference_level??(
     input.external_reference?5:input.official_answer?4:input.saved_gpt_feedback||input.gpt_explanation?3:
       input.previous_mistake?2:input.one_line_hint?1:0
@@ -1141,8 +1169,9 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     conclusion_reached:input.conclusion_reached,incomplete_reason:input.incomplete_reason,
   };
   const examEligibility=examScoreEligibility(scoreCandidate,problem);
-  const sourceAttemptForTransition=sourceReview?await db.attempts.get(sourceReview.generated_from_attempt_id):undefined;
-  const projected=projectStudyUpdateLifecycle({update:input,sourceReview,sourceAttempt:sourceAttemptForTransition,problem,
+  const lifecycleSource=sourceReview||(startedTask?{...startedTask,generated_from_attempt_id:gradingContract!.sourceAttemptId!,grading_contract:gradingContract} as Review:undefined);
+  const sourceAttemptForTransition=lifecycleSource?await db.attempts.get(Number(lifecycleSource.generated_from_attempt_id||gradingContract?.sourceAttemptId||0)):undefined;
+  const projected=projectStudyUpdateLifecycle({update:input,sourceReview:lifecycleSource,sourceAttempt:sourceAttemptForTransition,problem,
     defaultLearningPurpose:examEligibility.eligible?"exam_performance":input.generated_from_review_id?"error_repair":"integration_check"});
   input=projected.update as StudyUpdate&Record<string,unknown>;
   input.observed_out_of_scope_findings=await validateOutOfScopeObservations(input);
@@ -1597,7 +1626,7 @@ async function completeReview(id:number,body:Record<string,unknown>){
   const hintUsed=actualReferenceLevel>0||!!body.hint_used,afterHintReproduced=referenceClosed;
   const outcome:ReviewOutcome={
     result:referenceCheck.result,
-    hint_used:hintUsed,after_hint_reproduced:afterHintReproduced,time_minutes:Number(body.time_minutes||0),
+    hint_used:hintUsed,after_hint_reproduced:afterHintReproduced,time_minutes:body.time_minutes==null||body.time_minutes===""?null:Number(body.time_minutes),
     reference_level:actualReferenceLevel,allowed_reference_level:allowedReference,
     actual_reference_level:actualReferenceLevel,reference_closed_reproduction:referenceClosed,
     no_hint:actualReferenceLevel===0,one_line_hint:!!body.one_line_hint,
@@ -3193,7 +3222,7 @@ async function bootstrap(readOnly=false):Promise<Bootstrap>{
     conceptWeaknesses,pastExamRepairCandidates,plannerShadow,plannerMode,weaknessModel:"concept_evidence_v1" as const};
   const masteryByProblem=deriveMasteryByProblem({problemIds:problems.map(problem=>problem.problem_id),attempts:activeAttempts,reviews});
   return {problems:problems.sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.category.localeCompare(b.category)||a.problem_number-b.problem_number),attempts,reviews,roadmap,weakNotes,pastSessions,answerIndex,problemAliases,dashboard:dashboardWithKpis,settings,masterStatus,databaseStatus,adaptiveLearning,
-    coach,masteryByProblem,
+    coach,masteryByProblem,learningWorkByProblem:Object.fromEntries(metaEntries.filter(m=>m.key.startsWith("learning-work:")).flatMap(m=>{try{const w=JSON.parse(m.value);return [[w.problemId,w]];}catch{return [];}})),
     today:{tasks,selectionExclusions:currentToday.exclusions,currentTask:canonicalStudyPlan.primaryAction||undefined,canonicalStudyPlan,totalLoad,plannedMinutes:plannedTotal,remainingMinutes,actualMinutes,targetMinutes:settings.daily_study_minutes,capacityPercent,warning,guidance,
       planned_minutes_total:plannedTotal,completed_minutes_today:actualMinutes,remaining_minutes_today:remainingMinutes,
       postponed_minutes_today:postponedMinutes,target_minutes_today:settings.daily_study_minutes,
@@ -3648,6 +3677,30 @@ async function saveWholeAnswerRediagnosis(attemptId:number,text:string){
 let transferRequestQueue:Promise<unknown>=Promise.resolve();
 export async function localPost<T>(path:string,body:any):Promise<T>{
   await initialize();
+  if(path==="/api/learning-work"){
+    const problem=await db.problems.get(String(body.problemId||""));
+    if(!problem||!["preparing","awaiting_grading"].includes(body.stage))throw new Error("問題と作業段階を確認してください");
+    const current=await bootstrap();
+    const catalog=current.adaptiveLearning.pastExamCatalog.find(c=>c.canonicalProblemId===problem.problem_id);
+    if(catalog?.simulationProtected&&!current.today.tasks.some(t=>t.problem_id===problem.problem_id&&!t.stable_session_key&&t.ranking?.eligible))
+      throw new Error("この年度はblind本番測定の保護対象です。Todayまたは過去問sessionの解除条件を確認してください");
+    if(body.reviewId&&reviewExecutionState(await db.reviews.get(Number(body.reviewId)),todayString())!=="actionable")
+      throw new Error("この復習はまだ実行できません。保持間隔・延期・卒業状態を確認してください");
+    const key=`learning-work:${problem.problem_id}`,oldRow=await db.meta.get(key);
+    const old=oldRow?JSON.parse(oldRow.value) as import("./types.ts").LearningWork:undefined;
+    const latestId=Math.max(0,...current.attempts.filter(a=>a.problem_id===problem.problem_id&&!a.exclude_from_metrics).map(a=>a.id));
+    const pending=old&&latestId<=old.baselineAttemptId;
+    const requestedTask=body.contractId?current.today.tasks.find(t=>!t.id&&!t.stable_session_key&&!t.transfer_training_key&&t.problem_id===problem.problem_id&&t.ranking?.eligible&&t.grading_contract?.contractId===body.contractId):undefined;
+    if(body.contractId&&!body.reviewId&&!requestedTask)throw new Error("課題が更新されたか適格ではありません。現在のTodayから開き直してください");
+    if(pending&&old.task&&requestedTask&&old.task.grading_contract?.contractId!==requestedTask.grading_contract?.contractId)
+      throw new Error("開始済みの課題と現在の課題が異なります。採点対象を確認してください");
+    const work:import("./types.ts").LearningWork={id:pending?old.id:crypto.randomUUID(),problemId:problem.problem_id,
+      mode:String(body.mode||old?.mode||"full"),reviewId:Number(body.reviewId)||undefined,baselineAttemptId:pending?old.baselineAttemptId:latestId,
+      stage:pending&&old.stage==="awaiting_grading"?old.stage:body.stage,
+      referenceLevel:Math.max(pending?old.referenceLevel:0,Number(body.referenceLevel||0)),updatedAt:new Date().toISOString(),
+      task:requestedTask||(pending?old.task:undefined)};
+    await db.meta.put({key,value:JSON.stringify(work)});notifyStudyDataChanged({operation:"learning-work"});return {ok:true,work} as T;
+  }
   if(path==="/api/transfer-training"){
     const request=transferRequestQueue.catch(()=>{}).then(()=>transferTrainingRequest({db,body,current:bootstrap,
       save:input=>db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.answerIndex,db.problemAliases,db.correctionLogs],()=>saveAttempt(input))}));
@@ -3971,6 +4024,7 @@ export async function restoreBackup(data:any){
     if(Array.isArray(data.importLogs)) await db.importLogs.bulkAdd(data.importLogs);
     for(const row of await db.meta.where("key").startsWith("transfer-generation:").toArray())await db.meta.delete(row.key);
     for(const row of await db.meta.where("key").startsWith("transfer-training-context:").toArray())await db.meta.delete(row.key);
+    for(const row of await db.meta.where("key").startsWith("learning-work:").toArray())await db.meta.delete(row.key);
     if(Array.isArray(data.meta)) await db.meta.bulkPut(data.meta);
     // A restore changes the current source state. Keep historical day plans, but
     // never let a pre-restore/stale plan for today override the reconciled

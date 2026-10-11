@@ -8,7 +8,7 @@ export type ReviewPlan=Pick<Review,
   review_type:string; mode:string; completion_candidate?:boolean;
 };
 export type ReviewOutcome={
-  result:"success"|"partial"|"failed";hint_used:boolean;after_hint_reproduced?:boolean;time_minutes:number;
+  result:"success"|"partial"|"failed";hint_used:boolean;after_hint_reproduced?:boolean;time_minutes:number|null;
   reference_level?:number;no_hint?:boolean;one_line_hint?:boolean;previous_mistake?:boolean;
   official_answer?:boolean;gpt_explanation?:boolean;
   allowed_reference_level?:number;actual_reference_level?:number;

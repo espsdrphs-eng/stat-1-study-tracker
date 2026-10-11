@@ -567,7 +567,7 @@ export function buildAttemptReplacementGradingPrompt(args:{
       problemContext,sourceAttempt:args.sourceAttempt,date:args.date})
     :buildFirstAttemptGradingPrompt({problemId:attempt.problem_id,displayLabel:problemContext.displayLabel,
       theme:problemContext.theme,canonicalProblemType:problemContext.canonicalProblemType,mode:attempt.mode,
-      estimatedMinutes:attempt.time_minutes});
+      estimatedMinutes:attempt.time_minutes??undefined});
   return `【解答差し替えによる正式再採点】\nAttempt #${attempt.id} の元履歴は削除せず、新しく添付する答案を同じ採点範囲で採点してください。\n以下の replacement_for_attempt_id は変更しないでください。\n\n${addReplacementDirective(base,attempt.id)}`;
 }
 

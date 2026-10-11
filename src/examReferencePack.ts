@@ -324,7 +324,7 @@ export function buildPastExamCatalog(args:{
     const exposureSource:ExamReferenceCatalogItem["exposureSource"]=explicit?"explicit":attemptExposure?"attempt":
       relevantSessions.length?"session":exposure==="unseen"?"inferred_unseen":"reference_default";
     return {referenceProblemId:reference.problem_id,canonicalProblemId,year:reference.year,
-      questionNumber:reference.question_number,title:reference.title,availability:reference.availability,
+      questionNumber:reference.question_number,subject:reference.subject,title:reference.title,availability:reference.availability,
       schedulable:reference.schedulable,gradable:reference.gradable,fineConceptIds:reference.fine_concept_ids,
       coarseTopics:reference.coarse_topics,
       exposure,exposureSource,

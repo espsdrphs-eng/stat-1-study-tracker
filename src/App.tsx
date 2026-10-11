@@ -1,7 +1,7 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useMemo } from "react";
 import {createStateReloadCoordinator} from "./stateReload.ts";
 import {TransferTrainingPanel} from "./TransferTrainingPanel";
-import {deriveCurrentLearningDiagnosis,preAnswerReason,completionCriterionText,appendSubmittedAnswer} from "./learningFeedback";
+import {deriveCurrentLearningDiagnosis,deriveTaskIntroduction,deriveProblemReference,taskAssistanceText,preAnswerReason,completionCriterionText,deriveProblemLearningView,deriveProblemLearningViews,imageGradingPrompt,optionalNetMinutes,netMinutesText} from "./learningFeedback";
 import { useRegisterSW } from "virtual:pwa-register/react";
 import {
   AlertTriangle, Archive, ArrowDown, BarChart3, BookOpen, CalendarCheck, CalendarClock, Check, ChevronRight, ClipboardPaste,
@@ -16,7 +16,7 @@ import AdvancedImportView from "./AdvancedImportView";
 import { problemDisplayLabel } from "./importParser";
 import { createAttemptReviewPlan } from "./reviewRules";
 import { analyzeWeakTrends, buildQuizPrompt } from "./weakTrend";
-import { buildAttemptReplacementGradingPrompt, buildFirstAttemptGradingPrompt, buildRepairPrompt, buildReviewGradingPrompt, buildWholeAnswerRediagnosisPrompt } from "./gradingPrompt";
+import { buildAttemptReplacementGradingPrompt, buildFirstAttemptGradingPrompt, buildReviewGradingPrompt, buildWholeAnswerRediagnosisPrompt } from "./gradingPrompt";
 import { buildInitialGradingContract, buildProblemContextPack } from "./gradingContract.ts";
 import {shouldShowReviewPrompt} from "./reviewUiPolicy.ts";
 import { reviewMode, reviewTemplate } from "./reviewPresentation";
@@ -28,13 +28,13 @@ import {
 } from "./reviewExperience";
 import { removeTimingExpressions } from "./reviewTiming";
 import { EXAM_PHASES } from "./studyProgress";
-import { sheetUsageForPhase, type ExamPhase } from "./examReadiness";
+import { type ExamPhase } from "./examReadiness";
 import { resolveReviewCard, type ResolvedReviewCard } from "./reviewCardResolver";
 import { buildScan5Prompt, deriveExposure, scanMetrics, stageForDays, defaultSessionKind } from "./pastExamWorkflow";
 import {derivePastExamSessionState,derivePastExamWorkspace} from "./pastExamPlanning.ts";
 import {attemptPlanningEligible} from "./legacyKPolicy.ts";
 import {deriveCurrentActionClass,reviewDueState,todayLearningCategory} from "./todayLearningPolicy.ts";
-import {isPastExamSessionTask} from "./examOptimizationPolicy.ts";
+import {isPastExamSessionTask,currentTaskIdentity} from "./examOptimizationPolicy.ts";
 import { CHAPTER_META } from "./officialMaster";
 import { isProblemPack, masterDiff, parseAliasesPayload, parseIntegratedMasterPayload, parseProblemMasterPayload } from "./masterData";
 import { isIndexedDbSchemaError, schemaErrorMessage, type IndexedDbSchemaDiagnostic } from "./dbSchema";
@@ -52,19 +52,17 @@ import {
 } from "./examReferencePack";
 import type { AnswerIndexEntry, Attempt, Bootstrap, CoachDiagnosis, DashboardKpiValue, MasteryLevelState, PastExamExposure, PastExamSessionKind, PastSession, Problem, ProblemAlias, Review, ScanQuestion, StudyUpdate, Task } from "./types";
 
-type Page = "dashboard"|"today"|"problems"|"attempt"|"import"|"reviews"|"weak"|"past"|"sheets"|"settings";
+type Page = "dashboard"|"today"|"problems"|"attempt"|"import"|"reviews"|"weak"|"past"|"settings";
 const pageTitles:Record<Page,string> = {
   dashboard:"ダッシュボード",today:"今日やること",problems:"問題一覧",attempt:"手入力（予備）",
-  import:"GPT回答取り込み",reviews:"復習予定",weak:"弱点傾向",past:"過去問演習",sheets:"解答シート",settings:"設定"
+  import:"GPT回答取り込み",reviews:"復習予定",weak:"弱点傾向",past:"過去問演習",settings:"設定"
 };
 const navGroups = [
   {label:"今日",items:[["dashboard",LayoutDashboard],["today",ListChecks],["reviews",CalendarCheck]]},
   {label:"学習",items:[["problems",BookOpen],["past",Target],["weak",AlertTriangle]]},
-  {label:"管理",items:[["import",ClipboardPaste],["sheets",Download],["attempt",NotebookPen],["settings",Settings]]}
+  {label:"管理",items:[["import",ClipboardPaste],["attempt",NotebookPen],["settings",Settings]]}
 ] as const satisfies readonly {label:string;items:readonly (readonly [Page,typeof LayoutDashboard])[]}[];
 const modes:Record<string,string>={check:"チェック",skeleton:"骨格",main_calc:"主要計算",full:"フル答案",scan:"スキャン",exam_90min:"90分演習"};
-const sheetFiles:Record<string,string>={check:"00-check.pdf",skeleton:"01-skeleton.pdf",main_calc:"02-main-calculation.pdf",full:"03-full-answer.pdf",scan:"04-five-question-scan.pdf",exam_90min:"05-exam-90min.pdf"};
-const sheetHref=(mode:string)=>`./answer-sheets/${sheetFiles[mode]||sheetFiles.skeleton}`;
 const reviewNames:Record<string,string>={skeleton_retry:"骨格再現",main_calc_retry:"主要計算",full_retry:"フル再演習",careless_check:"チェックリスト確認",light_check:"短時間チェック",s_check:"S確認",past_exam_link:"過去問連動",past_exam_selection:"選題確認",past_exam_retry:"過去問補修"};
 const todayString = () => new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Tokyo",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
 const newSubmissionId=()=>globalThis.crypto?.randomUUID?.()||`submission-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -106,17 +104,6 @@ function InactiveReviewNotice({review,state,successors=[]}:{review:Review;state:
         </button>)}</div>}
     </div>
   </div>;
-}
-function SheetLink({href,label="シートを見る",primary=false}:{href:string;label?:string;primary?:boolean}){
-  const [open,setOpen]=useState(false);
-  return <><button type="button" className={`${primary?"primary":"ghost"} sheet-trigger`} onClick={()=>setOpen(true)}><Download size={15}/>{label}</button>
-    {open&&<div className="sheet-modal-backdrop" role="presentation" onClick={()=>setOpen(false)}>
-      <section className="sheet-modal" role="dialog" aria-modal="true" aria-label={label} onClick={event=>event.stopPropagation()}>
-        <header><div><strong>{label}</strong><span>右上の閉じるボタンでアプリに戻れます</span></div><button type="button" className="sheet-modal-close" onClick={()=>setOpen(false)} aria-label="シートを閉じる"><X size={21}/>閉じる</button></header>
-        <iframe src={href} title={label}/>
-        <footer><button type="button" className="ghost" onClick={()=>setOpen(false)}><X size={15}/>閉じて戻る</button><a className="primary" href={href} target="_blank" rel="noreferrer"><Download size={15}/>GoodNotes用に開く</a></footer>
-      </section>
-    </div>}</>;
 }
 export default function App() {
   const {needRefresh:[needRefresh,setNeedRefresh],updateServiceWorker}=useRegisterSW();
@@ -184,15 +171,14 @@ export default function App() {
       {!data.databaseStatus.valid&&<div className="update-banner database-required" role="alert"><div><strong>アプリのデータベース更新が必要です</strong><span>既存履歴は閲覧できますが、安全のため書き込み操作を一時停止しています。不足：{data.databaseStatus.missingStores.join("、")}</span></div><button className="primary small" disabled={busy} onClick={repairDatabase}>安全に更新</button></div>}
       <div className="content">
         {selected?.generated_transfer?<><button onClick={()=>setSelected(null)}>戻る</button><TransferTrainingPanel trainingKey={selected.generated_transfer.lineage.key}/></>:selected?<ProblemDetail problem={selected} startingTask={startingStudyTask?.problem_id===selected.problem_id?startingStudyTask:undefined} data={data} run={run} busy={busy} onBack={()=>{setSelected(null);setStartingStudyTask(null)}} onImport={()=>{setSelected(null);setPage("import")}}/>:
-        page==="dashboard"?<DashboardView data={data} go={go} select={setSelected}/>:
+        page==="dashboard"?<DashboardView data={data} go={go} select={(p,task)=>{setStartingStudyTask(task||deriveProblemLearningView(data,p).nextTask||null);setSelected(p)}}/>:
         page==="today"?<TodayView data={data} busy={writeBusy} run={run} go={go} select={(p,task)=>{setStartingStudyTask(task||null);setSelected(p)}}/>:
-        page==="problems"?<ProblemsView data={data} select={setSelected} run={run} busy={writeBusy}/>:
+        page==="problems"?<ProblemsView data={data} select={p=>{setStartingStudyTask(deriveProblemLearningView(data,p).nextTask||null);setSelected(p)}} run={run} busy={writeBusy}/>:
         page==="attempt"?<AttemptView problems={data.problems} run={run} busy={writeBusy}/>:
         page==="import"?<AdvancedImportView problems={data.problems} answerIndex={data.answerIndex} problemAliases={data.problemAliases} attempts={data.attempts} reviews={data.reviews} run={run} busy={writeBusy}/>:
         page==="reviews"?<ReviewsView data={data} run={run} busy={writeBusy} select={(p,task)=>{setStartingStudyTask(task);setSelected(p)}}/>:
         page==="weak"?<WeakView data={data} run={run} busy={writeBusy} onToday={()=>go("today")}/>:
         page==="past"?<PastView data={data} go={go} run={run} busy={writeBusy} startingTask={startingPastTask}/>:
-        page==="sheets"?<AnswerSheetsView/>:
         <SettingsView data={data} run={run} busy={busy}/>}
       </div>
     </main>
@@ -231,7 +217,13 @@ function ExamEvidenceSummary({assessment}:{assessment?:import("./examCapability"
         {metric&&<>（{Number(metric.numerator.toFixed(1))}/{metric.denominator}・標本{metric.evidenceCount}件）</>}</p>)}
   </div>;
 }
-function DashboardView({data,go,select}:{data:Bootstrap;go:(p:Page)=>void;select:(p:Problem)=>void}) {
+function TaskPurposeSummary({introduction}:{introduction:ReturnType<typeof deriveTaskIntroduction>}){
+  return <div className="task-purpose-summary"><p>{introduction.target} ／ {introduction.subparts}</p>
+    <p>今回の作業：{introduction.workLabel}</p>
+    {!introduction.blind&&<><p>前回のつまずき：{introduction.previousDifficulty}</p><p>回収目標：{introduction.recoveryGoal}</p></>}
+  </div>;
+}
+function DashboardView({data,go,select}:{data:Bootstrap;go:(p:Page)=>void;select:(p:Problem,task?:Task)=>void}) {
   const d=data.dashboard;
   const pmap=Object.fromEntries(data.problems.map(problem=>[problem.problem_id,problem]));
   const next=nextQueueTask(data);
@@ -246,7 +238,7 @@ function DashboardView({data,go,select}:{data:Bootstrap;go:(p:Page)=>void;select
       <article className="panel dashboard-kpi"><span className="eyebrow">EXAM PERFORMANCE</span><h3>本番対応力</h3><strong>{k.examReadiness.value}</strong><p>{k.examReadiness.detail}</p><details><summary>Levelの根拠・証拠の範囲</summary><p>{k.examReadiness.levelRationale}</p></details>{!!k.examReadiness.missingEvidence?.length&&<><small>不足：{k.examReadiness.missingEvidence.join("／")}</small><b className="kpi-next-evidence">評価を進めるには：{k.examReadiness.nextEvidenceAction}</b></>}<small>信頼度：{confidence(k.examReadiness.confidence)}</small></article>
       <article className="panel dashboard-kpi dashboard-pass-judgement"><span className="eyebrow">PASS JUDGEMENT</span><h3>本番合格判定</h3><PassJudgementContent value={k.passZone}/><small>信頼度：{confidence(k.passZone.confidence)}</small></article>
       <article className="panel dashboard-kpi"><span className="eyebrow">BOTTLENECK</span><h3>最大ボトルネック</h3><strong>{k.bottleneck.value}</strong><p>{k.bottleneck.detail}</p><button className="text-btn" onClick={()=>go("weak")}>診断の根拠を見る <ChevronRight size={15}/></button></article>
-      <article className="panel dashboard-kpi dashboard-kpi-action"><span className="eyebrow">NEXT ACTION</span><h3>今やること</h3><strong>{k.nextAction.value}</strong><p>{k.nextAction.detail}</p><div className="button-row"><button className="primary" onClick={()=>go("today")}><Play size={17}/>今日の課題へ</button>{nextProblem&&<button className="ghost" onClick={()=>select(nextProblem)}><BookOpen size={17}/>問題を開く</button>}</div></article>
+      <article className="panel dashboard-kpi dashboard-kpi-action"><span className="eyebrow">NEXT ACTION</span><h3>今やること</h3><strong>{k.nextAction.value}</strong><p>{k.nextAction.detail}</p>{nextProblem&&<TaskPurposeSummary introduction={deriveTaskIntroduction(data,nextProblem,nextTask||undefined)}/>}<div className="button-row"><button className="primary" onClick={()=>go("today")}><Play size={17}/>今日の課題へ</button>{nextProblem&&<button className="ghost" onClick={()=>select(nextProblem,nextTask||undefined)}><BookOpen size={17}/>問題を開く</button>}</div></article>
     </section>
     <section className="dashboard-support-strip"><span>今週の過去問 <strong>{k.support.pastExamShare==null?"未計測":`${Math.round(k.support.pastExamShare*100)}%`} / 目標{k.support.pastExamShareTarget}</strong></span><span>復習待ち <strong>{k.support.pendingReviews}件</strong></span><span>表示元 <strong>{next.source}</strong></span></section>
     {data.today.warning&&<div className="warning"><AlertTriangle/><div><strong>予定時間を調整してください</strong><p>{data.today.warning}</p></div></div>}
@@ -446,7 +438,6 @@ function ReviewPlanDetails({item:rawItem,compact=false,resolved}:{item:Partial<R
     <details className="review-technical-details"><summary>課題の詳細</summary>
       <div className="review-plan-summary">{item.due_date&&<div><span>実施日</span><strong>{item.due_date}</strong></div>}<div><span>演習モード</span><strong>{resolved?.reviewMethodLabel||item.review_method||"—"}</strong></div><div><span>必要時間</span><strong>{resolved?.estimatedMinutes||item.estimated_minutes||item.minutes||"—"}分</strong></div><div><span>使用シート</span><strong>{resolved?.sheetLabel||template.sheetLabel}</strong></div></div>
       {resolved&&<div className="grading-contract-summary"><div><span>lifecycle</span><strong>{resolved.gradingContract.learningPurpose}</strong></div><div><span>mode / scope</span><strong>{resolved.gradingContract.mode} / {resolved.gradingContract.reviewScope}</strong></div><div><span>採点対象</span><strong>{gradedPartLabels(resolved.gradingContract.gradedParts).join("・")||"なし"}</strong></div><div><span>採点対象外</span><strong>{resolved.gradingContract.explicitlyOutOfScopeParts.join("・")||"なし"}</strong></div></div>}
-      <div className="review-template-head"><SheetLink href={sheetHref(resolved?.effectiveMode||template.sheetMode)} label={resolved?.sheetLabel||template.sheetLabel}/></div>
     </details>
     <div className="reference-gate">
       <div className="reference-gate-head"><div><span>今回見たもの</span><strong>{referenceLabels[reference.actual_reference_level]}</strong></div><small>許可：{referenceLabels[allowed]}まで</small></div>
@@ -495,7 +486,7 @@ function ReviewOutcomeModal({item,busy,close,save}:{item:Partial<Review&Task>;bu
   const [result,setResult]=useState<"success"|"partial"|"failed">("success");
   const [reference,setReference]=useState<ReferenceState>(()=>readReferenceState(item.id));
   const [referenceClosed,setReferenceClosed]=useState(()=>readReferenceClosed(item.id));
-  const [minutes,setMinutes]=useState(String(item.estimated_minutes||item.minutes||5));
+  const [minutes,setMinutes]=useState("");
   const allowed=allowedReferenceLevel(item);
   const chooseReference=(level:ReferenceLevel)=>{
     const next=referenceStateAtLevel(level);
@@ -509,13 +500,13 @@ function ReviewOutcomeModal({item,busy,close,save}:{item:Partial<Review&Task>;bu
     <div className="reference-judgement"><div><span>許可された参照</span><strong>{referenceLabels[allowed]}まで</strong></div><div><span>実際に見た参照</span><strong>{referenceLabels[reference.actual_reference_level]}</strong></div></div>
     <div className="outcome-reference"><span>今回見たもの</span><div>{([0,1,2,3,4,5] as ReferenceLevel[]).map(level=><button type="button" key={level} className={reference.actual_reference_level===level?"selected":""} onClick={()=>chooseReference(level)}>{level}. {referenceLabels[level]}</button>)}</div></div>
     {hint&&<label className="outcome-check"><input type="checkbox" checked={referenceClosed} onChange={event=>{setReferenceClosed(event.target.checked);rememberReferenceClosed(item.id,event.target.checked)}}/><span>表示を隠してから、該当部分を白紙で再現した</span></label>}
-    <Field label="実際にかかった時間（分）"><input type="number" min="0" value={minutes} onChange={event=>setMinutes(event.target.value)}/></Field>
+    <Field label="正味解答時間（分・任意）"><input type="number" min="0.1" step="any" placeholder="空欄：時間不明" value={minutes} onChange={event=>setMinutes(event.target.value)}/></Field>
     <div className="outcome-preview"><strong>保存前判定</strong><span>{decision.message}</span><small>完了扱い：{decision.canComplete?"可能":"不可"} ／ 次回補正：{decision.shortenReview?"短くする":"なし"}</small></div>
-    <div className="form-actions"><button className="ghost" onClick={close}>キャンセル</button><button className="primary" disabled={busy} onClick={()=>save({
+    <div className="form-actions"><button className="ghost" onClick={close}>キャンセル</button><button className="primary" disabled={busy||(minutes!==""&&(!Number.isFinite(Number(minutes))||Number(minutes)<=0))} onClick={()=>save({
       ...reference,result:decision.result,hint_used:hint,hint_level:promptHintLevel(reference.actual_reference_level),
       after_hint_reproduced:referenceClosed,reference_closed_reproduction:referenceClosed,
       allowed_reference_level:allowed,actual_reference_level:reference.actual_reference_level,
-      time_minutes:Number(minutes||0)
+      time_minutes:optionalNetMinutes(minutes)
     })}>結果を保存</button></div>
   </div></Modal>;
 }
@@ -562,6 +553,7 @@ function PostponeReviewModal({item,initial="tomorrow",busy,close,save}:{item:Par
   </div></Modal>;
 }
 function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a:()=>Promise<unknown>,s:string)=>void;go:(p:Page,task?:Task)=>void;select:(p:Problem,task?:Task)=>void}) {
+  const learningViews=useMemo(()=>deriveProblemLearningViews(data),[data]);
   const [visibleCount,setVisibleCount]=useState(10);
   const [finishedTransferKey,setFinishedTransferKey]=useState<string>();
   const [reviewTask,setReviewTask]=useState<Task|null>(null);
@@ -592,13 +584,13 @@ function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a
           <p>{t.transfer_training_key?"別問題1問・参照なしで解答":isPastExamSessionTask(t)?t.session_workflow:
             `${modes[t.mode]||t.mode} / ${t.effective_review_scope||t.review_scope||"答案形成"}`}</p>
           <p className="why-today">{preAnswerReason(t)}</p>
+          {!isPastExamSessionTask(t)&&learningViews[t.problem_id]&&<small>作業状態：{learningViews[t.problem_id].workLabel}</small>}
           {t.transfer_training_key?<TransferTrainingPanel trainingKey={t.transfer_training_key} onSaved={()=>setFinishedTransferKey(t.transfer_training_key)}/>:
             <div className="button-row"><button className="primary" disabled={busy} onClick={()=>{
               if(isPastExamSessionTask(t))go("past",t);else if(pmap[t.problem_id])select(pmap[t.problem_id],t);
-            }}><Play size={15}/>学習開始</button>
+            }}><Play size={15}/>{learningViews[t.problem_id]?.workStatus==="awaiting_grading"?"採点を続ける":"学習開始"}</button>
               {!!t.id&&!!t.review_type&&<button className="ghost" disabled={busy} onClick={()=>setReviewTask(t)}>復習結果を記録</button>}
               <button className="ghost small" disabled={busy} onClick={()=>setPostponeTask({item:t,initial:"tomorrow"})}>後で取り組む</button></div>}
-          {!t.transfer_training_key&&<a href={sheetHref(t.mode)} download>解答用の空欄シート</a>}
         </article>)}</div>
         {visibleCount<eligible.length&&<button className="ghost" onClick={()=>setVisibleCount(n=>n+10)}>続きを表示（残り{eligible.length-visibleCount}件）</button>}
         {!eligible.length&&<Empty>現在実行できる候補はありません。待機条件を確認してください。</Empty>}
@@ -693,13 +685,14 @@ function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a
 function copyText(text:string,label:string,setCopied:(value:string)=>void){
   return navigator.clipboard.writeText(text).then(()=>{setCopied(label);setTimeout(()=>setCopied(""),1800)});
 }
-function StudyPromptButtons({item,resolved,submittedAnswer}:{item:Partial<Review&Task>;resolved?:ResolvedReviewCard;submittedAnswer?:string}) {
+function StudyPromptButtons({item,resolved}:{item:Partial<Review&Task>;resolved?:ResolvedReviewCard}) {
   const [copied,setCopied]=useState("");
-  const withAnswer=(prompt:string)=>appendSubmittedAnswer(prompt,submittedAnswer,Math.max(Number(item.actual_reference_level||0),readReferenceState(item.id).actual_reference_level));
+  const [fallback,setFallback]=useState("");
+  const withAnswer=(prompt:string)=>imageGradingPrompt(prompt,Math.max(Number(item.actual_reference_level||0),readReferenceState(item.id).actual_reference_level));
   const firstPrompt=buildFirstAttemptGradingPrompt({
     problemId:item.problem_id||"",displayLabel:item.title||item.problem_id,theme:item.theme,
     canonicalProblemType:item.canonical_problem_type,mode:item.mode,estimatedMinutes:item.minutes||item.estimated_minutes,
-    repairLineage:item.repair_lineage
+    repairLineage:item.repair_lineage,gradingContract:item.grading_contract
   });
   const reviewPrompt=item.id&&item.problem_id?buildReviewGradingPrompt({
     reviewId:item.id,problemId:item.problem_id,title:item.title,theme:item.theme,date:todayString(),mode:reviewMode(item),
@@ -712,18 +705,12 @@ function StudyPromptButtons({item,resolved,submittedAnswer}:{item:Partial<Review
     completionConditions:resolved?.completionConditions.value,allowedErrorTypes:resolved?.allowedErrorTypes,
     requiresKEvidence:resolved?.requiresKEvidence,learningPurpose:resolved?.prescription.learningPurpose,
     learningStage:resolved?.prescription.learningStage,assessmentTiming:resolved?.prescription.assessmentTiming,
-    targetKind:resolved?.prescription.targetKind,gradingContract:resolved?.gradingContract,problemContext:resolved?.problemContext
+    targetKind:resolved?.prescription.targetKind,gradingContract:resolved?.gradingContract||item.grading_contract,problemContext:resolved?.problemContext
   }):"";
-  const repairPrompt=buildRepairPrompt({
-    problemId:item.problem_id||"",displayLabel:item.title||item.problem_id,theme:item.theme,
-    canonicalProblemType:item.canonical_problem_type,mode:item.mode,estimatedMinutes:item.minutes||item.estimated_minutes,
-    repairLineage:item.repair_lineage
-  });
-  const isFirst=(item.task_origin||"first_attempt")==="first_attempt"&&!item.id;
+  const prompt=reviewPrompt||firstPrompt;
   return <div className="prompt-button-row">
-    <button type="button" className={isFirst?"primary small":"ghost small"} onClick={()=>void copyText(withAnswer(firstPrompt),"first",setCopied)}><Copy size={14}/>{copied==="first"?"コピー済み":"初回採点プロンプト"}</button>
-    <button type="button" className="ghost small" disabled={!reviewPrompt} onClick={async()=>{try{if(item.id)await post(`/api/reviews/${item.id}/contract-lock`,{});if(reviewPrompt)await copyText(withAnswer(reviewPrompt),"review",setCopied)}catch(error){window.alert(error instanceof Error?error.message:"この復習課題は現在実行できません")}}}><Copy size={14}/>{copied==="review"?"コピー済み":"復習採点プロンプト"}</button>
-    <button type="button" className="ghost small" onClick={()=>void copyText(repairPrompt,"repair",setCopied)}><Copy size={14}/>{copied==="repair"?"コピー済み":"理解補修プロンプト"}</button>
+    <button type="button" className="ghost small" onClick={async()=>{try{if(item.id)await post(`/api/reviews/${item.id}/contract-lock`,{});try{await copyText(withAnswer(prompt),"grading",setCopied);setFallback("")}catch{setFallback(withAnswer(prompt))}}catch(error){window.alert(error instanceof Error?error.message:"この復習課題は現在実行できません")}}}><Copy size={14}/>{copied==="grading"?"コピー済み":"採点プロンプトをコピー"}</button>
+    {fallback&&<label>自動コピーが許可されていません。全選択してコピーしてください。<textarea aria-label="コピー用採点プロンプト" readOnly value={fallback} onFocus={e=>e.currentTarget.select()}/></label>}
   </div>;
 }
 function resolveCanonicalProblemId(problemId:string,aliases:ProblemAlias[]):string {
@@ -751,7 +738,7 @@ function TodayTaskDetails({task,problem,onOpenProblem,onOpenPastExam,problemAlia
       <div><span>なぜこの年度</span><strong>{task.selected_year_reason}</strong></div>
       <div><span>sessionの状態</span><strong>{task.past_exam_session_state||"planned"}（個別問題の復習履歴とは別）</strong></div></div>
     <div className="today-card-actions"><button type="button" className="primary small" onClick={onOpenPastExam}><Play size={14}/>過去問演習を開く</button>
-      <SheetLink href={sheetHref("exam_90min")} label="90分解答シート"/></div></div>;
+      </div></div>;
   if(task.learning_purpose==="transfer_check")return <div className="today-task-detail"><h3>別問題で転移確認</h3>
     <p>参照なしで答案を作成してください。対象能力・元の弱点・解法は提出前には表示しません。</p>
     {problem&&<button className="primary" onClick={()=>onOpenProblem(problem)}>転移確認を開始</button>}</div>;
@@ -771,27 +758,19 @@ function TodayTaskDetails({task,problem,onOpenProblem,onOpenPastExam,problemAlia
     </div>
     <div className="task-detail-grid">
       <div><span>{isPastSession?"session":"出題型"}</span><strong>{isPastSession?"5問から3問を選ぶ本番型演習":type}</strong></div>
-      <div><span>{isPastSession?"実行順":"問題文・概要"}</span><strong>{isPastSession?task.session_workflow:(questionExcerpt||"問題文と模範解答は、書籍またはGoodNotesで確認してください。")}</strong></div>
+      <div><span>{isPastSession?"実行順":"問題文・概要"}</span><strong>{isPastSession?task.session_workflow:(questionExcerpt||"原本の問題文を確認してください。出典・設問・回収目標は問題を開いて確認できます。")}</strong></div>
     </div>
     {origin==="first_attempt"&&<div className="first-attempt-note"><Badge tone="green">初回</Badge><div><strong>この問題は初回です</strong><span>{task.mode==="full"?"まずフル答案として、方針・出発式・主要計算・結論まで書いてください。":"指定モードで、方針・出発式・今回見る量を明確にしてから解いてください。"}</span></div></div>}
     {origin==="review_attempt"&&<div className="first-attempt-note review"><Badge tone="orange">復習</Badge><div><strong>前回記録：{hasPrevious?"あり":"なし"}</strong><span>{hasPrevious?`前回：${task.previous_score||task.previous_date||"採点履歴を参照"}`:"前回ミスの詳細はありません。通常確認として扱います。"}</span></div></div>}
     {origin==="linked_s_check"&&<div className="first-attempt-note linked"><Badge tone="blue">関連確認</Badge><div><strong>この問題自体の前回記録：{hasPrevious?"あり":"なし"}</strong><span>元問題の弱点から作られた関連確認です。元問題：{resolved?.sourceProblem?.displayLabel||task.source_problem_id||"記録なし"}</span></div></div>}
     {resolved?.reviewNeeded&&<div className="review-consistency-warning"><AlertTriangle size={18}/><div><strong>要確認</strong><span>問題情報または復習履歴の不整合により、具体的な復習指示を一時的に非表示にしています。</span></div></div>}
     <div className="today-specific-guide">
-      <div><span>今日やる理由</span><strong>{task.reason}</strong></div>
-      {task.repair_lineage&&<div><span>補修元</span><strong>{task.repair_lineage.sourceProblemId} の失点 → {task.repair_lineage.matchReason}</strong></div>}
-      <div><span>今回見るポイント／直す点</span><strong>{resolved?.correctionTheme.value||correctionTheme({...task,theme,canonical_problem_type:type})}</strong></div>
-      <div><span>最初に書くもの</span><strong>{resolved?.entryHint.value||referenceEntryPoint({...task,theme,canonical_problem_type:type})}</strong></div>
-      <div><span>1行ヒント</span><strong>{resolved?.oneLineHint.value||oneLineHint({...task,theme,canonical_problem_type:type})}</strong></div>
-      <div><span>この時期のシート運用</span><strong>{sheetUsageForPhase(resolved?.effectiveMode||task.mode,examPhase)}</strong></div>
+      <div><span>今日やる理由</span><strong>{preAnswerReason(task)}</strong></div>
+      <p>対象設問と回収目標は、問題を開いて確認してください。具体的な解法の助言は明示的なヒント操作で記録します。</p>
     </div>
     <div className="today-card-actions">
       {isPastSession?<button type="button" className="primary small" onClick={onOpenPastExam}><Play size={14}/>過去問演習を開く</button>:
         problem&&<button type="button" className="ghost small" onClick={()=>onOpenProblem(problem)}><BookOpen size={14}/>問題詳細</button>}
-      <SheetLink href={sheetHref(resolved?.effectiveMode||task.mode)} label="解答シート"/>
-      {!isPastSession&&<StudyPromptButtons resolved={resolved} item={{...task,problem_id:canonicalId,title:displayLabel,theme,canonical_problem_type:type,mode:resolved?.effectiveMode||task.mode,
-        previous_date:resolved?.targetAttempt?.date||task.previous_date,previous_errors:resolved?.errorTypes||task.previous_errors,
-        previous_error_point:resolved?.targetAttempt?.error_point||task.previous_error_point,previous_next_action:resolved?.targetAttempt?.next_action||task.previous_next_action}}/>}
     </div>
   </div>;
 }
@@ -808,8 +787,8 @@ function TodayTaskRows({task:t,problem,data,busy,run,date,onReview,onOpenProblem
     {persistedReview?<InactiveReviewNotice review={persistedReview} state={executionState}/>:<div className="inactive-review-notice"><AlertTriangle size={18}/><div><strong>見つかりません</strong><span>この復習課題は現在のデータに存在しません。</span></div></div>}
   </td></tr>;
   const isPastSession=!!t.stable_session_key||t.past_exam_task_type==="timed_three_question_session"||t.past_exam_task_type==="simulation";
-  return <><tr className={t.checked?"task-checked":""}><td><Badge tone={t.kind==="S確認"?"blue":t.error_type==="K"?"red":""}>{t.kind}</Badge></td><td>{!isPastSession&&<strong>{t.problem_id}</strong>}<small>{t.title}{t.checked&&<em className="grading-wait">採点待ち</em>}</small>{isPastSession&&<small>{t.session_workflow}</small>}</td><td>{modes[t.mode]||t.mode}</td><td>{t.minutes}分</td><td><strong className="why-today">なぜ今日：{t.why_today||t.reason}</strong>{t.selected_year_reason&&<small>なぜこの年度：{t.selected_year_reason}</small>}{t.reason!==t.why_today&&<small>{t.reason}</small>}{t.repair_lineage&&<small>補修元：{t.repair_lineage.sourceProblemId}／{t.repair_lineage.matchReason}{t.repair_lineage.matchConfidence?`（一致 ${t.repair_lineage.matchConfidence}）`:""}</small>}{t.postpone_count?` ・ 先送り${t.postpone_count}回（${t.postpone_reason}）`:""}</td><td><div className="task-actions"><SheetLink href={sheetHref(t.mode)} label="シート"/><label className="task-check"><input type="checkbox" checked={!!t.checked} disabled={busy} onChange={toggle}/><span>{isReview?"復習結果を記録":"解答済み"}</span></label></div><ScheduleQuickButtons item={t} busy={busy} select={action=>onPostpone(t,action)}/></td></tr>
-    <tr className="task-plan-row"><td colSpan={6}><TodayTaskDetails task={t} problem={problem} onOpenProblem={onOpenProblem} onOpenPastExam={onOpenPastExam} problemAliases={data.problemAliases} examPhase={examPhase} resolved={resolved}/>{!isPastSession&&(t.review_method||t.review_reason)&&<ReviewPlanDetails item={t} compact resolved={resolved}/>}</td></tr></>;
+  return <><tr className={t.checked?"task-checked":""}><td><Badge tone={t.kind==="S確認"?"blue":t.error_type==="K"?"red":""}>{t.kind}</Badge></td><td>{!isPastSession&&<strong>{t.problem_id}</strong>}<small>{t.title}{t.checked&&<em className="grading-wait">採点待ち</em>}</small>{isPastSession&&<small>{t.session_workflow}</small>}</td><td>{modes[t.mode]||t.mode}</td><td>{t.minutes}分</td><td><strong className="why-today">なぜ今日：{preAnswerReason(t)}</strong>{t.selected_year_reason&&<small>なぜこの年度：{t.selected_year_reason}</small>}{t.postpone_count?` ・ 先送り${t.postpone_count}回（${t.postpone_reason}）`:""}</td><td><div className="task-actions"><label className="task-check"><input type="checkbox" checked={!!t.checked} disabled={busy} onChange={toggle}/><span>{isReview?"復習結果を記録":"解答済み"}</span></label></div><ScheduleQuickButtons item={t} busy={busy} select={action=>onPostpone(t,action)}/></td></tr>
+    <tr className="task-plan-row"><td colSpan={6}><TodayTaskDetails task={t} problem={problem} onOpenProblem={onOpenProblem} onOpenPastExam={onOpenPastExam} problemAliases={data.problemAliases} examPhase={examPhase} resolved={resolved}/></td></tr></>;
 }
 
 function ProblemChip({problem,latest,rank,select}:{problem:Problem;latest?:Attempt;rank:string;select:(problem:Problem)=>void}){
@@ -822,48 +801,40 @@ function ProblemChip({problem,latest,rank,select}:{problem:Problem;latest?:Attem
 
 function ProblemsView({data,select,run,busy}:{data:Bootstrap;select:(p:Problem)=>void;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean}) {
   const [filter,setFilter]=useState("all"),[query,setQuery]=useState(""),[adding,setAdding]=useState(false);
+  const [source,setSource]=useState("all"),[year,setYear]=useState("all"),[limit,setLimit]=useState(30);
   const [form,setForm]=useState<Record<string,string>>({problem_id:"",source_type:"whitebook",category:"A",chapter:"",problem_number:"",title:"",theme:"",priority:"semi_core",strategy_rank:"A",role:"training",recommended_mode:"full",linked_past_exams:"",linked_s_problems:"",linked_a_problems:"",notes:""});
-  const rankOf=(problem:Problem)=>problem.strategy_rank||(problem.category==="S"?"S":problem.category==="A"?"A":"過去問");
-  const latestMap=new Map<string,Attempt>();
-  data.attempts.forEach(attempt=>{if(!latestMap.has(attempt.problem_id))latestMap.set(attempt.problem_id,attempt)});
-  const matchesFilter=(problem:Problem)=>filter==="all"||(filter==="past_exam"?problem.category==="past_exam":rankOf(problem)===filter);
-  const shown=data.problems.filter(p=>matchesFilter(p)&&(`${p.problem_id} ${p.title} ${p.theme}`.toLowerCase().includes(query.toLowerCase())));
-  const whitebook=data.problems.filter(problem=>problem.category==="S"||problem.category==="A");
-  const rankCounts=["SS","S","A+","A"].map(rank=>{
-    const rows=whitebook.filter(problem=>rankOf(problem)===rank);
-    return {rank,total:rows.length,done:rows.filter(problem=>latestMap.has(problem.problem_id)).length};
-  });
-  const chapters=[1,2,3,4,5,6,7,8].map(chapter=>{
-    const all=data.problems.filter(problem=>problem.chapter===chapter&&(problem.category==="S"||problem.category==="A"));
-    return {chapter,all,shown:shown.filter(problem=>problem.chapter===chapter)};
-  }).filter(group=>group.shown.length);
-  const corePastCatalog=data.adaptiveLearning.pastExamCatalog;
-  const corePastIds=new Set(corePastCatalog.map(row=>row.canonicalProblemId));
-  const pastShown=shown.filter(problem=>problem.category==="past_exam"&&corePastIds.has(problem.problem_id));
-  const plannedPastIds=data.adaptiveLearning.plannerShadow.plan30.plan.flatMap(day=>
-    day.tasks.map(task=>task.referenceProblemId).filter((value):value is string=>!!value)
-  );
-  const plannedYearOrder=orderCorePastExamYears({
-    catalog:corePastCatalog,plannedReferenceProblemIds:plannedPastIds,
-    daysRemaining:data.dashboard.pace.daysRemaining
-  });
+  const views=useMemo(()=>deriveProblemLearningViews(data),[data]);
+  const rows=data.problems.map(problem=>({problem,state:views[problem.problem_id]}));
+  const filters=[["all","全問題"],["unstarted","未着手"],["awaiting_grading","採点待ち"],["repair","要復習"],["retention","保持確認待ち"],["transfer","転移確認待ち"]];
+  const shown=rows.filter(({problem:p,state:s})=>
+    (filter==="all"||(filter==="unstarted"?s.workStatus==="unstarted":filter==="awaiting_grading"?s.workStatus==="awaiting_grading":filter==="repair"?s.needsRepair:filter==="retention"?s.waitingRetention:s.waitingTransfer))&&
+    (source==="all"||(source==="generated"?!!p.generated_transfer:source==="past_exam"?p.category==="past_exam":p.source_type==="whitebook"))&&
+    (year==="all"||p.problem_id.startsWith(`PY-${year}-`))&&
+    `${p.problem_id} ${p.title} ${p.theme}`.toLowerCase().includes(query.toLowerCase()));
+  const years=[...new Set(data.problems.map(p=>/^PY-(\d{4})-/.exec(p.problem_id)?.[1]).filter((x):x is string=>!!x))].sort();
+  useEffect(()=>setLimit(30),[filter,query,source,year]);
   return <>
-    <section className="master-flow"><div><strong>SS / S</strong><span>型・出発式を固定する土台</span></div><ChevronRight/><div><strong>A+</strong><span>Sを崩された問題への耐性</span></div><ChevronRight/><div><strong>過去問</strong><span>5問から3問を選び答案化</span></div></section>
-    <div className="rank-overview">{rankCounts.map(item=><section className={`rank-stat rank-${item.rank.replace("+","plus")}`} key={item.rank}><span>実戦ランク {item.rank}</span><strong>{item.done}<small> / {item.total}題着手</small></strong><div><i style={{width:`${item.total?item.done/item.total*100:0}%`}}/></div></section>)}</div>
-    <div className="toolbar problem-toolbar"><div className="segmented">{["all","SS","S","A+","A","past_exam"].map(x=><button className={filter===x?"active":""} onClick={()=>setFilter(x)} key={x}>{x==="all"?"全体":x==="past_exam"?"過去問":x}</button>)}</div><label className="search"><Search size={17}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="問題ID・テーマで検索"/></label><button className="primary" onClick={()=>setAdding(true)}><Plus size={17}/>問題を追加</button></div>
-    <div className="chapter-master-grid">{chapters.map(group=>{
-      const attempted=group.all.filter(problem=>latestMap.has(problem.problem_id)).length;
-      const sRows=group.shown.filter(problem=>problem.category==="S"),aRows=group.shown.filter(problem=>problem.category==="A");
-      return <section className={`panel chapter-master ${group.chapter===6?"priority-chapter":""}`} key={group.chapter}>
-        <div className="chapter-master-head"><div><span>第{group.chapter}章</span><h3>{CHAPTER_META[group.chapter]?.short}</h3></div><div><strong>{attempted}/{group.all.length}</strong><small>着手</small></div></div>
-        <div className="chapter-progress"><i style={{width:`${group.all.length?attempted/group.all.length*100:0}%`}}/></div>
-        {!!sRows.length&&<div className="problem-lane"><span>S・土台</span><div>{sRows.sort((a,b)=>a.problem_number-b.problem_number).map(problem=><ProblemChip key={problem.problem_id} problem={problem} latest={latestMap.get(problem.problem_id)} rank={rankOf(problem)} select={select}/>)}</div></div>}
-        {!!aRows.length&&<div className="problem-lane"><span>A・補強</span><div>{aRows.sort((a,b)=>a.problem_number-b.problem_number).map(problem=><ProblemChip key={problem.problem_id} problem={problem} latest={latestMap.get(problem.problem_id)} rank={rankOf(problem)} select={select}/>)}</div></div>}
-      </section>})}</div>
-    {!!pastShown.length&&<section className="panel past-problem-master"><div className="panel-title"><div><span className="eyebrow">PAST EXAMS</span><h3>過去問・現在フェーズの候補順 {plannedYearOrder.join(" → ")}</h3><p>正規過去問マスターと露出状態から表示しています。模試保護中の未見年度は自動推薦しません。</p></div></div><div>{plannedYearOrder.map(year=><div className="past-year-row" key={year}><strong>{year}</strong>{pastShown.filter(problem=>problem.problem_id.startsWith(`PY-${year}-`)).sort((a,b)=>a.problem_number-b.problem_number).map(problem=><ProblemChip key={problem.problem_id} problem={problem} latest={latestMap.get(problem.problem_id)} rank="過去問" select={select}/>)}</div>)}</div></section>}
-    <details className="panel master-detail-table"><summary>問題マスターを表で確認する</summary><div className="table-wrap"><table><thead><tr><th>問題ID</th><th>原典</th><th>実戦ランク</th><th>テーマ</th><th>最新</th><th>状態</th></tr></thead><tbody>
-      {shown.map(p=>{const latest=latestMap.get(p.problem_id);return <tr key={p.problem_id} className="clickable" onClick={()=>select(p)}><td><strong>{p.problem_id}</strong></td><td>{p.category==="past_exam"?"過去問":p.category}</td><td><Badge tone={p.strategy_rank==="SS"?"red":p.strategy_rank==="A+"?"orange":p.category==="S"?"blue":""}>{rankOf(p)}</Badge></td><td>{p.theme||"—"}</td><td>{latest?`${latest.mark} ${latest.score_text||latest.score_label}`:"未着手"}</td><td>{p.completion_status==="review_pending"?"復習待ち":p.completion_status==="completed"?"完了":"進行中"}</td></tr>})}
-    </tbody></table></div></details>
+    <section className="panel"><h3>問題一覧</h3><p>作業状態と、保持・転移の確認状況を分けて表示します。次に取り組む順番はTodayで確認できます。</p>
+      <div className="toolbar problem-toolbar"><label>学習状況<select aria-label="学習状況" value={filter} onChange={e=>setFilter(e.target.value)}>{filters.map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></label>
+        <label>出典<select aria-label="出典" value={source} onChange={e=>setSource(e.target.value)}><option value="all">すべて</option><option value="past_exam">過去問</option><option value="whitebook">白本</option><option value="generated">生成転移問題</option></select></label>
+        <label>年度<select aria-label="年度" value={year} onChange={e=>setYear(e.target.value)}><option value="all">すべて</option>{years.map(y=><option key={y}>{y}</option>)}</select></label>
+        <label className="search"><Search size={17}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="問題ID・問題名で検索"/></label>
+        <button className="ghost" onClick={()=>setAdding(true)}><Plus size={17}/>問題を追加</button>
+      </div><p>{shown.length}問</p>
+    </section>
+    <div className="problem-state-list">{shown.slice(0,limit).map(({problem:p,state:s})=>{const introduction=deriveTaskIntroduction(data,p);return <section className="panel problem-state-row" key={p.problem_id} data-problem-id={p.problem_id}>
+      <div className="problem-state-head"><div><h3>{p.generated_transfer?p.display_label||p.title:problemDisplayLabel(p)}</h3><small>{p.problem_id}・{introduction.target} ／ {introduction.subparts}</small></div><Badge>{s.workLabel}</Badge></div>
+      <p>今回の作業：{introduction.workLabel}</p>
+      <p>次の行動：{s.nextAction}</p><button className="primary" onClick={()=>select(p)}>{s.workStatus==="awaiting_grading"?"採点を続ける":"問題を開く"}</button>
+      {!introduction.blind&&<details><summary>課題の目的・回収目標</summary><TaskPurposeSummary introduction={introduction}/></details>}
+      <details><summary>採点・保持・転移の状況</summary>
+        <p>最新採点：{s.latestAttempt?`${s.latestAttempt.date}・${s.latestAttempt.mark}・${s.latestAttempt.score_numeric??"―"}点`:"採点記録なし"}</p>
+        <p>学習到達度：{s.needsRepair?"要復習":s.retentionLabel}</p><p>保持：{s.retentionLabel}</p><p>転移：{s.transferLabel}</p>
+        <small>◎は同一問題の保持評価です。生成問題の成功は転移訓練であり、本番転移ではありません。</small>
+      </details>
+    </section>})}</div>
+    {!shown.length&&<Empty>該当する問題はありません</Empty>}
+    {shown.length>limit&&<button className="ghost wide-btn" onClick={()=>setLimit(n=>n+30)}>続きを表示</button>}
     {adding&&<Modal title="問題マスターに追加" close={()=>setAdding(false)}><form onSubmit={e=>{e.preventDefault();run(()=>post("/api/problems",form),"問題を追加しました");setAdding(false)}} className="form-grid">
       <Field label="問題ID"><input required value={form.problem_id} onChange={e=>setForm({...form,problem_id:e.target.value.toUpperCase()})} placeholder="WB-6-A-05"/></Field>
       <Field label="区分"><select value={form.category} onChange={e=>{const c=e.target.value;setForm({...form,category:c,source_type:c==="past_exam"?"past_exam":"whitebook",strategy_rank:c==="S"?"S":c==="A"?"A":"",role:c==="S"?"foundation":c==="A"?"training":"exam"})}}><option>A</option><option>S</option><option value="past_exam">過去問</option></select></Field>
@@ -887,21 +858,20 @@ function MasteryLevels({levels}:{levels:MasteryLevelState[]}){
 }
 
 function ProblemDetail({problem,data,run,busy,onBack,onImport,startingTask}:{problem:Problem;data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>Promise<boolean>;busy:boolean;onBack:()=>void;onImport:()=>void;startingTask?:Task}) {
-  const [blindAnswerSubmitted,setBlindAnswerSubmitted]=useState(false);
-  const [answerDraft,setAnswerDraft]=useState("");
-  const [solvingSince,setSolvingSince]=useState<number|null>(null),[elapsed,setElapsed]=useState(0);
+  const learningView=deriveProblemLearningView(data,problem);
+  const [blindAnswerSubmitted,setBlindAnswerSubmitted]=useState(learningView.workStatus==="awaiting_grading");
   const [hintOpen,setHintOpen]=useState(false),[hintBusy,setHintBusy]=useState(false),[showGradingImport,setShowGradingImport]=useState(false);
   const firstSeenAttempt=useRef(Math.max(0,...data.attempts.filter(a=>a.problem_id===problem.problem_id).map(a=>a.id)));
-  useEffect(()=>{if(!solvingSince||blindAnswerSubmitted)return;const timer=setInterval(()=>setElapsed(Math.floor((Date.now()-solvingSince)/1000)),1000);return()=>clearInterval(timer)},[solvingSince,blindAnswerSubmitted]);
   const [editing,setEditing]=useState<Attempt|null>(null);
   const [form,setForm]=useState<Record<string,string>>({});
   const [rediagnosing,setRediagnosing]=useState<Attempt|null>(null);
   const [replacing,setReplacing]=useState<Attempt|null>(null);
   const [rediagnosisText,setRediagnosisText]=useState("");
   const [rediagnosisPreview,setRediagnosisPreview]=useState<any>(null);
-  const [initialMode,setInitialMode]=useState(startingTask?.mode||(problem.category==="past_exam"?"full":problem.recommended_mode||"full"));
+  const [initialMode,setInitialMode]=useState(learningView.work?.mode||startingTask?.mode||(problem.category==="past_exam"?"full":problem.recommended_mode||"full"));
   const [initialPromptCopied,setInitialPromptCopied]=useState(false);
-  useEffect(()=>{setInitialMode(startingTask?.mode||(problem.category==="past_exam"?"full":problem.recommended_mode||"full"));setInitialPromptCopied(false);setBlindAnswerSubmitted(false);setAnswerDraft("");setSolvingSince(null);setHintOpen(false);firstSeenAttempt.current=Math.max(0,...data.attempts.filter(a=>a.problem_id===problem.problem_id).map(a=>a.id))},[problem.problem_id,startingTask?.mode,startingTask?.source_attempt_id,startingTask?.transfer_training_key]);
+  const [initialPromptFallback,setInitialPromptFallback]=useState("");
+  useEffect(()=>{const view=deriveProblemLearningView(data,problem);setInitialMode(view.work?.mode||startingTask?.mode||(problem.category==="past_exam"?"full":problem.recommended_mode||"full"));setInitialPromptCopied(false);setInitialPromptFallback("");setBlindAnswerSubmitted(view.workStatus==="awaiting_grading");setHintOpen(false);firstSeenAttempt.current=Math.max(0,...data.attempts.filter(a=>a.problem_id===problem.problem_id).map(a=>a.id))},[problem.problem_id,startingTask?.mode,startingTask?.source_attempt_id,startingTask?.transfer_training_key]);
   const canonicalId=resolveCanonicalProblemId(problem.problem_id,data.problemAliases);
   const attempts=data.attempts.filter(a=>resolveCanonicalProblemId(a.problem_id,data.problemAliases)===canonicalId);
   const validAttempts=attempts.filter(attempt=>attemptConsistentForDisplay(attempt,problem)&&
@@ -915,17 +885,17 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport,startingTask}:{pro
   }));
   const latest=validAttempts[0],nextReview=currentReviewCards[0]?.review;
   const isCompletelyFirst=attempts.length===0&&reviewSelection.current.length===0&&reviewSelection.history.length===0;
-  const initialContract=isCompletelyFirst?buildInitialGradingContract({problem,mode:initialMode}):undefined;
-  const initialProblemContext=isCompletelyFirst?buildProblemContextPack({
+  const initialContract=buildInitialGradingContract({problem,mode:initialMode});
+  const initialProblemContext=buildProblemContextPack({
     problemId:problem.problem_id,problems:data.problems,aliases:data.problemAliases,answers:data.answerIndex,
     attempts:data.attempts,reviews:data.reviews,
-  }):undefined;
+  });
   const initialPrompt=initialContract?buildFirstAttemptGradingPrompt({
     problemId:problem.problem_id,displayLabel:problemDisplayLabel(problem),theme:problem.theme,
     canonicalProblemType:problem.canonical_problem_type,mode:initialMode,estimatedMinutes:initialContract.estimatedMinutes,
     gradingContract:initialContract,problemContext:initialProblemContext,
   }):"";
-  const copyInitialPrompt=async()=>{await navigator.clipboard.writeText(appendSubmittedAnswer(initialPrompt,answerDraft));setInitialPromptCopied(true);setTimeout(()=>setInitialPromptCopied(false),1800)};
+  const copyInitialPrompt=async()=>{const prompt=imageGradingPrompt(initialPrompt);try{await navigator.clipboard.writeText(prompt);setInitialPromptCopied(true);setInitialPromptFallback("");setTimeout(()=>setInitialPromptCopied(false),1800)}catch{setInitialPromptFallback(prompt)}};
   const mastery=data.masteryByProblem[canonicalId]||data.masteryByProblem[problem.problem_id];
   const related=problem.related_s_problem_ids?.length?problem.related_s_problem_ids:String(problem.linked_s_problems||"").split(";").filter(Boolean);
   const editAttempt=(attempt:Attempt)=>{
@@ -968,46 +938,71 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport,startingTask}:{pro
     const result=await post(`/api/attempts/${target.id}/whole-diagnostic/save`,{text:rediagnosisText});
     setRediagnosing(null);setRediagnosisPreview(null);setRediagnosisText("");return result;
   },"元の採点を保持して、答案全体の追加診断だけを更新しました");};
-  const gradingTask=startingTask?.id?{...startingTask,problem_id:canonicalId}:nextReview;
+  const savedWorkReview=learningView.work?.reviewId?data.reviews.find(r=>r.id===learningView.work!.reviewId):undefined;
+  const baseGradingTask=savedWorkReview||learningView.work?.task|| (startingTask?.grading_contract?{...startingTask,problem_id:canonicalId}:nextReview);
+  const gradingTask=baseGradingTask?{...baseGradingTask,actual_reference_level:Math.max(Number(baseGradingTask.actual_reference_level||0),Number(learningView.work?.referenceLevel||0))}:undefined;
+  const introduction=deriveTaskIntroduction(data,problem,savedWorkReview||startingTask||gradingTask);
+  const problemReference=deriveProblemReference(problem,data.adaptiveLearning.pastExamCatalog);
   const hintReview=currentReviewCards.find(c=>c.review.id===gradingTask?.id);
-  const revealHint=async()=>{if(!hintReview)return;setHintBusy(true);try{
-    await post(`/api/reviews/${hintReview.review.id}/reference`,{actual_reference_level:2});
-    rememberReferenceState(hintReview.review.id,revealReference(readReferenceState(hintReview.review.id),2));setHintOpen(true);
+  const hintText=taskAssistanceText(data,gradingTask);
+  const revealHint=async()=>{if(!hintText)return;setHintBusy(true);try{
+    if(hintReview){
+      await post(`/api/reviews/${hintReview.review.id}/reference`,{actual_reference_level:2});
+      rememberReferenceState(hintReview.review.id,revealReference(readReferenceState(hintReview.review.id),2));
+    }else{
+      const ok=await run(()=>post("/api/learning-work",{problemId:canonicalId,mode:initialMode,stage:learningView.work?.stage||"preparing",referenceLevel:2,contractId:gradingTask?.grading_contract?.contractId}),"具体的なヒントを参照ありとして記録しました");
+      if(!ok)return;
+    }
+    setHintOpen(true);
   }catch(e){window.alert(e instanceof Error?e.message:"参照を記録できないため表示しません")}finally{setHintBusy(false)}};
+  const setWork=async(stage:"preparing"|"awaiting_grading")=>{
+    const ok=await run(()=>post("/api/learning-work",{problemId:canonicalId,mode:initialMode,
+      reviewId:gradingTask?.id,contractId:gradingTask?.id?undefined:gradingTask?.grading_contract?.contractId,stage,referenceLevel:Math.max(Number(learningView.work?.referenceLevel||0),Number(hintReview?.review.actual_reference_level||0),readReferenceState(gradingTask?.id).actual_reference_level)}),
+      stage==="awaiting_grading"?"答案完成を記録しました。ChatGPTへ答案画像を添付して採点してください":"採点準備中として記録しました");
+    if(ok&&stage==="awaiting_grading")setBlindAnswerSubmitted(true);
+  };
+  if(problem.generated_transfer)return <section className="panel"><button className="back" onClick={onBack}>← 戻る</button>
+    <TransferTrainingPanel trainingKey={problem.generated_transfer.lineage.key}/></section>;
   if(!blindAnswerSubmitted)return <section className="panel blind-problem" aria-label="解答前の問題">
     <button className="back" onClick={onBack}>← 戻る</button><h2>{problemDisplayLabel(problem)}</h2>
+    <section className="task-introduction" aria-label="課題の対象と回収目標" data-task-identity={introduction.taskIdentity}>
+      <h3>対象・今回の回収目標</h3>
+      <dl><dt>対象</dt><dd>{introduction.target} ／ {introduction.subparts}</dd>
+        <dt>今回の作業</dt><dd>{introduction.workLabel} ・ {introduction.scope}</dd>
+        <dt>前回のつまずき</dt><dd>{introduction.previousDifficulty}{introduction.evidenceAttemptIds.length>0&&<small>根拠：Attempt {introduction.evidenceAttemptIds.join(" / ")}{introduction.sourceDate&&` ・ 直前記録 ${introduction.sourceDate}`}</small>}</dd>
+        <dt>今回の回収目標</dt><dd>{introduction.recoveryGoal}</dd></dl>
+      <p>問題文を確認 → 紙／Goodnotesで解答 → 答案完成 → 採点プロンプトをコピー → ChatGPTに画像答案を添付 → 採点JSONを取り込む</p>
+    </section>
     <p>今回の範囲：{modes[initialMode]||initialMode}・{startingTask?.minutes||gradingTask?.estimated_minutes||"―"}分目安</p>
     <p>{preAnswerReason(startingTask||gradingTask||{})}</p>
-    <p>書籍・公式PDFの問題文だけを開いて解答してください。問題文全文はアプリに収録されていません。</p>
-    <a href={sheetHref(initialMode)} download>解答用の空欄シート</a>
-    {!solvingSince?<button className="primary" onClick={()=>setSolvingSince(Date.now())}>解答を開始</button>:<>
-      <p aria-live="off">経過 {Math.floor(elapsed/60)}分{elapsed%60}秒</p>
-      <label>答案（紙で解いた場合は採点時に画像を添付）<textarea rows={9} value={answerDraft} onChange={e=>setAnswerDraft(e.target.value)} style={{width:"100%"}}/></label>
-      <button className="primary" onClick={()=>setBlindAnswerSubmitted(true)}>答案を書き終えた（採点へ）</button>
-    </>}
-    {hintReview&&<div><button className="ghost" disabled={hintBusy} onClick={revealHint}>ヒントを開く（参照ありとして記録）</button>
-      {hintOpen&&<p role="status">参照あり：{hintReview.card.targetAttempt?.next_action||hintReview.card.targetAttempt?.error_point||"対象の資料を確認してください"}</p>}</div>}
+    <details className="problem-reference"><summary>問題を参照（原本の特定情報）</summary>
+      <p>{problemReference.locator} ／ {introduction.subparts}</p>
+      {problemReference.missing.length>0&&<p>特定情報の不足：{problemReference.missing.join("・")}</p>}
+      <p>{problemReference.availability}</p><small>原問題の確認・課題説明の表示はヒント閲覧に含めません。解答・解説はここには表示しません。</small>
+    </details>
+    <p>答案は紙・Goodnotesで作成し、採点時に画像をChatGPTへ直接添付してください。アプリへの答案入力は不要です。</p>
+    <p>作業状態：{learningView.workLabel}</p>
+    <div className="button-row">{learningView.workStatus!=="preparing"&&<button className="ghost" disabled={busy} onClick={()=>void setWork("preparing")}>解答作成を開始</button>}
+      <button className="primary" disabled={busy} onClick={()=>void setWork("awaiting_grading")}>答案完成・採点へ進む</button></div>
+    {hintText&&<div><button className="ghost" disabled={hintBusy||busy} onClick={revealHint}>ヒントを開く（参照ありとして記録）</button>
+      {hintOpen&&<p role="status">参照あり：{hintText}</p>}</div>}
   </section>;
   const savedResult=latest&&latest.id>firstSeenAttempt.current?latest:undefined;
   return <><button className="back" onClick={onBack}>← Todayへ戻る</button><section className="panel answer-summary"><h2>{problemDisplayLabel(problem)}：解答後</h2>
     {savedResult?<><p>今回：{savedResult.score_numeric??"―"}点・{savedResult.mark}</p><p>最大の失点：{savedResult.error_point||"major errorなし"}</p>
       <p>次の行動：{data.today.tasks.find(t=>t.problem_id===canonicalId&&!t.checked)?.kind||"Todayの最新順位へ進む"}</p></>:<p>答案を確定しました。今回の採点結果はまだ保存されていません。</p>}
     <p>成功条件：{completionCriterionText(gradingTask?.grading_contract)}</p>
-    {answerDraft&&<details><summary>確定した今回の答案</summary><p style={{whiteSpace:"pre-wrap"}}>{answerDraft}</p></details>}
-    {gradingTask?<StudyPromptButtons item={gradingTask} resolved={hintReview?.card} submittedAnswer={answerDraft}/>:initialPrompt&&<button className="ghost" onClick={copyInitialPrompt}>採点プロンプトをコピー</button>}
+    <p>採点プロンプトと答案画像をChatGPTへ送り、返された採点結果を取り込んでください。</p>
+    {gradingTask?<StudyPromptButtons item={gradingTask} resolved={hintReview?.card}/>:initialPrompt&&<button className="ghost" onClick={copyInitialPrompt}>{initialPromptCopied?"コピー済み":"採点プロンプトをコピー"}</button>}
+    {initialPromptFallback&&<label>自動コピーが許可されていません。全選択してコピーしてください。<textarea aria-label="コピー用採点プロンプト" readOnly value={initialPromptFallback} onFocus={e=>e.currentTarget.select()}/></label>}
     <button className="primary" onClick={()=>setShowGradingImport(true)}>GPT採点結果を取り込む</button>
   </section>
   {showGradingImport&&<Modal title="今回の答案の採点を保存" close={()=>setShowGradingImport(false)}><AdvancedImportView problems={data.problems} answerIndex={data.answerIndex} problemAliases={data.problemAliases} attempts={data.attempts} reviews={data.reviews} busy={busy}
-    submittedAnswer={{problemId:canonicalId,text:answerDraft,referenceLevel:Math.max(Number(hintReview?.review.actual_reference_level||0),readReferenceState(gradingTask?.id).actual_reference_level)}}
+    submittedAnswer={{problemId:canonicalId,text:"",referenceLevel:Math.max(Number(learningView.work?.referenceLevel||0),Number(hintReview?.review.actual_reference_level||0),readReferenceState(gradingTask?.id).actual_reference_level)}}
     run={(a,s)=>run(async()=>{const result=await a();setShowGradingImport(false);return result},s)}/></Modal>}
   <details className="panel post-answer-details"><summary>詳細履歴・解説・修正記録を開く（過去記録）</summary><div className="detail-hero"><div><div className="detail-badges"><Badge tone={problem.category==="S"?"blue":""}>原典 {problem.category}</Badge>{problem.strategy_rank&&<Badge tone={problem.strategy_rank==="SS"?"red":problem.strategy_rank==="A+"?"orange":""}>実戦 {problem.strategy_rank}</Badge>}</div><h2>{problemDisplayLabel(problem)}</h2><p>{problem.problem_id} ・ {problem.theme}</p></div><button className="primary" onClick={onImport}><ClipboardPaste size={17}/>GPT採点結果を取り込む</button></div>
     {startingTask&&<section className="panel"><h3>今回の学習scope</h3><p>{modes[startingTask.mode]||startingTask.mode}・{startingTask.minutes}分目安 / {startingTask.effective_review_scope||startingTask.review_scope||"答案形成"}</p>
-      <p>{startingTask.why_today}</p><StudyPromptButtons item={startingTask}/><small>記録保存後、最新の成功・失敗証拠でTodayの順位が更新されます。</small></section>}
-    {isCompletelyFirst&&<section className="panel initial-grading-panel"><div><span className="eyebrow">FIRST ATTEMPT</span><h3>この問題は初回です</h3><p>まず参照なしで解答してください。Reviewを作らず、problem masterと選択モードから初回採点契約を生成します。</p></div>
-      <label>採点モード<select value={initialMode} onChange={event=>setInitialMode(event.target.value)}>
-        <option value="skeleton">骨格</option><option value="main_calc">主要計算</option><option value="full">フル答案</option>
-      </select></label><div className="button-row"><button className="primary" onClick={copyInitialPrompt}><Copy size={16}/>{initialPromptCopied?"コピーしました":"初回採点プロンプトをコピー"}</button><button className="ghost" onClick={onImport}><ClipboardPaste size={16}/>GPT回答取り込みへ</button></div>
-      <small>初回採点の保存後、major failureがある場合だけ必要なReviewを生成します。過去問scan_onlyは過去問演習のscan workflowを使用します。</small></section>}
+      <p>{startingTask.why_today}</p><small>記録保存後、最新の成功・失敗証拠でTodayの順位が更新されます。</small></section>}
     {mastery&&<section className="panel problem-mastery"><div className="panel-title"><div><span className="eyebrow">CURRENT MASTERY</span><h3>問題別到達段階　{mastery.currentTitle}</h3></div><Badge tone={mastery.normalReviewComplete?"blue":"orange"}>{mastery.normalReviewComplete?"通常復習なし":`現在の復習 ${mastery.activeTargetCount} target`}</Badge></div><MasteryLevels levels={mastery.levels}/></section>}
     {latest&&<section className="panel latest-result"><div><span>最新評価</span><strong>{latest.score_text||latest.score_label} {latest.score_numeric!=null?`/ ${latest.score_numeric}点`:""} / {latest.mark}</strong></div><div><span>K/W/N/C</span><strong>{latest.error_types?.join(" + ")||latest.error_type}</strong></div><div><span>次回復習</span><strong>{nextReview?.due_date||"—"}</strong></div></section>}
     {(latest?.corrected_answer||latest?.required_derivation||latest?.improvement_guidance)&&<details className="panel answer-feedback compact-feedback"><summary>GPTの修正版答案・途中計算を確認</summary><div className="feedback-body">
@@ -1402,6 +1397,8 @@ function PastView({data,go,run,busy,startingTask}:{data:Bootstrap;go:(p:Page)=>v
     ["timed_three_question_session","simulation"].includes(String(startingTask.past_exam_task_type))&&
     !data.pastSessions.some(row=>row.stable_session_key===startingTask.stable_session_key&&derivePastExamSessionState(row)==="completed");
   const referenceCatalog=data.adaptiveLearning.pastExamCatalog;
+  const sessionSubject=referenceCatalog.find(p=>p.canonicalProblemId===startingTask?.problem_id)?.subject||
+    data.problems.find(p=>p.problem_id===startingTask?.problem_id)?.title.match(/統計数理|統計応用/)?.[0]||"科目未登録";
   const plannedReferenceIds=data.adaptiveLearning.plannerShadow.plan30.plan.flatMap(day=>
     day.tasks.map(task=>task.referenceProblemId).filter((value):value is string=>!!value)
   );
@@ -1463,7 +1460,17 @@ function PastView({data,go,run,busy,startingTask}:{data:Bootstrap;go:(p:Page)=>v
     window.scrollTo({top:0,behavior:"smooth"});
   };
   return <>
-    {blindSessionStart?<section className="panel past-workspace-next"><h2>{startingTask!.title}</h2><p>{startingTask!.session_workflow}</p><small>Todayで選んだsessionを開始します。scanを含めて90分です。</small></section>:
+    {blindSessionStart?<section className="panel past-workspace-next"><h2>{startingTask!.title}</h2><p>{startingTask!.session_workflow}</p><small>Todayで選んだsessionを開始します。scanを含めて90分です。</small>
+      <section className="task-introduction" aria-label="課題の対象と回収目標" data-task-identity={currentTaskIdentity(startingTask!)}>
+        <p>対象：統計検定1級・{sessionSubject} {startingTask!.past_exam_year}年・5問から3問を選択</p>
+        <p>今回の作業：本番形式演習。解答前に個別の弱点・解法は表示しません。</p>
+        <p>回収目標：scanを含む90分で選択・答案作成を実施し、選題・得点・時間内完遂を採点後に確認します。</p>
+        <details className="problem-reference"><summary>問題を参照（原本の特定情報）</summary>
+          <p>統計検定1級・{sessionSubject} {startingTask!.past_exam_year}年 問1〜問5</p>
+          <p>上記の特定情報で手元の原本を開いてください。原問題の確認はヒントに含めません。</p>
+        </details>
+      </section>
+    </section>:
     <section className="panel past-workspace-next"><div><span className="eyebrow">NEXT PAST-EXAM SESSION</span><h2>次の推奨過去問session</h2>{workspace.recommended?<><strong>{workspace.recommended.year}年・{workspace.recommended.label}</strong><p>{workspace.recommended.workflow}</p><small>{workspace.recommended.clean?"clean selection evidenceとして記録できます":"practice scanとして扱い、clean指標とは分離します"}</small><p><b>なぜこの年度：</b>{workspace.recommended.selectedYearReason}</p>{workspace.unseenIndividualPool.length>0&&<small>前年度などの未見残問は個別演習poolに保持：{workspace.unseenIndividualPool.slice(0,5).map(row=>row.canonicalProblemId).join("、")}</small>}</>:<p>{workspace.warning}</p>}</div>{workspace.recommended&&<button className="primary" onClick={()=>{setEditingSessionId(null);setSession({...session,year:String(workspace.recommended!.year),session_kind:workspace.recommended!.taskType==="timed_three_question_session"||workspace.recommended!.taskType==="simulation"?"selected_three_timed":"scan_only",questions:blankQuestions()});document.getElementById("past-session-form")?.scrollIntoView({behavior:"smooth"})}}><Play size={17}/>開始</button>}</section>}
     <section className="past-analysis-intro">
       <div><span className="eyebrow">PAST EXAM WORKSPACE</span><h2>過去問演習</h2><p>scan5 → 3問選択 → 答案 → 採点を一つの本番型workflowとして記録します。未解答問題は0点にしません。</p></div>
@@ -1536,7 +1543,7 @@ function PastView({data,go,run,busy,startingTask}:{data:Bootstrap;go:(p:Page)=>v
           <div><span>型判断</span><p>{typeCalibration?"要較正":metrics.typeIdentificationAccuracy==null?(saved.analysis_status==="completed"?"分析済み":"分析待ち"):`${metrics.typeIdentificationAccuracy}%`}</p></div>
           <div><span>選題結果</span><p>{saved.session_kind==="scan_only"?"scanのみ・実得点による選題評価の対象外":metrics.selectionSuccessRate==null?"選択答案の採点待ち":`${saved.selection_success_count??Math.round(metrics.selectionSuccessRate/100*3)}/3 成功`}</p></div>
           {saved.session_kind!=="scan_only"&&<div><span>選択答案</span><p>{saved.selected_answer_count??metrics.solvedCount}/3完了{selectedRows.some(row=>row.actualScore!=null)&&<><br/>{selectedRows.map(row=>`${row.questionLabel}=${row.actualScore}`).join(" / ")}</>}</p></div>}
-          <div><span>本番時間</span><p>{saved.session_kind==="scan_only"?`scan ${saved.scan_minutes??0}分（3問答案は不要）`:`答案 ${saved.selected_solve_minutes??0}分 / scan ${saved.scan_minutes??0}分 / 合計 ${saved.session_elapsed_minutes??saved.actual_total_minutes??0}分`}</p></div>
+          <div><span>本番時間</span><p>{saved.session_kind==="scan_only"?`scan ${netMinutesText(saved.scan_minutes)}（3問答案は不要）`:`答案 ${netMinutesText(saved.selected_solve_minutes)} / scan ${netMinutesText(saved.scan_minutes)} / 合計 ${netMinutesText(saved.session_elapsed_minutes??saved.actual_total_minutes)}`}</p></div>
         </div>
         {!!calibrationRows.length&&<p className="past-calibration"><b>較正用追加採点：</b>{calibrationRows.map(row=>`${row.questionLabel}=${row.actualScore}`).join(" / ")}</p>}
         {!!saved.score_calibration?.length&&<p className="past-calibration"><b>得点予測較正：</b>{saved.score_calibration.map(row=>`${row.problemId} ${row.error>0?"+":""}${row.error}`).join(" / ")}</p>}
@@ -1577,37 +1584,6 @@ function PastView({data,go,run,busy,startingTask}:{data:Bootstrap;go:(p:Page)=>v
   </>;
 }
 
-function AnswerSheetsView(){
-  const sheets=[
-    {mode:"check",title:"短時間チェック",pages:"1ページ",time:"3〜5分",description:"C・none・安定S用。型、初手、今見る量、注意点だけを確認します。"},
-    {mode:"skeleton",title:"骨格答案",pages:"1ページ",time:"10〜20分",description:"答案の設計図だけを作ります。方針、出発式、今見る量、条件、道具、流れ、最後に示すことを書き、最終計算はしません。"},
-    {mode:"main_calc",title:"主要計算",pages:"1ページ",time:"10〜20分",description:"計算・積分・和・変数変換など、得点の中心になる作業部分だけを途中式付きで書きます。"},
-    {mode:"full",title:"フル答案",pages:"2ページ",time:"30〜45分",description:"採点可能な答案を最初から最後まで書くための、方針欄付き横罫シートです。"},
-    {mode:"scan",title:"5問スキャン",pages:"1ページ",time:"5〜10分",description:"5問の型、入口、完走見込み、事故リスクを比較し、選ぶ3問と捨てる2問を決めます。"},
-    {mode:"exam_90min",title:"90分演習",pages:"4ページ",time:"90分",description:"選題・時間配分の作戦ページと、選択した3問それぞれの答案ページです。"}
-  ];
-  const allHref="./answer-sheets/00-all-answer-sheets.pdf";
-  const examplesHref="./answer-sheets/06-filled-examples.pdf";
-  return <>
-    <section className="answer-sheet-hero">
-      <div><span className="eyebrow">GOODNOTES / IPAD LANDSCAPE</span><h2>解答方式に合わせて、書く場所を先に決める</h2><p>すべてiPad横画面と同じ4:3比率です。PDFを開いてGoodNotesへ共有し、原本を複製してから使ってください。</p></div>
-      <div className="answer-sheet-hero-actions"><SheetLink href={examplesHref} label="模範記入例を見る"/><SheetLink href={allHref} label="全シートを見る" primary/></div>
-    </section>
-    <section className="mode-role-guide">
-      <div><strong>check</strong><span>思い出せるか。型・初手・今見る量・注意点だけ。</span></div>
-      <div><strong>skeleton</strong><span>設計図を作れるか。最終式や完成答案は不要。</span></div>
-      <div><strong>main_calc</strong><span>落とした計算だけ直す。問題全体は解き直さない。</span></div>
-      <div><strong>full</strong><span>本番答案。途中式・条件・計算・結論まで全部。</span></div>
-    </section>
-    <div className="answer-sheet-grid">{sheets.map(sheet=><section className={`panel answer-sheet-card mode-${sheet.mode}`} key={sheet.mode}>
-      <div className="sheet-preview"><NotebookPen size={24}/><span>{sheet.pages}</span></div>
-      <div className="sheet-card-body"><div><Badge>{modes[sheet.mode]}</Badge><h3>{sheet.title}シート</h3></div><p>{sheet.description}</p><small>目安 {sheet.time}・{sheet.pages}</small></div>
-      <SheetLink href={sheetHref(sheet.mode)} label="PDFを見る"/>
-    </section>)}</div>
-    <section className="panel sheet-example-note"><Sparkles size={22}/><div><h3>模範記入例</h3><p>骨格・主要計算・フル答案・5問スキャン・90分作戦の5種類について、「どの程度まで書けばよいか」を記入済みPDFで確認できます。</p></div><SheetLink href={examplesHref} label="5種類の記入例を見る"/></section>
-    <section className="panel goodnotes-guide"><div><span className="eyebrow">HOW TO USE</span><h3>GoodNotesへの入れ方</h3></div><ol><li>使うモードの「PDFを見る」を押す</li><li>「GoodNotes用に開く」を押して共有する</li><li>「新規書類として読み込む」で保存する</li><li>毎回、原本ページを複製してから答案を書く</li><li>書き終えたページを画像またはPDFでGPTへ送る</li></ol></section>
-  </>;
-}
 
 function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean}) {
   const [examDate,setExamDate]=useState(data.settings.exam_date);

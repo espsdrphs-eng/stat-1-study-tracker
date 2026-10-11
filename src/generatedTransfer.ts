@@ -26,7 +26,7 @@ export type GeneratedTransferContent=GeneratedDraft&{
   root_skill_id:string;lineage:TransferTrainingLineage;difficulty:string;estimated_minutes:number;
   exam_score_eligible:false;transfer_eligible:true;evidence_strength:"training";
   validation:GenerationValidation;content_hash:string;created_at:string;
-  lifecycle_status:"ready"|"submitted"|"graded";answer_submission?:{text:string;minutes:number;referenceLevel:number;submittedAt:string};
+  lifecycle_status:"ready"|"submitted"|"graded";answer_submission?:{text:string;minutes:number|null;referenceLevel:number;submittedAt:string;medium?:"paper_image"};
   grading_reference?:{problem_id:string;content_hash:string;reference_solution:string;grading_rubric:string;
     checks:Record<"well_defined"|"solution_correct"|"rubric_aligned",{pass:boolean;evidence:string}>;method:"manual_chatgpt"};
 };

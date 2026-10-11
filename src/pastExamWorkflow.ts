@@ -167,7 +167,7 @@ export function deriveExposure(session:PastSession):PastExamExposure{
   return "unknown";
 }
 
-export function sessionStudyMinutes(session:PastSession,linkedAttempts:Array<{id:number;time_minutes:number}>=[]){
+export function sessionStudyMinutes(session:PastSession,linkedAttempts:Array<{id:number;time_minutes:number|null}>=[]){
   if(session.session_kind==="scan_only")return Number(session.scan_minutes||0);
   if(session.session_kind==="scan_plus_one")return Number(session.scan_minutes||0)+(session.linked_attempt_ids||[]).reduce((sum,id)=>sum+Number(linkedAttempts.find(row=>row.id===id)?.time_minutes||0),0);
   if(session.session_kind==="selected_three_timed")return Number(session.actual_total_minutes||0);
