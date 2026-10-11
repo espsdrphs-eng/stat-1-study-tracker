@@ -200,9 +200,10 @@ test('Q2 excerpt sandbox: graduated retention → Planner JIT → blind grading 
   await db.meta.put({key:'daily_study_minutes',value:'150'});
   const key=`training:${skill}`,call=(action,extra={})=>localPost('/api/transfer-training',{key,action,...extra});
   const preBenchmark=await localGet('/api/bootstrap');
-  assert.ok(!preBenchmark.today.tasks.some(t=>t.transfer_training_key===key),'before benchmark, pending root is not a generated assignment');
-  await assert.rejects(()=>call('start'),/実行対象|候補|保留/,'no JIT bypass before the existing eligibility condition');
-  // Sandbox benchmark completion permits the existing post-benchmark JIT rule.
+  assert.ok(preBenchmark.today.tasks.some(t=>t.transfer_training_key===key),'ranked Today selects qualified training without the retired calendar prerequisite');
+  assert.equal((await call('start')).status,'requested');
+  assert.equal((await db.problems.toArray()).filter(p=>p.generated_transfer).length,0,'starting a qualified request is not stable registration');
+  // Keep the benchmark fixture to verify its independent role/KPI protection.
   await db.attempts.bulkPut([1,2,3].map(q=>({id:310+q,problem_id:`PY-2024-Q${q}`,date:'2026-10-04',
     mode:'timed',mark:'○',time_minutes:20,score_numeric:60,actual_reference_level:0,
     grading_confidence:.99,learning_purpose:'exam_performance',graded_findings:[],grading_contract:{gradedParts:[]}})));
@@ -220,7 +221,9 @@ test('Q2 excerpt sandbox: graduated retention → Planner JIT → blind grading 
     grading_rubric:'自力で尺度変更と逆数の係数を保持し、切断範囲と積分を完遂。対象部分を独立評価。',
     difficulty:'統計検定1級',estimated_minutes:10,surface_features:['切断された重み付き平均','連続記録値'],generator_pass_id:'local-coefficient-generation'};
   assert.equal((await call('start')).status,'requested');
-  await call('draft',{text:JSON.stringify(draft)});
+  // The manual protocol registers only a statement before the blind answer.
+  const {reference_solution,grading_rubric,...statement}=draft;
+  await call('draft',{text:JSON.stringify(statement)});
   const gen=JSON.parse((await db.meta.get(`transfer-generation:${key}`)).value);
   await call('validate',{text:JSON.stringify({draft_hash:gen.rounds[0].hash,validator_pass_id:'independent-local-coefficient-check',
     checks:Object.fromEntries(GENERATION_CHECKS.map(c=>[c,{pass:true,evidence:'sandbox: 尺度変換後の密度f_A(a)=3a²/125から別計算してF(t)=3(25-t²)/250と一致。'}]))})});
@@ -228,6 +231,7 @@ test('Q2 excerpt sandbox: graduated retention → Planner JIT → blind grading 
   assert.equal(blind.status,'ready');assert.ok(!JSON.stringify(blind).includes(skill));
   assert.ok(!JSON.stringify(blind).includes('reference_solution'));
   const pid=blind.problem.problem_id,p=await db.problems.get(pid),gc=buildInitialGradingContract({problem:p,mode:'full'});
+  assert.equal(p.generated_transfer.reference_solution,'');assert.equal(p.generated_transfer.grading_rubric,'');
   await call('submit',{answer:draft.reference_solution,minutes:10,referenceLevel:0});
   const update={problem_id:pid,problem_id_confirmed:true,date:'2026-10-05',mode:'full',score_numeric:100,
     score_label:'A',mark:'○',error_type:'none',error_types:['none'],error_point:'',next_action:'本番へ戻る',
@@ -235,7 +239,8 @@ test('Q2 excerpt sandbox: graduated retention → Planner JIT → blind grading 
     contract_id:gc.contractId,contract_hash:gc.contractHash,contract_version:gc.contractVersion,
     graded_part_ids:gc.gradedParts.map(p=>p.id),graded_findings:gc.gradedParts.map(p=>({graded_part_id:p.id,error_type:'none',resolved:true,evidence:'尺度と逆数の係数を保持した'})),
     target_skill_assessment:{self_selected:true,major_calculation_success:true,no_major_error:true,evidence:'1/(5Z)と下限t/5を自力で選択し積分した'}};
-  await call('grade',{text:JSON.stringify({study_update:update})});
+  await call('grade',{text:JSON.stringify({study_update:update,mathematical_review:{problem_id:pid,content_hash:p.generated_transfer.content_hash,reference_solution,grading_rubric,
+    checks:Object.fromEntries(['well_defined','solution_correct','rubric_aligned'].map(k=>[k,{pass:true,evidence:'FIXTURE: 尺度変更後の密度から独立に積分と採点基準を照合'}]))}})});
   let evidence=deriveTransferEvidence(await db.attempts.toArray());
   assert.equal(evidence.filter(e=>e.evidenceStrength==='training').length,1,'sibling lineage does not double-count');
   assert.equal(evidence.filter(e=>e.evidenceStrength==='strong').length,0);

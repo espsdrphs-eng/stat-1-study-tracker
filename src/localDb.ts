@@ -1,6 +1,6 @@
 import Dexie, { type EntityTable } from "dexie";
 import {transferTrainingRequest,generatedAttemptFields} from "./transferTrainingApi.ts";
-import {validateGeneratedContent} from "./generatedTransfer.ts";
+import {validateGeneratedContent,validateManualGradingReference} from "./generatedTransfer.ts";
 import type { AnswerIndexEntry, Attempt, Bootstrap, CoachDiagnosis, CorrectionLog, DataDiagnostic, GradingContractSnapshot, MasterImportLog, PastExamExposure, PastSession, Problem, ProblemAlias, ProblemRelation, Review, Roadmap, StudyUpdate, Task, TodayPlanSnapshot, WeakNote } from "./types";
 import { japaneseizeMathText } from "./mathJapanese.ts";
 import { analyzeWeaknesses } from "./weaknessAnalytics.ts";
@@ -1024,6 +1024,16 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
   const generatedFields=problem.source_type==="generated"?generatedAttemptFields(problem,input):undefined;
   const trainingContext=await db.meta.get(`transfer-training-context:${problem.problem_id}`);
   const intentionalTraining=trainingContext?JSON.parse(trainingContext.value) as import("./generatedTransfer.ts").TransferTrainingLineage:undefined;
+  if(intentionalTraining){
+    const submission=(JSON.parse(trainingContext!.value) as {answer_submission?:{minutes:number;referenceLevel:number}}).answer_submission;
+    const target=input.target_skill_assessment as Attempt["target_skill_assessment"];
+    if(!submission||!target||[target.self_selected,target.major_calculation_success,target.no_major_error].some(v=>typeof v!=="boolean")||!target.evidence?.trim())
+      throw new Error("転移答案の確定と対象能力の独立採点が必要です");
+    const contract=buildInitialGradingContract({problem,mode:"full"});
+    input={...input,learning_purpose:contract.learningPurpose,learning_stage:contract.learningStage,review_scope:contract.reviewScope,assessment_timing:"independent_performance",mode:"full",
+      time_minutes:submission.minutes,actual_minutes:submission.minutes,actual_reference_level:Math.max(submission.referenceLevel,Number(input.actual_reference_level??input.reference_level??0)),
+      generated_from_review_id:undefined,target_skill_assessment:target};
+  }
   if(generatedFields){
     const existing=(await db.attempts.where("problem_id").equals(problem.problem_id).toArray()).find(a=>!a.exclude_from_metrics);
     if(existing)return existing.id;
@@ -1116,7 +1126,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
   }
   const date=input.date||todayString();
   const actualMinutes=Number(input.actual_minutes??input.time_minutes??0);
-  const actualReferenceLevel=Math.min(5,Math.max(0,Number(input.actual_reference_level??input.reference_level??(
+  const actualReferenceLevel=Math.min(5,Math.max(Number(sourceReview?.actual_reference_level||0),0,Number(input.actual_reference_level??input.reference_level??(
     input.external_reference?5:input.official_answer?4:input.saved_gpt_feedback||input.gpt_explanation?3:
       input.previous_mistake?2:input.one_line_hint?1:0
   ))));
@@ -1226,12 +1236,14 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     // planned exposure is training, never an unprompted exam transfer.
     await db.attempts.update(id,{evidence_strength:"training",target_skill_prompted:true,
       source_problem_id:intentionalTraining.sourceProblemId,transfer_lineage:intentionalTraining,
-      exam_score_eligible:false,exam_score:null});
+      learning_purpose:"transfer_check",learning_stage:"transfer",target_skill_assessment:input.target_skill_assessment as Attempt["target_skill_assessment"],exam_score_eligible:false,exam_score:null});
     await db.meta.delete(`transfer-training-context:${problem.problem_id}`);
+    return id;
   }
   if(generatedFields){
     await db.attempts.update(id,{...generatedFields,canonical_attempt_id:id,submission_id:`generated:${problem.problem_id}`});
-    await db.problems.update(problem.problem_id,{generated_transfer:{...problem.generated_transfer!,lifecycle_status:"graded"}});
+    await db.problems.update(problem.problem_id,{generated_transfer:{...problem.generated_transfer!,lifecycle_status:"graded",
+      ...(problem.generated_transfer!.input_format?{grading_reference:validateManualGradingReference(problem,input.manual_generated_reference)}:{})}});
     // Keep all findings in the ordinary Attempt. Do not spawn a new Review tree
     // from a one-off training answer; the original root remains the repair unit.
     return id;
@@ -1574,7 +1586,7 @@ async function completeReview(id:number,body:Record<string,unknown>){
   if(!source||!problem) throw new Error("復習元の採点データが見つかりません");
   const linkedS=review.task_origin==="linked_s_check"||review.review_type==="s_check";
   const requestedResult=["success","partial","failed"].includes(String(body.result))?String(body.result) as ReviewOutcome["result"]:"partial";
-  const actualReferenceLevel=Math.min(5,Math.max(0,Number(body.actual_reference_level??body.reference_level??0))) as ReferenceLevel;
+  const actualReferenceLevel=Math.min(5,Math.max(Number(review.actual_reference_level||0),0,Number(body.actual_reference_level??body.reference_level??0))) as ReferenceLevel;
   const reviewMode=review.requires_full_answer?"exam_90min":review.review_type==="main_calc_retry"?"main_calc":
     ["careless_check","light_check"].includes(review.review_type)?"check":"skeleton";
   const fallbackAllowed=allowedReferenceLevel({previous_errors:source.error_types||[source.error_type],mode:reviewMode,
@@ -2970,6 +2982,7 @@ async function bootstrap(readOnly=false):Promise<Bootstrap>{
   const conceptWeaknesses=analyzeConceptWeaknesses({record:referenceRecord,problems,attempts:activeAttempts,
     reviews,weakNotes,today});
   const pastExamRepairCandidates=buildPastExamRepairCandidates({record:referenceRecord,sessions:pastSessions,
+    planningMode:"ranked",
     attempts:activeAttempts,conceptWeaknesses,problems,answers:answerIndex,exposureOverrides,
     generationStates:Object.fromEntries(metaEntries.filter(m=>m.key.startsWith("transfer-generation:")).flatMap(m=>{
       try{const r=JSON.parse(m.value);return [[r.key,r.status]]}catch{return []}

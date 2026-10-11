@@ -3,7 +3,7 @@ import { examScoreEligibility } from "./scoreEligibility.ts";
 import { excludeLegacyKFromPlanning, findingPlanningEligible } from "./legacyKPolicy.ts";
 import { scanMetrics, selectionSuccessRate } from "./pastExamWorkflow.ts";
 import {resolvePastExamProblemId} from "./examReferencePack.ts";
-import {deriveTransferEvidence,findingSkillIds,problemSkillIds} from "./skillEvidence.ts";
+import {deriveTransferEvidence,findingSkillIds,problemSkillIds,transferEvidenceStrength,independentReferenceFree,confidentGrading} from "./skillEvidence.ts";
 import {examHorizonPolicy} from "./examOptimizationPolicy.ts";
 import {deriveFailureEpisode} from "./failureEpisode.ts";
 
@@ -38,7 +38,8 @@ export type ExamReadinessMetrics = {
 
 export type MetricEvidence={value:number|null;numerator:number;denominator:number;evidenceCount:number;
   eligibleEvidenceRule:string;modeScope:string[];lastUpdated:string|null;confidence:"low"|"medium"|"high";
-  eligibleEvidenceIds:string[];lastUpdatedAt:string|null;missingEvidenceReason:string|null};
+  eligibleEvidenceIds:string[];lastUpdatedAt:string|null;missingEvidenceReason:string|null;
+  statusCounts?:{total:number;attempted:number;successful:number;failed:number;uncertain:number;unattempted:number}};
 export type LearningMetricEvidence={
   selectedThree:MetricEvidence&{sessions:Array<{sessionId:number;year:number;score:number;attemptIds:number[]}>};
   individual:MetricEvidence;diagnostic:MetricEvidence;timed:MetricEvidence;selection:MetricEvidence;
@@ -253,6 +254,30 @@ export function calculateExamReadinessMetrics(args: {
   evidence.selection.eligibleEvidenceIds=sessionIds(scanSessions.filter(s=>selectionSuccessRate(s)!=null));
   evidence.diagnostic.eligibleEvidenceIds=[...new Set(pastSessions.flatMap(s=>(s.counterfactual_calibration_attempt_ids||[]).map(id=>`attempt:${id}`)))];
   evidence.transfer!.eligibleEvidenceIds=[...[...transferOpportunities].map(id=>`root:${id}`),...transferRows.map(row=>row.id)];
+  // The denominator is a set of source-problem/skill opportunities, not the
+  // number of attempted tests. Same-problem retention and intentional training
+  // never count as a natural-exam attempt here.
+  const statusCounts={total:transferOpportunities.size,attempted:0,successful:0,failed:0,uncertain:0,unattempted:0};
+  const measured:Attempt[]=[];
+  for(const key of transferOpportunities){
+    const [sourceProblem,skill]=key.split("|");
+    const source=examAttempts.filter(a=>a.problem_id===sourceProblem&&!a.exclude_from_metrics&&!a.duplicate_of_attempt_id&&
+      (a.graded_findings||[]).some(f=>findingPlanningEligible(a,f)&&!f.resolved&&f.error_type!=="none"&&findingSkillIds(a,f).includes(skill))).sort((a,b)=>b.id-a.id)[0];
+    const relevant=examAttempts.filter(a=>source&&a.id>source.id&&a.problem_id!==sourceProblem&&!a.exclude_from_metrics&&!a.duplicate_of_attempt_id&&
+      transferEvidenceStrength(a)==="strong"&&(a.graded_findings||[]).some(f=>findingPlanningEligible(a,f)&&findingSkillIds(a,f).includes(skill))).sort((a,b)=>b.id-a.id)[0];
+    if(transferred.has(key)){statusCounts.successful++;statusCounts.attempted++;}
+    else if(!relevant)statusCounts.unattempted++;
+    else{
+      statusCounts.attempted++;measured.push(relevant);
+      if(independentReferenceFree(relevant)&&confidentGrading(relevant)&&
+        (relevant.graded_findings||[]).some(f=>findingPlanningEligible(relevant,f)&&!f.resolved&&f.error_type!=="none"&&findingSkillIds(relevant,f).includes(skill)))statusCounts.failed++;
+      else statusCounts.uncertain++;
+    }
+  }
+  evidence.transfer!.statusCounts=statusCounts;
+  evidence.transfer!.eligibleEvidenceIds=[...new Set([...evidence.transfer!.eligibleEvidenceIds,...attemptIds(measured)])];
+  const transferDate=[...transferRows.map(r=>r.date),...measured.map(a=>a.date)].sort().at(-1)||null;
+  evidence.transfer!.lastUpdated=evidence.transfer!.lastUpdatedAt=transferDate;
   const trainingOpportunities=new Set([...transferOpportunities,...attempts.filter(a=>!!a.transfer_lineage)
     .map(a=>`${a.transfer_lineage!.sourceProblemId}|${a.transfer_lineage!.rootSkillId}`),...trainingRows.map(r=>`${r.sourceProblemId}|${r.skillId}`)]);
   evidence.trainingTransfer={...metric(new Set(trainingRows.map(r=>`${r.sourceProblemId}|${r.skillId}`)).size,

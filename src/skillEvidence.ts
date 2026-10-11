@@ -1,5 +1,6 @@
 import type {Attempt,GradedFinding,GradedPartContract,Problem,RootWeakness} from "./types.ts";
 import {groundedFindingSkills} from "./groundedSkills.ts";
+import {deriveFailureEpisode} from "./failureEpisode.ts";
 import type {StoredExamReferencePack} from "./examReferencePack.ts";
 import {canonicalPastExamProblemId} from "./examReferencePack.ts";
 import {findingPlanningEligible} from "./legacyKPolicy.ts";
@@ -50,11 +51,25 @@ export function successfulSkillIds(attempt:Attempt){
   const cached=activeMemo?.successes.get(attempt);if(cached)return cached;
   const result=calculateSuccessfulSkillIds(attempt);activeMemo?.successes.set(attempt,result);return result;
 }
+/** Do not label an ungraded/uncertain answer as a transfer failure. */
+export function transferTrainingOutcome(attempt:Attempt,confirmedSuccess=false){
+  if(Number(attempt.actual_reference_level??attempt.reference_level)>0||attempt.hint_used)
+    return "参照ありの転移訓練（独立成功ではありません）";
+  const target=attempt.target_skill_assessment;
+  if(!independentReferenceFree(attempt)||!confidentGrading(attempt)||!target?.evidence.trim())
+    return "転移未確認（採点の根拠・確信度が不足）";
+  if(!target.self_selected||!target.major_calculation_success||!target.no_major_error)return "training transfer failure";
+  return confirmedSuccess?"training transfer success":"転移未確認（対象技能の対応が未確定）";
+}
 function calculateSuccessfulSkillIds(attempt:Attempt){
   if(!independentReferenceFree(attempt)||!confidentGrading(attempt))return [];
-  if(attempt.source_type==="generated"){
+  if(attempt.source_type==="generated"||attempt.transfer_lineage){
     const target=attempt.target_skill_assessment;
     if(!target?.self_selected||!target.major_calculation_success||!target.no_major_error||!target.evidence.trim())return [];
+    const lineage=attempt.transfer_lineage;
+    if(lineage&&deriveFailureEpisode(attempt).rootWeaknesses.some(r=>r.requiredRepair&&r.skillIds.includes(lineage.rootSkillId)))return [];
+    if(lineage?.matchConfidence==="high"&&lineage.sourceProblemId!==attempt.problem_id&&lineage.sourceFindingIds?.length)
+      return [lineage.rootSkillId];
   }
   const findings=(attempt.graded_findings||[]).filter(f=>findingPlanningEligible(attempt,f));
   const failed=new Set(findings.filter(f=>!f.resolved&&f.error_type!=="none")
@@ -94,7 +109,7 @@ export function rootProgress(source:Attempt,root:RootWeakness,attempts:Attempt[]
     if(root.skillIds.length&&root.skillIds.every(id=>successfulSkillIds(a).includes(id))&&
       (!repairSuccess||a.id>repairSuccess.id))repairSuccess=a;
   }
-  const transferFailure=later.filter(a=>a.id>(repairSuccess?.id||latestFailure.id)&&a.source_type==="generated"&&
+  const transferFailure=later.filter(a=>a.id>(repairSuccess?.id||latestFailure.id)&&a.problem_id!==source.problem_id&&
     a.transfer_lineage?.sourceProblemId===source.problem_id&&root.skillIds.includes(a.transfer_lineage.rootSkillId)&&
     independentReferenceFree(a)&&confidentGrading(a)&&a.target_skill_assessment&&
     (!a.target_skill_assessment.self_selected||!a.target_skill_assessment.major_calculation_success||!a.target_skill_assessment.no_major_error)).at(-1);
@@ -129,8 +144,8 @@ function calculateTransferEvidence(attempts:Attempt[]):TransferEvidence[]{
     if(a.exclude_from_metrics||a.duplicate_of_attempt_id)continue;
     for(const skillId of a.learning_purpose==="error_repair"?[]:successfulSkillIds(a)){
       for(const failure of latestFailures.get(skillId)?.values()||[])
-        if(failure.problem_id!==a.problem_id&&(a.source_type!=="generated"||
-          (a.transfer_lineage?.rootSkillId===skillId&&a.transfer_lineage.sourceProblemId===failure.problem_id)))rows.push({id:`transfer:${failure.id}:${a.id}:${skillId}`,
+        if(failure.problem_id!==a.problem_id&&(!a.transfer_lineage||
+          (a.transfer_lineage.rootSkillId===skillId&&a.transfer_lineage.sourceProblemId===failure.problem_id&&(!a.transfer_lineage.sourceAttemptId||a.transfer_lineage.sourceAttemptId===failure.id))))rows.push({id:`transfer:${failure.id}:${a.id}:${skillId}`,
           sourceAttemptId:failure.id,sourceProblemId:failure.problem_id,successAttemptId:a.id,successProblemId:a.problem_id,skillId,date:a.date,
           evidenceStrength:transferEvidenceStrength(a),lineage:a.transfer_lineage});
     }

@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import {createStateReloadCoordinator} from "./stateReload.ts";
 import {TransferTrainingPanel} from "./TransferTrainingPanel";
+import {deriveCurrentLearningDiagnosis,preAnswerReason,completionCriterionText,appendSubmittedAnswer} from "./learningFeedback";
 import { useRegisterSW } from "virtual:pwa-register/react";
 import {
   AlertTriangle, Archive, ArrowDown, BarChart3, BookOpen, CalendarCheck, CalendarClock, Check, ChevronRight, ClipboardPaste,
@@ -188,8 +189,8 @@ export default function App() {
         page==="problems"?<ProblemsView data={data} select={setSelected} run={run} busy={writeBusy}/>:
         page==="attempt"?<AttemptView problems={data.problems} run={run} busy={writeBusy}/>:
         page==="import"?<AdvancedImportView problems={data.problems} answerIndex={data.answerIndex} problemAliases={data.problemAliases} attempts={data.attempts} reviews={data.reviews} run={run} busy={writeBusy}/>:
-        page==="reviews"?<ReviewsView data={data} run={run} busy={writeBusy}/>:
-        page==="weak"?<WeakView data={data} run={run} busy={writeBusy}/>:
+        page==="reviews"?<ReviewsView data={data} run={run} busy={writeBusy} select={(p,task)=>{setStartingStudyTask(task);setSelected(p)}}/>:
+        page==="weak"?<WeakView data={data} run={run} busy={writeBusy} onToday={()=>go("today")}/>:
         page==="past"?<PastView data={data} go={go} run={run} busy={writeBusy} startingTask={startingPastTask}/>:
         page==="sheets"?<AnswerSheetsView/>:
         <SettingsView data={data} run={run} busy={busy}/>}
@@ -562,6 +563,7 @@ function PostponeReviewModal({item,initial="tomorrow",busy,close,save}:{item:Par
 }
 function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a:()=>Promise<unknown>,s:string)=>void;go:(p:Page,task?:Task)=>void;select:(p:Problem,task?:Task)=>void}) {
   const [visibleCount,setVisibleCount]=useState(10);
+  const [finishedTransferKey,setFinishedTransferKey]=useState<string>();
   const [reviewTask,setReviewTask]=useState<Task|null>(null);
   const [postponeTask,setPostponeTask]=useState<{item:Task;initial:ScheduleAction}|null>(null);
   const [todayFilter,setTodayFilter]=useState<"exam_practice"|"repair"|"maintenance"|"optional"|"completed"|"all">("all");
@@ -589,21 +591,19 @@ function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a
           <header><Badge tone="blue">優先 {t.ranking!.rank}</Badge><strong>{t.title}</strong><span>{t.ranking!.category}・{t.minutes}分目安</span></header>
           <p>{t.transfer_training_key?"別問題1問・参照なしで解答":isPastExamSessionTask(t)?t.session_workflow:
             `${modes[t.mode]||t.mode} / ${t.effective_review_scope||t.review_scope||"答案形成"}`}</p>
-          <p className="why-today">{t.why_today}</p>
-          {!t.transfer_training_key&&<small>{t.ranking!.reasons.slice(1).join(" / ")}</small>}
-          {t.transfer_training_key?<TransferTrainingPanel trainingKey={t.transfer_training_key} onExisting={id=>{const p=pmap[id];if(p)select(p,t)}}/>:
+          <p className="why-today">{preAnswerReason(t)}</p>
+          {t.transfer_training_key?<TransferTrainingPanel trainingKey={t.transfer_training_key} onSaved={()=>setFinishedTransferKey(t.transfer_training_key)}/>:
             <div className="button-row"><button className="primary" disabled={busy} onClick={()=>{
               if(isPastExamSessionTask(t))go("past",t);else if(pmap[t.problem_id])select(pmap[t.problem_id],t);
             }}><Play size={15}/>学習開始</button>
               {!!t.id&&!!t.review_type&&<button className="ghost" disabled={busy} onClick={()=>setReviewTask(t)}>復習結果を記録</button>}
               <button className="ghost small" disabled={busy} onClick={()=>setPostponeTask({item:t,initial:"tomorrow"})}>後で取り組む</button></div>}
-          {!t.transfer_training_key&&<details><summary>学習scope・操作</summary><TodayTaskDetails task={t} problem={pmap[t.problem_id]}
-            onOpenProblem={p=>select(p,t)} onOpenPastExam={()=>go("past",t)} problemAliases={data.problemAliases}
-            examPhase={data.dashboard.pace.phase==="final"?"final_stabilization":"past_exam_main"}/></details>}
+          {!t.transfer_training_key&&<a href={sheetHref(t.mode)} download>解答用の空欄シート</a>}
         </article>)}</div>
         {visibleCount<eligible.length&&<button className="ghost" onClick={()=>setVisibleCount(n=>n+10)}>続きを表示（残り{eligible.length-visibleCount}件）</button>}
         {!eligible.length&&<Empty>現在実行できる候補はありません。待機条件を確認してください。</Empty>}
       </section>
+      {finishedTransferKey&&!eligible.some(t=>t.transfer_training_key===finishedTransferKey)&&<><h3>今回保存した転移結果</h3><TransferTrainingPanel trainingKey={finishedTransferKey}/></>}
       <details className="panel"><summary>待機候補（{ranked.waiting.length}件）・再評価条件</summary>
         {ranked.waiting.map((w,i)=><div className="history" key={`${w.task.id||w.task.problem_id}:${i}`}><div><strong>{w.task.title}</strong>
           <p>{w.reason}</p><small>再評価：{w.reevaluateWhen}</small></div></div>)}
@@ -693,8 +693,9 @@ function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a
 function copyText(text:string,label:string,setCopied:(value:string)=>void){
   return navigator.clipboard.writeText(text).then(()=>{setCopied(label);setTimeout(()=>setCopied(""),1800)});
 }
-function StudyPromptButtons({item,resolved}:{item:Partial<Review&Task>;resolved?:ResolvedReviewCard}) {
+function StudyPromptButtons({item,resolved,submittedAnswer}:{item:Partial<Review&Task>;resolved?:ResolvedReviewCard;submittedAnswer?:string}) {
   const [copied,setCopied]=useState("");
+  const withAnswer=(prompt:string)=>appendSubmittedAnswer(prompt,submittedAnswer,Math.max(Number(item.actual_reference_level||0),readReferenceState(item.id).actual_reference_level));
   const firstPrompt=buildFirstAttemptGradingPrompt({
     problemId:item.problem_id||"",displayLabel:item.title||item.problem_id,theme:item.theme,
     canonicalProblemType:item.canonical_problem_type,mode:item.mode,estimatedMinutes:item.minutes||item.estimated_minutes,
@@ -720,8 +721,8 @@ function StudyPromptButtons({item,resolved}:{item:Partial<Review&Task>;resolved?
   });
   const isFirst=(item.task_origin||"first_attempt")==="first_attempt"&&!item.id;
   return <div className="prompt-button-row">
-    <button type="button" className={isFirst?"primary small":"ghost small"} onClick={()=>void copyText(firstPrompt,"first",setCopied)}><Copy size={14}/>{copied==="first"?"コピー済み":"初回採点プロンプト"}</button>
-    <button type="button" className="ghost small" disabled={!reviewPrompt} onClick={async()=>{try{if(item.id)await post(`/api/reviews/${item.id}/contract-lock`,{});if(reviewPrompt)await copyText(reviewPrompt,"review",setCopied)}catch(error){window.alert(error instanceof Error?error.message:"この復習課題は現在実行できません")}}}><Copy size={14}/>{copied==="review"?"コピー済み":"復習採点プロンプト"}</button>
+    <button type="button" className={isFirst?"primary small":"ghost small"} onClick={()=>void copyText(withAnswer(firstPrompt),"first",setCopied)}><Copy size={14}/>{copied==="first"?"コピー済み":"初回採点プロンプト"}</button>
+    <button type="button" className="ghost small" disabled={!reviewPrompt} onClick={async()=>{try{if(item.id)await post(`/api/reviews/${item.id}/contract-lock`,{});if(reviewPrompt)await copyText(withAnswer(reviewPrompt),"review",setCopied)}catch(error){window.alert(error instanceof Error?error.message:"この復習課題は現在実行できません")}}}><Copy size={14}/>{copied==="review"?"コピー済み":"復習採点プロンプト"}</button>
     <button type="button" className="ghost small" onClick={()=>void copyText(repairPrompt,"repair",setCopied)}><Copy size={14}/>{copied==="repair"?"コピー済み":"理解補修プロンプト"}</button>
   </div>;
 }
@@ -885,8 +886,13 @@ function MasteryLevels({levels}:{levels:MasteryLevelState[]}){
   </div>)}</div>;
 }
 
-function ProblemDetail({problem,data,run,busy,onBack,onImport,startingTask}:{problem:Problem;data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean;onBack:()=>void;onImport:()=>void;startingTask?:Task}) {
+function ProblemDetail({problem,data,run,busy,onBack,onImport,startingTask}:{problem:Problem;data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>Promise<boolean>;busy:boolean;onBack:()=>void;onImport:()=>void;startingTask?:Task}) {
   const [blindAnswerSubmitted,setBlindAnswerSubmitted]=useState(false);
+  const [answerDraft,setAnswerDraft]=useState("");
+  const [solvingSince,setSolvingSince]=useState<number|null>(null),[elapsed,setElapsed]=useState(0);
+  const [hintOpen,setHintOpen]=useState(false),[hintBusy,setHintBusy]=useState(false),[showGradingImport,setShowGradingImport]=useState(false);
+  const firstSeenAttempt=useRef(Math.max(0,...data.attempts.filter(a=>a.problem_id===problem.problem_id).map(a=>a.id)));
+  useEffect(()=>{if(!solvingSince||blindAnswerSubmitted)return;const timer=setInterval(()=>setElapsed(Math.floor((Date.now()-solvingSince)/1000)),1000);return()=>clearInterval(timer)},[solvingSince,blindAnswerSubmitted]);
   const [editing,setEditing]=useState<Attempt|null>(null);
   const [form,setForm]=useState<Record<string,string>>({});
   const [rediagnosing,setRediagnosing]=useState<Attempt|null>(null);
@@ -895,7 +901,7 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport,startingTask}:{pro
   const [rediagnosisPreview,setRediagnosisPreview]=useState<any>(null);
   const [initialMode,setInitialMode]=useState(startingTask?.mode||(problem.category==="past_exam"?"full":problem.recommended_mode||"full"));
   const [initialPromptCopied,setInitialPromptCopied]=useState(false);
-  useEffect(()=>{setInitialMode(startingTask?.mode||(problem.category==="past_exam"?"full":problem.recommended_mode||"full"));setInitialPromptCopied(false);setBlindAnswerSubmitted(false)},[problem.problem_id,startingTask?.mode,startingTask?.source_attempt_id,startingTask?.transfer_training_key]);
+  useEffect(()=>{setInitialMode(startingTask?.mode||(problem.category==="past_exam"?"full":problem.recommended_mode||"full"));setInitialPromptCopied(false);setBlindAnswerSubmitted(false);setAnswerDraft("");setSolvingSince(null);setHintOpen(false);firstSeenAttempt.current=Math.max(0,...data.attempts.filter(a=>a.problem_id===problem.problem_id).map(a=>a.id))},[problem.problem_id,startingTask?.mode,startingTask?.source_attempt_id,startingTask?.transfer_training_key]);
   const canonicalId=resolveCanonicalProblemId(problem.problem_id,data.problemAliases);
   const attempts=data.attempts.filter(a=>resolveCanonicalProblemId(a.problem_id,data.problemAliases)===canonicalId);
   const validAttempts=attempts.filter(attempt=>attemptConsistentForDisplay(attempt,problem)&&
@@ -919,7 +925,7 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport,startingTask}:{pro
     canonicalProblemType:problem.canonical_problem_type,mode:initialMode,estimatedMinutes:initialContract.estimatedMinutes,
     gradingContract:initialContract,problemContext:initialProblemContext,
   }):"";
-  const copyInitialPrompt=async()=>{await navigator.clipboard.writeText(initialPrompt);setInitialPromptCopied(true);setTimeout(()=>setInitialPromptCopied(false),1800)};
+  const copyInitialPrompt=async()=>{await navigator.clipboard.writeText(appendSubmittedAnswer(initialPrompt,answerDraft));setInitialPromptCopied(true);setTimeout(()=>setInitialPromptCopied(false),1800)};
   const mastery=data.masteryByProblem[canonicalId]||data.masteryByProblem[problem.problem_id];
   const related=problem.related_s_problem_ids?.length?problem.related_s_problem_ids:String(problem.linked_s_problems||"").split(";").filter(Boolean);
   const editAttempt=(attempt:Attempt)=>{
@@ -962,12 +968,39 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport,startingTask}:{pro
     const result=await post(`/api/attempts/${target.id}/whole-diagnostic/save`,{text:rediagnosisText});
     setRediagnosing(null);setRediagnosisPreview(null);setRediagnosisText("");return result;
   },"元の採点を保持して、答案全体の追加診断だけを更新しました");};
-  if(startingTask?.learning_purpose==="transfer_check"&&!blindAnswerSubmitted)return <section className="panel">
-    <h2>転移確認：{problemDisplayLabel(problem)}</h2><p>{startingTask.minutes}分目安・参照なし</p>
-    <p>書籍の問題文だけを見て答案を作成してください。対象能力・解法・採点基準は答案完成後に確認します。</p>
-    <button className="primary" onClick={()=>setBlindAnswerSubmitted(true)}>答案を書き終えた（採点へ）</button>
-    <button className="ghost" onClick={onBack}>戻る</button></section>;
-  return <><button className="back" onClick={onBack}>← 問題一覧へ</button><div className="detail-hero"><div><div className="detail-badges"><Badge tone={problem.category==="S"?"blue":""}>原典 {problem.category}</Badge>{problem.strategy_rank&&<Badge tone={problem.strategy_rank==="SS"?"red":problem.strategy_rank==="A+"?"orange":""}>実戦 {problem.strategy_rank}</Badge>}</div><h2>{problemDisplayLabel(problem)}</h2><p>{problem.problem_id} ・ {problem.theme}</p></div><button className="primary" onClick={onImport}><ClipboardPaste size={17}/>GPT採点結果を取り込む</button></div>
+  const gradingTask=startingTask?.id?{...startingTask,problem_id:canonicalId}:nextReview;
+  const hintReview=currentReviewCards.find(c=>c.review.id===gradingTask?.id);
+  const revealHint=async()=>{if(!hintReview)return;setHintBusy(true);try{
+    await post(`/api/reviews/${hintReview.review.id}/reference`,{actual_reference_level:2});
+    rememberReferenceState(hintReview.review.id,revealReference(readReferenceState(hintReview.review.id),2));setHintOpen(true);
+  }catch(e){window.alert(e instanceof Error?e.message:"参照を記録できないため表示しません")}finally{setHintBusy(false)}};
+  if(!blindAnswerSubmitted)return <section className="panel blind-problem" aria-label="解答前の問題">
+    <button className="back" onClick={onBack}>← 戻る</button><h2>{problemDisplayLabel(problem)}</h2>
+    <p>今回の範囲：{modes[initialMode]||initialMode}・{startingTask?.minutes||gradingTask?.estimated_minutes||"―"}分目安</p>
+    <p>{preAnswerReason(startingTask||gradingTask||{})}</p>
+    <p>書籍・公式PDFの問題文だけを開いて解答してください。問題文全文はアプリに収録されていません。</p>
+    <a href={sheetHref(initialMode)} download>解答用の空欄シート</a>
+    {!solvingSince?<button className="primary" onClick={()=>setSolvingSince(Date.now())}>解答を開始</button>:<>
+      <p aria-live="off">経過 {Math.floor(elapsed/60)}分{elapsed%60}秒</p>
+      <label>答案（紙で解いた場合は採点時に画像を添付）<textarea rows={9} value={answerDraft} onChange={e=>setAnswerDraft(e.target.value)} style={{width:"100%"}}/></label>
+      <button className="primary" onClick={()=>setBlindAnswerSubmitted(true)}>答案を書き終えた（採点へ）</button>
+    </>}
+    {hintReview&&<div><button className="ghost" disabled={hintBusy} onClick={revealHint}>ヒントを開く（参照ありとして記録）</button>
+      {hintOpen&&<p role="status">参照あり：{hintReview.card.targetAttempt?.next_action||hintReview.card.targetAttempt?.error_point||"対象の資料を確認してください"}</p>}</div>}
+  </section>;
+  const savedResult=latest&&latest.id>firstSeenAttempt.current?latest:undefined;
+  return <><button className="back" onClick={onBack}>← Todayへ戻る</button><section className="panel answer-summary"><h2>{problemDisplayLabel(problem)}：解答後</h2>
+    {savedResult?<><p>今回：{savedResult.score_numeric??"―"}点・{savedResult.mark}</p><p>最大の失点：{savedResult.error_point||"major errorなし"}</p>
+      <p>次の行動：{data.today.tasks.find(t=>t.problem_id===canonicalId&&!t.checked)?.kind||"Todayの最新順位へ進む"}</p></>:<p>答案を確定しました。今回の採点結果はまだ保存されていません。</p>}
+    <p>成功条件：{completionCriterionText(gradingTask?.grading_contract)}</p>
+    {answerDraft&&<details><summary>確定した今回の答案</summary><p style={{whiteSpace:"pre-wrap"}}>{answerDraft}</p></details>}
+    {gradingTask?<StudyPromptButtons item={gradingTask} resolved={hintReview?.card} submittedAnswer={answerDraft}/>:initialPrompt&&<button className="ghost" onClick={copyInitialPrompt}>採点プロンプトをコピー</button>}
+    <button className="primary" onClick={()=>setShowGradingImport(true)}>GPT採点結果を取り込む</button>
+  </section>
+  {showGradingImport&&<Modal title="今回の答案の採点を保存" close={()=>setShowGradingImport(false)}><AdvancedImportView problems={data.problems} answerIndex={data.answerIndex} problemAliases={data.problemAliases} attempts={data.attempts} reviews={data.reviews} busy={busy}
+    submittedAnswer={{problemId:canonicalId,text:answerDraft,referenceLevel:Math.max(Number(hintReview?.review.actual_reference_level||0),readReferenceState(gradingTask?.id).actual_reference_level)}}
+    run={(a,s)=>run(async()=>{const result=await a();setShowGradingImport(false);return result},s)}/></Modal>}
+  <details className="panel post-answer-details"><summary>詳細履歴・解説・修正記録を開く（過去記録）</summary><div className="detail-hero"><div><div className="detail-badges"><Badge tone={problem.category==="S"?"blue":""}>原典 {problem.category}</Badge>{problem.strategy_rank&&<Badge tone={problem.strategy_rank==="SS"?"red":problem.strategy_rank==="A+"?"orange":""}>実戦 {problem.strategy_rank}</Badge>}</div><h2>{problemDisplayLabel(problem)}</h2><p>{problem.problem_id} ・ {problem.theme}</p></div><button className="primary" onClick={onImport}><ClipboardPaste size={17}/>GPT採点結果を取り込む</button></div>
     {startingTask&&<section className="panel"><h3>今回の学習scope</h3><p>{modes[startingTask.mode]||startingTask.mode}・{startingTask.minutes}分目安 / {startingTask.effective_review_scope||startingTask.review_scope||"答案形成"}</p>
       <p>{startingTask.why_today}</p><StudyPromptButtons item={startingTask}/><small>記録保存後、最新の成功・失敗証拠でTodayの順位が更新されます。</small></section>}
     {isCompletelyFirst&&<section className="panel initial-grading-panel"><div><span className="eyebrow">FIRST ATTEMPT</span><h3>この問題は初回です</h3><p>まず参照なしで解答してください。Reviewを作らず、problem masterと選択モードから初回採点契約を生成します。</p></div>
@@ -1025,7 +1058,7 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport,startingTask}:{pro
       <div className="button-row wide"><button className="ghost" onClick={()=>navigator.clipboard.writeText(replacementPrompt(replacing))}><Copy size={15}/>差し替え用GPTプロンプトをコピー</button><button className="primary" onClick={()=>{setReplacing(null);onImport()}}><ClipboardPaste size={15}/>GPT回答取り込みへ</button></div>
       <small>保存時に旧Attemptの無効化、新Attempt保存、Review再構成、Today/Dashboard更新を1 transactionで行います。</small>
     </div></Modal>}
-  </>
+  </details></>
 }
 
 function AttemptView({problems,run,busy}:{problems:Problem[];run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean}) {
@@ -1087,7 +1120,7 @@ function ImportView({problems,run,busy}:{problems:Problem[];run:(a:()=>Promise<u
     </section></div>
 }
 
-function ReviewsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean}) {
+function ReviewsView({data,run,busy,select}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean;select:(p:Problem,t:Task)=>void}) {
   const [filter,setFilter]=useState("open");
   const [selectedReview,setSelectedReview]=useState<Review|null>(null);
   const [postponeReviewItem,setPostponeReviewItem]=useState<{item:Review;initial:ScheduleAction}|null>(null);
@@ -1155,7 +1188,8 @@ function ReviewsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>
           <div className="review-card-actions"><button disabled={busy} className="small primary" onClick={()=>setSelectedReview(review)}><Check size={14}/>復習結果を記録</button></div>
         </div>
         <ScheduleQuickButtons item={resolved.item} busy={busy} select={initial=>setPostponeReviewItem({item:review,initial})}/>
-        <ReviewPlanDetails item={resolved.item} resolved={resolved.card}/>
+        <p>{preAnswerReason(review)}</p><p>{modes[resolved.card.effectiveMode]||resolved.card.effectiveMode}・{resolved.card.estimatedMinutes}分目安</p>
+        <button className="ghost" onClick={()=>{const p=data.problems.find(p=>p.problem_id===resolved.card.canonicalProblemId);if(p)select(p,{...resolved.item,id:review.id,problem_id:p.problem_id,title:resolved.card.displayLabel,kind:"復習",minutes:resolved.card.estimatedMinutes} as Task)}}>問題を開いて解答する</button>
       </article>})}</div>
     {!rows.length&&<section className="panel"><Empty>該当する復習予定はありません</Empty></section>}
     {selectedReview&&<ReviewOutcomeModal item={resolveReview(selectedReview).item} busy={busy} close={()=>setSelectedReview(null)} save={saveReview}/>}
@@ -1256,7 +1290,30 @@ function CoachDiffList({title,diff}:{title:string;diff:CoachListDiff}){
 function CoachFactList({rows}:{rows:Array<{title:string;evidence:string}>}){
   return <div className="coach-fact-list">{rows.length?rows.slice(0,3).map((row,index)=><div key={`${row.title}-${index}`}><strong>{row.title}</strong><span>{row.evidence}</span></div>):<p>確認できる証拠がまだありません。</p>}</div>;
 }
-function WeakView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean}) {
+function CurrentLearningDiagnosis({data,onToday}:{data:Bootstrap;onToday:()=>void}){
+  const diagnosis=deriveCurrentLearningDiagnosis(data),a=diagnosis.assessment;
+  return <section className="panel current-learning-diagnosis" aria-label="現在の合格診断">
+    <h2>合格診断：{diagnosis.stage}</h2><p>本番対応力 {a?.level??"未測定"} / 5 ・信頼度 {coachConfidenceText(a?.confidence||"low")}</p>
+    <p style={{whiteSpace:"pre-wrap",overflowWrap:"anywhere"}}>{a?.passOutlook||"判定材料不足。参照なしの実答案で測定します。"}</p>
+    <p>選択3問：{a?.selectedThreeScore?.value==null?"未測定":`${Number(a.selectedThreeScore.value).toFixed(1)}%（${a.selectedThreeScore.evidenceCount} session）`}／選題：{a?.selectionAccuracy?.denominator?`${a.selectionAccuracy.numerator}/${a.selectionAccuracy.denominator}`:"未測定"}／時間内完遂：{a?.timedCompletion?.denominator?`${a.timedCompletion.numerator}/${a.timedCompletion.denominator}`:"未測定"}／本番の転移：{a?.transfer?.denominator?`${a.transfer.numerator}/${a.transfer.denominator}`:"未測定"}</p>
+    <small>実測証拠に基づく暫定評価です。正式な合格基準や合格確率を意味しません。最新の有効Attempt #{diagnosis.latestAttemptId}を反映。</small>
+    <details><summary>到達段階の根拠（合格確率ではありません）</summary><p>{a?.rationale}</p><p>選択3問の実測得点帯を基準に、選題・時間内完遂と証拠母数で段階の上限を確認します。2.5等は区分名であり、精密な能力値ではありません。転移訓練の成功を直接加点しません。</p></details>
+    {diagnosis.transfer.strongStatus&&<p>本番転移の対象 {diagnosis.transfer.strongStatus.total}件：別過去問で関連技能を測定済み {diagnosis.transfer.strongStatus.attempted}件（成功 {diagnosis.transfer.strongStatus.successful}・失敗 {diagnosis.transfer.strongStatus.failed}・独立成功を判定できない {diagnosis.transfer.strongStatus.uncertain}）、まだ別過去問で未測定 {diagnosis.transfer.strongStatus.unattempted}件。分母は過去の失点から得た問題・技能の組であり、全件に挑戦した回数ではありません。</p>}
+    <h3>合格に向けた強み</h3>{diagnosis.strengths.length?diagnosis.strengths.map(s=><p key={s}>{s}</p>):<p>独立した成功証拠はまだ不足しています。</p>}
+    <h3>現在の最大の不足能力（上位3件）</h3>
+    {diagnosis.deficits.length?diagnosis.deficits.map((d,i)=><article className="card" key={d.problemId}>
+      <h4>{i+1}. {d.problemId}</h4><p>{d.ability}</p><small>判断根拠：{d.date}・Attempt #{d.sourceAttemptId}。過去メモの件数ではなく現在の未解消target。</small>
+      <p>重要性・順位の理由：{d.task.why_today||"現在有効な過去問の未解消失点を、必要な範囲で補修するため"}。Todayと同じ適格候補の順位を使用します。</p>
+      <p>改善行動：{d.task.title}／{modes[d.task.mode]||d.task.mode}・{d.task.minutes}分目安</p>
+      <p>成功条件：{d.successCriterion}</p><button className="ghost" onClick={onToday}>Todayの優先 {d.task.ranking?.rank} へ</button>
+    </article>):<p>現在の採点から具体的な不足能力を確定できません。弱点なしではなく、未確認の能力は次の実答案で測定します。</p>}
+    <h3>保持・別問題への転移</h3><p>保持確認の適格候補 {diagnosis.retentionPending}件。別問題の参照なし訓練成功 {diagnosis.transfer.trainingSuccess}件／自然な過去問の転移成功 {diagnosis.transfer.strongSuccess}件。訓練での転移未達 {diagnosis.transfer.failed}件。手動生成は出題意図を知る可能性があるため本番の独立転移とは区別します。</p>
+    <p>補修・保持・技能照合などを待つ対象 {diagnosis.transfer.pendingProblems.length}問題／実行可能な転移候補 {diagnosis.transfer.eligible}件。本番転移KPIとは別集計です。同一問題の◎は保持であり転移成功には数えません。</p>
+    {!!diagnosis.transfer.pendingReasons.length&&<details><summary>転移の待機条件</summary>{diagnosis.transfer.pendingReasons.map(s=><p key={s}>{s}</p>)}</details>}
+    <button className="primary" onClick={onToday}>Todayの最新順位で学習する</button>
+  </section>;
+}
+function WeakView({data,run,busy,onToday}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean;onToday:()=>void}) {
   const [selected,setSelected]=useState<string[]>([]);
   const [copied,setCopied]=useState(false);
   const [editing,setEditing]=useState<Attempt|null>(null);
@@ -1291,8 +1348,10 @@ function WeakView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:
     if(!window.confirm(`この採点データを誤登録として無効化します。現在の復習内容が再計算され、既に生成したGPT採点結果は使用できなくなる場合があります。\n\n答案を修正して採点し直す場合は、問題ページの「解答を差し替えて再採点」を使用してください。`))return;
     run(()=>post(`/api/attempts/${attempt.id}/delete`,{}),"採点データを無効化し、現在の分析・復習予定を再計算しました");
   };
-  if(!trend.attemptCount) return <><CoachPanel data={data} run={run} busy={busy}/><ConceptWeaknessPanel data={data}/><section className="weak-trend-hero"><div><span className="eyebrow">WEAKNESS TRENDS</span><h2>GPT採点が集まると、苦手の傾向が見えてきます</h2><p>この画面はK/W/N/Cが付いた採点だけから、繰り返すミスを探します。ミスなしの採点は学習履歴には残りますが、弱点グラフには加算しません。</p></div></section><section className="panel weak-empty-explanation">{trend.totalAttemptCount?<><Check size={28}/><h3>採点は{trend.totalAttemptCount}件ありますが、弱点として数えるミスは0件です</h3><p>現在の採点はすべて「none（ミスなし）」です。K/W/N/Cが付いた結果を保存すると、テーマ別・分類別・週別のグラフが表示されます。</p></>:<Empty>まだ採点記録がありません。GPT採点結果を取り込むと自動で蓄積されます</Empty>}</section></>;
+  if(!trend.attemptCount) return <><CurrentLearningDiagnosis data={data} onToday={onToday}/><CoachPanel data={data} run={run} busy={busy}/><ConceptWeaknessPanel data={data}/><section className="weak-trend-hero"><div><span className="eyebrow">WEAKNESS TRENDS</span><h2>GPT採点が集まると、苦手の傾向が見えてきます</h2><p>この画面はK/W/N/Cが付いた採点だけから、繰り返すミスを探します。ミスなしの採点は学習履歴には残りますが、弱点グラフには加算しません。</p></div></section><section className="panel weak-empty-explanation">{trend.totalAttemptCount?<><Check size={28}/><h3>採点は{trend.totalAttemptCount}件ありますが、弱点として数えるミスは0件です</h3><p>現在の採点はすべて「none（ミスなし）」です。K/W/N/Cが付いた結果を保存すると、テーマ別・分類別・週別のグラフが表示されます。</p></>:<Empty>まだ採点記録がありません。GPT採点結果を取り込むと自動で蓄積されます</Empty>}</section></>;
   return <>
+    <CurrentLearningDiagnosis data={data} onToday={onToday}/>
+    <details className="panel"><summary>Coachの補足・過去の失敗傾向を確認（履歴）</summary>
     <CoachPanel data={data} run={run} busy={busy}/>
     <ConceptWeaknessPanel data={data}/>
     <section className="weak-trend-hero"><div><span className="eyebrow">LEGACY WEAKNESS TRENDS</span><h2>旧指標：採点結果から見える苦手傾向</h2><p>旧K/W/N/C集計は履歴比較専用です。正式計画の優先順位には、上のconcept evidenceを使用します。</p></div><div className="trend-summary"><strong>{trend.themes.length}</strong><span>旧方式の検出テーマ</span><small>最多 {trend.topTheme}</small></div></section>
@@ -1332,7 +1391,7 @@ function WeakView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:
       <div className="analysis-edit-note wide"><AlertTriangle size={16}/><span>保存すると、この採点結果から作られた復習予定と弱点傾向が新しい内容で再計算されます。</span></div>
       <div className="form-actions wide"><button type="button" className="ghost" onClick={()=>setEditing(null)}>キャンセル</button><button className="primary" disabled={busy}>更新する</button></div>
     </form></Modal>}
-  </>;
+  </details></>;
 }
 
 function PastView({data,go,run,busy,startingTask}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()=>Promise<unknown>,s:string)=>Promise<boolean>;busy:boolean;startingTask?:Task|null}) {

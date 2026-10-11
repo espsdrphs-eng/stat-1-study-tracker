@@ -132,7 +132,7 @@ export function deriveRankedStudyCandidates(args:{today:string;daysRemaining:num
       waiting.push({task:base(c.sourceProblemId,"転移待機","check",0),reason:c.reason,reevaluateWhen:"参照なし遅延保持・明示skill候補・benchmarkの条件が満たされた時"});continue;
     }
     if(!c.required)continue;
-    if(c.repairKind!=="transfer"&&graduated(c.sourceProblemId))continue;
+    if(c.repairKind!=="transfer"&&graduated(c.sourceProblemId)&&!c.transferFailureEvidenceId)continue;
     if(c.repairKind!=="transfer"&&!c.interventionChanged&&actionable.some(r=>r.problem_id===c.sourceProblemId))continue;
     const training=c.transferTraining;
     const id=training?.generatedProblemId||training?.existingProblemId||(c.repairKind==="transfer"?c.transferProblemIds[0]:

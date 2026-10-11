@@ -496,7 +496,7 @@ export type AdditionalStudyCandidate = {
 };
 export type PastExamRepairCandidate = {
   transferTraining?:import("./generatedTransfer.ts").TransferTrainingCandidate;
-  repairSuccessEvidenceId?:number;transferEvidenceId?:string;
+  repairSuccessEvidenceId?:number;transferEvidenceId?:string;transferFailureEvidenceId?:number;
   sessionId:number;sourceAttemptId:number;sourceProblemId:string;sourceFindingId:string;
   conceptId:string;conceptLabel:string;materiality:"minor"|"major";recurrence:number;
   examImpact:"low"|"medium"|"high";required:boolean;matchReason:string;
@@ -509,7 +509,7 @@ export type PastExamRepairCandidate = {
 };
 export type RepairLineageProjection = {
   intervention?:"rediagnosis";observedFailure?:string;
-  sourceFindingIds?:string[];repairSuccessEvidenceId?:number;
+  sourceFindingIds?:string[];repairSuccessEvidenceId?:number;transferFailureEvidenceId?:number;
   sourceAttemptId:number;sourceProblemId:string;sourceFindingId:string;
   rootConceptId:string;materiality:"minor"|"major";recurrence:number;
   examImpact:"low"|"medium"|"high";repairProblemId:string;matchReason:string;

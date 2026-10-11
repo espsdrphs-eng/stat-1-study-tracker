@@ -10,6 +10,7 @@ import { finalizeStudyUpdateForSave, prepareImportedStudyUpdate } from "./studyC
 import { projectStudyUpdateLifecycle } from "./studyUpdateLifecycle";
 import { reviewExecutionMessage, reviewExecutionState, selectCurrentReviewsForProblem, type ReviewExecutionState } from "./integrityEngine";
 import {resolveSemanticReviewGeneration} from "./reviewGeneration.ts";
+import {attachSubmittedAnswer,type SubmittedAnswer} from "./learningFeedback.ts";
 import type { AnswerIndexEntry, Attempt, Problem, ProblemAlias, Review, StudyUpdate } from "./types";
 import { wholeAnswerScanSummary } from "./wholeAnswerDiagnostic.ts";
 
@@ -83,8 +84,8 @@ function Pill({children,tone=""}:{children:React.ReactNode;tone?:string}){
   return <span className={`badge ${tone}`}>{children}</span>;
 }
 
-export default function AdvancedImportView({problems,answerIndex,problemAliases,attempts,reviews,run,busy}:{
-  problems:Problem[];answerIndex:AnswerIndexEntry[];problemAliases:ProblemAlias[];attempts:Attempt[];reviews:Review[];run:(action:()=>Promise<unknown>,success:string)=>Promise<boolean>;busy:boolean;
+export default function AdvancedImportView({problems,answerIndex,problemAliases,attempts,reviews,run,busy,submittedAnswer}:{
+  problems:Problem[];answerIndex:AnswerIndexEntry[];problemAliases:ProblemAlias[];attempts:Attempt[];reviews:Review[];run:(action:()=>Promise<unknown>,success:string)=>Promise<boolean>;busy:boolean;submittedAnswer?:SubmittedAnswer;
 }){
   const draftKey="stat1:gpt-import-draft:v1";
   const readDraft=()=>{try{return JSON.parse(sessionStorage.getItem(draftKey)||"null") as {text?:string;updates?:StudyUpdate[]}|null}catch{return null}};
@@ -199,7 +200,7 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
   };
 
   const saveUpdates=async()=>{
-    const snapshot=projectedUpdates.map(update=>sanitizeStudyUpdateTiming(update));
+    const snapshot=projectedUpdates.map(update=>attachSubmittedAnswer(sanitizeStudyUpdateTiming(update),submittedAnswer));
     sessionStorage.setItem(draftKey,JSON.stringify({text,updates:snapshot,savedAt:new Date().toISOString()}));
     const ok=await run(()=>post("/api/import",{updates:snapshot}),`${snapshot.length}件を保存しました`);
     if(!ok){setSaveFailed(true);return}

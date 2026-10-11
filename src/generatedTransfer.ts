@@ -15,7 +15,7 @@ export type TransferTrainingCandidate={
   key:string;lineage:TransferTrainingLineage;kind:"existing"|"generated"|"pending";
   existingProblemId?:string;generatedProblemId?:string;reason:string;
 };
-export type GeneratedDraft={problem_text:string;reference_solution:string;grading_rubric:string;
+export type GeneratedDraft={input_format?:"statement_only_v1";problem_text:string;reference_solution:string;grading_rubric:string;
   difficulty:"統計検定1級";estimated_minutes:number;surface_features:string[];generator_pass_id:string};
 export const GENERATION_CHECKS=["well_defined","solution_correct","rubric_aligned","skill_necessary",
   "no_shortcut","surface_distinct","skill_hidden","exam_appropriate","bounded_work"] as const;
@@ -27,8 +27,11 @@ export type GeneratedTransferContent=GeneratedDraft&{
   exam_score_eligible:false;transfer_eligible:true;evidence_strength:"training";
   validation:GenerationValidation;content_hash:string;created_at:string;
   lifecycle_status:"ready"|"submitted"|"graded";answer_submission?:{text:string;minutes:number;referenceLevel:number;submittedAt:string};
+  grading_reference?:{problem_id:string;content_hash:string;reference_solution:string;grading_rubric:string;
+    checks:Record<"well_defined"|"solution_correct"|"rubric_aligned",{pass:boolean;evidence:string}>;method:"manual_chatgpt"};
 };
 export type TransferGenerationRecord={key:string;lineage:TransferTrainingLineage;createdAt:string;
+  input_format?:"statement_only_v1";
   status:"requested"|"validation_pending"|"registered"|"pending";
   rounds:Array<{draft:GeneratedDraft;hash:string;validation?:GenerationValidation}>;problemId?:string;pendingReason?:string};
 const unique=(a:string[])=>[...new Set(a)];
@@ -67,6 +70,7 @@ export function delayedTrainingPrerequisites(source:Attempt,root:RootWeakness,at
 }
 
 export function deriveTransferTrainingCandidates(args:{record:StoredExamReferencePack;attempts:Attempt[];problems:Problem[];
+  planningMode?:"ranked"|"scheduled";
   answers?:AnswerIndexEntry[];exposureOverrides?:Record<string,string>;generationStates?:Record<string,string>;
   pastSessions?:PastSession[]}):TransferTrainingCandidate[]{
   const allowed=canonicalTrainingSkills(args.record),candidates=new Map<string,TransferTrainingCandidate>();
@@ -107,7 +111,9 @@ export function deriveTransferTrainingCandidates(args:{record:StoredExamReferenc
           (!!s.simulation_completed_at||s.session_state==="completed"));
         const repeatedFailure=args.attempts.filter(a=>a.problem_id===source.problem_id&&a.id<=source.id&&
           deriveFailureEpisode(a).rootWeaknesses.some(r=>r.rootWeaknessId===root.rootWeaknessId&&r.requiredRepair)).length>=2;
-        const generationDeferred=!!args.pastSessions&&!benchmarkComplete&&!repeatedFailure;
+        // Ranking, not a calendar milestone, selects qualified training in
+        // normal Today. Repair/retention, validation and JIT gates remain.
+        const generationDeferred=args.planningMode!=="ranked"&&!!args.pastSessions&&!benchmarkComplete&&!repeatedFailure;
         candidates.set(key,{key,lineage,kind:prior?"generated":existing.length?"existing":
           generationDeferred||args.generationStates?.[key]==="pending"?"pending":"generated",
           generatedProblemId:prior?.problem_id,existingProblemId:prior?undefined:existing[0]?.problem_id,
@@ -128,18 +134,22 @@ function text(value:unknown,name:string,min=1,max=24000){
   if(typeof value!=="string"||value.trim().length<min||value.length>max)throw new Error(`${name}: 長さ・形式が不正です`);
   return value.trim();
 }
-function object(input:string){
-  const raw=JSON.parse(input.trim().replace(/^```(?:json)?\s*/i,"").replace(/\s*```$/,""));
+export function transferJson(input:string){
+  let raw;
+  try{raw=JSON.parse(input.trim().replace(/^```(?:json)?\s*/i,"").replace(/\s*```$/,""));}
+  catch{throw new Error("JSON形式を確認してください。ChatGPTの結果全体をそのまま貼り付けてください。");}
   if(!raw||Array.isArray(raw)||typeof raw!=="object")throw new Error("JSON objectが必要です");
   return raw;
 }
 export async function acceptGenerationDraft(record:TransferGenerationRecord,input:string){
   if(record.status==="registered"||record.status==="validation_pending"||record.rounds.length>=2)throw new Error("再生成不可：検証待ち・登録済み、または上限2回です");
-  const raw=object(input),minutes=Number(raw.estimated_minutes);
+  const raw=transferJson(input),minutes=Number(raw.estimated_minutes),statementOnly=record.input_format==="statement_only_v1";
+  if(statementOnly&&["reference_solution","grading_rubric","solution","answer","rubric"].some(k=>k in raw))
+    throw new Error("生成結果に解答・採点基準を含めないでください。問題文だけの生成プロンプトで再依頼してください。");
   if(raw.difficulty!=="統計検定1級"||!Number.isInteger(minutes)||minutes<10||minutes>15)throw new Error("難易度または10〜15分の時間制約が不正です");
   if(!Array.isArray(raw.surface_features)||raw.surface_features.length<2)throw new Error("文脈・記号の情報が必要です");
-  const draft:GeneratedDraft={problem_text:text(raw.problem_text,"problem_text",30),reference_solution:text(raw.reference_solution,"reference_solution",30),
-    grading_rubric:text(raw.grading_rubric,"grading_rubric",20),difficulty:raw.difficulty,estimated_minutes:minutes,
+  const draft:GeneratedDraft={...(statementOnly?{input_format:"statement_only_v1" as const}:{}),problem_text:text(raw.problem_text,"問題文",30),reference_solution:statementOnly?"":text(raw.reference_solution,"reference_solution",30),
+    grading_rubric:statementOnly?"":text(raw.grading_rubric,"grading_rubric",20),difficulty:raw.difficulty,estimated_minutes:minutes,
     surface_features:raw.surface_features.map((s:unknown)=>text(s,"surface feature",1,300)),generator_pass_id:text(raw.generator_pass_id,"generator_pass_id")};
   if(draft.problem_text.includes(record.lineage.rootSkillId)||draft.problem_text.includes(record.lineage.sourceProblemId))throw new Error("問題文にtarget/sourceを露出させないでください");
   const hash=await contentHash(draft);
@@ -148,7 +158,7 @@ export async function acceptGenerationDraft(record:TransferGenerationRecord,inpu
 }
 export function acceptGenerationValidation(record:TransferGenerationRecord,input:string){
   if(record.status!=="validation_pending")throw new Error("先に生成passが必要です");
-  const raw=object(input),round=record.rounds.at(-1)!;
+  const raw=transferJson(input),round=record.rounds.at(-1)!;
   const validator=text(raw.validator_pass_id,"validator_pass_id");
   if(raw.draft_hash!==round.hash||validator===round.draft.generator_pass_id)throw new Error("検証対象hashまたは独立検証passが不正です");
   for(const key of GENERATION_CHECKS){
@@ -180,14 +190,31 @@ export function blindGeneratedView(problem:Problem){
 }
 export async function validateGeneratedContent(problem:Problem){
   const c=problem.generated_transfer;if(!c||problem.source_type!=="generated")throw new Error("generated content missing");
-  const draft:GeneratedDraft={problem_text:c.problem_text,reference_solution:c.reference_solution,grading_rubric:c.grading_rubric,
+  const draft:GeneratedDraft={...(c.input_format?{input_format:c.input_format}:{}),problem_text:c.problem_text,reference_solution:c.reference_solution,grading_rubric:c.grading_rubric,
     difficulty:c.difficulty,estimated_minutes:c.estimated_minutes,surface_features:c.surface_features,generator_pass_id:c.generator_pass_id};
   if(await contentHash(draft)!==c.content_hash||c.validation.draft_hash!==c.content_hash||
     c.validation.validator_pass_id===c.generator_pass_id||!GENERATION_CHECKS.every(k=>c.validation.checks[k]?.pass&&c.validation.checks[k]?.evidence?.length>=10)||
     !c.lineage.repairAttemptId||!c.lineage.retrievalAttemptId||c.lineage.rootSkillId!==c.root_skill_id||
     c.exam_score_eligible!==false||c.evidence_strength!=="training")throw new Error(`生成問題の不変content/検証/lineageが不正です: ${problem.problem_id}`);
+  if(c.input_format&& (c.reference_solution!==""||c.grading_rubric!==""))throw new Error("問題文専用の不変contentに解答が混入しています");
+  if(c.grading_reference)validateManualGradingReference(problem,c.grading_reference);
+}
+/** Post-submission reference is separate from the immutable, pre-answer statement. */
+export function validateManualGradingReference(problem:Problem,raw:unknown):NonNullable<GeneratedTransferContent["grading_reference"]>{
+  const c=problem.generated_transfer,r=raw as GeneratedTransferContent["grading_reference"];
+  if(!c?.answer_submission||!r||r.problem_id!==problem.problem_id||r.content_hash!==c.content_hash)
+    throw new Error("採点用解答の対象問題・内容照合が不一致です。現在の採点プロンプトで再確認してください。");
+  const solution=text(r.reference_solution,"採点用解答",30),rubric=text(r.grading_rubric,"採点基準",20);
+  for(const k of ["well_defined","solution_correct","rubric_aligned"] as const){
+    if(r.checks?.[k]?.pass!==true)throw new Error("数学的品質が未確認または採点不能です。問題条件と解答を別会話で再確認してください。結果は保存していません。");
+    text(r.checks[k].evidence,"品質確認の根拠",10,4000);
+  }
+  return {problem_id:problem.problem_id,content_hash:c.content_hash,reference_solution:solution,grading_rubric:rubric,checks:r.checks,method:"manual_chatgpt"};
 }
 export function generationPrompt(record:TransferGenerationRecord,sourceFeatures:string[]){
+  if(record.input_format==="statement_only_v1")return `手動ChatGPT連携の転移訓練問題を1問生成。元問題全文は与えません。新しい文脈・記号を使い、数値変更版や表面コピーを避ける。内部で解答可能性を検算するが、解答・解説・採点基準・対象技能は出力しない。問題文では使用公式や対象技能を指定しない。ユーザーは生成意図を知る可能性があるため、本番での独立転移とは判定しない。\n`+
+    JSON.stringify({target_operation:record.lineage.rootSkillId,observed_failure:record.lineage.observedFailure,success_criteria:record.lineage.successCriteria,forbidden_source_features:sourceFeatures})+
+    `\nIDはアプリが管理する。次のJSONだけ返す：`+JSON.stringify({problem_text:"問題文のみ",difficulty:"統計検定1級",estimated_minutes:12,surface_features:["新文脈","新記号"],generator_pass_id:"distinct generation pass"});
   return `転移確認問題の生成pass。解答者にtargetや解答を見せない運用です。元問題全文は与えません。新しい文脈・記号で、数字変更版を避けてください。\n`+
     JSON.stringify({lineage:record.lineage,target_difficulty:"統計検定1級",estimated_minutes:[10,15],forbidden_source_features:sourceFeatures})+
     `\ntargetを問題文で明示せず、その操作が主要解答に不可欠な問題を1問だけ生成。次のJSONだけ返す：`+
@@ -196,6 +223,7 @@ export function generationPrompt(record:TransferGenerationRecord,sourceFeatures:
 export function validationPrompt(record:TransferGenerationRecord,sourceFeatures:string[]){
   const r=record.rounds.at(-1);if(record.status!=="validation_pending"||!r)throw new Error("検証するdraftがありません");
   return `生成時とは別の新しい会話で独立検証してください。生成者の正解主張を信用せず自分で解き直す。迂回解法、元問題の表面コピー、target露出も反証し、不確実なら不合格。検証だけ行い内容を変更しない。\n`+
+    (r.draft.input_format?"問題文だけの事前品質確認です。内部で完全に解き採点可能性を確認する。solution_correctは独立に導いた解答、rubric_alignedはその解答を採点できるかを判定。返却する根拠には式・解法・解答・対象技能名を書かず、解答は採点時まで出力しない。これはモデルの品質報告であり数学的正しさの保証ではない。\n":"")+
     JSON.stringify({draft:r.draft,lineage:record.lineage,forbidden_source_features:sourceFeatures})+`\n結果JSON：`+
     JSON.stringify({draft_hash:r.hash,validator_pass_id:"distinct validation pass id",checks:Object.fromEntries(GENERATION_CHECKS.map(k=>[k,{pass:false,evidence:"独立した検算・反証の具体的根拠"}]))});
 }

@@ -181,6 +181,7 @@ export function analyzeConceptWeaknesses(args:{
 }
 
 export function buildPastExamRepairCandidates(args:{
+  planningMode?:"ranked"|"scheduled";
   record?:StoredExamReferencePack|null;sessions:PastSession[];attempts:Attempt[];
   conceptWeaknesses:ConceptWeaknessInsight[];problems?:Problem[];answers?:AnswerIndexEntry[];
   exposureOverrides?:Record<string,PastExamExposure>;generationStates?:Record<string,string>;
@@ -280,6 +281,7 @@ export function buildPastExamRepairCandidates(args:{
         const interventionRequired=required&&repairKind!=="transfer_wait"&&transferTraining?.kind!=="pending";
         candidates.push({sessionId:context.sessionId,sourceAttemptId:progress.latestFailure.id,sourceProblemId,transferTraining,
           repairSuccessEvidenceId:progress.repairSuccess?.id,
+          transferFailureEvidenceId:progress.transferFailure?.id,
           sourceFindingId:root.sourceFindingIds[0],sourceFindingIds:root.sourceFindingIds,
           rootWeaknessId:root.rootWeaknessId,conceptId,conceptLabel:root.title,observedFailure:root.description,
           materiality:root.materiality,recurrence:root.recurrence,examImpact:root.examImpact,required:interventionRequired,

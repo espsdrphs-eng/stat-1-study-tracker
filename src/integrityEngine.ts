@@ -18,7 +18,8 @@ import {buildPastExamYearCandidates,canonicalizePastExamSessions,derivePastExamS
 import {deriveFailureEpisode} from "./failureEpisode.ts";
 import type {CoachDiagnosisState,DashboardKpiProjection} from "./types.ts";
 import type {ExamReadinessMetrics} from "./examReadiness.ts";
-import {deriveTransferEvidence,withSkillEvidenceMemo} from "./skillEvidence.ts";
+import {deriveTransferEvidence,rootProgress,withSkillEvidenceMemo} from "./skillEvidence.ts";
+import {attemptPlanningEligible} from "./legacyKPolicy.ts";
 import {legacyTruncatedOutlook} from "./coachDiagnosis.ts";
 import {deriveExamReadinessAssessment,LEARNING_ASSESSMENT_LABELS} from "./examCapability.ts";
 
@@ -757,7 +758,17 @@ function calculateIntegrityAudit(args: {
     const cooldownEnd=addCalendarDays(attempt.date,45);
     const pending=active.filter(review=>resolveCanonicalProblemId(review.problem_id,aliases)===state.problemId&&
       ["error_repair","retrieval_check"].includes(String(review.grading_contract?.learningPurpose||review.learning_purpose||"")));
-    const currentGeneric=(currentTodayTasks||[]).filter(task=>!task.checked&&!task.review_type&&!isPastExamSessionTask(task)&&!task.transfer_training_key&&
+    const verifiedTransferRediagnosis=(task:Task)=>{
+      const lineage=task.repair_lineage;
+      if(lineage?.intervention!=="rediagnosis"||!lineage.transferFailureEvidenceId)return false;
+      const facts=attempts.filter(attemptPlanningEligible),source=facts.find(a=>a.id===lineage.sourceAttemptId);
+      if(!source)return false;
+      const root=deriveFailureEpisode(source).rootWeaknesses.find(r=>r.rootWeaknessId===lineage.rootWeaknessId);
+      if(!root)return false;
+      const progress=rootProgress(source,root,facts);
+      return progress.transferFailure?.id===lineage.transferFailureEvidenceId&&!progress.repairSuccess&&!progress.transfer;
+    };
+    const currentGeneric=(currentTodayTasks||[]).filter(task=>!task.checked&&!task.review_type&&!isPastExamSessionTask(task)&&!task.transfer_training_key&&!verifiedTransferRediagnosis(task)&&
       resolveCanonicalProblemId(task.problem_id,aliases)===state.problemId&&today<=cooldownEnd);
     const plannedGeneric=(currentPlanSummary?.plan||[]).flatMap(day=>day.date<=cooldownEnd?day.tasks:[])
       .filter(task=>task.problemId===state.problemId&&task.slot==="score_building"&&task.purpose!=="transfer_check"&&

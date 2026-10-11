@@ -65,7 +65,10 @@ test('sandbox: canonical Planner selection → two-pass generation → blind Att
   assert.equal((await db.problems.toArray()).filter(p=>p.source_type==='generated').length,0,'D: no generation before execution selection');
   if(process.env.TRANSFER_BROWSER_FIXTURE)await writeFile(process.env.TRANSFER_BROWSER_FIXTURE,JSON.stringify(await exportBackup()));
   const started=await call('start');assert.ok(started.prompt);assert.equal(started.status,'requested');
-  await call('draft',{text:JSON.stringify(generatedDraft)});
+  // New manual protocol deliberately rejects pre-answer solutions. Legacy
+  // immutable records remain covered by generatedTransfer.test.mjs.
+  const {reference_solution,grading_rubric,...statement}=generatedDraft;
+  await call('draft',{text:JSON.stringify(statement)});
   const record=JSON.parse((await db.meta.get(`transfer-generation:${key}`)).value);
   await call('validate',{text:JSON.stringify({draft_hash:record.rounds[0].hash,validator_pass_id:'sandbox-independent-solution-check',
     checks:Object.fromEntries(GENERATION_CHECKS.map(k=>[k,{pass:true,evidence:`sandbox ${k}: 独立に二次積とゼロ和制約から分散を照合した。`}]))})});
@@ -73,6 +76,7 @@ test('sandbox: canonical Planner selection → two-pass generation → blind Att
   assert.ok(!JSON.stringify(blind).includes('reference_solution'));assert.ok(!JSON.stringify(blind).includes(skill));
   await assert.rejects(()=>call('grading-prompt'));
   const p=await db.problems.get(blind.problem.problem_id),contract=buildInitialGradingContract({problem:p,mode:'full'});
+  assert.equal(p.generated_transfer.reference_solution,'');assert.equal(p.generated_transfer.grading_rubric,'');
   await call('submit',{answer:generatedDraft.reference_solution,minutes:12,referenceLevel:0});
   assert.ok((await call('grading-prompt')).prompt.includes(skill));
   const beforeReviews=await db.reviews.count();
@@ -83,13 +87,16 @@ test('sandbox: canonical Planner selection → two-pass generation → blind Att
     graded_part_ids:contract.gradedParts.map(p=>p.id),graded_findings:contract.gradedParts.map(p=>({graded_part_id:p.id,
       error_type:p.id==='answer_conclusion'?'C':'none',resolved:p.id!=='answer_conclusion',evidence:'答案で対象操作を確認'})),
     target_skill_assessment:{self_selected:true,major_calculation_success:true,no_major_error:true,evidence:'固定個数の割付で二次積を導き、差の分散へ接続した'}};
-  await call('grade',{text:JSON.stringify({study_update:update})});
+  const mathematical_review={problem_id:p.problem_id,content_hash:p.generated_transfer.content_hash,reference_solution,grading_rubric,
+    checks:Object.fromEntries(['well_defined','solution_correct','rubric_aligned'].map(k=>[k,{pass:true,evidence:'FIXTURE: 二次積とゼロ和制約から独立に分散を照合した'}]))};
+  await call('grade',{text:JSON.stringify({study_update:update,mathematical_review})});
   const a=(await db.attempts.where('problem_id').equals(p.problem_id).toArray())[0];
   assert.equal(a.exam_score_eligible,false);assert.equal(a.evidence_strength,'training');assert.equal(a.time_minutes,12);
+  assert.equal(a.target_skill_prompted,true,'manual generation cannot certify unexposed intention');
   assert.equal(await db.reviews.count(),beforeReviews,'M: no generated minor Review proliferation');
   let evidence=deriveTransferEvidence(await db.attempts.toArray());
   assert.ok(evidence.some(e=>e.successAttemptId===a.id&&e.evidenceStrength==='training'));
-  await call('grade',{text:JSON.stringify({study_update:update})});
+  await call('grade',{text:JSON.stringify({study_update:update,mathematical_review})});
   assert.equal(await db.attempts.where('problem_id').equals(p.problem_id).count(),1);
   await localGet('/api/bootstrap');await localGet('/api/bootstrap');
   const exported=await exportBackup();await restoreBackup(exported);
@@ -100,7 +107,7 @@ test('sandbox: canonical Planner selection → two-pass generation → blind Att
   assert.equal(audit.blockingIntegrityIssueCount,0);
   assert.equal(audit.plannerPolicyViolationCount,0);
   assert.deepEqual((await db.problems.get(p.problem_id)).generated_transfer,p.generated_transfer?{...p.generated_transfer,
-    lifecycle_status:'graded',answer_submission:(await db.problems.get(p.problem_id)).generated_transfer.answer_submission}:undefined);
+    lifecycle_status:'graded',grading_reference:{...mathematical_review,method:'manual_chatgpt'},answer_submission:(await db.problems.get(p.problem_id)).generated_transfer.answer_submission}:undefined);
   assert.equal((await call('view')).status,'graded');
   assert.equal((await db.problems.toArray()).filter(p=>p.source_type==='generated').length,1);
   const natural={...fact(a.id+1,today(),'exam_performance',true),problem_id:'PY-2018-Q2',mode:'full',source_type:'past_exam'};
