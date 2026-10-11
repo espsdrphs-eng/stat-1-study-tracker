@@ -30,7 +30,8 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
   if(action!=="view"&&!problem){
     if(!candidate)throw new Error("補修・遅延確認・taxonomy条件が未達、または確認済みです");
     const current=await args.current();
-    if(!current.today.tasks.some(t=>t.transfer_training_key===key&&t.triage==="must"&&!t.checked))
+    if(candidate.kind==="pending"||!current.today.tasks.some(t=>t.transfer_training_key===key&&
+      (t.ranking?.eligible===true||!current.today.canonicalStudyPlan.ranked&&t.triage==="must")&&!t.checked))
       throw new Error("まだCanonical Study Planの実行対象ではありません");
     if(candidate.kind==="existing"){
       if(action!=="start")throw new Error("既存の転移確認問題を使用してください");

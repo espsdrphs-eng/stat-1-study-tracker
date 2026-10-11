@@ -5,7 +5,7 @@ import "fake-indexeddb/auto";
 const {db,localGet,localPost}=await import("../src/localDb.ts");
 const today=()=>new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Tokyo",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
 
-test("追加候補は明示操作だけでsnapshotへ入り、同じ操作を2回しても二重計上しない",async()=>{
+test("順位付きTodayは追加学習枠を要求せず、旧snapshotと完了履歴を保全する",async()=>{
   await db.open();
   await db.transaction("rw",db.tables,async()=>{for(const table of db.tables)await table.clear()});
   await localGet("/api/bootstrap");
@@ -28,14 +28,17 @@ test("追加候補は明示操作だけでsnapshotへ入り、同じ操作を2�
   assert.ok(before.today.active_remaining_minutes>0,"current projection should include the formal adaptive tasks");
   assert.equal(before.today.remaining_learning_capacity_minutes,
     Math.max(0,240-61-before.today.active_remaining_minutes));
-  assert.ok(before.today.additionalCandidates.length);
-  const candidate=before.today.additionalCandidates[0];
+  assert.equal(before.today.canonicalStudyPlan.ranked.version,"learning-value-v1");
+  const queueBefore=before.today.tasks.filter(t=>t.ranking).map(t=>t.ranking);
   const rawBefore=(await db.meta.get(`today-plan-snapshot:${date}`)).value;
   await localGet("/api/bootstrap");
   assert.equal((await db.meta.get(`today-plan-snapshot:${date}`)).value,rawBefore);
-  await localPost("/api/today/add-candidate",{candidateKey:candidate.candidateKey});
-  await localPost("/api/today/add-candidate",{candidateKey:candidate.candidateKey});
+  // Daily opt-in is intentionally retired for the normal ranked mode. The
+  // standalone legacy additionalStudy unit tests still cover its old caps.
+  await assert.rejects(()=>localPost("/api/today/add-candidate",{candidateKey:"retired-slot"}),/順位付きToday/);
+  assert.deepEqual((await localGet("/api/bootstrap")).today.tasks.filter(t=>t.ranking).map(t=>t.ranking),queueBefore);
   const snapshot=JSON.parse((await db.meta.get(`today-plan-snapshot:${date}`)).value);
-  assert.equal(snapshot.tasks.filter(task=>task.additional_candidate_key===candidate.candidateKey).length,1);
+  assert.equal(snapshot.tasks.filter(task=>task.additional_candidate_key).length,0);
+  assert.equal((await db.attempts.get(9901)).score_numeric,80);
   assert.equal(snapshot.start_of_day_planned_minutes,61);
 });

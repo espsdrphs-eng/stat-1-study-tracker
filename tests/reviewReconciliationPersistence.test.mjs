@@ -74,13 +74,13 @@ test("safe integrity repair replaces a partially stale repair and hydrates Today
   assert.deepEqual(active[0].grading_contract.gradedParts.map(row=>row.id).sort(),["C","E"]);
   assert.equal((await db.meta.get(`today-plan-snapshot:${today}`)).value,snapshotBefore);
   const bootstrap=await localGet("/api/bootstrap");
-  const currentReview=bootstrap.today.tasks.find(task=>task.id===active[0].id);
+  const currentReview=bootstrap.today.canonicalStudyPlan.ranked.waiting.find(w=>w.task.id===active[0].id)?.task;
   assert.ok(currentReview);
   assert.deepEqual(currentReview.grading_contract.gradedParts.map(row=>row.id).sort(),["C","E"]);
   assert.equal(currentReview.minutes,10);
   // Snapshot history stays must, but the two remaining isolated N findings
   // have no current major consequence and must not suppress exam practice.
-  assert.equal(currentReview.triage,"tomorrow");
+  assert.ok(!bootstrap.today.tasks.some(task=>!task.checked&&task.id===active[0].id));
   const count=await db.reviews.count();
   await localPost("/api/integrity/repair",{});
   await localPost("/api/integrity/repair",{});
@@ -202,7 +202,7 @@ test("production-style review-id roots reconcile WB-4-A-29 from ten rows to four
   const afterFirst=await db.reviews.count();
   assert.equal((await db.meta.get(`today-plan-snapshot:${today}`)).value,snapshotBefore);
   const bootstrap=await localGet("/api/bootstrap");
-  const displayed=bootstrap.today.tasks.find(row=>row.problem_id===problemId);
+  const displayed=bootstrap.today.canonicalStudyPlan.ranked.waiting.find(w=>w.task.id===active[0].id)?.task;
   assert.equal(displayed.grading_contract.gradedParts.length,4);
   assert.doesNotMatch(displayed.derived_fields.oneLineHint.value,/だけ/);
   assert.match(displayed.derived_fields.oneLineHint.value,/残り3点/);

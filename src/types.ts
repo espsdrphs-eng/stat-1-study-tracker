@@ -321,6 +321,7 @@ export type PastSession = Record<string, unknown> & {
   analysis_status?:"not_started"|"pending"|"completed"|"invalid";
 };
 export type Task = {
+  ranking?:{version:"learning-value-v1";rank:number;band:number;category:string;waitingDays:number;evidenceIds:string[];reasons:string[];eligible:true};
   transfer_training_key?:string;
   id?:number; problem_id:string; title:string; kind:string; reason:string; mode:string;
   minutes:number; load:number; status?:string; error_type?:string; theme?:string;
@@ -525,6 +526,7 @@ export type FailureEpisode={
   episodeId:string;sourceAttemptId:number;sourceProblemId:string;rootWeaknesses:RootWeakness[];
 };
 export type CanonicalStudyPlan = {
+  ranked?:{version:"learning-value-v1";waiting:Array<{task:Task;reason:string;reevaluateWhen:string}>;dataQualityWarnings:string[]};
   primaryAction:Task|null;examPractice:Task[];requiredRepairs:Task[];
   optionalMaintenance:Task[];optionalExtras:Task[];
   examPracticeTasks:Task[];requiredRepairTasks:Task[];optionalTasks:Task[];deferredTasks:Task[];

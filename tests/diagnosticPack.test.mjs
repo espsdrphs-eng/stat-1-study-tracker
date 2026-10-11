@@ -73,7 +73,7 @@ test("診断ZIPは実データを変更せず適応planner監査を含む8ファ
   assert.match(testReport,/999\/999/);
   const plannerAudit=JSON.parse(await zip.file("planner-audit.json").async("string"));
   const adaptiveAudit=JSON.parse(await zip.file("adaptive-reference-audit.json").async("string"));
-  assert.equal(plannerAudit.plannerSource,"adaptive");
+  assert.equal(plannerAudit.plannerSource,"learning-value-v1");
   assert.ok(plannerAudit.formalPlan14&&plannerAudit.formalPlan30);
   assert.equal("thirtyDaySimulation" in plannerAudit,false);
   assert.equal(adaptiveAudit.plannerSource,"adaptive");

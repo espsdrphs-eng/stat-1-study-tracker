@@ -79,6 +79,7 @@ export function deriveActionPriority(task:Partial<Task>,today:string){
 }
 
 export function projectCanonicalActionTask(task:Task,today:string):Task{
+  if(task.ranking)return {...task,review_due_state:isReviewTask(task)?reviewDueState(task,today):undefined};
   const actionClass=deriveCurrentActionClass(task),maintenance=actionClass==="maintenance";
   return {...task,action_class:actionClass,
     review_due_state:isReviewTask(task)?reviewDueState(task,today):undefined,
@@ -88,6 +89,8 @@ export function projectCanonicalActionTask(task:Task,today:string):Task{
 }
 
 export function prioritizeCurrentTodayTasks(tasks:Task[],today:string){
+  if(tasks.some(t=>t.ranking))return [...tasks].sort((a,b)=>Number(!!a.checked)-Number(!!b.checked)||
+    (a.ranking?.rank??Infinity)-(b.ranking?.rank??Infinity));
   const projected=tasks.map((task,index)=>({task:projectCanonicalActionTask(task,today),index}));
   const open=projected.filter(row=>!row.task.checked).sort((left,right)=>{
       const leftOptional=left.task.triage==="tomorrow"?1:0,rightOptional=right.task.triage==="tomorrow"?1:0;

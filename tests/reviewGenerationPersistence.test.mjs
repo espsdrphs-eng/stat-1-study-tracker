@@ -73,9 +73,10 @@ test("delete rollback restores the logical Review into Current Today and stale G
   assert.equal(replacement.contract_hash,oldReview.contract_hash);
 
   const reloaded=await localGet("/api/bootstrap");
-  assert.equal(reloaded.today.tasks.find(task=>task.problem_id===problemId&&!task.checked)?.id,replacement.id);
-  assert.equal(reloaded.today.tasks.find(task=>task.id===replacement.id)?.action_class,"maintenance");
-  assert.equal(reloaded.today.tasks.find(task=>task.id===replacement.id)?.triage,"tomorrow");
+  // Lifecycle rebind still works; independent Whitebook retention is waiting,
+  // no longer a default Today task in the learning-value policy.
+  assert.equal(reloaded.today.canonicalStudyPlan.ranked.waiting.find(w=>w.task.id===replacement.id)?.task.id,replacement.id);
+  assert.ok(!reloaded.today.tasks.some(task=>!task.checked&&task.id===replacement.id));
   assert.notEqual(reloaded.today.currentTask?.id,replacement.id);
   assert.equal((await db.meta.get(snapshotKey)).value,snapshotBefore);
 
@@ -110,6 +111,6 @@ test("delete rollback restores the logical Review into Current Today and stale G
   const pack=await createDiagnosticPack(),zip=await JSZip.loadAsync(await pack.blob.arrayBuffer());
   const plannerAudit=JSON.parse(await zip.file("planner-audit.json").async("string"));
   assert.equal(plannerAudit.calculations.sources.current,"canonical Current Today projection");
-  assert.equal(plannerAudit.currentPlan.some(task=>task.id===395),false);
-  assert.equal(plannerAudit.currentPlan.some(task=>task.id===generation3[0].id),true);
+  assert.equal(plannerAudit.currentPlan.some(task=>task.id===395&&!task.checked),false);
+  assert.equal(plannerAudit.waitingPlan.some(w=>w.task.id===generation3[0].id),true);
 });

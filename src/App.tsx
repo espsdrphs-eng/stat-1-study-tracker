@@ -123,6 +123,7 @@ export default function App() {
   const [page,setPage]=useState<Page>("dashboard");
   const [menu,setMenu]=useState(false);
   const [selected,setSelected]=useState<Problem|null>(null);
+  const [startingStudyTask,setStartingStudyTask]=useState<Task|null>(null);
   const [startingPastTask,setStartingPastTask]=useState<Task|null>(null);
   const [busy,setBusy]=useState(false);
   const [refreshing,setRefreshing]=useState(false);
@@ -161,13 +162,14 @@ export default function App() {
     closeLocalDatabase();
     await updateServiceWorker(true);
   };
-  const go=(next:Page,task?:Task)=>{setPage(next);setMenu(false);setSelected(null);setStartingPastTask(next==="past"?task||null:null)};
+  const go=(next:Page,task?:Task)=>{setPage(next);setMenu(false);setSelected(null);setStartingStudyTask(null);setStartingPastTask(next==="past"?task||null:null)};
   if(!data) return <div className="boot"><div className="spinner"/><strong>学習データを準備しています</strong>{error&&<p>{error}</p>}{schemaIssue&&<div className="boot-repair"><span>不足している保存先：{schemaIssue.missingStores.join("、")||"確認中"}</span><button className="primary" disabled={busy} onClick={repairDatabase}>データベースを安全に更新</button><button className="ghost" onClick={()=>navigator.clipboard.writeText(JSON.stringify(schemaIssue,null,2))}>診断情報をコピー</button></div>}</div>;
   const writeBusy=busy||!data.databaseStatus.valid;
   return <div className="app-shell">
     <aside className={`sidebar ${menu?"open":""}`}>
       <div className="brand"><div className="brand-mark">1</div><div><strong>統計一級</strong><span>STUDY TRACKER</span></div><button className="mobile-close" onClick={()=>setMenu(false)}><X/></button></div>
-      <div className={`today-mini ${data.today.warning?"over":""}`}><span>今日の進捗</span><strong>確定課題の残り {data.today.confirmed_remaining_minutes}分</strong><div className="load-track"><i style={{width:`${Math.min(100,data.today.capacityPercent)}%`}}/></div><small>完了 {data.today.completed_minutes_today}分・目標まであと {data.today.target_remaining_minutes}分</small><small>追加可能 最大{data.today.additional_capacity_minutes}分</small><small>先送り候補 {data.today.postpone_candidate_minutes}分（計画外）</small></div>
+      {data.today.canonicalStudyPlan.ranked?<div className="today-mini"><span>学習価値順の候補</span><strong>{data.today.tasks.filter(t=>t.ranking&&!t.checked).length}件から選べます</strong><small>今日の記録：{data.today.completed_minutes_today}分</small><small>取り組む量は自分で決められます</small></div>:
+      <div className={`today-mini ${data.today.warning?"over":""}`}><span>今日の進捗</span><strong>確定課題の残り {data.today.confirmed_remaining_minutes}分</strong><div className="load-track"><i style={{width:`${Math.min(100,data.today.capacityPercent)}%`}}/></div><small>完了 {data.today.completed_minutes_today}分・目標まであと {data.today.target_remaining_minutes}分</small><small>追加可能 最大{data.today.additional_capacity_minutes}分</small><small>先送り候補 {data.today.postpone_candidate_minutes}分（計画外）</small></div>}
       <nav>{navGroups.map(group=><div className="nav-group" key={group.label}><span className="nav-section-label">{group.label}</span>{group.items.map(([key,Icon])=><button key={key} className={page===key?"active":""} onClick={()=>go(key)}><Icon size={19}/><span>{pageTitles[key]}</span>{key==="reviews"&&data.dashboard.pending>0&&<b>{data.dashboard.pending}</b>}</button>)}</div>)}</nav>
       <div className="sidebar-foot"><Gauge size={17}/><div><span>2週間ペース</span><strong className={`pace-${data.dashboard.pace.label}`}>{data.dashboard.pace.label}</strong></div><small className="app-version">v{__APP_VERSION__} · {__APP_COMMIT__.slice(0,7)}</small></div>
     </aside>
@@ -180,9 +182,9 @@ export default function App() {
       {needRefresh&&<div className="update-banner" role="alert"><div><strong>新しいバージョンがあります</strong><span>未保存内容を確認してから、安全に更新できます。</span></div><button className="primary small" onClick={safelyUpdateApp}>安全に更新</button><button className="ghost small" onClick={()=>setNeedRefresh(false)}>後で</button></div>}
       {!data.databaseStatus.valid&&<div className="update-banner database-required" role="alert"><div><strong>アプリのデータベース更新が必要です</strong><span>既存履歴は閲覧できますが、安全のため書き込み操作を一時停止しています。不足：{data.databaseStatus.missingStores.join("、")}</span></div><button className="primary small" disabled={busy} onClick={repairDatabase}>安全に更新</button></div>}
       <div className="content">
-        {selected?.generated_transfer?<><button onClick={()=>setSelected(null)}>戻る</button><TransferTrainingPanel trainingKey={selected.generated_transfer.lineage.key}/></>:selected?<ProblemDetail problem={selected} data={data} run={run} busy={busy} onBack={()=>setSelected(null)} onImport={()=>{setSelected(null);setPage("import")}}/>:
+        {selected?.generated_transfer?<><button onClick={()=>setSelected(null)}>戻る</button><TransferTrainingPanel trainingKey={selected.generated_transfer.lineage.key}/></>:selected?<ProblemDetail problem={selected} startingTask={startingStudyTask?.problem_id===selected.problem_id?startingStudyTask:undefined} data={data} run={run} busy={busy} onBack={()=>{setSelected(null);setStartingStudyTask(null)}} onImport={()=>{setSelected(null);setPage("import")}}/>:
         page==="dashboard"?<DashboardView data={data} go={go} select={setSelected}/>:
-        page==="today"?<TodayView data={data} busy={writeBusy} run={run} go={go} select={setSelected}/>:
+        page==="today"?<TodayView data={data} busy={writeBusy} run={run} go={go} select={(p,task)=>{setStartingStudyTask(task||null);setSelected(p)}}/>:
         page==="problems"?<ProblemsView data={data} select={setSelected} run={run} busy={writeBusy}/>:
         page==="attempt"?<AttemptView problems={data.problems} run={run} busy={writeBusy}/>:
         page==="import"?<AdvancedImportView problems={data.problems} answerIndex={data.answerIndex} problemAliases={data.problemAliases} attempts={data.attempts} reviews={data.reviews} run={run} busy={writeBusy}/>:
@@ -558,7 +560,8 @@ function PostponeReviewModal({item,initial="tomorrow",busy,close,save}:{item:Par
     <small>「今日やる」は今日必須へ戻します。期限なしは今日の自動予定から外れますが、問題一覧からはいつでも開けます。</small>
   </div></Modal>;
 }
-function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a:()=>Promise<unknown>,s:string)=>void;go:(p:Page,task?:Task)=>void;select:(p:Problem)=>void}) {
+function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a:()=>Promise<unknown>,s:string)=>void;go:(p:Page,task?:Task)=>void;select:(p:Problem,task?:Task)=>void}) {
+  const [visibleCount,setVisibleCount]=useState(10);
   const [reviewTask,setReviewTask]=useState<Task|null>(null);
   const [postponeTask,setPostponeTask]=useState<{item:Task;initial:ScheduleAction}|null>(null);
   const [todayFilter,setTodayFilter]=useState<"exam_practice"|"repair"|"maintenance"|"optional"|"completed"|"all">("all");
@@ -576,6 +579,44 @@ function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a
   const primaryAction=data.today.canonicalStudyPlan?.primaryAction||data.today.currentTask;
   const primaryLane=primaryAction&&deriveCurrentActionClass(primaryAction)==="targeted_repair"?"repair":"exam_practice";
   const maintenanceTasks=data.today.tasks.filter(task=>!task.checked&&deriveCurrentActionClass(task)==="maintenance");
+  const ranked=data.today.canonicalStudyPlan.ranked;
+  if(ranked){
+    const eligible=data.today.tasks.filter(t=>t.ranking&&!t.checked);
+    return <>
+      <section className="panel"><div className="panel-title"><div><h2>今やるべき学習</h2>
+        <p>学習価値順の{eligible.length}候補。上から取り組み、終了するタイミングは自分で決められます。時間は目安です。</p></div></div>
+        <div className="ranked-study-list">{eligible.slice(0,visibleCount).map(t=><article className="ranked-study-card" key={t.transfer_training_key||t.stable_session_key||`${t.id||"problem"}:${t.problem_id}`}>
+          <header><Badge tone="blue">優先 {t.ranking!.rank}</Badge><strong>{t.title}</strong><span>{t.ranking!.category}・{t.minutes}分目安</span></header>
+          <p>{t.transfer_training_key?"別問題1問・参照なしで解答":isPastExamSessionTask(t)?t.session_workflow:
+            `${modes[t.mode]||t.mode} / ${t.effective_review_scope||t.review_scope||"答案形成"}`}</p>
+          <p className="why-today">{t.why_today}</p>
+          {!t.transfer_training_key&&<small>{t.ranking!.reasons.slice(1).join(" / ")}</small>}
+          {t.transfer_training_key?<TransferTrainingPanel trainingKey={t.transfer_training_key} onExisting={id=>{const p=pmap[id];if(p)select(p,t)}}/>:
+            <div className="button-row"><button className="primary" disabled={busy} onClick={()=>{
+              if(isPastExamSessionTask(t))go("past",t);else if(pmap[t.problem_id])select(pmap[t.problem_id],t);
+            }}><Play size={15}/>学習開始</button>
+              {!!t.id&&!!t.review_type&&<button className="ghost" disabled={busy} onClick={()=>setReviewTask(t)}>復習結果を記録</button>}
+              <button className="ghost small" disabled={busy} onClick={()=>setPostponeTask({item:t,initial:"tomorrow"})}>後で取り組む</button></div>}
+          {!t.transfer_training_key&&<details><summary>学習scope・操作</summary><TodayTaskDetails task={t} problem={pmap[t.problem_id]}
+            onOpenProblem={p=>select(p,t)} onOpenPastExam={()=>go("past",t)} problemAliases={data.problemAliases}
+            examPhase={data.dashboard.pace.phase==="final"?"final_stabilization":"past_exam_main"}/></details>}
+        </article>)}</div>
+        {visibleCount<eligible.length&&<button className="ghost" onClick={()=>setVisibleCount(n=>n+10)}>続きを表示（残り{eligible.length-visibleCount}件）</button>}
+        {!eligible.length&&<Empty>現在実行できる候補はありません。待機条件を確認してください。</Empty>}
+      </section>
+      <details className="panel"><summary>待機候補（{ranked.waiting.length}件）・再評価条件</summary>
+        {ranked.waiting.map((w,i)=><div className="history" key={`${w.task.id||w.task.problem_id}:${i}`}><div><strong>{w.task.title}</strong>
+          <p>{w.reason}</p><small>再評価：{w.reevaluateWhen}</small></div></div>)}
+      </details>
+      {!!ranked.dataQualityWarnings.length&&<details className="panel"><summary>関連付けの確認が必要（{ranked.dataQualityWarnings.length}件）</summary>
+        {ranked.dataQualityWarnings.map(w=><p key={w}>{w}</p>)}</details>}
+      <details className="panel"><summary>今日の学習記録（{data.today.completedTasks.length}件）</summary>
+        {data.today.completedTasks.map((t,i)=><p key={i}>{t.title} / {t.reason} / 実時間 {t.minutes}分</p>)}
+      </details>
+      {reviewTask&&<ReviewOutcomeModal item={reviewTask} busy={busy} close={()=>setReviewTask(null)} save={saveReview}/>}
+      {postponeTask&&<PostponeReviewModal item={postponeTask.item} initial={postponeTask.initial} busy={busy} close={()=>setPostponeTask(null)} save={postponeReview}/>}
+    </>;
+  }
   const allGroups=[
     {key:"exam_practice",label:"今日の本番演習",description:"初見・選題・時間内完遂・別問題への転移を測る",tasks:activeTodayTasks.filter(task=>deriveCurrentActionClass(task)==="exam_practice")},
     {key:"repair",label:"今日の補修",description:"過去問・答案で確認されたmajor weaknessだけを局所補修する",tasks:activeTodayTasks.filter(task=>deriveCurrentActionClass(task)==="targeted_repair")},
@@ -710,6 +751,9 @@ function TodayTaskDetails({task,problem,onOpenProblem,onOpenPastExam,problemAlia
       <div><span>sessionの状態</span><strong>{task.past_exam_session_state||"planned"}（個別問題の復習履歴とは別）</strong></div></div>
     <div className="today-card-actions"><button type="button" className="primary small" onClick={onOpenPastExam}><Play size={14}/>過去問演習を開く</button>
       <SheetLink href={sheetHref("exam_90min")} label="90分解答シート"/></div></div>;
+  if(task.learning_purpose==="transfer_check")return <div className="today-task-detail"><h3>別問題で転移確認</h3>
+    <p>参照なしで答案を作成してください。対象能力・元の弱点・解法は提出前には表示しません。</p>
+    {problem&&<button className="primary" onClick={()=>onOpenProblem(problem)}>転移確認を開始</button>}</div>;
   const template=reviewTemplate(task);
   const origin=resolved?.taskOrigin||task.task_origin||((task.id||task.review_method)?"review_attempt":"first_attempt");
   const hasPrevious=resolved?!!resolved.targetAttempt:task.attempt_exists!==false&&!!(task.previous_date||task.previous_error_point);
@@ -841,16 +885,17 @@ function MasteryLevels({levels}:{levels:MasteryLevelState[]}){
   </div>)}</div>;
 }
 
-function ProblemDetail({problem,data,run,busy,onBack,onImport}:{problem:Problem;data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean;onBack:()=>void;onImport:()=>void}) {
+function ProblemDetail({problem,data,run,busy,onBack,onImport,startingTask}:{problem:Problem;data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean;onBack:()=>void;onImport:()=>void;startingTask?:Task}) {
+  const [blindAnswerSubmitted,setBlindAnswerSubmitted]=useState(false);
   const [editing,setEditing]=useState<Attempt|null>(null);
   const [form,setForm]=useState<Record<string,string>>({});
   const [rediagnosing,setRediagnosing]=useState<Attempt|null>(null);
   const [replacing,setReplacing]=useState<Attempt|null>(null);
   const [rediagnosisText,setRediagnosisText]=useState("");
   const [rediagnosisPreview,setRediagnosisPreview]=useState<any>(null);
-  const [initialMode,setInitialMode]=useState(problem.category==="past_exam"?"full":problem.recommended_mode||"full");
+  const [initialMode,setInitialMode]=useState(startingTask?.mode||(problem.category==="past_exam"?"full":problem.recommended_mode||"full"));
   const [initialPromptCopied,setInitialPromptCopied]=useState(false);
-  useEffect(()=>{setInitialMode(problem.category==="past_exam"?"full":problem.recommended_mode||"full");setInitialPromptCopied(false)},[problem.problem_id]);
+  useEffect(()=>{setInitialMode(startingTask?.mode||(problem.category==="past_exam"?"full":problem.recommended_mode||"full"));setInitialPromptCopied(false);setBlindAnswerSubmitted(false)},[problem.problem_id,startingTask?.mode,startingTask?.source_attempt_id,startingTask?.transfer_training_key]);
   const canonicalId=resolveCanonicalProblemId(problem.problem_id,data.problemAliases);
   const attempts=data.attempts.filter(a=>resolveCanonicalProblemId(a.problem_id,data.problemAliases)===canonicalId);
   const validAttempts=attempts.filter(attempt=>attemptConsistentForDisplay(attempt,problem)&&
@@ -917,7 +962,14 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport}:{problem:Problem;
     const result=await post(`/api/attempts/${target.id}/whole-diagnostic/save`,{text:rediagnosisText});
     setRediagnosing(null);setRediagnosisPreview(null);setRediagnosisText("");return result;
   },"元の採点を保持して、答案全体の追加診断だけを更新しました");};
+  if(startingTask?.learning_purpose==="transfer_check"&&!blindAnswerSubmitted)return <section className="panel">
+    <h2>転移確認：{problemDisplayLabel(problem)}</h2><p>{startingTask.minutes}分目安・参照なし</p>
+    <p>書籍の問題文だけを見て答案を作成してください。対象能力・解法・採点基準は答案完成後に確認します。</p>
+    <button className="primary" onClick={()=>setBlindAnswerSubmitted(true)}>答案を書き終えた（採点へ）</button>
+    <button className="ghost" onClick={onBack}>戻る</button></section>;
   return <><button className="back" onClick={onBack}>← 問題一覧へ</button><div className="detail-hero"><div><div className="detail-badges"><Badge tone={problem.category==="S"?"blue":""}>原典 {problem.category}</Badge>{problem.strategy_rank&&<Badge tone={problem.strategy_rank==="SS"?"red":problem.strategy_rank==="A+"?"orange":""}>実戦 {problem.strategy_rank}</Badge>}</div><h2>{problemDisplayLabel(problem)}</h2><p>{problem.problem_id} ・ {problem.theme}</p></div><button className="primary" onClick={onImport}><ClipboardPaste size={17}/>GPT採点結果を取り込む</button></div>
+    {startingTask&&<section className="panel"><h3>今回の学習scope</h3><p>{modes[startingTask.mode]||startingTask.mode}・{startingTask.minutes}分目安 / {startingTask.effective_review_scope||startingTask.review_scope||"答案形成"}</p>
+      <p>{startingTask.why_today}</p><StudyPromptButtons item={startingTask}/><small>記録保存後、最新の成功・失敗証拠でTodayの順位が更新されます。</small></section>}
     {isCompletelyFirst&&<section className="panel initial-grading-panel"><div><span className="eyebrow">FIRST ATTEMPT</span><h3>この問題は初回です</h3><p>まず参照なしで解答してください。Reviewを作らず、problem masterと選択モードから初回採点契約を生成します。</p></div>
       <label>採点モード<select value={initialMode} onChange={event=>setInitialMode(event.target.value)}>
         <option value="skeleton">骨格</option><option value="main_calc">主要計算</option><option value="full">フル答案</option>
@@ -1285,6 +1337,11 @@ function WeakView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:
 
 function PastView({data,go,run,busy,startingTask}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()=>Promise<unknown>,s:string)=>Promise<boolean>;busy:boolean;startingTask?:Task|null}) {
   const days=data.dashboard.pace.daysRemaining;
+  // Starting a blind timed session is not the historical problem workspace.
+  // Keep prior individual failures, solutions and taxonomy out of this view.
+  const blindSessionStart=!!startingTask&&isPastExamSessionTask(startingTask)&&
+    ["timed_three_question_session","simulation"].includes(String(startingTask.past_exam_task_type))&&
+    !data.pastSessions.some(row=>row.stable_session_key===startingTask.stable_session_key&&derivePastExamSessionState(row)==="completed");
   const referenceCatalog=data.adaptiveLearning.pastExamCatalog;
   const plannedReferenceIds=data.adaptiveLearning.plannerShadow.plan30.plan.flatMap(day=>
     day.tasks.map(task=>task.referenceProblemId).filter((value):value is string=>!!value)
@@ -1347,12 +1404,13 @@ function PastView({data,go,run,busy,startingTask}:{data:Bootstrap;go:(p:Page)=>v
     window.scrollTo({top:0,behavior:"smooth"});
   };
   return <>
-    <section className="panel past-workspace-next"><div><span className="eyebrow">NEXT PAST-EXAM SESSION</span><h2>次の推奨過去問session</h2>{workspace.recommended?<><strong>{workspace.recommended.year}年・{workspace.recommended.label}</strong><p>{workspace.recommended.workflow}</p><small>{workspace.recommended.clean?"clean selection evidenceとして記録できます":"practice scanとして扱い、clean指標とは分離します"}</small><p><b>なぜこの年度：</b>{workspace.recommended.selectedYearReason}</p>{workspace.unseenIndividualPool.length>0&&<small>前年度などの未見残問は個別演習poolに保持：{workspace.unseenIndividualPool.slice(0,5).map(row=>row.canonicalProblemId).join("、")}</small>}</>:<p>{workspace.warning}</p>}</div>{workspace.recommended&&<button className="primary" onClick={()=>{setEditingSessionId(null);setSession({...session,year:String(workspace.recommended!.year),session_kind:workspace.recommended!.taskType==="timed_three_question_session"||workspace.recommended!.taskType==="simulation"?"selected_three_timed":"scan_only",questions:blankQuestions()});document.getElementById("past-session-form")?.scrollIntoView({behavior:"smooth"})}}><Play size={17}/>開始</button>}</section>
+    {blindSessionStart?<section className="panel past-workspace-next"><h2>{startingTask!.title}</h2><p>{startingTask!.session_workflow}</p><small>Todayで選んだsessionを開始します。scanを含めて90分です。</small></section>:
+    <section className="panel past-workspace-next"><div><span className="eyebrow">NEXT PAST-EXAM SESSION</span><h2>次の推奨過去問session</h2>{workspace.recommended?<><strong>{workspace.recommended.year}年・{workspace.recommended.label}</strong><p>{workspace.recommended.workflow}</p><small>{workspace.recommended.clean?"clean selection evidenceとして記録できます":"practice scanとして扱い、clean指標とは分離します"}</small><p><b>なぜこの年度：</b>{workspace.recommended.selectedYearReason}</p>{workspace.unseenIndividualPool.length>0&&<small>前年度などの未見残問は個別演習poolに保持：{workspace.unseenIndividualPool.slice(0,5).map(row=>row.canonicalProblemId).join("、")}</small>}</>:<p>{workspace.warning}</p>}</div>{workspace.recommended&&<button className="primary" onClick={()=>{setEditingSessionId(null);setSession({...session,year:String(workspace.recommended!.year),session_kind:workspace.recommended!.taskType==="timed_three_question_session"||workspace.recommended!.taskType==="simulation"?"selected_three_timed":"scan_only",questions:blankQuestions()});document.getElementById("past-session-form")?.scrollIntoView({behavior:"smooth"})}}><Play size={17}/>開始</button>}</section>}
     <section className="past-analysis-intro">
       <div><span className="eyebrow">PAST EXAM WORKSPACE</span><h2>過去問演習</h2><p>scan5 → 3問選択 → 答案 → 採点を一つの本番型workflowとして記録します。未解答問題は0点にしません。</p></div>
       <button className="primary" onClick={()=>go("import")}><ClipboardPaste size={17}/>解いた問題をGPT採点</button>
     </section>
-    <details className="panel past-analytics-detail"><summary>詳細分析</summary><div className="past-analysis-metrics">
+    {!blindSessionStart&&<><details className="panel past-analytics-detail"><summary>詳細分析</summary><div className="past-analysis-metrics">
       <Metric label="取り込み済み" value={attempts.length} unit="件" hint="過去問の採点履歴"/>
       <Metric label="要復習" value={errorAttempts.length} unit="件" hint="K/W/N/Cあり" tone={errorAttempts.length?"amber":""}/>
       <Metric label="復習待ち" value={pending.length} unit="件" hint="過去問の未完了予定"/>
@@ -1379,6 +1437,7 @@ function PastView({data,go,run,busy,startingTask}:{data:Bootstrap;go:(p:Page)=>v
         </details>)}</div>
       </>}
     </details>
+    </>}
     <details className="panel past-session-quick" id="past-session-form" open><summary>{editingSessionId?"5問スキャンの事後結果を入力":"演習形式を選ぶ"}</summary><form className="scan5-form" onSubmit={event=>{event.preventDefault();void submitSession()}}>
       <div className="form-grid"><Field label="形式"><select value={session.session_kind} onChange={event=>setSession({...session,session_kind:event.target.value as PastExamSessionKind})}><option value="scan_only">scan only</option><option value="scan_plus_one">scan＋1問</option><option value="selected_three_timed">3問90分</option><option value="retrospective_review">事後レビュー</option></select></Field>
       <Field label="実施日"><input type="date" value={session.date} onChange={event=>setSession({...session,date:event.target.value})}/></Field>
@@ -1399,6 +1458,7 @@ function PastView({data,go,run,busy,startingTask}:{data:Bootstrap;go:(p:Page)=>v
       <label className="reference-reproduction-check"><input type="checkbox" checked={session.answer_exposure} onChange={event=>setSession({...session,answer_exposure:event.target.checked})}/>開始前または途中で模範解答を見た</label>
       <div className="form-actions"><button type="button" className="ghost" onClick={()=>{setEditingSessionId(null);setSession({...session,questions:blankQuestions()})}}>入力をリセット</button><button className="primary" disabled={busy}>{editingSessionId?"事後結果を保存":"事前判断を保存"}</button></div>
     </form></details>
+    {!blindSessionStart&&<>
     <section className="section-head"><div><span className="eyebrow">SCAN HISTORY</span><h2>過去問セッション</h2></div></section>
     <div className="past-result-list">{data.pastSessions.map(saved=>{
       const metrics=scanMetrics(saved),exposure=deriveExposure(saved),state=derivePastExamSessionState(saved);
@@ -1454,6 +1514,7 @@ function PastView({data,go,run,busy,startingTask}:{data:Bootstrap;go:(p:Page)=>v
     <section className="panel past-master"><div className="panel-title"><div><span className="eyebrow">PAST EXAM MASTER</span><h3>登録済み過去問</h3></div><Badge>{pastProblems.length}問</Badge></div>
       {pastProblems.map(problem=><div className="past-master-row" key={problem.problem_id}><div><strong>{problemDisplayLabel(problem)}</strong><span>{problem.problem_id} ・ {problem.theme}</span></div><small>関連A/S：{[problem.linked_a_problems,...(problem.related_s_problem_ids||[])].filter(Boolean).join(" / ")||"未設定"}</small></div>)}
     </section>
+    </>}
   </>;
 }
 

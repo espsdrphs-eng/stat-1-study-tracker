@@ -51,7 +51,9 @@ export function taskDraftFromPrescription(args:{prescription:LearningPrescriptio
     failureStrength:args.failureStrength,repeatedFailureCount:args.repeatedFailureCount,
     examRelevance:args.examRelevance,strategyRank:args.strategyRank,
     alternativeTransferOpportunity:args.alternativeTransferOpportunity});
-  const preferred=chooseDateWithinWindow({window,minutes:prescription.estimatedMinutes,dailyCapacity:args.dailyCapacity||150,scheduledMinutes:args.scheduledMinutes||{}});
+  // A learning interval is evidence timing, not a daily capacity reservation.
+  // Existing stored dates stay immutable; only new prescriptions use this rule.
+  const preferred=window.preferredDate;
   const deduplicationKey=taskDeduplicationKey({problemId:prescription.problemId,learningPurpose:prescription.learningPurpose,
     sourceAttemptId:args.sourceAttemptId,policyVersion:prescription.policyVersion,assessmentTiming:prescription.assessmentTiming});
   return {window,dueDate:preferred,deduplicationKey};

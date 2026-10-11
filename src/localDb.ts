@@ -66,7 +66,7 @@ import {parseWholeAnswerRediagnosis,WHOLE_ANSWER_DIAGNOSTIC_VERSION,wholeAnswerD
 import {deriveDashboardKpis} from "./dashboardKpi.ts";
 import {deriveExamReadinessAssessment} from "./examCapability.ts";
 import {reviewDueState,reviewPlanningDecision} from "./todayLearningPolicy.ts";
-import {deriveCanonicalStudyPlan} from "./canonicalStudyPlan.ts";
+import {deriveCanonicalStudyPlan,deriveRankedStudyCandidates} from "./canonicalStudyPlan.ts";
 import {canonicalizePastExamSessions,currentPastExamSessionExplanation,derivePastExamSessionState,pastExamSessionKey,pastExamSessionPurpose,reconcilePastExamSessionEvidence,stablePastExamSessionKey,validatePastExamSessionIdentity,validatePastExamTaskIdentity,projectPastExamSessionAdmissions} from "./pastExamPlanning.ts";
 
 const PLANNER_RUNTIME_MODE_META_KEY="planner-runtime-mode";
@@ -2659,7 +2659,10 @@ async function ensureBuiltInExamReferencePack(){
   });
 }
 
-async function bootstrap():Promise<Bootstrap>{
+export async function readCurrentStudyState():Promise<Bootstrap>{return bootstrap(true);}
+
+async function bootstrap(readOnly=false):Promise<Bootstrap>{
+  if(!readOnly){
   await initialize();
   const storedProjectionVersion=await db.meta.get(CURRENT_PLAN_PROJECTION_META_KEY);
   const projectionUpgradeRequired=storedProjectionVersion?.value!==CURRENT_PLAN_PROJECTION_VERSION;
@@ -2678,6 +2681,7 @@ async function bootstrap():Promise<Bootstrap>{
     await reconcileProblemLearningState(undefined,false);
     await reconcilePastExamSessionGenerations(false);
     await db.meta.put({key:CURRENT_PLAN_PROJECTION_META_KEY,value:CURRENT_PLAN_PROJECTION_VERSION});
+  }
   }
   const [problems,attempts,rawReviews,roadmap,weakNotes,rawPastSessions,sMemory,metaEntries,answerIndex,answerPdfs,problemAliases]=await Promise.all([
     db.problems.toArray(),db.attempts.orderBy("id").reverse().toArray(),db.reviews.orderBy("due_date").toArray(),db.roadmap.orderBy("order_index").toArray(),
@@ -2977,9 +2981,11 @@ async function bootstrap():Promise<Bootstrap>{
       kind:String(row.kind||""),mode:String(row.mode||""),stable_session_key:row.stable_session_key?String(row.stable_session_key):undefined,
       postponed_to:String(row.postponed_to||""),postpone_reason:String(row.postpone_reason||"")})),today,examDate:settings.exam_date,
     targetMinutes:settings.daily_study_minutes,repairCandidates:pastExamRepairCandidates});
-  const adaptiveTodayTasks=adaptivePlanDayToTasks({
-    day:plannerShadow.plan14.plan.find(day=>day.date===today),problems,reviews,today
-  });
+  const rankedPool=deriveRankedStudyCandidates({today,daysRemaining:plannerShadow.daysRemaining,problems,attempts:activeAttempts,reviews,
+    pastSessions,catalog:pastExamCatalog,weaknesses:conceptWeaknesses,repairCandidates:pastExamRepairCandidates,
+    taskPostponements:[...taskPostponements.values()].map(row=>({problem_id:String(row.problem_id||""),kind:String(row.kind||""),
+      stable_session_key:row.stable_session_key?String(row.stable_session_key):undefined,postponed_to:String(row.postponed_to||"")}))});
+  const adaptiveTodayTasks=rankedPool.tasks;
   // The legacy triage path remains available for rollback and developer comparison,
   // but normal daily generation uses only the adaptive planner.
   const generatedTriage=plannerMode==="legacy"
@@ -2995,7 +3001,7 @@ async function bootstrap():Promise<Bootstrap>{
       tasks:snapshotTasks,created_at:new Date().toISOString(),
       planner_source:plannerMode,planner_version:plannerMode==="adaptive"?ADAPTIVE_PLANNER_VERSION:"legacy-v1"
     };
-    await db.meta.put({key:snapshotKey,value:JSON.stringify(snapshot)});
+    if(!readOnly)await db.meta.put({key:snapshotKey,value:JSON.stringify(snapshot)});
   }
   const generatedMap=new Map(generatedTriage.tasks.map(task=>[taskSnapshotId(task),task]));
   const reviewMap=new Map(reviews.map(review=>[review.id,review]));
@@ -3067,9 +3073,10 @@ async function bootstrap():Promise<Bootstrap>{
   const actualMinutes=activeAttempts.filter(attempt=>attempt.date===today&&!attempt.parent_past_session_id).reduce((sum,attempt)=>sum+Math.max(0,Number(attempt.time_minutes||0)),0)
     +pastSessions.filter(session=>String(session.date)===today).reduce((sum,session)=>sum+sessionStudyMinutes(session,activeAttempts),0);
   const currentToday=deriveCurrentTodayProjection({snapshot,generatedTasks:generatedTriage.tasks,attempts,pastSessions,reviews,today,
-    aliases:problemAliases,adaptive:plannerMode==="adaptive",hydrateTask:hydrateCurrentTask,
+    aliases:problemAliases,adaptive:plannerMode==="adaptive",ranked:plannerMode==="adaptive",hydrateTask:hydrateCurrentTask,
     includeTask:task=>{
       if(!validatePastExamTaskIdentity(task).valid)return false;
+      if(plannerMode==="adaptive")return true; // Ranked selector already evaluates identity-specific postponement.
       if(task.id&&task.review_type)return true;
       const record=taskPostponements.get(`${task.problem_id}:${task.kind}`);
       if(!record)return true;
@@ -3078,7 +3085,8 @@ async function bootstrap():Promise<Bootstrap>{
     },
     manuallyChecked:task=>checkedKeys.has(`today-check:${today}:${task.problem_id}:${task.kind}`),
     completedMinutes:actualMinutes,targetMinutes:settings.daily_study_minutes});
-  const canonicalStudyPlan=deriveCanonicalStudyPlan({tasks:currentToday.tasks,today});
+  const canonicalStudyPlan=deriveCanonicalStudyPlan({tasks:currentToday.tasks,today,
+    ranked:plannerMode==="adaptive"?{version:"learning-value-v1",waiting:rankedPool.waiting,dataQualityWarnings:rankedPool.dataQualityWarnings}:undefined});
   const tasks=currentToday.tasks,timeSummary=currentToday.timeSummary;
   const totalLoad=Math.round(tasks.filter(task=>!task.checked&&task.triage!=="tomorrow").reduce((sum,x)=>sum+x.load,0)*10)/10;
   const activeRemainingMinutes=timeSummary.activeRemainingMinutes;
@@ -3132,10 +3140,11 @@ async function bootstrap():Promise<Bootstrap>{
     pendingReviews:reviewPortfolio.actionable})};
   const integrityHealth=runIntegrityAudit({
     attempts,reviews:rawReviews,currentReviews:reviews,problems,aliases:problemAliases,today,todayPlanSnapshots:[snapshot],validCrossTargetReviewIds,
-    currentTodayTasks:tasks,currentNextTask:canonicalStudyPlan.primaryAction||undefined,currentPlanSummary:plannerShadow.plan14,
-    futurePlanSummaries:[{label:"7-day",summary:plannerShadow.plan7},{label:"14-day",summary:plannerShadow.plan14},
-      {label:"30-day",summary:plannerShadow.plan30}],
-    additionalCandidates:additionalStudy.candidates,eligibleTodayTasks:generatedTriage.tasks,
+    currentTodayTasks:tasks,currentNextTask:canonicalStudyPlan.primaryAction||undefined,rankingMode:plannerMode==="adaptive",
+    currentPlanSummary:plannerMode==="legacy"?plannerShadow.plan14:undefined,
+    futurePlanSummaries:plannerMode==="legacy"?[{label:"7-day",summary:plannerShadow.plan7},{label:"14-day",summary:plannerShadow.plan14},
+      {label:"30-day",summary:plannerShadow.plan30}]:[],
+    additionalCandidates:plannerMode==="legacy"?additionalStudy.candidates:[],eligibleTodayTasks:generatedTriage.tasks,
     examDate:settings.exam_date||"2026-11-15",pastExamCatalog,pastSessions:rawPastSessions,
     repairCandidates:pastExamRepairCandidates,conceptWeaknesses,currentPastSessions:pastSessions,
     currentCoach:coach,currentKpis:dashboardWithKpis.kpis,currentReadiness:dashboard.readiness,
@@ -3390,15 +3399,16 @@ async function integrityAudit():Promise<IntegrityAudit>{
   const current=await bootstrap();
   return runIntegrityAudit({attempts,reviews,currentReviews:current.reviews,problems,aliases,today:todayString(),todayPlanSnapshots:snapshots,validCrossTargetReviewIds,
     currentTodayTasks:current.today.tasks,currentNextTask:current.today.currentTask,
-    currentPlanSummary:current.adaptiveLearning.plannerShadow.plan14,
-    futurePlanSummaries:[{label:"7-day",summary:current.adaptiveLearning.plannerShadow.plan7},
+    rankingMode:!!current.today.canonicalStudyPlan.ranked,
+    currentPlanSummary:current.today.canonicalStudyPlan.ranked?undefined:current.adaptiveLearning.plannerShadow.plan14,
+    futurePlanSummaries:current.today.canonicalStudyPlan.ranked?[]:[{label:"7-day",summary:current.adaptiveLearning.plannerShadow.plan7},
       {label:"14-day",summary:current.adaptiveLearning.plannerShadow.plan14},
       {label:"30-day",summary:current.adaptiveLearning.plannerShadow.plan30}],
     examDate:current.settings.exam_date||"2026-11-15",pastExamCatalog:current.adaptiveLearning.pastExamCatalog,
     pastSessions,repairCandidates:current.adaptiveLearning.pastExamRepairCandidates,conceptWeaknesses:current.adaptiveLearning.conceptWeaknesses,
     currentPastSessions:current.pastSessions,currentCoach:current.coach,currentKpis:current.dashboard.kpis,currentReadiness:current.dashboard.readiness,
-    additionalCandidates:current.today.additionalCandidates,
-    eligibleTodayTasks:adaptivePlanDayToTasks({day:current.adaptiveLearning.plannerShadow.plan14.plan.find(day=>day.date===todayString()),
+    additionalCandidates:current.today.canonicalStudyPlan.ranked?[]:current.today.additionalCandidates,
+    eligibleTodayTasks:current.today.canonicalStudyPlan.ranked?current.today.tasks.filter(t=>!!t.ranking):adaptivePlanDayToTasks({day:current.adaptiveLearning.plannerShadow.plan14.plan.find(day=>day.date===todayString()),
       problems:current.problems,reviews:current.reviews,today:todayString()})});
 }
 
@@ -3719,6 +3729,8 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
   } else if(path==="/api/master/diagnostic/resolve"){
     return await resolveDiagnostic(body) as T;
   } else if(path==="/api/today/add-candidate"){
+    const rankedCurrent=await bootstrap();
+    if(rankedCurrent.today.canonicalStudyPlan.ranked)throw new Error("順位付きTodayでは適格候補を直接開始してください。日次追加枠は使用しません。");
     const candidateKey=String(body.candidateKey||"");
     const today=todayString(),key=`today-plan-snapshot:${today}`;
     const existingRow=await db.meta.get(key);

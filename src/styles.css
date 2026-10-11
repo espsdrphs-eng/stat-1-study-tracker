@@ -367,3 +367,9 @@ header h1{font-size:28px;font-weight:700;letter-spacing:-.02em;color:var(--text-
 .past-workspace-next .primary{flex-shrink:0;white-space:nowrap}
 .weekly-chart{min-width:0}.week-bars{gap:4px}.week-bars>div{min-width:0}.week-bars small{white-space:normal;overflow-wrap:anywhere}
 .coach-level>b,.coach-current p,.pass-judgement-meaning p{white-space:normal;overflow:visible;overflow-wrap:anywhere;max-height:none}
+.ranked-study-list{display:grid;gap:16px}
+.ranked-study-card{border:1px solid var(--border,#dce2eb);border-radius:12px;padding:16px;overflow-wrap:anywhere;min-width:0}
+.ranked-study-card header{display:flex;align-items:center;flex-wrap:wrap;gap:10px}
+.ranked-study-card header>strong{flex:1;min-width:160px}
+.ranked-study-card .button-row{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
+.ranked-study-card details{margin-top:12px}

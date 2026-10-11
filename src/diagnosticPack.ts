@@ -1,6 +1,6 @@
 import JSZip from "jszip";
 import type { Table } from "dexie";
-import { db } from "./localDb.ts";
+import { db,readCurrentStudyState } from "./localDb.ts";
 import { APP_BUILD_VERSION, APP_SCHEMA_VERSION, DB_NAME, DB_VERSION } from "./dbSchema.ts";
 import { resolveCanonicalProblemId } from "./examReadiness.ts";
 import { buildReviewGradingPrompt } from "./gradingPrompt.ts";
@@ -249,7 +249,7 @@ function logicalReviewPlan(review:Review){
 
 function parseSnapshot(row:{key:string;value:string}){try{return JSON.parse(row.value) as TodayPlanSnapshot}catch{return {parseError:true,rawValue:row.value}}}
 
-function buildPlannerAudit(snapshotRows:Array<{key:string;value:string}>,reviews:Review[],attempts:Attempt[],targetMinutes:number,currentTasks?:Task[]){
+function buildPlannerAudit(snapshotRows:Array<{key:string;value:string}>,reviews:Review[],attempts:Attempt[],targetMinutes:number,currentTasks?:Task[],waitingPlan:unknown[]=[]){
   const snapshots=snapshotRows.map(row=>({key:row.key,snapshot:parseSnapshot(row)}));
   const latest=snapshots.sort((a,b)=>a.key.localeCompare(b.key)).at(-1);
   const snapshot=latest?.snapshot as TodayPlanSnapshot|undefined;
@@ -264,7 +264,7 @@ function buildPlannerAudit(snapshotRows:Array<{key:string;value:string}>,reviews
   return {generatedAt:new Date().toISOString(),latestSnapshotKey:latest?.key||null,startOfDayPlan:snapshot?{
     date:snapshot.date,taskIds:snapshot.task_ids,startOfDayPlannedMinutes:snapshot.start_of_day_planned_minutes,
     initialBucket:snapshot.initial_bucket,initialEstimatedMinutes:snapshot.initial_estimated_minutes}:null,
-    currentPlan:tasks,completed,remaining,postponeCandidates:candidates,actuallyPostponed:postponed,
+    currentPlan:tasks,waitingPlan,completed,remaining,postponeCandidates:candidates,actuallyPostponed:postponed,
     calculations:{completedMinutes:completed.reduce((sum,task)=>sum+Number(task.minutes||0),0),
       remainingMinutes:remaining.reduce((sum,task)=>sum+Number(task.minutes||0),0),
       postponeCandidateMinutes:candidates.reduce((sum,task)=>sum+Number(task.minutes||0),0),
@@ -314,6 +314,7 @@ export type DiagnosticPackResult={blob:Blob;fileName:string;summary:{files:strin
 export async function createDiagnosticPack():Promise<DiagnosticPackResult>{
   if(!db.isOpen()) throw new Error("データベースが開かれていません。画面を再読み込みしてからもう一度お試しください。");
   const before=await databaseFingerprint();
+  const liveCurrent=await readCurrentStudyState();
   const [problems,aliases,attempts,reviews,weakNotes,pastSessions,metaRows,importLogs,correctionLogs,answerIndex]=await Promise.all([
     db.problems.toArray(),db.problemAliases.toArray(),db.attempts.toArray(),db.reviews.toArray(),db.weakNotes.toArray(),
     db.pastSessions.toArray(),db.meta.toArray(),db.importLogs.toArray(),db.correctionLogs.toArray(),db.answerIndex.toArray()
@@ -396,9 +397,14 @@ export async function createDiagnosticPack():Promise<DiagnosticPackResult>{
     completedMinutes,activeRemainingMinutes:projectedToday?.timeSummary.activeRemainingMinutes||0,
     currentTasks:projectedToday?.tasks||formalTodayTasks,shadow:adaptiveShadow,
     urgentReviewBlocked:adaptiveShadow.plan14.reviewSchedule.capacityConflicts.some(row=>row.preferredDate<=today||row.latestDate<=today)});
-  consistency.systemIntegrity=runIntegrityAudit({attempts,reviews,problems,aliases,today,todayPlanSnapshots,validCrossTargetReviewIds,
-    currentTodayTasks:projectedToday?.tasks||formalTodayTasks,currentNextTask:projectedToday?.currentTask,
-    currentPlanSummary:adaptiveShadow.plan14,additionalCandidates:additional.candidates,eligibleTodayTasks:formalTodayTasks});
+  const rankingMode=!!liveCurrent.today.canonicalStudyPlan.ranked;
+  consistency.systemIntegrity=runIntegrityAudit({attempts,reviews,currentReviews:liveCurrent.reviews,problems,aliases,today,
+    todayPlanSnapshots,validCrossTargetReviewIds,currentTodayTasks:liveCurrent.today.tasks,currentNextTask:liveCurrent.today.currentTask,
+    rankingMode,currentPlanSummary:rankingMode?undefined:adaptiveShadow.plan14,
+    additionalCandidates:rankingMode?[]:additional.candidates,eligibleTodayTasks:rankingMode?liveCurrent.today.tasks.filter(t=>t.ranking):formalTodayTasks,
+    examDate,pastExamCatalog:liveCurrent.adaptiveLearning.pastExamCatalog,pastSessions,currentPastSessions:liveCurrent.pastSessions,
+    repairCandidates:liveCurrent.adaptiveLearning.pastExamRepairCandidates,conceptWeaknesses:liveCurrent.adaptiveLearning.conceptWeaknesses,
+    currentCoach:liveCurrent.coach,currentKpis:liveCurrent.dashboard.kpis,currentReadiness:liveCurrent.dashboard.readiness});
   const {legacy30:_legacy30,comparisonReasons:_legacyComparison,...formalAdaptiveAudit}=adaptiveShadow;
   const adaptiveReferenceAudit={plannerSource:"adaptive",referencePack:buildReferencePackStatus(referenceRecord),
     exposureCounts:Object.fromEntries([...new Set(referenceCatalog.map(row=>row.exposure))]
@@ -408,8 +414,9 @@ export async function createDiagnosticPack():Promise<DiagnosticPackResult>{
     topConceptWeaknesses:conceptWeaknesses.slice(0,20),
     repairCandidates,
     adaptivePlanner:formalAdaptiveAudit};
-  const plannerAudit={...buildPlannerAudit(snapshotRows,reviews,attempts,Math.max(30,Number(settings.daily_study_minutes||150)),projectedToday?.tasks||formalTodayTasks),
-    plannerSource:"adaptive",formalPlan14:adaptiveShadow.plan14,formalPlan30:adaptiveShadow.plan30,
+  const plannerAudit={...buildPlannerAudit(snapshotRows,reviews,attempts,Math.max(30,Number(settings.daily_study_minutes||150)),liveCurrent.today.tasks,
+    liveCurrent.today.canonicalStudyPlan.ranked?.waiting||[]),
+    plannerSource:liveCurrent.today.canonicalStudyPlan.ranked?"learning-value-v1":"adaptive",formalPlan14:adaptiveShadow.plan14,formalPlan30:adaptiveShadow.plan30,
     weeklyActual:adaptiveShadow.weeklyActual,weeklyTarget:adaptiveShadow.weeklyTarget,
     phaseDiagnostics:adaptiveShadow.phaseDiagnostics};
   const pendingAudits=promptAudits.filter((_,index)=>["pending","overdue","deferred"].includes(reviews[index]?.status));

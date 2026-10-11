@@ -46,6 +46,7 @@ export function qualifyingAttemptForTodayTask(args:{
   if(args.task.transfer_training_key)return args.attempts.find(a=>a.transfer_lineage?.key===args.task.transfer_training_key&&
     !a.exclude_from_metrics&&!a.duplicate_of_attempt_id);
   return args.attempts.filter(attempt=>!attempt.duplicate_of_attempt_id&&
+    (!args.task.ranking||!args.task.source_attempt_id||attempt.id>args.task.source_attempt_id)&&
     resolveCanonicalProblemId(attempt.problem_id,aliases)===taskProblem&&attempt.date===args.snapshot.date&&
     savedAfterSnapshot(attempt,args.snapshot)&&attemptModeSatisfiesTask(args.task.mode,attempt.mode)&&
     (!scanModes.has(String(attempt.mode||""))||scanModes.has(String(args.task.mode||"")))&&

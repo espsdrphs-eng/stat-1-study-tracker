@@ -417,6 +417,31 @@ const cutoffDate=(today:string,days:number)=>{
 };
 
 /** Calendar chooses the session kind; exposure and learning evidence choose the year. */
+export function derivePastExamRoleRelease(args:{attempts:Attempt[];pastSessions:PastSession[];daysRemaining:number}){
+  const completed=(year:number)=>args.pastSessions.filter(row=>row.year===year&&
+    row.session_kind==="selected_three_timed"&&derivePastExamSessionState(row)==="completed")
+    .sort((a,b)=>String(b.simulation_completed_at||b.attempt_completed_at||b.date)
+      .localeCompare(String(a.simulation_completed_at||a.attempt_completed_at||a.date)))[0];
+  const cleanMeasurement=completed(2022),benchmark=completed(2024);
+  const selected2022=new Set(cleanMeasurement?.selected_timed_attempt_ids||[]);
+  const required2022Roots=args.attempts.filter(attempt=>selected2022.has(attempt.id))
+    .flatMap(attempt=>deriveFailureEpisode(attempt).rootWeaknesses.filter(root=>root.requiredRepair).map(root=>({attempt,root})))
+    .sort((a,b)=>Number(b.root.errorTypes.includes("W"))-Number(a.root.errorTypes.includes("W"))||
+      Number(a.attempt.score_numeric??100)-Number(b.attempt.score_numeric??100)||a.attempt.id-b.attempt.id||
+      a.root.rootWeaknessId.localeCompare(b.root.rootWeaknessId)).slice(0,2);
+  const transferEvidence=benchmark||required2022Roots.length?deriveTransferEvidence(args.attempts):[];
+  const pendingRoots=required2022Roots.filter(({attempt,root})=>!rootProgress(attempt,root,args.attempts).repairSuccess&&
+    !transferEvidence.some(row=>row.sourceAttemptId===attempt.id&&root.skillIds.includes(row.skillId)));
+  const benchmarkDate=String(benchmark?.simulation_completed_at||benchmark?.attempt_completed_at||benchmark?.date||"").slice(0,10);
+  const laterExam=!!benchmarkDate&&args.pastSessions.some(row=>row.year!==2024&&row.session_kind==="selected_three_timed"&&
+    derivePastExamSessionState(row)==="completed"&&String(row.simulation_completed_at||row.attempt_completed_at||row.date).slice(0,10)>benchmarkDate);
+  const laterTransfer=!!benchmarkDate&&transferEvidence.some(row=>row.date>benchmarkDate);
+  const holdout=deriveLearningPolicy(args.daysRemaining).holdoutPolicy;
+  return {cleanMeasurement,benchmark,pendingRoots,
+    benchmarkReleased:args.daysRemaining<=holdout.releaseWindowDaysByYear[2024]&&!!cleanMeasurement&&!pendingRoots.length,
+    historicalRetestReleased:args.daysRemaining<=holdout.releaseWindowDaysByYear[2025]&&!!benchmark&&(laterExam||laterTransfer)};
+}
+
 export function buildPastExamYearCandidates(args:{
   catalog:ExamReferenceCatalogItem[];attempts:Attempt[];pastSessions:PastSession[];
   weaknesses?:ConceptWeaknessInsight[];today:string;daysRemaining:number;
@@ -437,35 +462,14 @@ export function buildPastExamYearCandidates(args:{
     row.session_kind==="selected_three_timed"&&derivePastExamSessionState(row)==="completed")
     .sort((a,b)=>String(b.simulation_completed_at||b.attempt_completed_at||b.date)
       .localeCompare(String(a.simulation_completed_at||a.attempt_completed_at||a.date)))[0];
-  const cleanMeasurement=completed(2022);
-  const benchmark=completed(2024);
-  const selected2022=new Set(cleanMeasurement?.selected_timed_attempt_ids||[]);
-  const required2022Roots=args.attempts.filter(attempt=>selected2022.has(attempt.id))
-    .flatMap(attempt=>deriveFailureEpisode(attempt).rootWeaknesses.filter(root=>root.requiredRepair)
-      .map(root=>({attempt,root})))
-    .sort((a,b)=>Number(b.root.errorTypes.includes("W"))-Number(a.root.errorTypes.includes("W"))||
-      Number(a.attempt.score_numeric??100)-Number(b.attempt.score_numeric??100)||
-      a.attempt.id-b.attempt.id||a.root.rootWeaknessId.localeCompare(b.root.rootWeaknessId))
-    .slice(0,2);
-  // Most planning calls precede both milestones. Avoid re-deriving the entire
-  // Attempt transfer graph for every day in the 7/14/30-day forecasts.
-  const transferEvidence=benchmark||required2022Roots.length?deriveTransferEvidence(args.attempts):[];
-  const required2022RepairPending=required2022Roots.some(({attempt,root})=>
-    !rootProgress(attempt,root,args.attempts).repairSuccess&&
-    !transferEvidence.some(row=>row.sourceAttemptId===attempt.id&&root.skillIds.includes(row.skillId)));
-  const benchmarkDate=String(benchmark?.simulation_completed_at||benchmark?.attempt_completed_at||benchmark?.date||"").slice(0,10);
-  const laterExam=!!benchmarkDate&&args.pastSessions.some(row=>row.year!==2024&&
-    row.session_kind==="selected_three_timed"&&derivePastExamSessionState(row)==="completed"&&
-    String(row.simulation_completed_at||row.attempt_completed_at||row.date).slice(0,10)>benchmarkDate);
-  const laterTransfer=!!benchmarkDate&&transferEvidence.some(row=>row.date>benchmarkDate);
-  const holdout=deriveLearningPolicy(args.daysRemaining).holdoutPolicy;
+  const release=derivePastExamRoleRelease(args);
   return years.map(year=>{
     const rows=args.catalog.filter(row=>row.year===year);
     const yearRole=pastExamYearRole(year);
     const roleReleased=yearRole==="current_benchmark_simulation"?
-      args.daysRemaining<=holdout.releaseWindowDaysByYear[2024]&&!!cleanMeasurement&&!required2022RepairPending:
+      release.benchmarkReleased:
       yearRole==="historical_retest"?
-      args.daysRemaining<=holdout.releaseWindowDaysByYear[2025]&&!!benchmark&&(laterExam||laterTransfer):true;
+      release.historicalRetestReleased:true;
     const eligibleRows=rows.filter(row=>row.availability==="verified_problem"&&row.schedulable&&row.gradable&&
       (!row.simulationProtected||yearRole==="training_pool"&&args.daysRemaining<=30||
         yearRole!=="training_pool"&&roleReleased));

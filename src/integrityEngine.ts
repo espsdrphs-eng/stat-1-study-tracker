@@ -233,6 +233,8 @@ function calculateIntegrityAudit(args: {
   currentPlanSummary?:AdaptivePlanSummary;futurePlanSummaries?:Array<{label:string;summary:AdaptivePlanSummary}>;
   additionalCandidates?:AdditionalStudyCandidate[];
   eligibleTodayTasks?:Task[];
+  /** A ranked queue is not a commitment to execute every listed repair today. */
+  rankingMode?:boolean;
   pendingImportUpdates?:StudyUpdate[];
   examDate?:string;
   pastExamCatalog?:ExamReferenceCatalogItem[];
@@ -277,7 +279,7 @@ function calculateIntegrityAudit(args: {
       .map(session=>reconcilePastExamSessionEvidence(session,attempts,session.session_alias_ids))});
   const preferredMeasurementYear=preferredPastExamMeasurementYear({catalog:args.pastExamCatalog||[],pastSessions:canonicalPastSessions,
     today,attempts,daysRemaining:daysUntilExam(today,args.examDate||"2026-11-15")});
-  for(const task of (currentTodayTasks||[]).filter(row=>row.triage==="must"&&isPastExamSessionTask(row)&&row.stable_session_key&&row.past_exam_year&&!row.checked)){
+  for(const task of (currentTodayTasks||[]).filter(row=>(row.triage==="must"||row.ranking?.eligible)&&isPastExamSessionTask(row)&&row.stable_session_key&&row.past_exam_year&&!row.checked)){
     const session=canonicalPastSessions.find(row=>pastExamSessionKey(row)===task.stable_session_key);
     const decision=derivePastExamSessionAdmission({year:task.past_exam_year!,catalog:args.pastExamCatalog||[],
       pastSessions:canonicalPastSessions,today,session,attempts,clean:task.clean_selection_evidence,preferredMeasurementYear});
@@ -417,7 +419,7 @@ function calculateIntegrityAudit(args: {
     const count=new Set((currentTodayTasks||[]).filter(task=>!task.checked&&task.triage==="must"&&
       task.repair_lineage?.rootWeaknessId&&roots.has(task.repair_lineage.rootWeaknessId))
       .map(task=>task.repair_lineage!.rootWeaknessId)).size;
-    if(count>2)issues.push({category:"too_many_session_repairs_required",severity:"active",
+    if(!args.rankingMode&&count>2)issues.push({category:"too_many_session_repairs_required",severity:"active",
       detail:`Session ${session.id} promoted ${count} required repairs`,repairable:false});
   }
 
@@ -551,7 +553,7 @@ function calculateIntegrityAudit(args: {
       const isWhitebookRepair=task.today_category==="repair"&&!task.id&&
         problemById.get(resolveCanonicalProblemId(task.problem_id,aliases))?.source_type==="whitebook";
       const lineage=task.repair_lineage;
-      if(task.today_category==="repair"&&task.triage==="must"&&
+      if((task.today_category==="repair"||task.ranking?.category==="補修")&&(task.triage==="must"||task.ranking?.eligible)&&
         problemById.get(resolveCanonicalProblemId(task.problem_id,aliases))?.source_type==="whitebook"&&
         (!lineage||lineage.matchConfidence!=="high"||!lineage.sourceAttemptId||!lineage.sourceProblemId||
           !lineage.rootWeaknessId||!lineage.sourceFindingIds?.length||!lineage.matchedSkillIds?.length||
@@ -946,7 +948,7 @@ function calculateIntegrityAudit(args: {
         reviewIds:task.review_type&&task.id?[task.id]:undefined,
         detail:`${task.problem_id} has a qualifying Attempt but its current Today task is incomplete`,repairable:false,
       });
-      if(task.review_type&&task.id){
+      if(task.review_type&&task.id&&!expectedChecked){
         const state=reviewExecutionState(currentReviewsById.get(task.id),today);
         if(state!=="actionable")issues.push({
           category:"inactive_review_current_task",severity:"active",reviewIds:[task.id],

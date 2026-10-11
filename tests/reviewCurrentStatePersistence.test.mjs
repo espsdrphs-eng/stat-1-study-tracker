@@ -50,12 +50,14 @@ test("snapshot, dashboard and GPT save share the persisted Review execution stat
   const snapshotBefore=(await db.meta.get(key)).value;
 
   const bootstrap=await localGet("/api/bootstrap");
-  assert.deepEqual(bootstrap.today.tasks.filter(task=>task.id).map(task=>task.id),[active.id]);
+  // New normal Today excludes unrelated Whitebook maintenance, without
+  // retiring its valid execution contract or changing snapshot history.
+  assert.deepEqual(bootstrap.today.tasks.filter(task=>task.id).map(task=>task.id),[]);
+  assert.deepEqual(bootstrap.today.canonicalStudyPlan.ranked.waiting.filter(w=>w.task.id).map(w=>w.task.id),[active.id]);
   assert.equal(bootstrap.dashboard.pending,1);
   assert.equal(bootstrap.today.active_remaining_minutes,
     bootstrap.today.tasks.filter(task=>!task.checked&&task.triage!=="tomorrow")
       .reduce((sum,task)=>sum+Number(task.minutes||0),0));
-  assert.ok(bootstrap.today.active_remaining_minutes>=5);
   assert.equal((await db.meta.get(key)).value,snapshotBefore);
 
   const countsBefore={attempts:await db.attempts.count(),reviews:await db.reviews.count()};
