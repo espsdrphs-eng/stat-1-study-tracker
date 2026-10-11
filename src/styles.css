@@ -379,6 +379,20 @@ header h1{font-size:28px;font-weight:700;letter-spacing:-.02em;color:var(--text-
 .problem-state-row h3{margin:0 0 6px}
 .problem-state-row details{margin-top:14px}
 .problem-toolbar{flex-wrap:wrap}
+.problem-table-scroll{overflow-x:auto;padding:0;max-width:100%}
+.problem-table{width:100%;min-width:800px;border-collapse:separate;border-spacing:0;table-layout:fixed}
+.problem-table th,.problem-table td{padding:12px 10px;vertical-align:top;border-bottom:1px solid var(--border);text-align:left;overflow-wrap:anywhere}
+.problem-table th:first-child{width:27%;position:sticky;left:0;background:var(--panel,#fff);z-index:1}
+.problem-table tbody th{white-space:normal;text-transform:none;letter-spacing:normal;line-height:1.5}
+.problem-table tbody th>strong{font-size:15px;color:var(--ink,#263e36)}
+.problem-table tbody th>small{font-size:11px;font-weight:400}
+.problem-table thead th:first-child{z-index:2}
+.problem-table th:nth-child(2){width:27%}.problem-table th:nth-child(3){width:16%}.problem-table th:nth-child(4){width:14%}
+.problem-table small{display:block;margin-top:4px;color:var(--muted)}
+.problem-table td button{display:block;margin:0 0 6px;white-space:normal}
+.problem-table tr[aria-selected="true"] td{background:#f0f6fc}
+.answer-scope{font-size:1rem;line-height:1.6}
+.task-scope-selection{margin:16px 0;padding:16px;border:1px solid var(--border);border-radius:12px}
 .problem-toolbar label{min-width:0;max-width:100%}
 .problem-toolbar select,.problem-toolbar input{max-width:100%}
 .task-introduction,.problem-reference{margin:16px 0;padding:16px;border:1px solid var(--border);border-radius:12px;min-width:0;overflow-wrap:anywhere}

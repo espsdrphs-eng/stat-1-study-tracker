@@ -5,6 +5,7 @@ import {attemptPlanningEligible} from "./legacyKPolicy.ts";
 import {deriveFailureEpisode} from "./failureEpisode.ts";
 import {currentTaskIdentity,isPastExamSessionTask} from "./examOptimizationPolicy.ts";
 import {resolveCanonicalProblemId} from "./examReadiness.ts";
+import {deriveTaskAnswerScope,taskAnswerScopeText} from "./taskAnswerScope.ts";
 
 // Neutral projections of existing grading slots/criteria, not new mastery rules.
 const targetLabels:Record<string,string>={problem_type:"型の判断",first_step:"初手",focal_quantity:"対象の量",critical_condition:"条件確認",major_calculation:"主要計算",answer_conclusion:"最終結論"};
@@ -81,7 +82,7 @@ export function deriveTaskIntroduction(data:Bootstrap,problem:Problem,item?:Part
     const labels=errors.filter((e):e is keyof typeof errorLabels=>!!e&&!!errorLabels[e]).map(e=>errorLabels[e]);
     if(labels.length){failures.push(...labels);evidenceAttemptIds.push(source.id);}
   }
-  const recordedParts=!blind?[...new Set(parts.flatMap(p=>[p.label,p.currentCorrection||""].flatMap(text=>text.match(/小問\s*[0-9０-９]+|[（(][0-9０-９]+[）)](?=の|で|を|は)/gu)||[])))]:[];
+  const answerScope=deriveTaskAnswerScope({problem,task,attempts:data.attempts,overrides:data.taskAnswerScopeOverrides});
   const scope=parts.map((p,i)=>{
     const slot=p.stableTargetKey?.split(":slot:")[1]||p.stable_target_key?.split(":slot:")[1];
     const label=targetLabels[p.id]||(slot?targetLabels[slot]:undefined)||`採点対象${i+1}`;
@@ -91,8 +92,8 @@ export function deriveTaskIntroduction(data:Bootstrap,problem:Problem,item?:Part
   const goals=!blind?contract?.completionCriteria?.map(c=>criterionLabels[c.id]).filter(Boolean)||[]:[];
   const partGoals=!blind&&contract?.completionCriteria?.length?parts.map(p=>criterionLabels[p.completionCriterionId]).filter(Boolean):[];
   return {taskIdentity:task?currentTaskIdentity(task as Task):`problem:${problemId}`,target:deriveProblemReference(problem,data.adaptiveLearning?.pastExamCatalog).locator,
-    workLabel,blind,subparts:blind?"原問題の指定範囲":recordedParts.length?recordedParts.join(" / "):"設問番号未登録",
-    scope:blind?"原問題の指定範囲":scope.length?[...new Set(scope)].join(" / "):"対象範囲未登録",
+    workLabel,blind,answerScope,subparts:taskAnswerScopeText(answerScope),
+    scope:blind?taskAnswerScopeText(answerScope):scope.length?[...new Set(scope)].join(" / "):"対象範囲未登録",
     previousDifficulty:blind?"独立性を守るため解答前は表示しません":failures.length?[...new Set(failures)].join(" / "):"診断未登録",
     recoveryGoal:blind?"問題文の要求に対して自力で答案を作成し、採点後に確認します":goals.length||partGoals.length?[...new Set([...goals,...partGoals])].join(" / ")+(contract?.allowedReferenceLevel===0&&!goals.some(g=>g.includes("参照なし"))?"（参照なし）":""):"回収条件未設定",
     evidenceAttemptIds:[...new Set(evidenceAttemptIds)],sourceDate:!blind&&source?source.date:null};
@@ -127,7 +128,7 @@ export function deriveProblemLearningView(data:Bootstrap,problem:Problem,transfe
   const pendingWork=work&&!rows.some(a=>a.id>work.baselineAttemptId&&!a.exclude_from_metrics);
   const generated=problem.generated_transfer;
   const workStatus=pendingWork?work.stage:generated?.answer_submission&&!rows.length?"awaiting_grading":rows.length?"graded":"unstarted";
-  const workLabel={unstarted:"未着手",preparing:"解答作成中・採点準備中",awaiting_grading:"採点待ち",graded:"採点済み"}[workStatus];
+  const workLabel={unstarted:"未着手",preparing:"採点準備中",awaiting_grading:"採点待ち",graded:"採点済み"}[workStatus];
   const current=selectCurrentReviewsForProblem({reviews:data.reviews,problemId:id,aliases:data.problemAliases,today:data.dashboard.today}).current;
   const needsRepair=!mastery?.normalReviewComplete&&(mastery?.levels.some(l=>["repairing","needs_recheck"].includes(l.status))||current.some(r=>(r.learning_purpose||r.grading_contract?.learningPurpose)==="error_repair"));
   const waitingRetention=!needsRepair&&!mastery?.normalReviewComplete&&(mastery?.levels.some(l=>l.status==="retention_pending")||current.some(r=>(r.learning_purpose||r.grading_contract?.learningPurpose)==="retrieval_check"));

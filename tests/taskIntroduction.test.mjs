@@ -23,12 +23,13 @@ test('legacy root-specific parts remain a registered scope without exposing corr
 });
 test('blind exam transfer cannot reveal source diagnosis, skill or targeted subparts',()=>{
  const v=feedback.deriveTaskIntroduction(data,problem,{...task,learning_purpose:'transfer_check',grading_contract:{...contract,learningPurpose:'transfer_check'}});
- assert.equal(v.blind,true);assert.equal(v.subparts,'原問題の指定範囲');assert.equal(v.previousDifficulty,'独立性を守るため解答前は表示しません');
+ // The new scope explicitly names the transfer problem's full requirements, never the source parts.
+ assert.equal(v.blind,true);assert.equal(v.subparts,'問題全体（問題文の要求範囲）');assert.equal(v.previousDifficulty,'独立性を守るため解答前は表示しません');
  assert.deepEqual(v.evidenceAttemptIds,[]);assert.doesNotMatch(JSON.stringify(v),/小問4|主要計算|Xbar/);
 });
 test('missing diagnosis and goals remain missing, not fabricated',()=>{
  const v=feedback.deriveTaskIntroduction({...data,attempts:[],reviews:[],today:{tasks:[],canonicalStudyPlan:{ranked:{waiting:[]}}}},problem,{problem_id:problem.problem_id,learning_purpose:'error_repair'});
- assert.equal(v.previousDifficulty,'診断未登録');assert.equal(v.recoveryGoal,'回収条件未設定');assert.equal(v.subparts,'設問番号未登録');
+ assert.equal(v.previousDifficulty,'診断未登録');assert.equal(v.recoveryGoal,'回収条件未設定');assert.equal(v.subparts,'対象小問未特定・指定が必要');assert.notEqual(v.answerScope.status,'whole');
 });
 test('root-based task without Review ID has explicit assistance from its valid source only',()=>{
  const source={...data.attempts[0],next_action:'小問4で1/Xbar=2/Uを確認する'};

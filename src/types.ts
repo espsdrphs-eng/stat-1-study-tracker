@@ -584,6 +584,7 @@ export type Dashboard = {
 export type LearningWork={id:string;problemId:string;mode:string;reviewId?:number;baselineAttemptId:number;stage:"preparing"|"awaiting_grading";referenceLevel:number;updatedAt:string;task?:Task};
 export type Bootstrap = {
   learningWorkByProblem?:Record<string,LearningWork>;
+  taskAnswerScopeOverrides?:Record<string,import('./taskAnswerScope.ts').TaskAnswerScopeOverride>;
   problems:Problem[]; attempts:Attempt[]; reviews:Review[]; roadmap:Roadmap[];
   weakNotes:WeakNote[]; pastSessions:PastSession[]; answerIndex:AnswerIndexEntry[]; problemAliases:ProblemAlias[]; dashboard:Dashboard;
   adaptiveLearning:AdaptiveLearning;

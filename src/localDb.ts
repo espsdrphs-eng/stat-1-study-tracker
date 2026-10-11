@@ -1,4 +1,5 @@
 import Dexie, { type EntityTable } from "dexie";
+import {deriveTaskAnswerScope,validateTaskAnswerScopeOverride,taskAnswerScopeKey} from './taskAnswerScope.ts';
 import {transferTrainingRequest,generatedAttemptFields} from "./transferTrainingApi.ts";
 import {validateGeneratedContent,validateManualGradingReference} from "./generatedTransfer.ts";
 import type { AnswerIndexEntry, Attempt, Bootstrap, CoachDiagnosis, CorrectionLog, DataDiagnostic, GradingContractSnapshot, MasterImportLog, PastExamExposure, PastSession, Problem, ProblemAlias, ProblemRelation, Review, Roadmap, StudyUpdate, Task, TodayPlanSnapshot, WeakNote } from "./types";
@@ -61,7 +62,7 @@ import {materializeObservedOutOfScopeFindings} from "./outOfScopeObservations.ts
 import {deriveCurrentTodayProjection} from "./currentTodayProjection.ts";
 import {matchingPastSessionForTodayTask} from "./todayTaskProjection.ts";
 import {resolveSemanticReviewGeneration} from "./reviewGeneration.ts";
-import {classifyFailureStrength,examHorizonPolicy,isPastExamSessionTask,learningEventKind,masteryLevelForTargets} from "./examOptimizationPolicy.ts";
+import {classifyFailureStrength,currentTaskIdentity,examHorizonPolicy,isPastExamSessionTask,learningEventKind,masteryLevelForTargets} from "./examOptimizationPolicy.ts";
 import {parseWholeAnswerRediagnosis,WHOLE_ANSWER_DIAGNOSTIC_VERSION,wholeAnswerDiagnosticFingerprint} from "./wholeAnswerDiagnostic.ts";
 import {deriveDashboardKpis} from "./dashboardKpi.ts";
 import {deriveExamReadinessAssessment} from "./examCapability.ts";
@@ -3223,6 +3224,7 @@ async function bootstrap(readOnly=false):Promise<Bootstrap>{
   const masteryByProblem=deriveMasteryByProblem({problemIds:problems.map(problem=>problem.problem_id),attempts:activeAttempts,reviews});
   return {problems:problems.sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.category.localeCompare(b.category)||a.problem_number-b.problem_number),attempts,reviews,roadmap,weakNotes,pastSessions,answerIndex,problemAliases,dashboard:dashboardWithKpis,settings,masterStatus,databaseStatus,adaptiveLearning,
     coach,masteryByProblem,learningWorkByProblem:Object.fromEntries(metaEntries.filter(m=>m.key.startsWith("learning-work:")).flatMap(m=>{try{const w=JSON.parse(m.value);return [[w.problemId,w]];}catch{return [];}})),
+    taskAnswerScopeOverrides:Object.fromEntries(metaEntries.filter(m=>m.key.startsWith('task-answer-scope:')).flatMap(m=>{try{const v=JSON.parse(m.value);return [[v.scopeKey,v]];}catch{return [];}})),
     today:{tasks,selectionExclusions:currentToday.exclusions,currentTask:canonicalStudyPlan.primaryAction||undefined,canonicalStudyPlan,totalLoad,plannedMinutes:plannedTotal,remainingMinutes,actualMinutes,targetMinutes:settings.daily_study_minutes,capacityPercent,warning,guidance,
       planned_minutes_total:plannedTotal,completed_minutes_today:actualMinutes,remaining_minutes_today:remainingMinutes,
       postponed_minutes_today:postponedMinutes,target_minutes_today:settings.daily_study_minutes,
@@ -3677,6 +3679,21 @@ async function saveWholeAnswerRediagnosis(attemptId:number,text:string){
 let transferRequestQueue:Promise<unknown>=Promise.resolve();
 export async function localPost<T>(path:string,body:any):Promise<T>{
   await initialize();
+  if(path==='/api/task-answer-scope'){
+    const problem=await db.problems.get(String(body.problemId||''));
+    if(!problem)throw new Error('問題が見つかりません。');
+    const current=await bootstrap();
+    const tasks:Partial<Task&Review>[]=[...current.today.tasks,...current.reviews.filter(r=>r.status==='pending')];
+    const task=tasks.find(t=>t.problem_id===problem.problem_id&&taskAnswerScopeKey(problem,t)===body.scopeKey);
+    if(!task)throw new Error('課題が更新されました。現在の対象を確認してください。');
+    const scope=deriveTaskAnswerScope({problem,task,attempts:current.attempts});
+    if(!['unknown','conflict'].includes(scope.status))throw new Error('この課題の解答範囲は既存記録で特定済みです。');
+    const value=validateTaskAnswerScopeOverride({scopeKey:scope.scopeKey,problemId:problem.problem_id,
+      taskIdentity:currentTaskIdentity(task as Task,problem.problem_id),primaryTargetParts:body.primaryTargetParts,
+      secondaryTargetParts:body.secondaryTargetParts,referenceOnlyParts:body.referenceOnlyParts});
+    await db.meta.put({key:`task-answer-scope:${scope.scopeKey}`,value:JSON.stringify(value)});
+    notifyStudyDataChanged({operation:'task-answer-scope'});return {ok:true} as T;
+  }
   if(path==="/api/learning-work"){
     const problem=await db.problems.get(String(body.problemId||""));
     if(!problem||!["preparing","awaiting_grading"].includes(body.stage))throw new Error("問題と作業段階を確認してください");
@@ -4025,6 +4042,7 @@ export async function restoreBackup(data:any){
     for(const row of await db.meta.where("key").startsWith("transfer-generation:").toArray())await db.meta.delete(row.key);
     for(const row of await db.meta.where("key").startsWith("transfer-training-context:").toArray())await db.meta.delete(row.key);
     for(const row of await db.meta.where("key").startsWith("learning-work:").toArray())await db.meta.delete(row.key);
+    for(const row of await db.meta.where('key').startsWith('task-answer-scope:').toArray())await db.meta.delete(row.key);
     if(Array.isArray(data.meta)) await db.meta.bulkPut(data.meta);
     // A restore changes the current source state. Keep historical day plans, but
     // never let a pre-restore/stale plan for today override the reconciled

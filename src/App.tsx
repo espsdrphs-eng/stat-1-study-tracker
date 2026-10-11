@@ -2,6 +2,7 @@ import { useEffect, useState, useRef, useMemo } from "react";
 import {createStateReloadCoordinator} from "./stateReload.ts";
 import {TransferTrainingPanel} from "./TransferTrainingPanel";
 import {deriveCurrentLearningDiagnosis,deriveTaskIntroduction,deriveProblemReference,taskAssistanceText,preAnswerReason,completionCriterionText,deriveProblemLearningView,deriveProblemLearningViews,imageGradingPrompt,optionalNetMinutes,netMinutesText} from "./learningFeedback";
+import {appendTaskAnswerScope,type TaskAnswerScope} from './taskAnswerScope';
 import { useRegisterSW } from "virtual:pwa-register/react";
 import {
   AlertTriangle, Archive, ArrowDown, BarChart3, BookOpen, CalendarCheck, CalendarClock, Check, ChevronRight, ClipboardPaste,
@@ -583,6 +584,7 @@ function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a
           <header><Badge tone="blue">優先 {t.ranking!.rank}</Badge><strong>{t.title}</strong><span>{t.ranking!.category}・{t.minutes}分目安</span></header>
           <p>{t.transfer_training_key?"別問題1問・参照なしで解答":isPastExamSessionTask(t)?t.session_workflow:
             `${modes[t.mode]||t.mode} / ${t.effective_review_scope||t.review_scope||"答案形成"}`}</p>
+          {!isPastExamSessionTask(t)&&pmap[t.problem_id]&&<p className="answer-scope"><strong>今回解く箇所：{deriveTaskIntroduction(data,pmap[t.problem_id],t).subparts}</strong></p>}
           <p className="why-today">{preAnswerReason(t)}</p>
           {!isPastExamSessionTask(t)&&learningViews[t.problem_id]&&<small>作業状態：{learningViews[t.problem_id].workLabel}</small>}
           {t.transfer_training_key?<TransferTrainingPanel trainingKey={t.transfer_training_key} onSaved={()=>setFinishedTransferKey(t.transfer_training_key)}/>:
@@ -685,10 +687,10 @@ function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a
 function copyText(text:string,label:string,setCopied:(value:string)=>void){
   return navigator.clipboard.writeText(text).then(()=>{setCopied(label);setTimeout(()=>setCopied(""),1800)});
 }
-function StudyPromptButtons({item,resolved}:{item:Partial<Review&Task>;resolved?:ResolvedReviewCard}) {
+function StudyPromptButtons({item,resolved,answerScope}:{item:Partial<Review&Task>;resolved?:ResolvedReviewCard;answerScope:TaskAnswerScope}) {
   const [copied,setCopied]=useState("");
   const [fallback,setFallback]=useState("");
-  const withAnswer=(prompt:string)=>imageGradingPrompt(prompt,Math.max(Number(item.actual_reference_level||0),readReferenceState(item.id).actual_reference_level));
+  const withAnswer=(prompt:string)=>appendTaskAnswerScope(imageGradingPrompt(prompt,Math.max(Number(item.actual_reference_level||0),readReferenceState(item.id).actual_reference_level)),answerScope);
   const firstPrompt=buildFirstAttemptGradingPrompt({
     problemId:item.problem_id||"",displayLabel:item.title||item.problem_id,theme:item.theme,
     canonicalProblemType:item.canonical_problem_type,mode:item.mode,estimatedMinutes:item.minutes||item.estimated_minutes,
@@ -709,7 +711,7 @@ function StudyPromptButtons({item,resolved}:{item:Partial<Review&Task>;resolved?
   }):"";
   const prompt=reviewPrompt||firstPrompt;
   return <div className="prompt-button-row">
-    <button type="button" className="ghost small" onClick={async()=>{try{if(item.id)await post(`/api/reviews/${item.id}/contract-lock`,{});try{await copyText(withAnswer(prompt),"grading",setCopied);setFallback("")}catch{setFallback(withAnswer(prompt))}}catch(error){window.alert(error instanceof Error?error.message:"この復習課題は現在実行できません")}}}><Copy size={14}/>{copied==="grading"?"コピー済み":"採点プロンプトをコピー"}</button>
+    <button type="button" className="ghost small" disabled={['unknown','conflict'].includes(answerScope.status)} onClick={async()=>{try{const scoped=withAnswer(prompt);if(item.id)await post(`/api/reviews/${item.id}/contract-lock`,{});try{await copyText(scoped,"grading",setCopied);setFallback("")}catch{setFallback(scoped)}}catch(error){window.alert(error instanceof Error?error.message:"この復習課題は現在実行できません")}}}><Copy size={14}/>{copied==="grading"?"コピー済み":"採点プロンプトをコピー"}</button>
     {fallback&&<label>自動コピーが許可されていません。全選択してコピーしてください。<textarea aria-label="コピー用採点プロンプト" readOnly value={fallback} onFocus={e=>e.currentTarget.select()}/></label>}
   </div>;
 }
@@ -802,6 +804,7 @@ function ProblemChip({problem,latest,rank,select}:{problem:Problem;latest?:Attem
 function ProblemsView({data,select,run,busy}:{data:Bootstrap;select:(p:Problem)=>void;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean}) {
   const [filter,setFilter]=useState("all"),[query,setQuery]=useState(""),[adding,setAdding]=useState(false);
   const [source,setSource]=useState("all"),[year,setYear]=useState("all"),[limit,setLimit]=useState(30);
+  const [expanded,setExpanded]=useState<string|null>(null);
   const [form,setForm]=useState<Record<string,string>>({problem_id:"",source_type:"whitebook",category:"A",chapter:"",problem_number:"",title:"",theme:"",priority:"semi_core",strategy_rank:"A",role:"training",recommended_mode:"full",linked_past_exams:"",linked_s_problems:"",linked_a_problems:"",notes:""});
   const views=useMemo(()=>deriveProblemLearningViews(data),[data]);
   const rows=data.problems.map(problem=>({problem,state:views[problem.problem_id]}));
@@ -822,17 +825,21 @@ function ProblemsView({data,select,run,busy}:{data:Bootstrap;select:(p:Problem)=
         <button className="ghost" onClick={()=>setAdding(true)}><Plus size={17}/>問題を追加</button>
       </div><p>{shown.length}問</p>
     </section>
-    <div className="problem-state-list">{shown.slice(0,limit).map(({problem:p,state:s})=>{const introduction=deriveTaskIntroduction(data,p);return <section className="panel problem-state-row" key={p.problem_id} data-problem-id={p.problem_id}>
-      <div className="problem-state-head"><div><h3>{p.generated_transfer?p.display_label||p.title:problemDisplayLabel(p)}</h3><small>{p.problem_id}・{introduction.target} ／ {introduction.subparts}</small></div><Badge>{s.workLabel}</Badge></div>
-      <p>今回の作業：{introduction.workLabel}</p>
-      <p>次の行動：{s.nextAction}</p><button className="primary" onClick={()=>select(p)}>{s.workStatus==="awaiting_grading"?"採点を続ける":"問題を開く"}</button>
-      {!introduction.blind&&<details><summary>課題の目的・回収目標</summary><TaskPurposeSummary introduction={introduction}/></details>}
-      <details><summary>採点・保持・転移の状況</summary>
-        <p>最新採点：{s.latestAttempt?`${s.latestAttempt.date}・${s.latestAttempt.mark}・${s.latestAttempt.score_numeric??"―"}点`:"採点記録なし"}</p>
-        <p>学習到達度：{s.needsRepair?"要復習":s.retentionLabel}</p><p>保持：{s.retentionLabel}</p><p>転移：{s.transferLabel}</p>
-        <small>◎は同一問題の保持評価です。生成問題の成功は転移訓練であり、本番転移ではありません。</small>
-      </details>
-    </section>})}</div>
+    <div className="panel problem-table-scroll"><table className="problem-table" aria-label="問題と今回解く小問">
+      <thead><tr><th>問題</th><th>今回解く箇所</th><th>学習区分</th><th>状態</th><th>次の操作</th></tr></thead>
+      <tbody>{shown.slice(0,limit).map(({problem:p,state:s})=>{const introduction=deriveTaskIntroduction(data,p);
+        const status=s.workStatus==='awaiting_grading'?s.workLabel:s.needsRepair?'復習待ち':s.waitingRetention?'保持確認待ち':s.retentionLabel==='保持確認済み'?s.retentionLabel:s.workLabel;
+        return <tr key={p.problem_id} data-problem-id={p.problem_id} aria-selected={expanded===p.problem_id}>
+          <th scope="row"><strong>{p.generated_transfer?p.display_label||p.title:problemDisplayLabel(p)}</strong><small>{introduction.target}</small></th>
+          <td className="answer-scope"><strong>{introduction.subparts}</strong></td><td>{introduction.workLabel}</td><td>{status}</td>
+          <td><button className="primary small" onClick={()=>select(p)}>{s.workStatus==='awaiting_grading'?'採点を続ける':'問題を開く'}</button><button className="ghost small" onClick={()=>setExpanded(expanded===p.problem_id?null:p.problem_id)}>詳細確認</button></td>
+        </tr>})}</tbody></table></div>
+    {expanded&&(()=>{const row=shown.find(r=>r.problem.problem_id===expanded);if(!row)return null;const {problem:p,state:s}=row;
+      return <section className="panel"><h3>{problemDisplayLabel(p)}の状況</h3><TaskPurposeSummary introduction={deriveTaskIntroduction(data,p)}/>
+        <p>最新採点：{s.latestAttempt?`${s.latestAttempt.date}・${s.latestAttempt.mark}・${s.latestAttempt.score_numeric??'―'}点`:'採点記録なし'}</p>
+        <p>保持：{s.retentionLabel} ／ 転移：{s.transferLabel}</p><p>次の行動：{s.nextAction}</p>
+        <small>◎は同一問題の保持評価です。生成問題の成功は転移訓練であり、本番転移ではありません。</small></section>;
+    })()}
     {!shown.length&&<Empty>該当する問題はありません</Empty>}
     {shown.length>limit&&<button className="ghost wide-btn" onClick={()=>setLimit(n=>n+30)}>続きを表示</button>}
     {adding&&<Modal title="問題マスターに追加" close={()=>setAdding(false)}><form onSubmit={e=>{e.preventDefault();run(()=>post("/api/problems",form),"問題を追加しました");setAdding(false)}} className="form-grid">
@@ -851,6 +858,21 @@ function ProblemsView({data,select,run,busy}:{data:Bootstrap;select:(p:Problem)=
   </>
 }
 
+function TaskScopeSelection({scope,problemId,run,busy}:{scope:TaskAnswerScope;problemId:string;run:(a:()=>Promise<unknown>,s:string)=>Promise<boolean>;busy:boolean}){
+  const [primary,setPrimary]=useState(''),[secondary,setSecondary]=useState(''),[reference,setReference]=useState('');
+  if(!['unknown','conflict'].includes(scope.status))return null;
+  const split=(s:string)=>s.split(/[\s、,・/]+/u).filter(Boolean);
+  return <section className="task-scope-selection"><h3>{scope.status==='conflict'?'対象小問の記録を確認してください':'対象小問未特定'}</h3>
+    <p>未特定を問題全体とは扱いません。手元の問題と採点履歴を確認し、今回の対象番号だけを指定してください。</p>
+    <small>複数ある場合は「[2] [3]」のように空白で区切ってください。</small>
+    {scope.candidateParts.length>0&&<p>記録に出現する番号（対象とは限りません）：{scope.candidateParts.join('・')}</p>}
+    <div className="form-grid"><Field label="主対象の小問"><input aria-label="主対象の小問" value={primary} onChange={e=>setPrimary(e.target.value)} placeholder="[3] または 小問2"/></Field>
+      <Field label="補助確認（任意）"><input aria-label="補助確認の小問" value={secondary} onChange={e=>setSecondary(e.target.value)}/></Field>
+      <Field label="参照のみ（任意・採点対象外）"><input aria-label="参照のみの小問" value={reference} onChange={e=>setReference(e.target.value)}/></Field></div>
+    <button className="ghost" disabled={busy||!primary.trim()} onClick={()=>void run(()=>post('/api/task-answer-scope',{problemId,scopeKey:scope.scopeKey,primaryTargetParts:split(primary),secondaryTargetParts:split(secondary),referenceOnlyParts:split(reference)}),'今回の課題の小問範囲を保存しました')}>今回の対象小問を保存</button>
+    <small>課題・契約単位の指定です。過去の採点・ヒント履歴は変更しません。</small>
+  </section>;
+}
 function MasteryLevels({levels}:{levels:MasteryLevelState[]}){
   return <div className="mastery-levels">{levels.map(level=><div key={level.level} className={`mastery-level ${level.status}`}>
     <span>問題別段階 {level.level}</span><strong>{level.title}</strong><em>{level.label}</em>
@@ -939,7 +961,7 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport,startingTask}:{pro
     setRediagnosing(null);setRediagnosisPreview(null);setRediagnosisText("");return result;
   },"元の採点を保持して、答案全体の追加診断だけを更新しました");};
   const savedWorkReview=learningView.work?.reviewId?data.reviews.find(r=>r.id===learningView.work!.reviewId):undefined;
-  const baseGradingTask=savedWorkReview||learningView.work?.task|| (startingTask?.grading_contract?{...startingTask,problem_id:canonicalId}:nextReview);
+  const baseGradingTask=savedWorkReview||learningView.work?.task|| (startingTask?.grading_contract?{...startingTask,problem_id:canonicalId}:learningView.nextTask||nextReview);
   const gradingTask=baseGradingTask?{...baseGradingTask,actual_reference_level:Math.max(Number(baseGradingTask.actual_reference_level||0),Number(learningView.work?.referenceLevel||0))}:undefined;
   const introduction=deriveTaskIntroduction(data,problem,savedWorkReview||startingTask||gradingTask);
   const problemReference=deriveProblemReference(problem,data.adaptiveLearning.pastExamCatalog);
@@ -973,6 +995,7 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport,startingTask}:{pro
         <dt>今回の回収目標</dt><dd>{introduction.recoveryGoal}</dd></dl>
       <p>問題文を確認 → 紙／Goodnotesで解答 → 答案完成 → 採点プロンプトをコピー → ChatGPTに画像答案を添付 → 採点JSONを取り込む</p>
     </section>
+    <TaskScopeSelection scope={introduction.answerScope} problemId={canonicalId} run={run} busy={busy}/>
     <p>今回の範囲：{modes[initialMode]||initialMode}・{startingTask?.minutes||gradingTask?.estimated_minutes||"―"}分目安</p>
     <p>{preAnswerReason(startingTask||gradingTask||{})}</p>
     <details className="problem-reference"><summary>問題を参照（原本の特定情報）</summary>
@@ -982,7 +1005,7 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport,startingTask}:{pro
     </details>
     <p>答案は紙・Goodnotesで作成し、採点時に画像をChatGPTへ直接添付してください。アプリへの答案入力は不要です。</p>
     <p>作業状態：{learningView.workLabel}</p>
-    <div className="button-row">{learningView.workStatus!=="preparing"&&<button className="ghost" disabled={busy} onClick={()=>void setWork("preparing")}>解答作成を開始</button>}
+    <div className="button-row">
       <button className="primary" disabled={busy} onClick={()=>void setWork("awaiting_grading")}>答案完成・採点へ進む</button></div>
     {hintText&&<div><button className="ghost" disabled={hintBusy||busy} onClick={revealHint}>ヒントを開く（参照ありとして記録）</button>
       {hintOpen&&<p role="status">参照あり：{hintText}</p>}</div>}
@@ -993,7 +1016,9 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport,startingTask}:{pro
       <p>次の行動：{data.today.tasks.find(t=>t.problem_id===canonicalId&&!t.checked)?.kind||"Todayの最新順位へ進む"}</p></>:<p>答案を確定しました。今回の採点結果はまだ保存されていません。</p>}
     <p>成功条件：{completionCriterionText(gradingTask?.grading_contract)}</p>
     <p>採点プロンプトと答案画像をChatGPTへ送り、返された採点結果を取り込んでください。</p>
-    {gradingTask?<StudyPromptButtons item={gradingTask} resolved={hintReview?.card}/>:initialPrompt&&<button className="ghost" onClick={copyInitialPrompt}>{initialPromptCopied?"コピー済み":"採点プロンプトをコピー"}</button>}
+    <p className="answer-scope"><strong>今回解く箇所：{introduction.subparts}</strong></p>
+    <TaskScopeSelection scope={introduction.answerScope} problemId={canonicalId} run={run} busy={busy}/>
+    {gradingTask?<StudyPromptButtons item={gradingTask} resolved={hintReview?.card} answerScope={introduction.answerScope}/>:initialPrompt&&<button className="ghost" onClick={copyInitialPrompt}>{initialPromptCopied?"コピー済み":"採点プロンプトをコピー"}</button>}
     {initialPromptFallback&&<label>自動コピーが許可されていません。全選択してコピーしてください。<textarea aria-label="コピー用採点プロンプト" readOnly value={initialPromptFallback} onFocus={e=>e.currentTarget.select()}/></label>}
     <button className="primary" onClick={()=>setShowGradingImport(true)}>GPT採点結果を取り込む</button>
   </section>
