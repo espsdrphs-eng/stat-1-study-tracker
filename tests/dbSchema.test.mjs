@@ -30,12 +30,10 @@ test("GPT保存transactionはresolverとcorrection logを同じ原子保存に�
   const source=await readFile(new URL("../src/localDb.ts",import.meta.url),"utf8");
   const saveBranch=source.slice(source.indexOf('path==="/api/attempts"'),source.indexOf('path==="/api/import"'));
   const importBranch=source.slice(source.indexOf('path==="/api/import"'),source.indexOf('/^\\/api\\/attempts'));
-  assert.match(saveBranch,/db\.problemAliases/);
-  assert.match(importBranch,/db\.problemAliases/);
-  assert.match(saveBranch,/db\.correctionLogs/);
-  assert.match(importBranch,/db\.correctionLogs/);
-  assert.match(saveBranch,/bulkAdd\(logs/);
-  assert.match(importBranch,/bulkAdd\(logs/);
+  // Both public entrypoints now use the same verified, idempotent transaction.
+  assert.match(saveBranch,/saveGptUpdates/);assert.match(importBranch,/saveGptUpdates/);
+  const common=source.slice(source.indexOf('async function saveGptUpdates'),source.indexOf('async function saveAttempt'));
+  assert.match(common,/db\.problemAliases/);assert.match(common,/db\.correctionLogs/);assert.match(common,/bulkAdd\(logs/);
 });
 
 test("v13 migrationは既存履歴を削除せず件数を記録する",async()=>{

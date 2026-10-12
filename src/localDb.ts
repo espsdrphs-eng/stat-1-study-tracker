@@ -1,4 +1,5 @@
 import Dexie, { type EntityTable } from "dexie";
+import {gradingSubmissionKey,type GradingSaveReceipt} from './gradingSubmission.ts';
 import {deriveTaskAnswerScope,validateTaskAnswerScopeOverride,taskAnswerScopeKey} from './taskAnswerScope.ts';
 import {transferTrainingRequest,generatedAttemptFields} from "./transferTrainingApi.ts";
 import {validateGeneratedContent,validateManualGradingReference} from "./generatedTransfer.ts";
@@ -1015,6 +1016,55 @@ async function reconcileProblemLearningState(problemId?:string,preview=false):Pr
 }
 
 type PendingCorrectionLog=Omit<CorrectionLog,"id">;
+async function saveGptUpdates(updates:(StudyUpdate&Record<string,unknown>)[]):Promise<GradingSaveReceipt>{
+  if(!updates.length)throw new Error('保存する採点結果がありません。');
+  for(const update of updates){
+    const score=update.score_numeric,max=Number(update.score_max??100);
+    if(score!=null&&(!Number.isFinite(Number(score))||!Number.isFinite(max)||max<=0||Number(score)<0||Number(score)>max))
+      throw new Error('採点点数が範囲外です。入力を保持し、点数と満点を確認してください。');
+  }
+  // Hash outside IndexedDB: awaiting a crypto operation inside a Safari
+  // transaction can close it before the actual writes.
+  const keys=await Promise.all(updates.map(gradingSubmissionKey));
+  try{await assertDatabaseSchema('saveGptEvaluation', [...GPT_SAVE_REQUIRED_STORES,STORES.correctionLogs]);}
+  catch(error){if(!(error instanceof IndexedDbSchemaError))throw error;await repairDatabaseSchema();await assertDatabaseSchema('saveGptEvaluation',[...GPT_SAVE_REQUIRED_STORES,STORES.correctionLogs]);}
+  const logs:PendingCorrectionLog[]=[],ids:number[]=[];let replayed=true;
+  await db.transaction('rw',[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.answerIndex,db.problemAliases,db.correctionLogs],async()=>{
+    for(let i=0;i<updates.length;i++){
+      const prior=await db.meta.get(keys[i].key);
+      if(prior){const receipt=JSON.parse(prior.value) as {payload:string;attemptId:number};
+        if(receipt.payload!==keys[i].payload)throw new Error('保存識別子が一致しません。入力内容を保持して再確認してください。');
+        const saved=await db.attempts.get(receipt.attemptId);
+        if(!saved)throw new Error('保存済みの記録が見つかりません。入力内容を保持して確認してください。');
+        if(!saved.invalidated_at&&!saved.superseded_by_attempt_id){ids.push(saved.id);continue;}
+        // An explicit soft invalidation may restore a new logical Review. A
+        // NEW submission still has to pass the existing semantic-rebind gate;
+        // never revive the invalidated Attempt or silently call it saved.
+        if(!updates[i].submission_id||updates[i].submission_id===saved.submission_id)
+          throw new Error('この採点記録は無効化・差し替え済みです。現在の採点契約を使用してください。');
+      }
+      const update=updates[i],replacementId=Number(update.replacement_for_attempt_id||0);
+      const acknowledged=update.submission_id?(await db.attempts.toArray()).find(a=>a.submission_id===update.submission_id):undefined;
+      if(acknowledged){
+        if(Object.keys(update).every(k=>['problem_id','submission_id'].includes(k))&&acknowledged.problem_id===update.problem_id&&!acknowledged.invalidated_at&&!acknowledged.superseded_by_attempt_id){ids.push(acknowledged.id);continue;}
+        throw new Error('この保存IDには別の採点内容が保存されています。入力を保持し、差し替え採点で変更してください。');
+      }
+      const replacement=replacementId?await replaceAttemptAndRegrade(replacementId,update,logs):undefined;
+      const id=replacementId?Number((replacement as {newAttemptId?:number;attemptId?:number})?.newAttemptId||(replacement as {attemptId?:number})?.attemptId):await saveAttempt(update,logs);
+      if(!id||!await db.attempts.get(id))throw new Error('永続保存を確認できませんでした。入力内容は保持してください。');
+      ids.push(id);replayed=false;
+      await db.meta.put({key:keys[i].key,value:JSON.stringify({payload:keys[i].payload,attemptId:id})});
+    }
+    if(logs.length)await db.correctionLogs.bulkAdd(logs as CorrectionLog[]);
+  });
+  if((await db.attempts.bulkGet(ids)).some(row=>!row))throw new Error('保存先の記録を確認できませんでした。入力を保持して再試行してください。');
+  let projectionWarning:string|undefined;
+  try{await reconcilePastExamSessionGenerations(false);}
+  catch(error){projectionWarning=`学習記録は保存済みです。計画の更新は再読み込みで再試行してください：${error instanceof Error?error.message:String(error)}`;}
+  notifyStudyDataChanged({operation:'save-gpt-import'});
+  return {ok:true,savedAttemptIds:ids,replayed,...(projectionWarning?{projectionWarning}:{})};
+}
+
 async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorrectionLogs:PendingCorrectionLog[]=[]){
   input={...input,...sanitizeStudyUpdateTiming(input)};
   const submissionId=String(input.submission_id||"").trim()||`submission-${crypto.randomUUID()}`;
@@ -1332,14 +1382,14 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
       :basePlan;
   const hasNewStableObservation=(input.observed_out_of_scope_findings||[]).some(row=>row.stable_target_key);
   const hasStructuredUnresolved=(input.graded_findings||[]).some(row=>!row.resolved&&row.error_type!=="none");
-  const nextPurpose=sourceReview?transition?.nextPurpose:
+  const nextPurpose=lifecycleSource?transition?.nextPurpose:
     (hasStructuredUnresolved||hasNewStableObservation)?undefined:effectiveErrors.length?"error_repair":
       problem.source_type==="past_exam"?undefined:"retrieval_check";
   const delayedPrescription=nextPurpose?resolveLearningPolicy({problemId:input.problem_id,problem,source:{...input,
     error_types:effectiveErrors.length?effectiveErrors:["none"],learning_purpose:nextPurpose,
     assessment_timing:"delayed_retrieval"},learningPurpose:nextPurpose,
     targetedParts:nextPurpose===sourcePrescription?.learningPurpose||
-      nextPurpose==="retrieval_check"&&sourceReview?.learning_purpose==="error_repair"?
+      nextPurpose==="retrieval_check"&&lifecycleSource?.learning_purpose==="error_repair"?
       input.targeted_parts:undefined}):undefined;
   const delayedDraft=delayedPrescription?taskDraftFromPrescription({prescription:delayedPrescription,sourceAttemptId:id,sourceDate:date,errors:effectiveErrors}):undefined;
   const delayedInterval=delayedDraft?Math.max(0,Math.round((Date.parse(delayedDraft.dueDate)-Date.parse(date))/86400000)):0;
@@ -3860,29 +3910,9 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
       related_s_problem_ids:list(body.linked_s_problems),linked_past_exam_ids:list(body.linked_past_exams)});
     if(body.category==="S") await db.sMemory.put({problem_id:body.problem_id,state:"stable",k_trigger_count:0});
   } else if(path==="/api/attempts") {
-    await assertDatabaseSchema("saveGptEvaluation",GPT_SAVE_REQUIRED_STORES);
-    const logs:PendingCorrectionLog[]=[];
-    await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.answerIndex,db.problemAliases,db.correctionLogs],async()=>{
-      const replacementId=Number(body.replacement_for_attempt_id||0);
-      if(replacementId)await replaceAttemptAndRegrade(replacementId,body as StudyUpdate&Record<string,unknown>,logs);
-      else await saveAttempt(body,logs);
-      if(logs.length)await db.correctionLogs.bulkAdd(logs as CorrectionLog[]);
-    });
-    await reconcilePastExamSessionGenerations(false);
-    notifyStudyDataChanged({operation:"save-attempt",reviewId:Number(body.generated_from_review_id||0)||undefined});
+    return await saveGptUpdates([body]) as T;
   } else if(path==="/api/import") {
-    await assertDatabaseSchema("saveGptEvaluationBatch",GPT_SAVE_REQUIRED_STORES);
-    const logs:PendingCorrectionLog[]=[];
-    await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.answerIndex,db.problemAliases,db.correctionLogs],async()=>{
-      for(const update of body.updates){
-        const replacementId=Number(update.replacement_for_attempt_id||0);
-        if(replacementId)await replaceAttemptAndRegrade(replacementId,update,logs);
-        else await saveAttempt(update,logs);
-      }
-      if(logs.length)await db.correctionLogs.bulkAdd(logs as CorrectionLog[]);
-    });
-    await reconcilePastExamSessionGenerations(false);
-    notifyStudyDataChanged({operation:"save-gpt-import"});
+    return await saveGptUpdates(body.updates) as T;
   } else if(/^\/api\/attempts\/\d+\/replace$/.test(path)) {
     const id=Number(path.split("/")[3]),logs:PendingCorrectionLog[]=[];
     const result=await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.answerIndex,db.problemAliases,db.correctionLogs],async()=>{
@@ -4043,6 +4073,7 @@ export async function restoreBackup(data:any){
     for(const row of await db.meta.where("key").startsWith("transfer-training-context:").toArray())await db.meta.delete(row.key);
     for(const row of await db.meta.where("key").startsWith("learning-work:").toArray())await db.meta.delete(row.key);
     for(const row of await db.meta.where('key').startsWith('task-answer-scope:').toArray())await db.meta.delete(row.key);
+    for(const row of await db.meta.where('key').startsWith('grading-submission:').toArray())await db.meta.delete(row.key);
     if(Array.isArray(data.meta)) await db.meta.bulkPut(data.meta);
     // A restore changes the current source state. Keep historical day plans, but
     // never let a pre-restore/stale plan for today override the reconciled

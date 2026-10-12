@@ -107,6 +107,9 @@ export function isIndexedDbSchemaError(error:unknown):error is IndexedDbSchemaEr
 }
 
 export function schemaErrorMessage(error:unknown) {
+  const name=error&&typeof error==='object'&&'name' in error?String(error.name):'';
+  if(name==='QuotaExceededError')return '端末の保存容量が不足しています。入力内容は保持しています。端末の空き容量を確保して同じ保存ボタンで再試行してください。';
+  if(name==='SecurityError')return 'ブラウザが端末への保存を許可していません。入力をコピーして保全し、通常のSafari画面で保存権限を確認してください。';
   if(isIndexedDbSchemaError(error)){
     const diagnostic=error.diagnostic;
     return `保存先データベースの更新が必要です。不足している保存先：${diagnostic.missingStores.join("、")||"確認中"}。現在のDBバージョン：${diagnostic.databaseVersion}、必要なDBバージョン：${diagnostic.requiredDatabaseVersion}`;

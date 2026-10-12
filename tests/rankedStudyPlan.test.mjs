@@ -115,10 +115,22 @@ test('14-day closed loop advances both comparable old repairs and incomplete Pas
 test('same-problem pending repeated failure changes intervention; no false transfer or graduation',()=>{
  const a=fixture(),p='PY-2018-Q1',source=graded(1,p,'2026-10-01',false);a.attempts=[source];
  const root=deriveFailureEpisode(source).rootWeaknesses[0];
- a.reviews=[{id:20,problem_id:p,source_attempt_id:1,status:'pending',due_date:'2026-10-05',earliest_date:'2026-10-03',learning_purpose:'error_repair',estimated_minutes:12}];
+ const review={id:20,problem_id:p,source_attempt_id:1,status:'pending',due_date:'2026-10-05',earliest_date:'2026-10-03',learning_purpose:'error_repair',estimated_minutes:12};
+ // This is the SAME-root case: the generic fixture contract assesses a
+ // conclusion, whereas this source finding assesses major_calculation.
+ review.grading_contract={...contract(review),gradedParts:source.grading_contract.gradedParts};a.reviews=[review];
  a.repairCandidates=[{sessionId:-1,sourceAttemptId:1,sourceProblemId:p,sourceFindingId:'major_calculation',sourceFindingIds:['major_calculation'],rootWeaknessId:root.rootWeaknessId,conceptId:'coefficient_tracking',conceptLabel:'係数追跡',materiality:'major',recurrence:2,examImpact:'high',required:true,matchReason:'explicit current root',whitebookProblemIds:[],transferProblemIds:[],repairKind:'rediagnosis',interventionChanged:true,sameRootFailureCount:2,reason:'同rootの再診断を局所化',requiresUserConfirmation:true}];
  const out=derive(a);assert.ok(out.tasks.some(t=>t.repair_lineage?.intervention==='rediagnosis'));assert.ok(out.waiting.some(w=>w.task.id===20));
  assert.ok(!out.tasks.some(t=>t.transfer_training_key));assert.equal(source.mark,'×');
+});
+
+test('a repeated major-calculation root cannot replace a Review for a different target on the same source',()=>{
+ const a=fixture(),p='PY-2018-Q1',source=graded(1,p,'2026-10-01',false);a.attempts=[source];
+ const root=deriveFailureEpisode(source).rootWeaknesses[0];
+ a.reviews=[{id:20,problem_id:p,source_attempt_id:1,status:'pending',due_date:'2026-10-05',earliest_date:'2026-10-03',learning_purpose:'error_repair',estimated_minutes:12}];
+ a.repairCandidates=[{sessionId:-1,sourceAttemptId:1,sourceProblemId:p,sourceFindingId:'major_calculation',sourceFindingIds:['major_calculation'],rootWeaknessId:root.rootWeaknessId,conceptId:'coefficient_tracking',conceptLabel:'係数追跡',materiality:'major',recurrence:2,examImpact:'high',required:true,matchReason:'explicit current root',whitebookProblemIds:[],transferProblemIds:[],repairKind:'rediagnosis',interventionChanged:true,sameRootFailureCount:2,reason:'同rootの再診断を局所化',requiresUserConfirmation:true}];
+ const out=derive(a);assert.ok(out.tasks.some(t=>t.id===20));assert.ok(!out.waiting.some(w=>w.task.id===20));
+ assert.ok(out.waiting.some(w=>w.reason.includes('同問題の有効な補修')));assert.ok(!out.tasks.some(t=>t.transfer_training_key));
 });
 
 test('a source failure saved today cannot complete its newly ranked repair',()=>{

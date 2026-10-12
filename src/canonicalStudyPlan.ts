@@ -87,7 +87,11 @@ export function deriveRankedStudyCandidates(args:{today:string;daysRemaining:num
     if(!["pending","overdue"].includes(review.status)||review.exclude_from_planning)continue;
     const problem=pmap.get(review.problem_id);if(!problem)continue;
     const contract=review.grading_contract,purpose=contract?.learningPurpose||review.learning_purpose;
-    const candidate=args.repairCandidates.find(c=>c.sourceProblemId===review.problem_id&&c.required&&c.repairKind!=="transfer");
+    // A different/older root for the same problem cannot replace this Review.
+    const sourceId=contract?.sourceAttemptId||review.source_attempt_id||review.generated_from_attempt_id;
+    const currentParts=new Set(contract?.gradedParts.map(p=>p.id)||review.graded_part_ids||[]);
+    const candidate=args.repairCandidates.find(c=>c.sourceProblemId===review.problem_id&&c.sourceAttemptId===sourceId&&c.required&&c.repairKind!=="transfer"&&
+      c.sourceFindingIds?.some(id=>currentParts.has(id)));
     const task={...base(review.problem_id,purpose==="retrieval_check"?"遅延保持":"局所補修",contract?.mode||review.effective_mode||"check",
       Number(contract?.estimatedMinutes||review.estimated_minutes||review.duration_minutes||10)),...review,
       ...(contract?taskFieldsFromContract(contract):{}),review_type:review.review_type||"targeted_review",checked:false,load:0} as Task;
@@ -145,20 +149,38 @@ export function deriveRankedStudyCandidates(args:{today:string;daysRemaining:num
     }
     const task=base(repairId,training?"転移確認":c.interventionChanged?"局所再診断":c.repairKind==="transfer"?"別問題確認":"局所補修",
       training||c.repairKind==="transfer"?"full":"skeleton",training?12:c.repairKind==="transfer"?35:c.repairKind==="whitebook"?15:7);
-    task.source_attempt_id=c.sourceAttemptId;task.action_class="targeted_repair";
+    const descendants=repairId===c.sourceProblemId&&c.repairKind!=='transfer'?valid.filter(a=>{
+      if(a.problem_id!==c.sourceProblemId||a.id<=c.sourceAttemptId||!['error_repair','retrieval_check'].includes(String(a.learning_purpose))||
+        !c.sourceFindingIds?.length||!c.sourceFindingIds.every(id=>a.graded_findings?.some(f=>f.graded_part_id===id&&f.planning_eligible!==false&&f.validity!=='invalid_legacy_k')))return false;
+      let parent=a.grading_contract?.sourceAttemptId;const seen=new Set<number>();
+      while(parent&&!seen.has(parent)){if(parent===c.sourceAttemptId)return true;seen.add(parent);parent=valid.find(p=>p.id===parent)?.grading_contract?.sourceAttemptId;}
+      return false;
+    }).sort((a,b)=>b.id-a.id):[];
+    const currentSource=descendants[0]||valid.find(a=>a.id===c.sourceAttemptId);
+    if(descendants[0]&&(c.sourceFindingIds||[]).every(id=>descendants[0].graded_findings?.some(f=>f.graded_part_id===id&&f.planning_eligible!==false&&f.validity!=='invalid_legacy_k'&&f.resolved===true&&f.error_type==='none'))){
+      waiting.push({task,reason:'対象は後続の有効な補修で成功済み。古い失点を通常補修として再投入しない',reevaluateWhen:'遅延保持または別問題での失敗証拠が発生した時'});continue;
+    }
+    task.source_attempt_id=currentSource?.id||c.sourceAttemptId;task.action_class="targeted_repair";
     task.learning_purpose=c.repairKind==="transfer"?"transfer_check":"error_repair";
+    const followup=args.reviews.find(r=>r.problem_id===c.sourceProblemId&&Number(r.source_attempt_id||r.generated_from_attempt_id)===task.source_attempt_id&&
+      ['pending','overdue'].includes(r.status)&&!r.exclude_from_planning);
+    const executedRepair=currentSource&&['error_repair','retrieval_check'].includes(String(currentSource.learning_purpose))?currentSource:undefined;
+    if(c.repairKind!=='transfer'&&executedRepair&&followup&&
+      (String(followup.earliest_date||followup.due_date)>args.today||!!followup.postponed_to&&(followup.postponed_to==='unscheduled'||followup.postponed_to>args.today))){
+      waiting.push({task,reason:`今回の学習は保存済み。残る対象はReview ${followup.id}で再確認`,reevaluateWhen:followup.postponed_to||followup.earliest_date||followup.due_date});continue;
+    }
     if(training){task.transfer_training_key=training.key;task.title="転移確認";}
-    else task.repair_lineage={...c,rootConceptId:c.conceptId,repairProblemId:repairId,intervention:c.interventionChanged?"rediagnosis":undefined};
+    else task.repair_lineage={...c,sourceAttemptId:task.source_attempt_id!,rootConceptId:c.conceptId,repairProblemId:repairId,intervention:c.interventionChanged?"rediagnosis":undefined};
     if(c.repairKind!=="transfer"){
       const built=buildGradingContractSnapshot({review:{...task,learning_stage:"repair",assessment_timing:"same_session_correction",
         review_scope:"targeted_patch",targeted_parts:c.sourceFindingIds,allowed_reference_level:c.interventionChanged?3:0},
-        problem:pmap.get(repairId),sourceAttempt:valid.find(a=>a.id===c.sourceAttemptId),createdAt:`${args.today}T00:00:00Z`});
+        problem:pmap.get(repairId),sourceAttempt:currentSource,createdAt:`${args.today}T00:00:00Z`});
       if(built.needsReview){waiting.push({task,reason:"局所補修の採点scopeを確定できません",reevaluateWhen:"有効なtargetと採点契約を確認した時"});continue;}
       Object.assign(task,taskFieldsFromContract(built.contract),{grading_contract:built.contract});
     }
     task.direct_exam_loss=selectedIds.has(c.sourceProblemId);
     add(task,c.repairKind==="transfer"?5:task.direct_exam_loss?2:3,c.repairKind==="transfer"?"転移":"補修",
-      training?"補修・遅延保持後の別問題1問で確認。本番の転移証拠とは区別します。":c.reason,[`attempt:${c.sourceAttemptId}`,root]);
+      training?"補修・遅延保持後の別問題1問で確認。本番の転移証拠とは区別します。":c.reason,[`attempt:${task.source_attempt_id}`,root]);
   }
   const active=args.pastSessions.find(s=>s.session_kind==="selected_three_timed"&&
     !["completed","cancelled","invalidated","deferred"].includes(derivePastExamSessionState(s))&&!s.superseded_by_session_id&&

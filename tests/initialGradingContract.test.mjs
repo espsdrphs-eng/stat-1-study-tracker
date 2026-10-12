@@ -80,6 +80,7 @@ test("initial contractはAttemptへ保存され、失敗後だけ必要Reviewを
   const successRepairs=(await db.reviews.where("problem_id").equals(successProblem.problem_id).toArray())
     .filter(row=>["pending","overdue"].includes(row.status)&&(row.grading_contract?.learningPurpose||row.learning_purpose)==="error_repair");
   assert.equal(successRepairs.length,0);
-  await assert.rejects(()=>localPost("/api/attempts",{...updateFor(successProblem,successContract,"stale-initial-contract",false),
-    submission_id:"stale-initial-contract"}),/初回採点契約は現在の初回答案にだけ/);
+  const same=updateFor(successProblem,successContract,"stale-initial-contract",false),count=await db.attempts.count();
+  const retry=await localPost('/api/attempts',same);assert.deepEqual(retry.savedAttemptIds,[successAttempt.id]);assert.equal(await db.attempts.count(),count);
+  await assert.rejects(()=>localPost('/api/attempts',{...same,score_numeric:Number(same.score_numeric)-1}),/初回採点契約は現在の初回答案にだけ/);
 });

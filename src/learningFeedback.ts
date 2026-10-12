@@ -10,7 +10,7 @@ import {deriveTaskAnswerScope,taskAnswerScopeText} from "./taskAnswerScope.ts";
 // Neutral projections of existing grading slots/criteria, not new mastery rules.
 const targetLabels:Record<string,string>={problem_type:"型の判断",first_step:"初手",focal_quantity:"対象の量",critical_condition:"条件確認",major_calculation:"主要計算",answer_conclusion:"最終結論"};
 const criterionLabels:Record<string,string>={identify_problem_type:"問題の型を判断できる",choose_first_step:"最初の一手を自力で選べる",identify_focal_quantity:"求める量を特定できる",track_critical_condition:"必要な条件を確認できる",complete_major_calculation:"主要計算を最後まで完了できる",reach_requested_conclusion:"問われた結論まで答案化できる",retrieval_short_recall:"型・初手・対象の量・重要条件を参照なしで想起できる",reconstruct_full_structure:"問題全体の構成を参照なしで再現できる",reproduce_targeted_points:"指定対象を参照なしで整合的に再現できる",reproduce_current_unresolved_parts:"指定された未解消の対象を再現できる",complete_assigned_scope:"指定範囲を参照なしで完了できる"};
-const errorLabels:Record<string,string>={K:"入口・知識の不足",W:"計算・答案化の誤り",N:"記号・表記の誤り",C:"条件確認の不足"};
+const errorLabels:Record<string,string>={K:"入口・知識の不足",W:"計算・答案化の誤り",N:"条件・理由の不足",C:"記号・表記の誤り"};
 // Quote only neutral topics actually present in a recorded target. Never expose
 // its equation, corrected value, solution method or free-form cueLabel.
 const recordedTopics=(text:string)=>[...new Set(text.match(/係数|指数(?!分布)|符号|添字|支持範囲|分母|平均|分散|期待値|確率|密度|結論|条件|記号/gu)||[])];
@@ -36,7 +36,7 @@ export function deriveProblemReference(problem:Problem,catalog:Pick<ExamReferenc
       problem.problem_number?`${problem.category==="A"||problem.category==="S"?problem.category:""}問${problem.problem_number}`:"問番号未登録"].join(" ・ ");
   }
   return {locator,missing,statement:problem.source_type==="generated"?problem.generated_transfer?.problem_text||null:null,
-    availability:"この特定情報を使い、手元の原本から問題を開いてください。"};
+    availability:problem.source_type==='generated'?'登録済みの生成問題文を確認してください。':'問題本文・原問題PDFへの参照は登録されていません。この特定情報を使い、手元の原本から問題を開いてください。解答資料を原問題として代用しません。'};
 }
 
 /** Detailed assistance is only rendered AFTER a recorded, explicit hint action. */
@@ -140,7 +140,8 @@ export function deriveProblemLearningView(data:Bootstrap,problem:Problem,transfe
   const waitingTransfer=generated?generated.lifecycle_status!=="graded":!strong&&(training||!!nextTask?.transfer_training_key||!!data.today.canonicalStudyPlan.ranked?.waiting.some(w=>canonical(w.task.problem_id)===id&&(!!w.task.transfer_training_key||w.task.kind==="転移待機")));
   const transferLabel=generated?rows[0]?transferTrainingOutcome(rows[0],evidence.some(e=>e.successAttemptId===rows[0].id)):"転移訓練中":strong?"本番転移確認済み":training?"転移訓練成功・本番転移未測定":"本番転移未測定";
   const nextAction=workStatus==="awaiting_grading"?"採点JSONを取り込む":workStatus==="preparing"?"紙／Goodnotesで答案を完成させる":nextTask?.transfer_training_key?"別問題で転移訓練":needsRepair?"未解消範囲を復習":waitingRetention?"参照なしで保持確認":mastery?.normalReviewComplete?"Todayの次の候補へ":nextTask?preAnswerReason(nextTask):"問題を開いて解答する";
-  return {workStatus,workLabel,work:pendingWork?work:undefined,latestAttempt,needsRepair:!!needsRepair,waitingRetention:!!waitingRetention,waitingTransfer,retentionLabel,transferLabel,nextAction,nextTask};
+  const statusLabel=[workLabel,needsRepair?'再復習予定':waitingRetention?'保持確認待ち':mastery?.normalReviewComplete?'保持確認済み':''].filter(Boolean).join('・');
+  return {workStatus,workLabel,statusLabel,work:pendingWork?work:undefined,latestAttempt,needsRepair:!!needsRepair,waitingRetention:!!waitingRetention,waitingTransfer,retentionLabel,transferLabel,nextAction,nextTask};
 }
 export function deriveProblemLearningViews(data:Bootstrap){
   const evidence=deriveTransferEvidence(data.attempts.filter(attemptPlanningEligible));

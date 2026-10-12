@@ -1,4 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
+import {schemaErrorMessage} from './dbSchema';
+import type {GradingSaveReceipt} from './gradingSubmission';
 import { AlertTriangle, BookOpen, CalendarCheck, Check, ClipboardPaste, Copy, Database, NotebookPen, Pencil, RefreshCw, X } from "lucide-react";
 import { post } from "./api";
 import { applyProblemMaster, parseStudyText, problemDisplayLabel, todayString } from "./importParser";
@@ -99,6 +101,8 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
   const [saved,setSaved]=useState<{count:number;ids:string[];at:string}|null>(null);
   const [highlightedField,setHighlightedField]=useState("");
   const [saveFailed,setSaveFailed]=useState(false);
+  const [saveFailureReason,setSaveFailureReason]=useState('');
+  const saving=useRef(false);
   const gradingPrompt=imageGradingPrompt(buildGradingPrompt(todayString()));
   const newSubmissionId=()=>globalThis.crypto?.randomUUID?.()||`submission-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const projectForPreview=(update:StudyUpdate)=>{
@@ -113,8 +117,8 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
   const projectedUpdates=reviewGenerations.map(result=>projectForPreview(result.update));
 
   useEffect(()=>{
-    if(text||updates.length) sessionStorage.setItem(draftKey,JSON.stringify({text,updates,savedAt:new Date().toISOString()}));
-    else sessionStorage.removeItem(draftKey);
+    try{if(text||updates.length) sessionStorage.setItem(draftKey,JSON.stringify({text,updates,savedAt:new Date().toISOString()}));
+    else sessionStorage.removeItem(draftKey);}catch{setError('一時保存領域を利用できません。入力は画面に保持しています。ページを閉じる前に入力内容をコピーしてください。');}
   },[text,updates]);
 
   const parse=()=>{
@@ -200,18 +204,22 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
   };
 
   const saveUpdates=async()=>{
+    if(saving.current)return;saving.current=true;
+    let receipt:GradingSaveReceipt|undefined,reason:unknown;
+    try{
     const snapshot=projectedUpdates.map(update=>attachSubmittedAnswer(sanitizeStudyUpdateTiming(update),submittedAnswer));
-    sessionStorage.setItem(draftKey,JSON.stringify({text,updates:snapshot,savedAt:new Date().toISOString()}));
-    const ok=await run(()=>post("/api/import",{updates:snapshot}),`${snapshot.length}件を保存しました`);
-    if(!ok){setSaveFailed(true);return}
+    try{sessionStorage.setItem(draftKey,JSON.stringify({text,updates:snapshot,savedAt:new Date().toISOString()}));}catch{/* Keep the visible input and allow the actual durable save. */}
+    const ok=await run(async()=>{try{receipt=await post<GradingSaveReceipt>('/api/import',{updates:snapshot});if(!receipt?.savedAttemptIds?.length)throw new Error('永続保存を確認できませんでした。');return receipt;}catch(e){reason=e;throw e;}},`${snapshot.length}件を保存しました`);
+    if(!ok){setSaveFailed(true);setSaveFailureReason(schemaErrorMessage(reason||'保存先を確認できません。入力をコピーし、端末の空き容量・他のアプリタブを確認して同じ保存を再試行してください。'));return}
     setSaveFailed(false);
     sessionStorage.removeItem(draftKey);
     setText("");
     setUpdates([]);
     setStructured(false);
     setEditing(false);
-    setError("");
+    setError(receipt?.projectionWarning||'');
     setSaved({count:snapshot.length,ids:[...new Set(snapshot.map(row=>row.problem_id))],at:new Intl.DateTimeFormat("ja-JP",{hour:"2-digit",minute:"2-digit"}).format(new Date())});
+    }finally{saving.current=false;}
   };
   const currentReviewPrompt=(review:Review)=>{
     const sourceAttempt=attempts.find(row=>row.id===Number(review.source_attempt_id||review.generated_from_attempt_id||0));
@@ -357,7 +365,7 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
         <button disabled={busy||!canSave} className="primary wide-btn" onClick={saveUpdates}>
           <Database size={17}/>{updates.length}件を保存する
         </button>
-        {saveFailed&&<div className="database-save-failure"><AlertTriangle size={18}/><div><strong>学習内容はまだ保存されていません</strong><span>解析済みの入力内容はこの画面と一時保存領域に保持しています。データベース更新後、もう一度保存してください。</span><div className="button-row"><button type="button" className="primary small" disabled={busy} onClick={async()=>{const ok=await run(()=>post("/api/database/repair",{}),"データベースを安全に更新しました");if(ok)setSaveFailed(false)}}>データベースを更新する</button><button type="button" className="ghost small" onClick={()=>navigator.clipboard.writeText(JSON.stringify({study_updates:updates},null,2))}><Copy size={14}/>入力内容をコピー</button></div></div></div>}
+        {saveFailed&&<div className="database-save-failure"><AlertTriangle size={18}/><div><strong>保存完了を確認できませんでした</strong><span>{saveFailureReason}</span><p>解析済み入力はこの画面に保持しています。空き容量・他のアプリタブ・上記の原因を確認し、同じ保存ボタンで再試行してください。コピーは保存完了ではありません。</p><button type="button" className="ghost small" onClick={()=>navigator.clipboard.writeText(JSON.stringify({study_updates:updates},null,2))}><Copy size={14}/>入力内容をコピー</button></div></div>}
         {!canSave&&<div className="save-blocked"><strong>保存できません。</strong>
           {invalidSourceUpdates.length?<><span>保存対象の復習課題は現在実行できません。</span><ul>{invalidSourceUpdates.map(item=>
             <li key={`${item.index}-${item.row.generated_from_review_id}`}>Review #{item.row.generated_from_review_id}：{item.message}

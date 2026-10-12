@@ -140,7 +140,9 @@ export default function App() {
     return()=>{window.removeEventListener("stat1-db-blocked",blocked);window.removeEventListener("stat1-db-versionchange",changed);
       window.removeEventListener("pageshow",resume);document.removeEventListener("visibilitychange",resume);unsubscribe()};
   },[]);
-  const run=async(action:()=>Promise<unknown>,success:string)=>{setBusy(true);setError("");try{await reload.mutate(action);setMessage(success);await load();return true}catch(e){handleFailure(e);return false}finally{setBusy(false)}};
+  const run=async(action:()=>Promise<unknown>,success:string)=>{setBusy(true);setError("");try{const result=await reload.mutate(action);setMessage(success);await load();
+    if(result&&typeof result==='object'&&'projectionWarning' in result&&result.projectionWarning)setError(previous=>[previous,String(result.projectionWarning)].filter(Boolean).join('\n'));
+    return true}catch(e){handleFailure(e);return false}finally{setBusy(false)}};
   const repairDatabase=async()=>{
     const ok=await run(()=>post("/api/database/repair",{}),"データベースを安全に更新しました");
     if(ok)setSchemaIssue(null);
@@ -586,7 +588,7 @@ function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a
             `${modes[t.mode]||t.mode} / ${t.effective_review_scope||t.review_scope||"答案形成"}`}</p>
           {!isPastExamSessionTask(t)&&pmap[t.problem_id]&&<p className="answer-scope"><strong>今回解く箇所：{deriveTaskIntroduction(data,pmap[t.problem_id],t).subparts}</strong></p>}
           <p className="why-today">{preAnswerReason(t)}</p>
-          {!isPastExamSessionTask(t)&&learningViews[t.problem_id]&&<small>作業状態：{learningViews[t.problem_id].workLabel}</small>}
+          {!isPastExamSessionTask(t)&&learningViews[t.problem_id]&&<small>状態：{learningViews[t.problem_id].statusLabel}</small>}
           {t.transfer_training_key?<TransferTrainingPanel trainingKey={t.transfer_training_key} onSaved={()=>setFinishedTransferKey(t.transfer_training_key)}/>:
             <div className="button-row"><button className="primary" disabled={busy} onClick={()=>{
               if(isPastExamSessionTask(t))go("past",t);else if(pmap[t.problem_id])select(pmap[t.problem_id],t);
@@ -828,7 +830,7 @@ function ProblemsView({data,select,run,busy}:{data:Bootstrap;select:(p:Problem)=
     <div className="panel problem-table-scroll"><table className="problem-table" aria-label="問題と今回解く小問">
       <thead><tr><th>問題</th><th>今回解く箇所</th><th>学習区分</th><th>状態</th><th>次の操作</th></tr></thead>
       <tbody>{shown.slice(0,limit).map(({problem:p,state:s})=>{const introduction=deriveTaskIntroduction(data,p);
-        const status=s.workStatus==='awaiting_grading'?s.workLabel:s.needsRepair?'復習待ち':s.waitingRetention?'保持確認待ち':s.retentionLabel==='保持確認済み'?s.retentionLabel:s.workLabel;
+        const status=s.statusLabel;
         return <tr key={p.problem_id} data-problem-id={p.problem_id} aria-selected={expanded===p.problem_id}>
           <th scope="row"><strong>{p.generated_transfer?p.display_label||p.title:problemDisplayLabel(p)}</strong><small>{introduction.target}</small></th>
           <td className="answer-scope"><strong>{introduction.subparts}</strong></td><td>{introduction.workLabel}</td><td>{status}</td>
@@ -998,13 +1000,13 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport,startingTask}:{pro
     <TaskScopeSelection scope={introduction.answerScope} problemId={canonicalId} run={run} busy={busy}/>
     <p>今回の範囲：{modes[initialMode]||initialMode}・{startingTask?.minutes||gradingTask?.estimated_minutes||"―"}分目安</p>
     <p>{preAnswerReason(startingTask||gradingTask||{})}</p>
-    <details className="problem-reference"><summary>問題を参照（原本の特定情報）</summary>
+    <details className="problem-reference"><summary>問題を参照</summary>
       <p>{problemReference.locator} ／ {introduction.subparts}</p>
       {problemReference.missing.length>0&&<p>特定情報の不足：{problemReference.missing.join("・")}</p>}
       <p>{problemReference.availability}</p><small>原問題の確認・課題説明の表示はヒント閲覧に含めません。解答・解説はここには表示しません。</small>
     </details>
     <p>答案は紙・Goodnotesで作成し、採点時に画像をChatGPTへ直接添付してください。アプリへの答案入力は不要です。</p>
-    <p>作業状態：{learningView.workLabel}</p>
+    <p>状態：{learningView.statusLabel}</p>
     <div className="button-row">
       <button className="primary" disabled={busy} onClick={()=>void setWork("awaiting_grading")}>答案完成・採点へ進む</button></div>
     {hintText&&<div><button className="ghost" disabled={hintBusy||busy} onClick={revealHint}>ヒントを開く（参照ありとして記録）</button>
@@ -1012,7 +1014,18 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport,startingTask}:{pro
   </section>;
   const savedResult=latest&&latest.id>firstSeenAttempt.current?latest:undefined;
   return <><button className="back" onClick={onBack}>← Todayへ戻る</button><section className="panel answer-summary"><h2>{problemDisplayLabel(problem)}：解答後</h2>
-    {savedResult?<><p>今回：{savedResult.score_numeric??"―"}点・{savedResult.mark}</p><p>最大の失点：{savedResult.error_point||"major errorなし"}</p>
+    <section className="task-introduction" aria-label="課題の対象と回収目標" data-task-identity={introduction.taskIdentity}>
+      <h3>対象・今回の回収目標</h3><dl><dt>対象</dt><dd>{introduction.target} ／ {introduction.subparts}</dd>
+      <dt>今回の作業</dt><dd>{introduction.workLabel} ・ {introduction.scope}</dd>
+      <dt>前回のつまずき</dt><dd>{introduction.previousDifficulty}</dd><dt>今回の回収目標</dt><dd>{introduction.recoveryGoal}</dd></dl>
+      <p>紙／Goodnotesの答案画像と採点プロンプトをChatGPTへ渡し、採点JSONを取り込んでください。</p>
+    </section>
+    <details className="problem-reference"><summary>問題を参照</summary><p>{problemReference.locator} ／ {introduction.subparts}</p>
+      {problemReference.missing.length>0&&<p>特定情報の不足：{problemReference.missing.join('・')}</p>}<p>{problemReference.availability}</p>
+      <small>原問題の確認・課題説明の表示はヒント閲覧に含めません。</small></details>
+    {savedResult?<><p>今回の学習：保存済み（弱点の克服とは別判定）</p><p>今回：{savedResult.score_numeric??"―"}点・{savedResult.mark}</p><p>最大の失点：{savedResult.error_point||"major errorなし"}</p>
+      {!!savedResult.uncertain_points?.length&&<p>採点の未確定箇所：{savedResult.uncertain_points.join(' ／ ')}。保存済みの記録を保持し、追加確認してください。</p>}
+      {nextReview&&<p>次回復習：{nextReview.earliest_date||nextReview.due_date}以降・{nextReview.due_date}目安（Review {nextReview.id}）。今回の作業完了と別の課題です。</p>}
       <p>次の行動：{data.today.tasks.find(t=>t.problem_id===canonicalId&&!t.checked)?.kind||"Todayの最新順位へ進む"}</p></>:<p>答案を確定しました。今回の採点結果はまだ保存されていません。</p>}
     <p>成功条件：{completionCriterionText(gradingTask?.grading_contract)}</p>
     <p>採点プロンプトと答案画像をChatGPTへ送り、返された採点結果を取り込んでください。</p>

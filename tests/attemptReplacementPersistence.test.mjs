@@ -14,6 +14,9 @@ async function seedReview(){
   await db.transaction("rw",[db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta],async()=>{
     await Promise.all([db.attempts.clear(),db.reviews.clear(),db.weakNotes.clear(),db.sMemory.clear()]);
     for(const row of await db.meta.where("key").startsWith("today-plan-snapshot:").toArray())await db.meta.delete(row.key);
+    // This fixture deliberately clears all Attempts; their receipts must be
+    // cleared too. A production soft invalidation never performs this reset.
+    for(const row of await db.meta.where('key').startsWith('grading-submission:').toArray())await db.meta.delete(row.key);
   });
   const problem=await db.problems.get(problemId);
   const source={id:141,problem_id:problemId,date:today(),mode:"skeleton",time_minutes:10,mark:"○",score_label:"S",score_numeric:95,

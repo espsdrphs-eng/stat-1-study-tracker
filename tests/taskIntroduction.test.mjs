@@ -40,12 +40,12 @@ test('root-based task without Review ID has explicit assistance from its valid s
  assert.equal(feedback.taskAssistanceText({...data,attempts:[{...source,graded_findings:[{graded_part_id:'major_calculation',resolved:true,error_type:'none'}],next_action:'保持確認へ進む'}]},rootTask),'','administrative learning goals are not solution assistance');
  assert.equal(feedback.taskAssistanceText(data,task),part.currentCorrection,'retention assistance uses original finding lineage, not successful repair as a new failure');
 });
-test('original problem reference is a source locator, not a viewer or a missing-PDF warning',()=>{
+test('original source absence is explicit, and solution PDFs never substitute for a question',()=>{
  const p={...problem,official_answer_url:'file:///C:/answers.pdf',official_answer:'SECRET',question_excerpt:'求める量を答えよ。'};
  const v=feedback.deriveProblemReference(p);
  assert.equal(v.statement,null);assert.match(v.locator,/2019年.*問2/);
  assert.doesNotMatch(JSON.stringify(v),/SECRET|file:|answers.pdf/);
- const absent=feedback.deriveProblemReference(problem);assert.equal(absent.statement,null);assert.doesNotMatch(absent.availability,/PDF|画像|ページ|未登録/);
+ const absent=feedback.deriveProblemReference(problem);assert.equal(absent.statement,null);assert.match(absent.availability,/原問題PDFへの参照は登録されていません/);assert.match(absent.availability,/手元の原本/);
 });
 
 test('original locator uses recorded subject, year and question without defaulting all exams to mathematical statistics',()=>{
@@ -72,4 +72,10 @@ test('legacy Today detail does not auto-display unrecorded solution advice',asyn
  const src=await readFile(new URL('../src/App.tsx',import.meta.url),'utf8');
  const details=src.slice(src.indexOf('function TodayTaskDetails'),src.indexOf('function TodayTaskRows'));
  assert.doesNotMatch(details,/resolved\?\.entryHint|resolved\?\.oneLineHint|referenceEntryPoint\(/);
+});
+test('one shared status keeps grading work and unresolved learning separate',()=>{
+ const d=structuredClone(data);d.masteryByProblem[problem.problem_id]={normalReviewComplete:false,levels:[{status:'repairing'}]};d.learningWorkByProblem[problem.problem_id]={baselineAttemptId:269,stage:'awaiting_grading'};
+ const pending=feedback.deriveProblemLearningView(d,problem);assert.equal(pending.workStatus,'awaiting_grading');assert.match(pending.statusLabel,/採点待ち/);
+ d.attempts.push({id:307,problem_id:problem.problem_id,date:'2026-10-12',score_numeric:55});
+ const saved=feedback.deriveProblemLearningView(d,problem);assert.equal(saved.workStatus,'graded');assert.equal(saved.needsRepair,true);assert.match(saved.statusLabel,/採点済み.*再復習予定/);
 });

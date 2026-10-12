@@ -18,6 +18,8 @@ test('started root task without Review ID retains its exact grading contract thr
  await localPost('/api/attempts',grade);
  const saved=(await db.attempts.where('problem_id').equals(p.problem_id).toArray()).at(-1);
  assert.equal(saved.grading_contract.contractId,c.contractId);assert.equal(saved.actual_reference_level,2);assert.equal(saved.hint_used,true);assert.notEqual(saved.mark,'◎');assert.equal(saved.learning_purpose,'error_repair');assert.equal(saved.assessment_timing,'same_session_correction');assert.equal(saved.exam_score_eligible,false);
- await assert.rejects(localPost('/api/attempts',grade),/終了|更新|再生成/);
+ // Identical grading retry is now idempotent, not a new stale execution.
+ const count=await db.attempts.count(),retry=await localPost('/api/attempts',grade);assert.deepEqual(retry.savedAttemptIds,[saved.id]);assert.equal(await db.attempts.count(),count);
+ await assert.rejects(localPost('/api/attempts',{...grade,score_numeric:99}),/終了|更新|再生成/);
  await assert.rejects(localPost('/api/learning-work',{problemId:p.problem_id,stage:'preparing',contractId:'review:pending:forged'}),/適格|更新|課題/);
 });
