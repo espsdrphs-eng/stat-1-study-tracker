@@ -7,6 +7,9 @@ import { classifyKPolicyValidity, planningErrorsForSource } from "./legacyKPolic
 import type { LearningPrescription } from "./learningPolicyResolver.ts";
 import { gradedPartContracts, gradedPartIds, gradedPartLabels, sameGradedPartIds } from "./gradedParts.ts";
 import { withCurrentFindingPayload } from "./currentTargetPayload.ts";
+import {gradingTaskContext,normalizeGradingContextInput} from './gradingTaskContext.ts';
+import type {TaskAnswerScope} from './taskAnswerScope.ts';
+import type {StudyUpdate} from './types.ts';
 
 export const GRADING_CONTRACT_VERSION="STAT1-CONTRACT-v2";
 
@@ -349,6 +352,36 @@ export function contractDifferences(
 }
 
 export function contractShortId(contract:GradingContractSnapshot){return contract.contractId.slice(-8)}
+
+/** Legacy omission is repairable only after exact identity/scope verification.
+ * This does not weaken contractDifferences or trust the model's task identity. */
+export function completeGradingTaskContext(expected:GradingContractSnapshot,raw:StudyUpdate,scope?:TaskAnswerScope):StudyUpdate{
+  let input=normalizeGradingContextInput(raw as unknown as Record<string,unknown>) as StudyUpdate;
+  const canonical=gradingTaskContext(expected,scope),echo=input.task_context;
+  if(scope?.targetEvidence.some(e=>e.source==='manual.task_scope')&&!echo?.answer_scope)
+    throw new Error('手動指定した対象小問の照合が必要です。task_context.answer_scope を含む現在の採点プロンプトを使用してください。');
+  const signature=(v:unknown)=>JSON.stringify(Array.isArray(v)?[...v].sort():v);
+  if(input.source_attempt_id!==undefined&&input.source_attempt_id!==expected.sourceAttemptId)throw new Error('source_attempt_id が元答案と一致しません。現在の課題のプロンプトを使用してください。');
+  if(input.source_review_id&&input.source_review_id!==(expected.reviewId||expected.sourceReviewId))throw new Error('source_review_id が対象Reviewと一致しません。');
+  if(echo){for(const [key,value] of Object.entries(echo)){
+    if(key==='answer_scope'||value===undefined)continue;
+    if(signature(value)!==signature(canonical[key as keyof typeof canonical]))throw new Error(`課題コンテキストの ${key} が画面の契約と一致しません。`);
+  }
+  if(echo.answer_scope){
+    if(!canonical.answer_scope||Object.entries(echo.answer_scope).some(([key,value])=>signature(value)!==signature(canonical.answer_scope![key as keyof typeof canonical.answer_scope])))throw new Error('対象小問の範囲が画面と一致しません。主対象・補助確認・参照のみを現在のプロンプトで確認してください。');
+  }}
+  if(input.target_kind===undefined&&expected.targetKind){
+    const supplied={contractId:input.contract_id,contractVersion:input.contract_version,contractHash:input.contract_hash,problemId:input.problem_id,
+      learningPurpose:input.learning_purpose,mode:input.mode as GradingContractSnapshot['mode'],reviewScope:input.review_scope,targetKind:expected.targetKind,
+      gradedParts:input.graded_part_ids||input.graded_parts||[]};
+    const diffs=contractDifferences(expected,supplied);
+    const names:Record<string,string>={contractId:'contract_id',contractVersion:'contract_version',contractHash:'contract_hash',problemId:'problem_id',learningPurpose:'learning_purpose',reviewScope:'review_scope',gradedParts:'graded_part_ids'};
+    if(diffs.length)throw new Error(`target_kind が不足しています。安全な補完に必要な項目が不足または一致しません: ${diffs.map(d=>names[d.field]||d.field).join('・')}。現在の採点プロンプトを使用してください。`);
+    if(scope&&(scope.status==='unknown'||scope.status==='conflict'||scope.targetEvidence.some(e=>e.source==='manual.task_scope')&&!echo?.answer_scope))throw new Error('target_kind の補完には対象小問の確定が必要です。手動指定の場合は task_context.answer_scope を含む現在のプロンプトを使用してください。');
+    input={...input,target_kind:expected.targetKind};
+  }
+  return {...input,...(echo||raw.target_kind===undefined&&expected.targetKind?{task_context:canonical}:{})};
+}
 
 export function isActionableReview(
   review:Partial<Review&Task>,

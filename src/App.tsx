@@ -692,13 +692,14 @@ function copyText(text:string,label:string,setCopied:(value:string)=>void){
 function StudyPromptButtons({item,resolved,answerScope}:{item:Partial<Review&Task>;resolved?:ResolvedReviewCard;answerScope:TaskAnswerScope}) {
   const [copied,setCopied]=useState("");
   const [fallback,setFallback]=useState("");
-  const withAnswer=(prompt:string)=>appendTaskAnswerScope(imageGradingPrompt(prompt,Math.max(Number(item.actual_reference_level||0),readReferenceState(item.id).actual_reference_level)),answerScope);
+  const withAnswer=(prompt:string)=>appendTaskAnswerScope(imageGradingPrompt(prompt,Math.max(Number(item.actual_reference_level||0),readReferenceState(item.id).actual_reference_level)),answerScope,resolved?.gradingContract||item.grading_contract);
   const firstPrompt=buildFirstAttemptGradingPrompt({
     problemId:item.problem_id||"",displayLabel:item.title||item.problem_id,theme:item.theme,
     canonicalProblemType:item.canonical_problem_type,mode:item.mode,estimatedMinutes:item.minutes||item.estimated_minutes,
     repairLineage:item.repair_lineage,gradingContract:item.grading_contract
   });
-  const reviewPrompt=item.id&&item.problem_id?buildReviewGradingPrompt({
+  const assignedContract=!!item.grading_contract&&!item.grading_contract.contractId.startsWith('initial:');
+  const reviewPrompt=(item.id||assignedContract)&&item.problem_id?buildReviewGradingPrompt({
     reviewId:item.id,problemId:item.problem_id,title:item.title,theme:item.theme,date:todayString(),mode:reviewMode(item),
     previousDate:item.previous_date,previousScore:item.previous_score,previousErrors:item.previous_errors,
     previousErrorPoint:item.previous_error_point,previousNextAction:item.previous_next_action,
@@ -708,7 +709,8 @@ function StudyPromptButtons({item,resolved,answerScope}:{item:Partial<Review&Tas
     reviewScope:resolved?.effectiveReviewScope,targetedParts:resolved?.targetedParts,
     completionConditions:resolved?.completionConditions.value,allowedErrorTypes:resolved?.allowedErrorTypes,
     requiresKEvidence:resolved?.requiresKEvidence,learningPurpose:resolved?.prescription.learningPurpose,
-    learningStage:resolved?.prescription.learningStage,assessmentTiming:resolved?.prescription.assessmentTiming,
+    learningStage:resolved?.prescription.learningStage,assessmentTiming:resolved?.prescription.assessmentTiming||item.assessment_timing,
+    actualReferenceLevel:Math.max(Number(item.actual_reference_level||0),readReferenceState(item.id).actual_reference_level),
     targetKind:resolved?.prescription.targetKind,gradingContract:resolved?.gradingContract||item.grading_contract,problemContext:resolved?.problemContext
   }):"";
   const prompt=reviewPrompt||firstPrompt;

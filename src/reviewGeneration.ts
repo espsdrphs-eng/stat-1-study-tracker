@@ -1,6 +1,7 @@
 import type {Attempt,ProblemAlias,Review,StudyUpdate} from "./types.ts";
 import {resolveCanonicalProblemId} from "./examReadiness.ts";
-import {contractDifferences} from "./gradingContract.ts";
+import {contractDifferences,completeGradingTaskContext} from "./gradingContract.ts";
+import {gradingTaskContext} from './gradingTaskContext.ts';
 import {canonicalAttemptId,logicalReviewKey,reviewExecutionMessage,reviewExecutionState} from "./reviewCurrentState.ts";
 import {attemptPlanningEligible} from "./legacyKPolicy.ts";
 
@@ -24,6 +25,11 @@ function hasNewGradingEvidence(args:{oldReview:Review;sourceAttempt:Attempt|unde
 function updateMatchesOldContract(update:StudyUpdate,review:Review){
   const contract=review.grading_contract;
   if(!contract)return false;
+  // Preserve strict matching for already signed legacy contracts. Only a
+  // missing kind needs the new, exact-identity completion path.
+  if(update.target_kind===undefined){
+    try{update=completeGradingTaskContext({...contract,reviewId:contract.reviewId||review.id},{...update,task_context:undefined});}catch{return false;}
+  }
   return contractDifferences(contract,{
     contractId:String(update.contract_id||""),contractVersion:String(update.contract_version||""),
     contractHash:String(update.contract_hash||""),problemId:String(update.problem_id||""),
@@ -73,7 +79,9 @@ export function resolveSemanticReviewGeneration(args:{
     message:"復習内容が更新されています。現在ReviewのGPT採点プロンプトを再生成してください"};
   const contract=currentReview.grading_contract!;
   return {kind:"rebound",oldReview,currentReview,message:`元Review #${oldReview.id}は置換されています。同一採点契約の現在Review #${currentReview.id}へ適用します`,
-    update:{...args.update,generated_from_review_id:currentReview.id,source_review_id:currentReview.id,
+    update:{...args.update,generated_from_review_id:currentReview.id,source_review_id:currentReview.id,source_attempt_id:contract.sourceAttemptId,
+      ...(args.update.task_context?{task_context:{...gradingTaskContext(contract),...(args.update.task_context.answer_scope?{answer_scope:{...args.update.task_context.answer_scope,
+        scope_key:args.update.task_context.answer_scope.scope_key.startsWith(`review:${oldReview.id}:`)?args.update.task_context.answer_scope.scope_key.replace(`review:${oldReview.id}:`,`review:${currentReview.id}:`):args.update.task_context.answer_scope.scope_key}}:{})}}:{}),
       contract_id:contract.contractId,contract_version:contract.contractVersion,contract_hash:contract.contractHash,
       learning_purpose:contract.learningPurpose,learning_stage:contract.learningStage,mode:contract.mode,
       review_scope:contract.reviewScope,target_kind:contract.targetKind,graded_part_ids:contract.gradedParts.map(part=>part.id),

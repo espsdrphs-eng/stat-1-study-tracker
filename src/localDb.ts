@@ -1,5 +1,6 @@
 import Dexie, { type EntityTable } from "dexie";
 import {gradingSubmissionKey,type GradingSaveReceipt} from './gradingSubmission.ts';
+import {normalizeGradingContextInput} from './gradingTaskContext.ts';
 import {deriveTaskAnswerScope,validateTaskAnswerScopeOverride,taskAnswerScopeKey} from './taskAnswerScope.ts';
 import {transferTrainingRequest,generatedAttemptFields} from "./transferTrainingApi.ts";
 import {validateGeneratedContent,validateManualGradingReference} from "./generatedTransfer.ts";
@@ -28,7 +29,7 @@ import { analyzeLegacyKReorganization } from "./legacyKRepair.ts";
 import { attemptPlanningEligible, classifyKPolicyValidity, excludeLegacyKFromPlanning, planningErrorsForSource } from "./legacyKPolicy.ts";
 import { analyzeSourceMismatchRepair, resolveReviewOrigin, REVIEW_ORIGIN_POLICY_VERSION } from "./reviewOrigin.ts";
 import { normalizePastExamSession, parseScan5Update, sessionStudyMinutes, validatePastExamSession } from "./pastExamWorkflow.ts";
-import { auditLegacyReviewContracts, buildGradingContractSnapshot, buildInitialGradingContract, buildProblemContextPack, computeContractHash, contractDifferences, prescriptionFromContract, repairTargets, taskFieldsFromContract } from "./gradingContract.ts";
+import { auditLegacyReviewContracts, buildGradingContractSnapshot, buildInitialGradingContract, buildProblemContextPack, computeContractHash, contractDifferences, completeGradingTaskContext, prescriptionFromContract, repairTargets, taskFieldsFromContract } from "./gradingContract.ts";
 import { primaryErrorFromFindings, validateGradedFindings } from "./gradedParts.ts";
 import {
   addCalendarDays, auditReviewSchedules, differenceInCalendarDays, pendingReviewIdentityKey, resolveReviewSchedule,
@@ -1017,6 +1018,7 @@ async function reconcileProblemLearningState(problemId?:string,preview=false):Pr
 
 type PendingCorrectionLog=Omit<CorrectionLog,"id">;
 async function saveGptUpdates(updates:(StudyUpdate&Record<string,unknown>)[]):Promise<GradingSaveReceipt>{
+  updates=updates.map(row=>normalizeGradingContextInput(row) as StudyUpdate&Record<string,unknown>);
   if(!updates.length)throw new Error('保存する採点結果がありません。');
   for(const update of updates){
     const score=update.score_numeric,max=Number(update.score_max??100);
@@ -1065,6 +1067,14 @@ async function saveGptUpdates(updates:(StudyUpdate&Record<string,unknown>)[]):Pr
   return {ok:true,savedAttemptIds:ids,replayed,...(projectionWarning?{projectionWarning}:{})};
 }
 
+async function scopeForGradingInput(problem:Problem,task:Partial<Review&Task>,input:StudyUpdate,attempts?:Attempt[]){
+  const key=taskAnswerScopeKey(problem,task),row=await db.meta.get(`task-answer-scope:${key}`);
+  if(!input.task_context?.answer_scope&&input.target_kind!==undefined&&!row)return undefined;
+  const manual=row?JSON.parse(row.value) as import('./taskAnswerScope.ts').TaskAnswerScopeOverride:undefined;
+  return deriveTaskAnswerScope({problem,task,attempts:attempts||await db.attempts.where('problem_id').equals(problem.problem_id).toArray(),
+    overrides:manual?{[key]:manual}:undefined});
+}
+
 async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorrectionLogs:PendingCorrectionLog[]=[]){
   input={...input,...sanitizeStudyUpdateTiming(input)};
   const submissionId=String(input.submission_id||"").trim()||`submission-${crypto.randomUUID()}`;
@@ -1101,6 +1111,13 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     const [generationReviews,generationAttempts,generationAliases]=await Promise.all([
       db.reviews.toArray(),db.attempts.toArray(),db.problemAliases.toArray()
     ]);
+    const oldReview=generationReviews.find(r=>r.id===input.generated_from_review_id);
+    const signed=!!input.contract_id&&!!input.contract_hash&&!!input.contract_version&&Array.isArray(input.graded_part_ids||input.graded_parts);
+    // An unsigned submission to a terminal Review must first receive its
+    // canonical ended-state refusal, not a misleading missing-field error.
+    if(oldReview?.grading_contract&&signed&&(input.target_kind===undefined||input.task_context)){
+      input=completeGradingTaskContext(oldReview.grading_contract,input,await scopeForGradingInput(problem,oldReview,input,generationAttempts)) as StudyUpdate&Record<string,unknown>;
+    }
     const generation=resolveSemanticReviewGeneration({update:input,reviews:generationReviews,
       attempts:generationAttempts,aliases:generationAliases,today:todayString()});
     if(generation.kind==="rebound")input=generation.update as StudyUpdate&Record<string,unknown>;
@@ -1119,6 +1136,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
   // validated, started task snapshot may authorize that contract; never GPT IDs.
   const startedRow=await db.meta.get(`learning-work:${problem.problem_id}`);
   const started=startedRow?JSON.parse(startedRow.value) as import("./types.ts").LearningWork:undefined;
+  if(!sourceReview&&!requestedContractId&&started?.stage==='awaiting_grading'&&started.task?.grading_contract)throw new Error('採点待ちの課題を特定できません。contract_id・contract_version・contract_hash・graded_part_ids を現在の採点プロンプトから返してください。');
   const startedTask=!sourceReview&&!requestedInitialContract&&started?.task?.grading_contract?.contractId===requestedContractId?started.task:undefined;
   if(startedTask){
     const c=startedTask.grading_contract!,attempts=await db.attempts.where("problem_id").equals(problem.problem_id).toArray();
@@ -1127,6 +1145,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
       !source||!attemptPlanningEligible(source)||source.exclude_from_planning||
       attempts.some(a=>a.id>started!.baselineAttemptId&&!a.exclude_from_metrics&&!a.duplicate_of_attempt_id))
       throw new Error("この局所補修は終了または更新されています。現在の課題から採点プロンプトを再生成してください");
+    input=completeGradingTaskContext(c,input,await scopeForGradingInput(problem,startedTask,input,attempts)) as StudyUpdate&Record<string,unknown>;
     input={...input,task_origin:"review_attempt",mode:c.mode,learning_purpose:c.learningPurpose,learning_stage:c.learningStage,
       assessment_timing:startedTask.assessment_timing||"same_session_correction",allowed_reference_level:c.allowedReferenceLevel};
   }
@@ -1148,6 +1167,10 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     :undefined;
   const gradingContract=sourceReview?.grading_contract||initialContract||startedTask?.grading_contract;
   if(gradingContract){
+    if(!startedTask){
+      const task=sourceReview||{problem_id:problem.problem_id,grading_contract:gradingContract};
+      input=completeGradingTaskContext(gradingContract,input,await scopeForGradingInput(problem,task,input)) as StudyUpdate&Record<string,unknown>;
+    }
     const supplied={
       contractId:String(input.contract_id||""),contractVersion:String(input.contract_version||""),
       contractHash:String(input.contract_hash||""),problemId:String(input.problem_id||""),
@@ -1301,6 +1324,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     ,session_role:["selected_timed","counterfactual_calibration","individual_transfer"].includes(String(input.session_role||""))?
       input.session_role as Attempt["session_role"]:undefined
      ,contract_id:input.contract_id,contract_version:input.contract_version,contract_hash:input.contract_hash
+     ,target_kind:input.target_kind,task_context:input.task_context
      ,semantic_rebind_from_review_id:input.semantic_rebind_from_review_id,semantic_rebind_message:input.semantic_rebind_message
      ,replaces_attempt_id:input.replacement_for_attempt_id
      ,replacement_reason:input.replacement_reason

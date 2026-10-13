@@ -1,6 +1,8 @@
 import type {Attempt,Problem,Review,Task} from './types.ts';
 import {attemptPlanningEligible,planningEligibleFindings} from './legacyKPolicy.ts';
 import {currentTaskIdentity,isPastExamSessionTask} from './examOptimizationPolicy.ts';
+import {gradingTaskContext} from './gradingTaskContext.ts';
+import type {GradingContractSnapshot} from './types.ts';
 
 export type TaskAnswerScope={
   scopeKey:string;status:'identified'|'unknown'|'conflict'|'whole';
@@ -216,8 +218,13 @@ export function taskAnswerScopeText(scope:TaskAnswerScope){
  if(scope.status==='unknown'||scope.status==='conflict')return scope.status==='conflict'?'対象小問の記録が矛盾（要確認）':'対象小問未特定・指定が必要';
  return `主対象：${scope.primaryTargetParts.join('・')}${scope.secondaryTargetParts.length?` ／ 補助確認：${scope.secondaryTargetParts.join('・')}`:''}${scope.referenceOnlyParts.length?` ／ 参照のみ：${scope.referenceOnlyParts.join('・')}`:''}`;
 }
-export function appendTaskAnswerScope(prompt:string,scope:TaskAnswerScope){
+export function appendTaskAnswerScope(prompt:string,scope:TaskAnswerScope,contract?:GradingContractSnapshot){
  if(scope.status==='unknown'||scope.status==='conflict')throw new Error('対象小問を確認・指定してから採点プロンプトをコピーしてください。');
+ if(contract){
+  if(!/^  task_context: .+$/m.test(prompt))throw new Error('採点プロンプトの課題コンテキストがありません。現行プロンプトを再生成してください。');
+  prompt=prompt.replace(/^  task_context: .+$/m,`  task_context: ${JSON.stringify(gradingTaskContext(contract,scope))}`);
+  prompt+='\n\n課題識別情報は推測・変更しない。study_update の task_context、target_kind、contract_id / version / hash、graded_part_ids を省略せず、上記の指定値をそのまま返してください。';
+ }
  if(scope.status==='whole')return prompt+'\n\n【今回の解答範囲】問題全体（問題文の要求範囲）。';
  return prompt+`\n\n【今回の原問題の小問範囲：採点対象の上限】\n主対象：${scope.primaryTargetParts.join('・')}\n補助確認：${scope.secondaryTargetParts.join('・')||'なし'}\n参照のみ（採点対象外）：${scope.referenceOnlyParts.join('・')||'なし'}\n上記の主対象・補助確認以外を未回答として減点しない。参照先を追加解答対象にしない。指定外の小問の成績・解消状態を更新しない。内部graded_part_idsは原問題の小問番号ではない。既存の契約ID・hash・採点項目IDは変更しない。`;
 }

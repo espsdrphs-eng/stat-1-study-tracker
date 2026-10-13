@@ -6,6 +6,7 @@ import type { EffectiveReviewScope } from "./reviewScopeResolver.ts";
 import type { Attempt, GradingContractSnapshot, ProblemContextPack, Review,RepairLineageProjection } from "./types.ts";
 import { gradedPartIds, gradedPartLabels } from "./gradedParts.ts";
 import { suppliedReferenceCoverage } from "./wholeAnswerDiagnostic.ts";
+import {gradingTaskContextYaml} from './gradingTaskContext.ts';
 
 export type ReviewPromptContext={
   reviewId?:number;problemId:string;title?:string;theme?:string;date:string;mode:string;
@@ -57,10 +58,11 @@ const wholeAnswerYaml=`whole_answer_scan:
   diagnostic_uncertainties: [] # region_id, description, reason, potential_materiality, confidence, candidate_interpretations, user_action_required`;
 
 export function buildFirstAttemptGradingPrompt(context:FirstAttemptPromptContext){
-  const mode=context.mode||"full";
+  const mode=context.gradingContract?.mode||context.mode||"full";
   const contract=context.gradingContract;
   const problemContext=context.problemContext;
   const contractParts=contract?.gradedParts||[];
+  const initial=!contract||contract.contractId.startsWith('initial:');
   const lineage=context.repairLineage;
   const linkedSkillTask=lineage?.sourceProblemId!==context.problemId&&lineage?.matchConfidence==="high"&&lineage?.weaknessSkillIds?.length;
   const assignedPurpose=contract?.learningPurpose||(lineage?.intervention==="rediagnosis"?"error_repair":
@@ -74,11 +76,9 @@ root: ${lineage.rootWeaknessId}
 操作名は例えばmoment_generating_functionなら積率母関数（MGF）、law_total_varianceなら全分散公式。単なる型認識では計算成功にしない。
 対象外の成功だけではtransfer成功としない。失敗・参照・不確実性もそのまま記録し、全体得点の契約は変更しない。` :"";
   return `あなたは統計検定1級・統計数理の答案採点者です。
-以下の問題について、私の初回答案を採点してください。
+以下の問題について、私の${initial?'初回答案':'今回の指定範囲の答案'}を採点してください。
 
-今回は初回答案です。
-前回ミスや前回復習履歴はありません。
-復習ではなく、初回の到達度診断として採点してください。
+${initial?'今回は初回答案です。\n前回ミスや前回復習履歴はありません。\n復習ではなく、初回の到達度診断として採点してください。':'今回は保存済み契約に対応する指定範囲の確認です。初回扱いにせず、契約内の対象だけを採点してください。'}
 
 【重要】
 problem_id は下記の指定値を必ずそのまま使ってください。
@@ -108,7 +108,7 @@ ${context.estimatedMinutes||""}分
 情報充足度：${problemContext?.contextCompleteness||"metadata_only"}
 ${transferFocus}
 
-【initial grading contract：Review非依存の今回の採点範囲】
+【${initial?'initial':'assigned'} grading contract：Review非依存の今回の採点範囲】
 contract_id: ${contract?.contractId||"legacy_initial_prompt"}
 contract_version: ${contract?.contractVersion||""}
 contract_hash: ${contract?.contractHash||""}
@@ -117,7 +117,7 @@ review_scope: ${contract?.reviewScope||"full_answer"}
 graded_parts:
 ${contractParts.length?contractParts.map(part=>`- ${part.id}｜${part.label}｜許可: ${part.allowedErrorTypes.join("/")}`).join("\n"):"- 答案から実際に採点した部分"}
 
-このcontractは初回採点用であり、Reviewを参照しない。contract外の発見はwhole-answer diagnosticへ分離する。
+このcontractは${initial?'初回採点':'指定課題の採点'}用であり、Reviewを参照しない。contract外の発見はwhole-answer diagnosticへ分離する。
 
 【入力】
 問題文：
@@ -160,17 +160,18 @@ ${wholeAnswerRules}
 
 \`\`\`yaml
 study_update:
+${gradingTaskContextYaml(contract)}  target_kind: "${contract?.targetKind||''}"
   contract_id: "${contract?.contractId||""}"
   contract_version: "${contract?.contractVersion||""}"
   contract_hash: "${contract?.contractHash||""}"
   problem_id: "${context.problemId}"
 ${linkedSkillTask?`  source_problem_id: "${lineage.sourceProblemId}"\n`:""}  display_label: "${context.displayLabel||context.problemId}"
   date: "auto_today"
-  task_origin: "first_attempt"
+  task_origin: "${initial?'first_attempt':'review_attempt'}"
   mode: "${mode}"
   learning_purpose: "${assignedPurpose}"
   learning_stage: "${contract?.learningStage||"acquisition"}"
-  assessment_timing: "independent_performance"
+  assessment_timing: "${initial?'independent_performance':assignedPurpose==='retrieval_check'?'delayed_retrieval':'same_session_correction'}"
   review_scope: "${contract?.reviewScope||"full_answer"}"
   review_method: ""
   score_text: ""
@@ -448,6 +449,7 @@ ${wholeAnswerRules}
 16. 最後に次のYAMLをコードブロックで出力する。空欄・null・[]は答案から判定した値で置き換える。
 
 study_update:
+${gradingTaskContextYaml(contract)}  source_attempt_id: ${contract?.sourceAttemptId||'null'}
   contract_id: "${contract?.contractId||""}"
   contract_version: "${contract?.contractVersion||""}"
   contract_hash: "${contract?.contractHash||""}"

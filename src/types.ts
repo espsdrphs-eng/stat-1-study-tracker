@@ -169,6 +169,8 @@ export type ProblemContextPack={
   previousReviews:Array<{reviewId:number;status:string;reviewType:string;dueDate:string}>;verifiedRelations:ProblemRelation[];
 };
 export type Attempt = {
+  target_kind?:TargetKind;
+  task_context?:import('./gradingTaskContext.ts').GradingTaskContext;
   source_type?:Problem["source_type"];
   evidence_strength?:"training"|"strong";
   target_skill_prompted?:boolean;
@@ -641,6 +643,8 @@ export type Bootstrap = {
     additionalCandidates:AdditionalStudyCandidate[]};
 };
 export type StudyUpdate = {
+  task_context?:import('./gradingTaskContext.ts').GradingTaskContext;
+  source_attempt_id?:number;
   problem_id:string; date:string; mode:string; time_minutes?:number|string|null; actual_minutes?:number|string|null;
   source_problem_id?:string;
   estimated_minutes?:number|string; mark:string; score_label:string;
