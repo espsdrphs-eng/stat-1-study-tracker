@@ -2,7 +2,7 @@ import type {Attempt,Problem,RootWeakness,AnswerIndexEntry,PastSession} from "./
 import type {StoredExamReferencePack} from "./examReferencePack.ts";
 import {canonicalPastExamProblemId} from "./examReferencePack.ts";
 import {deriveFailureEpisode} from "./failureEpisode.ts";
-import {findingSkillIds,successfulSkillIds,independentReferenceFree,confidentGrading,problemSkillIds} from "./skillEvidence.ts";
+import {findingSkillIds,successfulSkillIds,independentReferenceFree,gradedRepairEvidence,confidentGrading,problemSkillIds,rootTargetKeys} from "./skillEvidence.ts";
 import {groundedWhitebookSkills,matchesFailureOperation} from "./groundedSkills.ts";
 import {findingPlanningEligible} from "./legacyKPolicy.ts";
 
@@ -43,9 +43,7 @@ export function canonicalTrainingSkills(record:StoredExamReferencePack){
   return new Set(record.data.concepts.filter(c=>["active","verified"].includes(c.status)&&c.source_confidence==="high").map(c=>c.concept_id));
 }
 export function delayedTrainingPrerequisites(source:Attempt,root:RootWeakness,attempts:Attempt[]){
-  const sourceTargets=new Set((source.grading_contract?.gradedParts||[])
-    .filter(part=>root.sourceFindingIds.includes(part.id))
-    .map(part=>part.stableTargetKey||part.stable_target_key||part.id));
+  const sourceTargets=rootTargetKeys(source,root,attempts);
   const targetFindings=(a:Attempt)=>{
     const parts=new Map((a.grading_contract?.gradedParts||[]).map(part=>[part.id,part]));
     return (a.graded_findings||[]).filter(f=>{
@@ -62,7 +60,7 @@ export function delayedTrainingPrerequisites(source:Attempt,root:RootWeakness,at
   for(const a of attempts.filter(a=>a.id>source.id&&a.problem_id===source.problem_id&&!a.exclude_from_metrics&&!a.duplicate_of_attempt_id).sort((a,b)=>a.id-b.id)){
     const failed=targetFindings(a).some(f=>!f.resolved&&f.error_type!=="none");
     if(failed){repair=undefined;retrieval=undefined;continue;}
-    if(!relevant(a)||!independentReferenceFree(a)||!confidentGrading(a))continue;
+    if(!relevant(a)||!(a.learning_purpose==='error_repair'?gradedRepairEvidence(a):independentReferenceFree(a))||!confidentGrading(a))continue;
     if(a.learning_purpose==="error_repair"){repair=a;retrieval=undefined;}
     else if(repair&&a.learning_purpose==="retrieval_check"&&a.date>repair.date&&a.assessment_timing==="delayed_retrieval")retrieval=a;
   }

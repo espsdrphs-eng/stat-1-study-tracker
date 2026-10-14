@@ -61,7 +61,8 @@ export function deriveRankedStudyCandidates(args:{today:string;daysRemaining:num
   const allowedYears=new Set(yearCandidates.map(y=>y.year));
   const release=derivePastExamRoleRelease(args);
   const dayDiff=(from:string)=>Math.max(0,Math.floor((Date.parse(args.today)-Date.parse(from))/86400000)||0);
-  const originDate=(task:Task)=>task.earliest_date||valid.find(a=>a.id===task.source_attempt_id)?.date||
+  const originDate=(task:Task)=>task.earliest_date||valid.find(a=>a.id===task.repair_lineage?.transferFailureEvidenceId)?.date||
+    valid.find(a=>a.id===task.source_attempt_id)?.date||
     valid.filter(a=>a.problem_id===task.problem_id).sort((a,b)=>a.id-b.id)[0]?.date||
     (task.past_exam_year?args.pastSessions.filter(s=>s.year===task.past_exam_year).map(s=>String(s.date)).sort()[0]:undefined)||
     args.today; // Unknown candidate age is zero, not a fabricated waiting date.
@@ -150,7 +151,9 @@ export function deriveRankedStudyCandidates(args:{today:string;daysRemaining:num
     const task=base(repairId,training?"転移確認":c.interventionChanged?"局所再診断":c.repairKind==="transfer"?"別問題確認":"局所補修",
       training||c.repairKind==="transfer"?"full":"skeleton",training?12:c.repairKind==="transfer"?35:c.repairKind==="whitebook"?15:7);
     const descendants=repairId===c.sourceProblemId&&c.repairKind!=='transfer'?valid.filter(a=>{
-      if(a.problem_id!==c.sourceProblemId||a.id<=c.sourceAttemptId||!['error_repair','retrieval_check'].includes(String(a.learning_purpose))||
+      // A success before a new, verified different-problem failure is not a
+      // repair of that failure. Keep the source target, not the old success payload.
+      if(a.problem_id!==c.sourceProblemId||a.id<=Math.max(c.sourceAttemptId,c.transferFailureEvidenceId||0)||!['error_repair','retrieval_check'].includes(String(a.learning_purpose))||
         !c.sourceFindingIds?.length||!c.sourceFindingIds.every(id=>a.graded_findings?.some(f=>f.graded_part_id===id&&f.planning_eligible!==false&&f.validity!=='invalid_legacy_k')))return false;
       let parent=a.grading_contract?.sourceAttemptId;const seen=new Set<number>();
       while(parent&&!seen.has(parent)){if(parent===c.sourceAttemptId)return true;seen.add(parent);parent=valid.find(p=>p.id===parent)?.grading_contract?.sourceAttemptId;}
@@ -180,7 +183,8 @@ export function deriveRankedStudyCandidates(args:{today:string;daysRemaining:num
     }
     task.direct_exam_loss=selectedIds.has(c.sourceProblemId);
     add(task,c.repairKind==="transfer"?5:task.direct_exam_loss?2:3,c.repairKind==="transfer"?"転移":"補修",
-      training?"補修・遅延保持後の別問題1問で確認。本番の転移証拠とは区別します。":c.reason,[`attempt:${task.source_attempt_id}`,root]);
+      training?"補修・遅延保持後の別問題1問で確認。本番の転移証拠とは区別します。":c.reason,
+      [`attempt:${task.source_attempt_id}`,root,...(c.transferFailureEvidenceId?[`attempt:${c.transferFailureEvidenceId}`]:[])]);
   }
   const active=args.pastSessions.find(s=>s.session_kind==="selected_three_timed"&&
     !["completed","cancelled","invalidated","deferred"].includes(derivePastExamSessionState(s))&&!s.superseded_by_session_id&&

@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useMemo } from "react";
 import {createStateReloadCoordinator} from "./stateReload.ts";
 import {TransferTrainingPanel} from "./TransferTrainingPanel";
-import {deriveCurrentLearningDiagnosis,deriveTaskIntroduction,deriveProblemReference,taskAssistanceText,preAnswerReason,completionCriterionText,deriveProblemLearningView,deriveProblemLearningViews,imageGradingPrompt,optionalNetMinutes,netMinutesText} from "./learningFeedback";
+import {deriveCurrentWeaknessRows,deriveCurrentLearningDiagnosis,deriveTaskIntroduction,deriveProblemReference,taskAssistanceText,preAnswerReason,completionCriterionText,deriveProblemLearningView,deriveProblemLearningViews,imageGradingPrompt,optionalNetMinutes,netMinutesText} from "./learningFeedback";
 import {appendTaskAnswerScope,type TaskAnswerScope} from './taskAnswerScope';
 import { useRegisterSW } from "virtual:pwa-register/react";
 import {
@@ -16,7 +16,7 @@ import { createDiagnosticPack } from "./diagnosticPack";
 import AdvancedImportView from "./AdvancedImportView";
 import { problemDisplayLabel } from "./importParser";
 import { createAttemptReviewPlan } from "./reviewRules";
-import { analyzeWeakTrends, buildQuizPrompt } from "./weakTrend";
+import { analyzeWeakTrends } from "./weakTrend";
 import { buildAttemptReplacementGradingPrompt, buildFirstAttemptGradingPrompt, buildReviewGradingPrompt, buildWholeAnswerRediagnosisPrompt } from "./gradingPrompt";
 import { buildInitialGradingContract, buildProblemContextPack } from "./gradingContract.ts";
 import {shouldShowReviewPrompt} from "./reviewUiPolicy.ts";
@@ -586,9 +586,9 @@ function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a
           <header><Badge tone="blue">優先 {t.ranking!.rank}</Badge><strong>{t.title}</strong><span>{t.ranking!.category}・{t.minutes}分目安</span></header>
           <p>{t.transfer_training_key?"別問題1問・参照なしで解答":isPastExamSessionTask(t)?t.session_workflow:
             `${modes[t.mode]||t.mode} / ${t.effective_review_scope||t.review_scope||"答案形成"}`}</p>
-          {!isPastExamSessionTask(t)&&pmap[t.problem_id]&&<p className="answer-scope"><strong>今回解く箇所：{deriveTaskIntroduction(data,pmap[t.problem_id],t).subparts}</strong></p>}
+          {!t.transfer_training_key&&!isPastExamSessionTask(t)&&pmap[t.problem_id]&&<p className="answer-scope"><strong>今回解く箇所：{deriveTaskIntroduction(data,pmap[t.problem_id],t).subparts}</strong></p>}
           <p className="why-today">{preAnswerReason(t)}</p>
-          {!isPastExamSessionTask(t)&&learningViews[t.problem_id]&&<small>状態：{learningViews[t.problem_id].statusLabel}</small>}
+          {!t.transfer_training_key&&!isPastExamSessionTask(t)&&learningViews[t.problem_id]&&<small>状態：{learningViews[t.problem_id].statusLabel}</small>}
           {t.transfer_training_key?<TransferTrainingPanel trainingKey={t.transfer_training_key} onSaved={()=>setFinishedTransferKey(t.transfer_training_key)}/>:
             <div className="button-row"><button className="primary" disabled={busy} onClick={()=>{
               if(isPastExamSessionTask(t))go("past",t);else if(pmap[t.problem_id])select(pmap[t.problem_id],t);
@@ -1348,23 +1348,43 @@ function CurrentLearningDiagnosis({data,onToday}:{data:Bootstrap;onToday:()=>voi
     <button className="primary" onClick={onToday}>Todayの最新順位で学習する</button>
   </section>;
 }
+function CurrentWeaknessPanel({data,onToday}:{data:Bootstrap;onToday:()=>void}){
+  const [limit,setLimit]=useState(10);
+  const [query,setQuery]=useState('');
+  const rows=useMemo(()=>deriveCurrentWeaknessRows(data),[data]);
+  const names=useMemo(()=>Object.fromEntries(data.problems.map(p=>[p.problem_id,problemDisplayLabel(p)])),[data.problems]);
+  const visible=rows.filter(row=>row.sources.some(s=>[s.problemId,names[s.problemId],s.description,...s.skillIds].filter(Boolean).join(' ').toLowerCase().includes(query.trim().toLowerCase())));
+  return <section className="panel" aria-label="現在の弱点と成功証拠"><h2>現在の弱点・保持・転移</h2>
+    <p>採点結果を取り込むと自動更新します。旧弱点メモは履歴として保持し、未解消フラグの件数を現在の弱点数には使いません。同じcanonical技能の行でも、各問題の対象と根拠は別々に保持します。</p>
+    <label>問題・技能で絞り込む<input type="search" value={query} onChange={e=>{setQuery(e.target.value);setLimit(10)}} placeholder="例：2019年問2、PY-2019-Q2"/></label>
+    {visible.slice(0,limit).map(row=><article className="card" key={row.id}><h3>{row.status}</h3>
+      <p>{row.sources.map(s=>`${names[s.problemId]||s.problemId}（${s.problemId}）`).filter((id,i,a)=>a.indexOf(id)===i).join(' / ')}</p>
+      {row.identityPending&&<p>skill identityの根拠不足：保持証拠は残し、別問題の技能照合は保留します。</p>}
+      <details><summary>根拠・改善した点・残る課題・次の操作</summary>{row.sources.map(s=><div className="history" key={s.rootId}><div>
+        <strong>{s.problemId}：{s.status}</strong><p>{s.description}</p>
+        {s.problemReviewComplete&&s.status==='証拠不足'&&<p>同一問題の通常Reviewは終了済みです。この旧rootへの成功対応は未確定であり、古い失敗だけから再補修を要求しません。</p>}
+        <small>失敗根拠 Attempt #{s.latestFailureAttemptId} ／ 採点対象 {s.findingIds.join('・')}（内部採点項目であり小問番号ではありません）</small>
+        <p>最終確認 {s.lastCheckedDate||'未確認'}・Attempt #{s.lastCheckedAttemptId||'未登録'}</p>
+        <p>補修成功 {s.repairAttemptId?`#${s.repairAttemptId}${s.repairAssisted?'（援助あり・独立成功ではない）':''}`:'未確認'} ／ 遅延保持成功 {s.retrievalAttemptId?`#${s.retrievalAttemptId}`:'未確認'} ／ 別問題成功 {s.transferAttemptId?`#${s.transferAttemptId}`:'未確認'}{s.transferFailureAttemptId&&` ／ 別問題失敗 #${s.transferFailureAttemptId}`}</p>
+        <p>次の行動：{s.nextAction}</p>
+      </div></div>)}</details><button className="ghost" onClick={onToday}>Todayの現在順位を確認</button>
+    </article>)}
+    {visible.length>limit&&<button className="ghost" onClick={()=>setLimit(n=>n+10)}>続きを表示（残り{visible.length-limit}件）</button>}
+    {!!rows.length&&!visible.length&&<p>この条件に一致するrootはありません。問題一覧の現在状態・採点履歴も確認してください。</p>}
+    {!rows.length&&<p>確定した失敗targetの証拠がありません。未測定は習得済みとは扱いません。</p>}
+  </section>;
+}
 function WeakView({data,run,busy,onToday}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean;onToday:()=>void}) {
-  const [selected,setSelected]=useState<string[]>([]);
-  const [copied,setCopied]=useState(false);
   const [editing,setEditing]=useState<Attempt|null>(null);
   const [form,setForm]=useState<Record<string,string>>({});
   const trend=analyzeWeakTrends(data.problems,data.attempts,data.weakNotes,"",data.problemAliases);
   const topThemes=trend.themes.slice(0,8),maxTheme=Math.max(1,...topThemes.map(theme=>theme.score));
-  const themeSignature=topThemes.map(theme=>theme.label).join("|");
-  useEffect(()=>{setSelected(current=>current.length?current.filter(theme=>topThemes.some(row=>row.label===theme)):topThemes.slice(0,3).map(theme=>theme.label))},[themeSignature]);
   const errorCounts=Object.fromEntries(trend.errors.map(error=>[error.error,error.count])) as Record<string,number>;
   const errorTotal=trend.errors.reduce((sum,error)=>sum+error.count,0);
   const errorColors:Record<string,string>={K:"#b33c36",W:"#d17a35",N:"#487da9",C:"#8b9290"};
   let stop=0;
   const donutParts=["K","W","N","C"].map(error=>{const start=stop;stop+=errorTotal?errorCounts[error]/errorTotal*100:0;return `${errorColors[error]} ${start}% ${stop}%`});
   const weekly=trend.weeks,maxWeek=Math.max(1,...weekly.map(week=>week.count));
-  const quizPrompt=buildQuizPrompt(selected,data.problems,data.attempts,data.weakNotes,5,data.problemAliases);
-  const copyPrompt=async()=>{await navigator.clipboard.writeText(quizPrompt);setCopied(true);setTimeout(()=>setCopied(false),1800)};
   const dominantError=[...trend.errors].sort((a,b)=>b.score-a.score)[0]?.error||"—";
   const analysisAttempts=data.attempts.filter(attempt=>(attempt.error_types||[attempt.error_type]).some(error=>error!=="none"));
   const noteFor=(attempt:Attempt)=>data.weakNotes.find(note=>note.generated_from_attempt_id===attempt.id)||
@@ -1386,6 +1406,7 @@ function WeakView({data,run,busy,onToday}:{data:Bootstrap;run:(a:()=>Promise<unk
   if(!trend.attemptCount) return <><CurrentLearningDiagnosis data={data} onToday={onToday}/><CoachPanel data={data} run={run} busy={busy}/><ConceptWeaknessPanel data={data}/><section className="weak-trend-hero"><div><span className="eyebrow">WEAKNESS TRENDS</span><h2>GPT採点が集まると、苦手の傾向が見えてきます</h2><p>この画面はK/W/N/Cが付いた採点だけから、繰り返すミスを探します。ミスなしの採点は学習履歴には残りますが、弱点グラフには加算しません。</p></div></section><section className="panel weak-empty-explanation">{trend.totalAttemptCount?<><Check size={28}/><h3>採点は{trend.totalAttemptCount}件ありますが、弱点として数えるミスは0件です</h3><p>現在の採点はすべて「none（ミスなし）」です。K/W/N/Cが付いた結果を保存すると、テーマ別・分類別・週別のグラフが表示されます。</p></>:<Empty>まだ採点記録がありません。GPT採点結果を取り込むと自動で蓄積されます</Empty>}</section></>;
   return <>
     <CurrentLearningDiagnosis data={data} onToday={onToday}/>
+    <CurrentWeaknessPanel data={data} onToday={onToday}/>
     <details className="panel"><summary>Coachの補足・過去の失敗傾向を確認（履歴）</summary>
     <CoachPanel data={data} run={run} busy={busy}/>
     <ConceptWeaknessPanel data={data}/>
@@ -1404,11 +1425,6 @@ function WeakView({data,run,busy,onToday}:{data:Bootstrap;run:(a:()=>Promise<unk
         <div className="week-bars">{weekly.map(week=><div key={week.label}><span>{week.count}件</span><i style={{height:`${Math.max(4,week.count/maxWeek*100)}%`}}/><small>{week.label.slice(5)}<b>重要度 {week.score}</b></small></div>)}</div>
       </section>
     </div>
-    <section className="panel quiz-builder"><div className="quiz-builder-head"><div><span className="eyebrow">QUIZ WITH GPT</span><h2>苦手テーマをGPTでクイズ復習</h2><p>復習したいテーマを選び、プロンプトをコピーして普段使っているGPTへ貼り付けます。アプリから外部へ自動送信はしません。</p></div><Sparkles size={25}/></div>
-      <div className="theme-picker">{topThemes.map(theme=><label className={selected.includes(theme.label)?"selected":""} key={theme.label}><input type="checkbox" checked={selected.includes(theme.label)} onChange={()=>setSelected(values=>values.includes(theme.label)?values.filter(value=>value!==theme.label):[...values,theme.label])}/><span>{theme.label}</span><b>{theme.score}点</b></label>)}</div>
-      <textarea className="quiz-prompt" readOnly value={quizPrompt}/>
-      <button className="primary copy-quiz" disabled={!selected.length} onClick={copyPrompt}>{copied?<Check size={17}/>:<Copy size={17}/>} {copied?"コピーしました":"GPTクイズ用プロンプトをコピー"}</button>
-    </section>
     <details className="panel trend-evidence"><summary>分析に使った採点データを編集・削除</summary><div>{analysisAttempts.map(attempt=>{
       const note=noteFor(attempt),problem=data.problems.find(item=>item.problem_id===attempt.problem_id);
       return <div className="evidence-row managed" key={attempt.id}><ErrorBadge value={attempt.primary_error_type||attempt.error_type}/><div><strong>{note?.theme||problem?.theme||"テーマ未設定"}</strong><span>{attempt.date} ・ {attempt.problem_id} ・ {attempt.error_point||"ミス内容未入力"}</span></div><div className="evidence-actions"><button className="small ghost" onClick={()=>editAttempt(attempt)}><Pencil size={13}/>編集</button><button className="small danger-button" disabled={busy} onClick={()=>removeAttempt(attempt)}><Trash2 size={13}/>削除</button></div></div>})}</div></details>

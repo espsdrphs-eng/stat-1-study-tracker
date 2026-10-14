@@ -431,8 +431,13 @@ export function derivePastExamRoleRelease(args:{attempts:Attempt[];pastSessions:
       Number(a.attempt.score_numeric??100)-Number(b.attempt.score_numeric??100)||a.attempt.id-b.attempt.id||
       a.root.rootWeaknessId.localeCompare(b.root.rootWeaknessId)).slice(0,2);
   const transferEvidence=benchmark||required2022Roots.length?deriveTransferEvidence(args.attempts):[];
-  const pendingRoots=required2022Roots.filter(({attempt,root})=>!rootProgress(attempt,root,args.attempts).repairSuccess&&
-    !transferEvidence.some(row=>row.sourceAttemptId===attempt.id&&root.skillIds.includes(row.skillId)));
+  const pendingRoots=required2022Roots.filter(({attempt,root})=>{
+    const repair=rootProgress(attempt,root,args.attempts).repairSuccess;
+    // Progress after permitted scaffolding is not permission to release a
+    // protected measurement. Keep the minimal prerequisite unassisted.
+    const unassisted=!!repair&&Number(repair.actual_reference_level??repair.reference_level??NaN)===0&&!repair.hint_used;
+    return !unassisted&&!transferEvidence.some(row=>row.sourceAttemptId===attempt.id&&root.skillIds.includes(row.skillId));
+  });
   const benchmarkDate=String(benchmark?.simulation_completed_at||benchmark?.attempt_completed_at||benchmark?.date||"").slice(0,10);
   const laterExam=!!benchmarkDate&&args.pastSessions.some(row=>row.year!==2024&&row.session_kind==="selected_three_timed"&&
     derivePastExamSessionState(row)==="completed"&&String(row.simulation_completed_at||row.attempt_completed_at||row.date).slice(0,10)>benchmarkDate);

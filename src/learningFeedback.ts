@@ -1,6 +1,8 @@
 import type {Bootstrap,Task,Review,Attempt,Problem,GradingContractSnapshot,StudyUpdate,ExamReferenceCatalogItem} from "./types.ts";
 import {selectCurrentReviewsForProblem} from "./integrityEngine.ts";
-import {deriveTransferEvidence,transferTrainingOutcome} from "./skillEvidence.ts";
+import {deriveTransferEvidence,transferTrainingOutcome,rootProgress,rootTargetKeys,verifiedTransferRediagnosis} from "./skillEvidence.ts";
+import {delayedTrainingPrerequisites} from './generatedTransfer.ts';
+import {buildStableTargetIndex} from './stableTargetIdentity.ts';
 import {attemptPlanningEligible} from "./legacyKPolicy.ts";
 import {deriveFailureEpisode} from "./failureEpisode.ts";
 import {currentTaskIdentity,isPastExamSessionTask} from "./examOptimizationPolicy.ts";
@@ -130,15 +132,16 @@ export function deriveProblemLearningView(data:Bootstrap,problem:Problem,transfe
   const workStatus=pendingWork?work.stage:generated?.answer_submission&&!rows.length?"awaiting_grading":rows.length?"graded":"unstarted";
   const workLabel={unstarted:"未着手",preparing:"採点準備中",awaiting_grading:"採点待ち",graded:"採点済み"}[workStatus];
   const current=selectCurrentReviewsForProblem({reviews:data.reviews,problemId:id,aliases:data.problemAliases,today:data.dashboard.today}).current;
-  const needsRepair=!mastery?.normalReviewComplete&&(mastery?.levels.some(l=>["repairing","needs_recheck"].includes(l.status))||current.some(r=>(r.learning_purpose||r.grading_contract?.learningPurpose)==="error_repair"));
+  const nextTask=data.today.tasks.find(t=>canonical(t.problem_id)===id&&!t.checked&&!t.stable_session_key);
+  const transferRepair=!!nextTask&&verifiedTransferRediagnosis(nextTask,data.attempts);
+  const needsRepair=transferRepair||!mastery?.normalReviewComplete&&(mastery?.levels.some(l=>["repairing","needs_recheck"].includes(l.status))||current.some(r=>(r.learning_purpose||r.grading_contract?.learningPurpose)==="error_repair"));
   const waitingRetention=!needsRepair&&!mastery?.normalReviewComplete&&(mastery?.levels.some(l=>l.status==="retention_pending")||current.some(r=>(r.learning_purpose||r.grading_contract?.learningPurpose)==="retrieval_check"));
   const retentionLabel=mastery?.normalReviewComplete?"保持確認済み":waitingRetention?"保持確認待ち":"保持未確認";
   const evidence=transferEvidence||deriveTransferEvidence(data.attempts.filter(attemptPlanningEligible));
   const related=evidence.filter(e=>canonical(e.sourceProblemId)===id);
   const training=related.some(e=>e.evidenceStrength==="training"),strong=related.some(e=>e.evidenceStrength==="strong");
-  const nextTask=data.today.tasks.find(t=>canonical(t.problem_id)===id&&!t.checked&&!t.stable_session_key);
   const waitingTransfer=generated?generated.lifecycle_status!=="graded":!strong&&(training||!!nextTask?.transfer_training_key||!!data.today.canonicalStudyPlan.ranked?.waiting.some(w=>canonical(w.task.problem_id)===id&&(!!w.task.transfer_training_key||w.task.kind==="転移待機")));
-  const transferLabel=generated?rows[0]?transferTrainingOutcome(rows[0],evidence.some(e=>e.successAttemptId===rows[0].id)):"転移訓練中":strong?"本番転移確認済み":training?"転移訓練成功・本番転移未測定":"本番転移未測定";
+  const transferLabel=generated?rows[0]?transferTrainingOutcome(rows[0],evidence.some(e=>e.successAttemptId===rows[0].id)):"転移訓練中":transferRepair?"転移訓練未達・再補修が必要":strong?"本番転移確認済み":training?"転移訓練成功・本番転移未測定":"本番転移未測定";
   const nextAction=workStatus==="awaiting_grading"?"採点JSONを取り込む":workStatus==="preparing"?"紙／Goodnotesで答案を完成させる":nextTask?.transfer_training_key?"別問題で転移訓練":needsRepair?"未解消範囲を復習":waitingRetention?"参照なしで保持確認":mastery?.normalReviewComplete?"Todayの次の候補へ":nextTask?preAnswerReason(nextTask):"問題を開いて解答する";
   const statusLabel=[workLabel,needsRepair?'再復習予定':waitingRetention?'保持確認待ち':mastery?.normalReviewComplete?'保持確認済み':''].filter(Boolean).join('・');
   return {workStatus,workLabel,statusLabel,work:pendingWork?work:undefined,latestAttempt,needsRepair:!!needsRepair,waitingRetention:!!waitingRetention,waitingTransfer,retentionLabel,transferLabel,nextAction,nextTask};
@@ -158,6 +161,49 @@ export function preAnswerReason(item:Partial<Task&Review>){
   if(purpose==="retrieval_check")return "参照なしで保持を確認します。";
   if(purpose==="error_repair"||item.repair_lineage)return "未完成の解答範囲に再挑戦します。";
   return "現在の答案形成を確認します。";
+}
+/** Read-only view of canonical root evidence. No memo toggles, new lifecycle or
+ * persisted skill merge: separate source targets remain independently scoped. */
+export function deriveCurrentWeaknessRows(data:Bootstrap){
+  const facts=data.attempts.filter(a=>attemptPlanningEligible(a)&&!a.exclude_from_planning&&!a.exclude_from_metrics&&!a.duplicate_of_attempt_id);
+  const index=buildStableTargetIndex({attempts:facts,reviews:data.reviews});
+  const evidence=deriveTransferEvidence(facts),seen=new Set<string>();
+  const sources=[];
+  for(const source of facts.filter(a=>!a.transfer_lineage&&a.source_type!=='generated').sort((a,b)=>a.id-b.id))for(const root of deriveFailureEpisode(source).rootWeaknesses){
+    if(!root.requiredRepair||seen.has(root.rootWeaknessId))continue;seen.add(root.rootWeaknessId);
+    const progress=rootProgress(source,root,facts,index),delayed=delayedTrainingPrerequisites(source,root,facts);
+    const repair=progress.transferFailure?undefined:delayed.repair||(!source.grading_contract?.gradedParts.length?progress.repairSuccess:undefined);
+    const retrieval=progress.transferFailure?undefined:delayed.retrieval;
+    const transfer=evidence.filter(e=>e.sourceProblemId===source.problem_id&&root.skillIds.includes(e.skillId)&&
+      e.successAttemptId>(progress.transferFailure?.id||progress.latestFailure.id)).at(-1);
+    const task=data.today.tasks.find(t=>!t.checked&&(t.repair_lineage?.rootWeaknessId===root.rootWeaknessId||
+      t.problem_id===source.problem_id&&(t.transfer_training_key||t.source_attempt_id===progress.latestFailure.id)));
+    const waiting=data.today.canonicalStudyPlan.ranked?.waiting.find(w=>w.task.problem_id===source.problem_id);
+    const status=transfer?transfer.evidenceStrength==='strong'?'本番転移確認済み':'転移訓練確認済み・本番転移未確認':
+      retrieval?'保持成功・転移未確認':repair?'補修成功・保持未確認':
+        root.confidence==='low'||data.masteryByProblem?.[source.problem_id]?.normalReviewComplete&&!progress.transferFailure?'証拠不足':'補修が必要';
+    const last=[progress.latestFailure,repair,retrieval,facts.find(a=>a.id===(progress.transferFailure?.id||transfer?.successAttemptId))]
+      .filter((a):a is Attempt=>!!a).sort((a,b)=>b.id-a.id)[0];
+    sources.push({rootId:root.rootWeaknessId,problemId:source.problem_id,sourceAttemptId:source.id,
+      targetKeys:[...rootTargetKeys(source,root,facts,index)].sort(),
+      findingIds:root.sourceFindingIds,skillIds:root.skillIds,status,description:progress.latestFailure.id===source.id?root.description:
+        deriveFailureEpisode(progress.latestFailure).rootWeaknesses.find(r=>r.rootWeaknessId===root.rootWeaknessId)?.description||root.description,
+      latestFailureAttemptId:progress.latestFailure.id,repairAttemptId:repair?.id,retrievalAttemptId:retrieval?.id,
+      repairAssisted:!!repair&&(!!repair.hint_used||Number(repair.actual_reference_level??repair.reference_level)>0),
+      problemReviewComplete:!!data.masteryByProblem?.[source.problem_id]?.normalReviewComplete,
+      transferAttemptId:transfer?.successAttemptId,transferFailureAttemptId:progress.transferFailure?.id,
+      lastCheckedDate:last?.date,lastCheckedAttemptId:last?.id,task,
+      nextAction:task?`${task.title}（Today 優先 ${task.ranking?.rank||'未設定'}）`:waiting?`${waiting.reason}。再評価：${waiting.reevaluateWhen}`:
+        transfer?'次の自然な過去問で再測定':retrieval?'別問題候補のskill照合・開始条件を確認':repair?'参照なしの遅延保持を確認':'有効な採点で対象範囲を確認',
+      identityPending:!root.skillIds.length});
+  }
+  const groups=new Map<string,typeof sources>();
+  for(const s of sources){const key=s.skillIds.length?`skill:${[...s.skillIds].sort().join('|')}`:
+    s.targetKeys.length?`target:${s.problemId}:${s.targetKeys.join('|')}`:s.rootId;groups.set(key,[...(groups.get(key)||[]),s]);}
+  const order=['補修が必要','証拠不足','補修成功・保持未確認','保持成功・転移未確認','転移訓練確認済み・本番転移未確認','本番転移確認済み'];
+  return [...groups].map(([id,sources])=>({id,sources,status:[...sources].sort((a,b)=>order.indexOf(a.status)-order.indexOf(b.status))[0].status,
+    identityPending:sources.some(s=>s.identityPending),rank:Math.min(...sources.map(s=>s.task?.ranking?.rank||Infinity))}))
+    .sort((a,b)=>a.rank-b.rank||order.indexOf(a.status)-order.indexOf(b.status)||a.id.localeCompare(b.id));
 }
 export function deriveCurrentLearningDiagnosis(data:Bootstrap){
   const assessment=data.dashboard.kpis?.assessment;

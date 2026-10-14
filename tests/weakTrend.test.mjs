@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { analyzeWeakTrends, buildQuizPrompt } from "../src/weakTrend.ts";
+import { analyzeWeakTrends } from "../src/weakTrend.ts";
+import * as weakTrend from '../src/weakTrend.ts';
+import {readFile} from 'node:fs/promises';
 
 const problems=[
   {problem_id:"WB-6-A-05",category:"A",chapter:6,theme:"AIC・自由度"},
@@ -35,16 +37,12 @@ test("ミスなし採点は保存件数には含めるが弱点グラフには�
   assert.equal(trend.weeks.reduce((sum,week)=>sum+week.count,0),3);
 });
 
-test("選択テーマから1問ずつ進むGPTクイズ用プロンプトを作る",()=>{
-  const prompt=buildQuizPrompt(["AIC・自由度"],problems,attempts,notes,5);
-  assert.match(prompt,/全5問/);
-  assert.match(prompt,/必ず1問ずつ/);
-  assert.match(prompt,/答えるまで正解を表示しない/);
-  assert.match(prompt,/WB-6-A-05/);
-  assert.doesNotMatch(prompt,/自由パラメータ数/);
-  assert.match(prompt,/弱点ノートの具体例はまだありません/);
-  assert.match(prompt,/study_updates/);
-  assert.match(prompt,/STAT1-QUIZ-v1/);
+// The historical-theme quiz was intentionally retired: it wrote general quiz
+// results to original problem IDs without the current task/skill contract.
+test("旧履歴クイズのUIと生成コードを廃止し、証拠付き転移導線へ一本化する",async()=>{
+  assert.equal('buildQuizPrompt' in weakTrend,false);
+  const source=await readFile(new URL('../src/App.tsx',import.meta.url),'utf8');
+  assert.doesNotMatch(source,/GPTクイズ用プロンプトをコピー|buildQuizPrompt/);
 });
 
 test("採点データの編集・削除後は弱点傾向が再計算される",()=>{

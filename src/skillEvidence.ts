@@ -1,9 +1,9 @@
-import type {Attempt,GradedFinding,GradedPartContract,Problem,RootWeakness} from "./types.ts";
+import type {Attempt,GradedFinding,GradedPartContract,Problem,RootWeakness,Task} from "./types.ts";
 import {groundedFindingSkills} from "./groundedSkills.ts";
 import {deriveFailureEpisode} from "./failureEpisode.ts";
 import type {StoredExamReferencePack} from "./examReferencePack.ts";
 import {canonicalPastExamProblemId} from "./examReferencePack.ts";
-import {findingPlanningEligible} from "./legacyKPolicy.ts";
+import {findingPlanningEligible,attemptPlanningEligible} from "./legacyKPolicy.ts";
 import type {StableTargetIndex} from "./stableTargetIdentity.ts";
 
 const unique=(values:string[])=>[...new Set(values.filter(Boolean))];
@@ -37,10 +37,22 @@ export function referenceSkills(record:StoredExamReferencePack|null|undefined,pr
   return unique([...problemSkillIds(problems.find(p=>p.problem_id===canonical)),
     ...(record?.data.pastExamProblems.find(p=>canonicalPastExamProblemId(p)===canonical)?.fine_concept_ids||[])]);
 }
-export function independentReferenceFree(attempt:Attempt){
+function unassistedAnswer(attempt:Attempt){
   return !attempt.exclude_from_metrics&&!attempt.duplicate_of_attempt_id&&
     Number(attempt.actual_reference_level??attempt.reference_level??NaN)===0&&!attempt.hint_used&&
-    attempt.assessment_timing!=="same_session_correction"&&!["scan","scan5","scan_only"].includes(attempt.mode);
+    !["scan","scan5","scan_only"].includes(attempt.mode);
+}
+export function independentReferenceFree(attempt:Attempt){
+  return unassistedAnswer(attempt)&&attempt.assessment_timing!=="same_session_correction";
+}
+/** Completing a local correction is repair, never an independent retention or
+ * transfer sample. Its later retrieval must still be delayed and unassisted. */
+export function gradedRepairEvidence(attempt:Attempt){
+  const reference=Number(attempt.actual_reference_level??attempt.reference_level??NaN);
+  const allowed=Number(attempt.grading_contract?.allowedReferenceLevel??0);
+  return attempt.learning_purpose==='error_repair'&&!attempt.exclude_from_metrics&&!attempt.duplicate_of_attempt_id&&
+    Number.isInteger(reference)&&reference>=0&&reference<=5&&allowed>=0&&allowed<=5&&reference<=allowed&&(!attempt.hint_used||reference>0)&&
+    !['scan','scan5','scan_only'].includes(attempt.mode);
 }
 export function confidentGrading(attempt:Attempt){
   const confidence=Number(attempt.grading_confidence??0);
@@ -77,8 +89,8 @@ function calculateSuccessfulSkillIds(attempt:Attempt){
   return unique(findings.filter(f=>f.resolved&&f.error_type==="none").flatMap(f=>
     findingSkillIds(attempt,f))).filter(id=>!failed.has(id));
 }
-/** Explicit success is scoped to the assessed root. Feedback/prose never counts. */
-export function rootProgress(source:Attempt,root:RootWeakness,attempts:Attempt[],index?:StableTargetIndex){
+/** Shared exact target lineage, including targets persisted by legacy Reviews. */
+export function rootTargetKeys(source:Attempt,root:RootWeakness,attempts:Attempt[],index?:StableTargetIndex){
   const sourceParts=(source.grading_contract?.gradedParts||[]).filter(p=>root.sourceFindingIds.includes(p.id));
   const identity=(a:Attempt,p:GradedPartContract)=>index?.attemptPart(a.id,p.id)?.identityKey||p.stableTargetKey||p.stable_target_key||p.id;
   const keys=new Set(sourceParts.map(p=>identity(source,p)));
@@ -89,8 +101,14 @@ export function rootProgress(source:Attempt,root:RootWeakness,attempts:Attempt[]
     const prefix=`part:${source.problem_id}:${source.id}:`;
     for(const a of attempts.filter(a=>a.problem_id===source.problem_id))
       for(const p of a.grading_contract?.gradedParts||[])
-        if(p.id.startsWith(prefix)&&/^\d+$/.test(p.id.slice(prefix.length)))keys.add(identity(a,p));
+        if(typeof p?.id==='string'&&p.id.startsWith(prefix)&&/^\d+$/.test(p.id.slice(prefix.length)))keys.add(identity(a,p));
   }
+  return keys;
+}
+/** Explicit success is scoped to the assessed root. Feedback/prose never counts. */
+export function rootProgress(source:Attempt,root:RootWeakness,attempts:Attempt[],index?:StableTargetIndex){
+  const keys=rootTargetKeys(source,root,attempts,index);
+  const identity=(a:Attempt,p:GradedPartContract)=>index?.attemptPart(a.id,p.id)?.identityKey||p.stableTargetKey||p.stable_target_key||p.id;
   const later=attempts.filter(a=>a.id>source.id&&!a.exclude_from_metrics&&!a.duplicate_of_attempt_id).sort((a,b)=>a.id-b.id);
   let repairSuccess:Attempt|undefined;
   let latestFailure=source;
@@ -100,7 +118,7 @@ export function rootProgress(source:Attempt,root:RootWeakness,attempts:Attempt[]
       (keys.has(identity(a,p))||findingSkillIds(a,f).some(id=>root.skillIds.includes(id)))));
     if(relevant.some(f=>!f.resolved&&f.error_type!=="none")){latestFailure=a;repairSuccess=undefined;}
     else if(a.learning_purpose!=="retrieval_check"&&relevant.length&&
-      relevant.every(f=>f.resolved&&f.error_type==="none")&&independentReferenceFree(a)&&confidentGrading(a))repairSuccess=a;
+      relevant.every(f=>f.resolved&&f.error_type==="none")&&(independentReferenceFree(a)||gradedRepairEvidence(a))&&confidentGrading(a))repairSuccess=a;
   }
   // A scaffold on another problem is still repair, not the independent test
   // after repair. Require explicit source lineage before it can unlock transfer.
@@ -123,6 +141,17 @@ export function rootProgress(source:Attempt,root:RootWeakness,attempts:Attempt[]
 export type TransferEvidence={id:string;sourceAttemptId:number;sourceProblemId:string;successAttemptId:number;
   successProblemId:string;skillId:string;date:string;evidenceStrength:"training"|"strong";
   lineage?:Attempt["transfer_lineage"]};
+/** Same raw-evidence check for the audit and all current-state displays. */
+export function verifiedTransferRediagnosis(task:Task,attempts:Attempt[]){
+  const lineage=task.repair_lineage;
+  if(lineage?.intervention!=='rediagnosis'||!lineage.transferFailureEvidenceId)return false;
+  const facts=attempts.filter(attemptPlanningEligible),source=facts.find(a=>a.id===lineage.sourceAttemptId);
+  if(!source)return false;
+  const root=deriveFailureEpisode(source).rootWeaknesses.find(r=>r.rootWeaknessId===lineage.rootWeaknessId);
+  if(!root)return false;
+  const progress=rootProgress(source,root,facts);
+  return progress.transferFailure?.id===lineage.transferFailureEvidenceId&&!progress.repairSuccess&&!progress.transfer;
+}
 export function transferEvidenceStrength(a:Attempt):"training"|"strong"{
   // A previously studied exam year can measure improvement, but not blind
   // transfer in a new exam context.
