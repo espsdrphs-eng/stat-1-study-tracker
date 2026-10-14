@@ -186,3 +186,16 @@ function calculateTransferEvidence(attempts:Attempt[]):TransferEvidence[]{
   }
   return rows;
 }
+
+/** Historical successes stay immutable; current capability needs evidence newer
+ * than a subsequent verified failure for that source/skill. */
+export function currentTransferEvidence(attempts:Attempt[]){
+  return deriveTransferEvidence(attempts).filter(row=>!attempts.some(a=>a.id>row.successAttemptId&&
+    !a.exclude_from_metrics&&!a.duplicate_of_attempt_id&&(
+      a.problem_id===row.sourceProblemId&&(a.graded_findings||[]).some(f=>findingPlanningEligible(a,f)&&
+        !f.resolved&&f.error_type!=='none'&&findingSkillIds(a,f).includes(row.skillId))||
+      a.transfer_lineage?.sourceProblemId===row.sourceProblemId&&a.transfer_lineage.rootSkillId===row.skillId&&
+        independentReferenceFree(a)&&confidentGrading(a)&&!!a.target_skill_assessment&&
+        (!a.target_skill_assessment.self_selected||!a.target_skill_assessment.major_calculation_success||!a.target_skill_assessment.no_major_error)
+    )));
+}

@@ -401,3 +401,4 @@ header h1{font-size:28px;font-weight:700;letter-spacing:-.02em;color:var(--text-
 .task-introduction dd small{display:block;margin-top:6px}
 .problem-reference summary{cursor:pointer;font-weight:600;min-height:32px}
 @media(max-width:850px){.task-introduction dl{grid-template-columns:1fr;gap:6px}.task-introduction dd{margin-bottom:12px}}
+.weakness-stages{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:12px 0}.weakness-stages span{padding:9px;border:1px solid var(--border);border-radius:8px;font-size:12px}.learning-update details p{white-space:pre-wrap;overflow-wrap:anywhere}.evidence-dates small{display:block;line-height:1.6}

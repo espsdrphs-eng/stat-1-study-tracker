@@ -1,6 +1,7 @@
 import type {Attempt,GradedPartContract,MasteryLevelState,ProblemMasteryState,Review} from "./types.ts";
 import {resolvePersistedAttemptLifecycle} from "./reviewTransition.ts";
 import {attemptPlanningEligible} from "./legacyKPolicy.ts";
+import {currentTransferEvidence} from './skillEvidence.ts';
 
 const LEVEL_TITLES={1:"骨格保持",2:"主要計算完遂",3:"転移"} as const;
 const STATUS_LABELS={
@@ -21,10 +22,10 @@ export function masteryLevelForPart(part:GradedPartContract,review?:Review):1|2|
 }
 
 function state(level:1|2|3,status:MasteryLevelState["status"],activeTargetCount=0,retainedTargetCount=0):MasteryLevelState{
-  return {level,title:LEVEL_TITLES[level],status,label:STATUS_LABELS[status],activeTargetCount,retainedTargetCount};
+  return {level,title:LEVEL_TITLES[level],status,label:level===3&&status==='retained'?'別問題の確認あり':STATUS_LABELS[status],activeTargetCount,retainedTargetCount};
 }
 
-export function deriveProblemMasteryState(args:{problemId:string;attempts:Attempt[];reviews:Review[]}):ProblemMasteryState{
+export function deriveProblemMasteryState(args:{problemId:string;attempts:Attempt[];reviews:Review[];transferEvidence?:ReturnType<typeof currentTransferEvidence>}):ProblemMasteryState{
   const attempts=args.attempts.filter(row=>row.problem_id===args.problemId&&attemptPlanningEligible(row));
   const transferAttempts=args.attempts.filter(row=>row.source_problem_id===args.problemId&&row.transfer_evidence&&
     attemptPlanningEligible(row));
@@ -54,7 +55,10 @@ export function deriveProblemMasteryState(args:{problemId:string;attempts:Attemp
       }
     }
   }
-  for(const attempt of transferAttempts)if(resolvePersistedAttemptLifecycle(attempt).reviewOutcome==="success")retained[3]++;
+  const verified=new Set((args.transferEvidence||currentTransferEvidence(args.attempts.filter(attemptPlanningEligible)))
+    .filter(e=>e.sourceProblemId===args.problemId).map(e=>e.successAttemptId));
+  for(const attempt of transferAttempts)if(!attempt.transfer_lineage&&resolvePersistedAttemptLifecycle(attempt).reviewOutcome==="success")verified.add(attempt.id);
+  retained[3]=verified.size;
   const levels=[1,2,3].map(value=>{
     const level=value as 1|2|3;
     if(repairing[level])return state(level,"repairing",repairing[level],retained[level]);
@@ -75,5 +79,6 @@ export function deriveProblemMasteryState(args:{problemId:string;attempts:Attemp
 }
 
 export function deriveMasteryByProblem(args:{problemIds:string[];attempts:Attempt[];reviews:Review[]}){
-  return Object.fromEntries(args.problemIds.map(problemId=>[problemId,deriveProblemMasteryState({problemId,attempts:args.attempts,reviews:args.reviews})]));
+  const transferEvidence=currentTransferEvidence(args.attempts.filter(attemptPlanningEligible));
+  return Object.fromEntries(args.problemIds.map(problemId=>[problemId,deriveProblemMasteryState({problemId,attempts:args.attempts,reviews:args.reviews,transferEvidence})]));
 }

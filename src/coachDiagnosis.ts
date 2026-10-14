@@ -286,14 +286,25 @@ export function buildCoachDiagnosisState(args:{
   const current=history[0]||null;
   const needsTextRefresh=!!current&&legacyTruncatedOutlook(current);
   const newAttemptCount=current?args.attempts.filter(row=>row.id>current.evidenceCutoffAttemptId&&!row.exclude_from_metrics&&!row.duplicate_of_attempt_id).length:args.attempts.length;
-  const useCurrent=!!current&&!needsTextRefresh&&newAttemptCount===0;
+  const evidenceChanged=!!current?.sourceEvidenceVersion&&current.sourceEvidenceVersion!==coachEvidenceVersion(args.attempts);
+  const useCurrent=!!current&&!needsTextRefresh&&newAttemptCount===0&&!evidenceChanged;
   const assessment=args.assessment||deriveExamReadinessAssessment(args.dashboard.readiness,args.today);
   const provisional=deriveProvisionalCoachDiagnosis({...args,assessment});
   const display={...(useCurrent?current!:provisional),level:{value:assessment.level,label:assessment.label,
     passOutlook:assessment.passOutlook,confidence:assessment.confidence,rationale:assessment.rationale}};
-  return {assessment,current,display,history,source:useCurrent?"gpt":"local_provisional",stale:!!current&&newAttemptCount>0,
+  return {assessment,current,display,history,source:useCurrent?"gpt":"local_provisional",stale:!!current&&(newAttemptCount>0||evidenceChanged),
     needsTextRefresh,
     newAttemptCount,prompt:buildCoachReviewPrompt({...args,assessment}),lastReviewedAt:current?.reviewedAt||null};
+}
+
+export function coachEvidenceVersion(attempts:Attempt[]){
+  const rows=attempts.filter(a=>!a.exclude_from_metrics&&!a.duplicate_of_attempt_id)
+    .sort((a,b)=>a.id-b.id).map(a=>[a.id,a.problem_id,a.date,a.score_numeric,a.mark,a.learning_purpose,
+      a.reference_level,a.actual_reference_level,a.hint_used,a.grading_confidence,a.mode,a.assessment_timing,
+      a.time_minutes,a.error_point,a.next_action,a.exclude_from_planning,
+      a.graded_findings,a.grading_contract,a.transfer_lineage,a.target_skill_assessment]);
+  let hash=2166136261;for(const char of JSON.stringify(rows))hash=Math.imul(hash^char.charCodeAt(0),16777619);
+  return `coach:${(hash>>>0).toString(36)}`;
 }
 
 export function coachPreview(current:CoachDiagnosis|null,next:CoachDiagnosis){

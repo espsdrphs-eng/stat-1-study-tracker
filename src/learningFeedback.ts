@@ -1,6 +1,6 @@
 import type {Bootstrap,Task,Review,Attempt,Problem,GradingContractSnapshot,StudyUpdate,ExamReferenceCatalogItem} from "./types.ts";
 import {selectCurrentReviewsForProblem} from "./integrityEngine.ts";
-import {deriveTransferEvidence,transferTrainingOutcome,rootProgress,rootTargetKeys,verifiedTransferRediagnosis} from "./skillEvidence.ts";
+import {deriveTransferEvidence,currentTransferEvidence,transferTrainingOutcome,rootProgress,rootTargetKeys,verifiedTransferRediagnosis} from "./skillEvidence.ts";
 import {delayedTrainingPrerequisites} from './generatedTransfer.ts';
 import {buildStableTargetIndex} from './stableTargetIdentity.ts';
 import {attemptPlanningEligible} from "./legacyKPolicy.ts";
@@ -8,6 +8,7 @@ import {deriveFailureEpisode} from "./failureEpisode.ts";
 import {currentTaskIdentity,isPastExamSessionTask} from "./examOptimizationPolicy.ts";
 import {resolveCanonicalProblemId} from "./examReadiness.ts";
 import {deriveTaskAnswerScope,taskAnswerScopeText} from "./taskAnswerScope.ts";
+import {resolvePersistedAttemptLifecycle} from './reviewTransition.ts';
 
 // Neutral projections of existing grading slots/criteria, not new mastery rules.
 const targetLabels:Record<string,string>={problem_type:"型の判断",first_step:"初手",focal_quantity:"対象の量",critical_condition:"条件確認",major_calculation:"主要計算",answer_conclusion:"最終結論"};
@@ -120,6 +121,12 @@ export function imageGradingPrompt(prompt:string,referenceLevel=0,minutes:number
   return `${prompt}\n\n【紙／Goodnotesの答案画像による採点】\n本人がこのプロンプトとともに添付した答案画像を採点してください。アプリ内に本人の答案本文はありません。読めない部分は推測せず不確実として返してください。問題文・公式資料と本人の答案を混同しないでください。\n参照段階 ${referenceLevel}。この記録を下げず採点してください。\n正味解答時間は${minutes==null?"不明。actual_minutes: null、time_minutes: null。画像から時間を推測しない":`${minutes}分（中断時間を除く）` }。\n既存の問題ID・契約ID・対象part・採点結果の構造化形式を維持してください。プロンプトのコピーは答案完成・採点成功の証拠ではありません。`;
 }
 /** One display projection shared by Today/list/detail. Never re-ranks tasks. */
+function confirmedRetention(rows:Attempt[],mastery:Bootstrap['masteryByProblem'][string]|undefined){
+  return !!mastery?.normalReviewComplete&&(
+    mastery.levels?.some(level=>level.status==='retained'&&level.retainedTargetCount>0)||
+    rows.some(a=>attemptPlanningEligible(a)&&resolvePersistedAttemptLifecycle(a).graduated)||
+    rows.some(a=>deriveFailureEpisode(a).rootWeaknesses.some(root=>!!delayedTrainingPrerequisites(a,root,rows).retrieval)));
+}
 export function deriveProblemLearningView(data:Bootstrap,problem:Problem,transferEvidence?:ReturnType<typeof deriveTransferEvidence>){
   const aliases=new Map(data.problemAliases.map(a=>[a.alias,a.problem_id]));
   const canonical=(id:string)=>{const seen=new Set<string>();while(aliases.has(id)&&!seen.has(id)){seen.add(id);id=aliases.get(id)!;}return id;};
@@ -136,20 +143,48 @@ export function deriveProblemLearningView(data:Bootstrap,problem:Problem,transfe
   const transferRepair=!!nextTask&&verifiedTransferRediagnosis(nextTask,data.attempts);
   const needsRepair=transferRepair||!mastery?.normalReviewComplete&&(mastery?.levels.some(l=>["repairing","needs_recheck"].includes(l.status))||current.some(r=>(r.learning_purpose||r.grading_contract?.learningPurpose)==="error_repair"));
   const waitingRetention=!needsRepair&&!mastery?.normalReviewComplete&&(mastery?.levels.some(l=>l.status==="retention_pending")||current.some(r=>(r.learning_purpose||r.grading_contract?.learningPurpose)==="retrieval_check"));
-  const retentionLabel=mastery?.normalReviewComplete?"保持確認済み":waitingRetention?"保持確認待ち":"保持未確認";
-  const evidence=transferEvidence||deriveTransferEvidence(data.attempts.filter(attemptPlanningEligible));
+  const retentionConfirmed=confirmedRetention(rows,mastery);
+  const retentionLabel=retentionConfirmed?"保持確認済み":waitingRetention?"保持確認待ち":"保持未確認";
+  const evidence=transferEvidence||currentTransferEvidence(data.attempts.filter(attemptPlanningEligible));
   const related=evidence.filter(e=>canonical(e.sourceProblemId)===id);
   const training=related.some(e=>e.evidenceStrength==="training"),strong=related.some(e=>e.evidenceStrength==="strong");
   const waitingTransfer=generated?generated.lifecycle_status!=="graded":!strong&&(training||!!nextTask?.transfer_training_key||!!data.today.canonicalStudyPlan.ranked?.waiting.some(w=>canonical(w.task.problem_id)===id&&(!!w.task.transfer_training_key||w.task.kind==="転移待機")));
   const transferLabel=generated?rows[0]?transferTrainingOutcome(rows[0],evidence.some(e=>e.successAttemptId===rows[0].id)):"転移訓練中":transferRepair?"転移訓練未達・再補修が必要":strong?"本番転移確認済み":training?"転移訓練成功・本番転移未測定":"本番転移未測定";
   const nextAction=workStatus==="awaiting_grading"?"採点JSONを取り込む":workStatus==="preparing"?"紙／Goodnotesで答案を完成させる":nextTask?.transfer_training_key?"別問題で転移訓練":needsRepair?"未解消範囲を復習":waitingRetention?"参照なしで保持確認":mastery?.normalReviewComplete?"Todayの次の候補へ":nextTask?preAnswerReason(nextTask):"問題を開いて解答する";
-  const statusLabel=[workLabel,needsRepair?'再復習予定':waitingRetention?'保持確認待ち':mastery?.normalReviewComplete?'保持確認済み':''].filter(Boolean).join('・');
+  const statusLabel=[workLabel,needsRepair?'再復習予定':waitingRetention?'保持確認待ち':retentionConfirmed?'保持確認済み':''].filter(Boolean).join('・');
   return {workStatus,workLabel,statusLabel,work:pendingWork?work:undefined,latestAttempt,needsRepair:!!needsRepair,waitingRetention:!!waitingRetention,waitingTransfer,retentionLabel,transferLabel,nextAction,nextTask};
 }
 export function deriveProblemLearningViews(data:Bootstrap){
-  const evidence=deriveTransferEvidence(data.attempts.filter(attemptPlanningEligible));
+  const evidence=currentTransferEvidence(data.attempts.filter(attemptPlanningEligible));
   return Object.fromEntries(data.problems.map(p=>[p.problem_id,deriveProblemLearningView(data,p,evidence)]));
 }
+export function deriveLearningUpdateSummary(data:Pick<Bootstrap,'attempts'|'dashboard'>){
+  const latest=[...data.attempts].filter(attemptPlanningEligible).sort((a,b)=>b.id-a.id)[0];
+  if(!latest)return null;
+  const local=['error_repair','retrieval_check','transfer_check'].includes(String(latest.learning_purpose));
+  const ids=data.dashboard.readiness?.evidence?.selectedThree?.sessions?.flatMap(s=>s.attemptIds)||[];
+  const reason=latest.learning_purpose==='error_repair'?'今回は局所補修です。本番得点・時間指標の集計対象ではありません。':
+    latest.learning_purpose==='retrieval_check'?'今回は同一問題の保持確認です。別問題の転移成功とは別に判定します。':
+    latest.learning_purpose==='transfer_check'?'今回は意図的な転移訓練です。本番session得点や自然な転移成功へ加算しません。':
+    ids.includes(latest.id)?'今回の答案は本番sessionの測定証拠です。得点・時間・選題の資格を別々に再評価します。':
+    '今回の答案は保存済みです。本番session指標は、その対象証拠が増えた場合だけ更新されます。';
+  return {attemptId:latest.id,problemId:latest.problem_id,date:latest.date,score:latest.score_numeric,
+    unresolved:(latest.graded_findings||[]).filter(f=>!f.resolved&&f.error_type!=='none'&&f.planning_eligible!==false).length,
+    reason,local,change:latest.answer_change_summary||latest.result_summary||'',sourceAttemptId:latest.grading_contract?.sourceAttemptId};
+}
+
+export function deriveWeaknessDisplayRows(data:Bootstrap){
+  const groups=new Map<string,ReturnType<typeof deriveCurrentWeaknessRows>[number]>();
+  for(const row of deriveCurrentWeaknessRows(data)){
+    const key=row.identityPending?`unmapped:${row.sources[0].problemId}`:row.id,old=groups.get(key);
+    if(old){old.sources.push(...row.sources);old.rank=Math.min(old.rank,row.rank);
+      const order=['補修が必要','証拠不足','補修成功・保持未確認','保持成功・転移未確認','転移訓練確認済み・本番転移未確認','本番転移確認済み'];
+      if(order.indexOf(row.status)<order.indexOf(old.status))old.status=row.status;}
+    else groups.set(key,{...row,id:key,sources:[...row.sources]});
+  }
+  return [...groups.values()].sort((a,b)=>a.rank-b.rank||a.id.localeCompare(b.id));
+}
+
 export function completionCriterionText(contract?:GradingContractSnapshot){
   return contract?.completionCriteria?.map(c=>c.displayText).filter(Boolean).join(" / ")||
     "対象範囲を参照なしで最後の結論まで再現し、対象major errorがないことを採点で確認";
@@ -231,15 +266,16 @@ export function deriveCurrentLearningDiagnosis(data:Bootstrap){
     deficits.push({problemId:task.problem_id,ability:evidence,sourceAttemptId:source.id,date:source.date,evidence,task,
       successCriterion:completionCriterionText(task.grading_contract)});
   }
-  const transfers=deriveTransferEvidence(facts);
+  const transfers=currentTransferEvidence(facts);
   const training=transfers.filter(e=>e.evidenceStrength==="training"),strong=transfers.filter(e=>e.evidenceStrength==="strong");
   const lastTraining=new Map<string,Attempt>();
   for(const a of [...facts].sort((a,b)=>a.id-b.id))if(a.transfer_lineage)lastTraining.set(a.transfer_lineage.key,a);
   const failed=[...lastTraining.values()].filter(a=>transferTrainingOutcome(a)==="training transfer failure");
   const strengths:string[]=[];
   if(assessment?.selectionAccuracy?.denominator&&Number(assessment.selectionAccuracy.value)>=80)strengths.push(`選題は${assessment.selectionAccuracy.numerator}/${assessment.selectionAccuracy.denominator}で成功`);
-  const retained=Object.values(data.masteryByProblem).filter(m=>m.normalReviewComplete).length;
-  if(retained)strengths.push(`${retained}問題で通常復習が終了（別問題への転移とは区別）`);
+  const retained=Object.entries(data.masteryByProblem).filter(([id,m])=>confirmedRetention(facts.filter(a=>
+    resolveCanonicalProblemId(a.problem_id,data.problemAliases||[])===id),m)).length;
+  if(retained)strengths.push(`${retained}問題で保持の証拠を確認（別問題への転移とは区別）`);
   if(strong.length)strengths.push(`本番文脈の別問題で${strong.length}件の自然な転移成功を確認`);
   const pending=data.today.canonicalStudyPlan.ranked?.waiting.filter(w=>w.task.kind==="転移待機")||[];
   return {assessment,stage:assessment?.label||"判定材料不足",strengths,deficits:deficits.slice(0,3),

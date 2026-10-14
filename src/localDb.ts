@@ -44,6 +44,7 @@ import {
   reviewExecutionMessage, reviewExecutionState, runIntegrityAudit, type IntegrityAudit
 } from "./integrityEngine.ts";
 import { notifyStudyDataChanged } from "./appEvents.ts";
+import {assertReviewExecutionAdmission} from './reviewCurrentState.ts';
 import {
   buildPastExamCatalog, buildReferencePackStatus, canonicalPastExamProblemId, orderCorePastExamYears,
   enrichReconciledLinks, EXAM_REFERENCE_EXPOSURE_META_KEY, EXAM_REFERENCE_PACK_META_KEY,
@@ -58,7 +59,7 @@ import { summarizeReviewPortfolio } from "./reviewPortfolio.ts";
 import { BUILT_IN_EXAM_REFERENCE_PACK, builtInReferencePackValidation } from "./builtinExamReferencePack.ts";
 import { analyzeReviewReconciliation, reconciliationForProblem, type ReconciliationAudit } from "./reviewReconciliation.ts";
 import {isValidStableTargetKey,issueStableTargetKey,stableTargetKeyForPart,withStableTargetKey} from "./stableTargetIdentity.ts";
-import {buildCoachDiagnosisState, coachPreview, COACH_HISTORY_META_KEY, parseCoachUpdate} from "./coachDiagnosis.ts";
+import {buildCoachDiagnosisState, coachEvidenceVersion, coachPreview, COACH_HISTORY_META_KEY, parseCoachUpdate} from "./coachDiagnosis.ts";
 import {deriveMasteryByProblem} from "./masteryProjection.ts";
 import {materializeObservedOutOfScopeFindings} from "./outOfScopeObservations.ts";
 import {deriveCurrentTodayProjection} from "./currentTodayProjection.ts";
@@ -1129,6 +1130,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
   if(sourceReview){
     const sourceState=reviewExecutionState(sourceReview,todayString());
     if(sourceState!=="actionable")throw new Error(reviewExecutionMessage(sourceState,sourceReview));
+    assertReviewExecutionAdmission(sourceReview,todayString());
   }
   const requestedContractId=String(input.contract_id||"");
   const requestedInitialContract=requestedContractId.startsWith(`initial:${problem.problem_id}:`);
@@ -1683,6 +1685,7 @@ async function completeReview(id:number,body:Record<string,unknown>){
   if(!review) throw new Error("復習予定が見つかりません");
   const executionState=reviewExecutionState(review,todayString());
   if(executionState!=="actionable")throw new Error(reviewExecutionMessage(executionState,review));
+  assertReviewExecutionAdmission(review,todayString());
   const staleReason=await staleEvidenceReason(review);
   if(staleReason)throw new Error(`この復習課題は最新答案により終了または更新されています。${staleReason}`);
   const source=await db.attempts.get(review.generated_from_attempt_id);
@@ -3775,8 +3778,7 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     const catalog=current.adaptiveLearning.pastExamCatalog.find(c=>c.canonicalProblemId===problem.problem_id);
     if(catalog?.simulationProtected&&!current.today.tasks.some(t=>t.problem_id===problem.problem_id&&!t.stable_session_key&&t.ranking?.eligible))
       throw new Error("この年度はblind本番測定の保護対象です。Todayまたは過去問sessionの解除条件を確認してください");
-    if(body.reviewId&&reviewExecutionState(await db.reviews.get(Number(body.reviewId)),todayString())!=="actionable")
-      throw new Error("この復習はまだ実行できません。保持間隔・延期・卒業状態を確認してください");
+    if(body.reviewId)assertReviewExecutionAdmission(await db.reviews.get(Number(body.reviewId)),todayString());
     const key=`learning-work:${problem.problem_id}`,oldRow=await db.meta.get(key);
     const old=oldRow?JSON.parse(oldRow.value) as import("./types.ts").LearningWork:undefined;
     const latestId=Math.max(0,...current.attempts.filter(a=>a.problem_id===problem.problem_id&&!a.exclude_from_metrics).map(a=>a.id));
@@ -3833,7 +3835,7 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     if(unknown.length)throw new Error(`根拠problem_idが問題マスターにありません: ${unknown.join("、")}`);
     let history:CoachDiagnosis[]=[];try{history=JSON.parse(row?.value||"[]")}catch{history=[]}
     const duplicate=history.some(item=>item.reviewedAt===diagnosis.reviewedAt&&item.evidenceCutoffAttemptId===diagnosis.evidenceCutoffAttemptId);
-    if(!duplicate)await db.meta.put({key:COACH_HISTORY_META_KEY,value:JSON.stringify([...history,diagnosis])});
+    if(!duplicate)await db.meta.put({key:COACH_HISTORY_META_KEY,value:JSON.stringify([...history,{...diagnosis,sourceEvidenceVersion:coachEvidenceVersion(attempts.filter(attemptPlanningEligible))}])});
     notifyStudyDataChanged({operation:"save-coach-diagnosis"});
     return {ok:true,diagnosis,duplicate} as T;
   } else if(path==="/api/exam-reference-pack/import"){
@@ -3993,6 +3995,7 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     const id=Number(path.split("/")[3]),review=await db.reviews.get(id);
     const state=reviewExecutionState(review,todayString());
     if(state!=="actionable")throw new Error(reviewExecutionMessage(state,review));
+    assertReviewExecutionAdmission(review,todayString());
     await db.reviews.update(id,{status:"done",completed_at:new Date().toISOString()});
     notifyStudyDataChanged({operation:"mark-review-done",reviewId:id});
   } else if(/^\/api\/reviews\/\d+\/pending$/.test(path)) {

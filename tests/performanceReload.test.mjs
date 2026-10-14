@@ -56,7 +56,12 @@ test('old same-line skill recognition is preserved, including Unicode line separ
   const expected=matches.filter(([id])=>id!=='risk_function'||!matches.some(([other])=>other==='coefficient_tracking_scale_reciprocal'))
    .map(([skillId,,ambiguity])=>({skillId,confidence:ambiguity.test(evidence)?'medium':'high'}));
   const f={graded_part_id:'major_calculation',evidence};
-  assert.deepEqual(groundedFindingSkills({id:1,graded_findings:[f]},f).map(({skillId,confidence})=>({skillId,confidence})),expected,evidence);
+  // The approved operation taxonomy now also recognizes maximum_likelihood.
+  // Keep the exact old six-rule behavior (including ambiguity and line breaks)
+  // as a compatibility assertion; its grounded extension has separate tests.
+  assert.deepEqual(groundedFindingSkills({id:1,graded_findings:[f]},f)
+   .filter(({skillId})=>original.some(([id])=>id===skillId))
+   .map(({skillId,confidence})=>({skillId,confidence})),expected,evidence);
  }
 });
 test('reload recovers from an obsolete read failure and remains usable after an action failure',async()=>{

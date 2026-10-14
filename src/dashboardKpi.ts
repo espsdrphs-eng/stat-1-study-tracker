@@ -89,6 +89,11 @@ export function deriveDashboardKpis(input:DashboardKpiInput):DashboardKpiProject
   if(timedMeasured&&Number(r.timedCompletionRate)<60){
     bottleneckValue="時間内完走の再現性";bottleneckDetail=`時間内完走 ${pct(r.timedCompletionRate)}（${r.sampleSizes.timed}件）`;
     bottleneckSource="timed_evidence";bottleneckCount=r.sampleSizes.timed;bottleneckConfidence="high";
+    examReadiness.nextEvidenceAction='必要なmajor補修と短い時間配分の補正後、保護条件を満たした本番benchmarkで再測定する';
+    passZone.nextEvidenceAction=examReadiness.nextEvidenceAction;
+    passZone.nextEvidenceActions=[examReadiness.nextEvidenceAction];
+    bottleneckDetail+=`。最終測定 ${r.evidence?.timed.lastUpdated||'日付不明'}。改善後の再測定が必要です。`;
+    bottleneckConfidence=r.evidence?.timed.confidence||bottleneckConfidence;
   }else if(selectionMeasured&&Number(r.selectionSuccessRate)<60){
     bottleneckValue="5問から3問を選ぶ判断";bottleneckDetail=`選題成功 ${pct(r.selectionSuccessRate)}（${r.sampleSizes.scans}件）`;
     bottleneckSource="selection_evidence";bottleneckCount=r.sampleSizes.scans;bottleneckConfidence="high";

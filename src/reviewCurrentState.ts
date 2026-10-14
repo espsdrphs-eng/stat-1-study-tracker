@@ -48,3 +48,19 @@ export function reviewExecutionMessage(state:ReviewExecutionState,review?:Partia
   if(state==="stale")return "画面と採点契約が一致しないため、現在は実行できません";
   return "現在実行できます";
 }
+
+/** Contract validity is also used for preview/reconciliation. Execution additionally
+ * respects the persisted interval and explicit postponement, without mutating it. */
+export function reviewExecutionAdmission(review:Review|undefined,today:string){
+  const state=reviewExecutionState(review,today);
+  if(state!=="actionable")return {eligible:false,reason:reviewExecutionMessage(state,review)};
+  const postponed=review?.postponed_to;
+  if(postponed==='unscheduled')return {eligible:false,reason:'この復習は延期中です。再開日を確認してください。'};
+  const earliest=[review?.earliest_date||review?.due_date||'',postponed||''].sort().at(-1)||'';
+  if(earliest>today)return {eligible:false,reason:`この復習は ${earliest} 以降に実行できます。保持間隔・延期を維持します。`};
+  return {eligible:true,reason:'現在実行できます'};
+}
+export function assertReviewExecutionAdmission(review:Review|undefined,today:string){
+  const decision=reviewExecutionAdmission(review,today);
+  if(!decision.eligible)throw new Error(decision.reason);
+}

@@ -401,6 +401,7 @@ export type ConceptWeaknessInsight = {
 export type CoachConfidence="low"|"medium"|"high";
 export type CoachDiagnosis = {
   textIntegrity?:"complete";
+  sourceEvidenceVersion?:string;
   schemaVersion:"stat1-coach-v1";reviewedAt:string;evidenceCutoffAttemptId:number;
   level:{value:number;label:string;passOutlook:string;confidence:CoachConfidence;rationale:string};
   primaryBottleneck:{title:string;explanation:string;evidenceProblemIds:string[];effectOnExam:string};

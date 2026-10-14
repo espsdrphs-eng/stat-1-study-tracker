@@ -105,7 +105,8 @@ export function deriveTaskAnswerScope(args:{problem:Problem;task?:ScopeTask;atte
    if(inherited&&ts.length&&failurePattern.test(text.slice(0,ts[0].start)))return false;
    for(const [i,t] of ts.entries()){
     candidates.push(t.label);if(t.quoted)continue;
-    let after=afterGroup(text,ts,i).split(/[。\n]/u)[0];
+    const numberedRegion=afterGroup(text,ts,i);
+    let after=numberedRegion.split(/[。\n]/u)[0];
     if(/^(?:より|を(?:使|利用|用い)|へ接続)/.test(after)){add(t.label,'reference',field,attemptId);continue;}
     const subject=/^(?:は|が|の|で|を|について|まで)/.test(after);
     const positive=/正解|正しく|正しい(?:が|。|、|$)|修正された|(?:正答|修復|再現|到達)(?:した|できた)|改善(?:して|した)|完遂(?:した|できた)/.test(after);
@@ -113,7 +114,10 @@ export function deriveTaskAnswerScope(args:{problem:Problem;task?:ScopeTask;atte
     if(/新たな誤答とは扱わない|再評価していない|対象外/.test(after)){add(t.label,'excluded',field,attemptId);continue;}
     const failed=failurePattern.test(after);
     if(subject&&failed){add(t.label,'primary',field,attemptId);found=true;}
-    else if(subject&&positive)add(t.label,'excluded',field,attemptId);
+    // A positive first sentence about one operation is not success of the whole
+    // subquestion when the same numbered region still names a remaining error.
+    else if(subject&&positive&&!failurePattern.test(numberedRegion)&&
+      !/欠落|未実施|混在|不整合|置かず/.test(numberedRegion))add(t.label,'excluded',field,attemptId);
     else if(inherited&&(t.start===0||/^答案(?:では)?$/.test(text.slice(0,t.start)))&&subject&&!positive){add(t.label,'primary',field,attemptId);found=true;}
    }
    return found;

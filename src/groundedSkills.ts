@@ -5,6 +5,7 @@ export type GroundedSkillTag={skillId:string;evidence:string;confidence:"high"|"
 // No chapter/theme inference, embeddings, or extrapolation from missing answers.
 type SkillRule={id:string;named?:RegExp;all?:RegExp[];ambiguous:RegExp};
 const rules:SkillRule[]=[
+  {id:'maximum_likelihood',all:[/尤度|最尤/,/密度の積|対数尤度/,/微分|推定量|MLE/i],ambiguous:/操作が不明|単に分布名/},
   {id:"coefficient_tracking_scale_reciprocal",all:[/1\/Xbar|逆数/,/係数|定数倍/],ambiguous:/係数が不明|操作が不明/},
   // The assessed finding names a conditional law and its conditioned variables;
   // candidate matching below checks the actual inverse-density operation.
@@ -56,6 +57,7 @@ export function groundedWhitebookSkills(problem:Problem,answers:AnswerIndexEntry
  * general identity but the destination only calculates a named distribution. */
 export function matchesFailureOperation(failure:string,skill:string,problem:Problem,answers:AnswerIndexEntry[]=[]){
   const answer=answers.find(row=>row.problem_id===problem.problem_id)?.answer_excerpt||"";
+  if(skill==='maximum_likelihood')return extract(answer,'candidate solution').some(tag=>tag.skillId===skill&&tag.confidence==='high');
   if(skill==="coefficient_tracking_scale_reciprocal")
     return extract(answer,"candidate solution").some(tag=>tag.skillId===skill&&tag.confidence==="high");
   if(skill==="conditional_distribution"&&/(?:Bayes|ベイズ|逆条件付け|X\|Z)/i.test(failure))
