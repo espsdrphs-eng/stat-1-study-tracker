@@ -1,13 +1,16 @@
 import {useEffect,useState} from "react";
 import {post} from "./api";
 type View={status:string;problem?:{problem_id:string;display_label:string;difficulty:string;estimated_minutes:number;problem_text:string};existingProblemId?:string;prompt?:string;pendingReason?:string;
-  afterSubmission?:{rootSkillId:string;sourceProblemId:string;result:string;evidence:string;solution:string;rubric:string;
+  sourceContext?:{sourceProblemId:string;sourceLabel:string;skillName:string;sourceAttemptId:number;sourceScopeText:string;destinationProblemId?:string;evidenceKind:string};
+  afterSubmission?:{rootSkillId:string;rootSkillName?:string;sourceProblemId:string;result:string;evidence:string;solution:string;rubric:string;
     feedback?:{score:number|null;scoreMax:number;errorPoint:string;nextAction:string;successCriterion:string}}};
 export function TransferTrainingPanel({trainingKey,onSaved}:{trainingKey:string;onSaved?:()=>void;onExisting?:(id:string)=>void}){
   const [view,setView]=useState<View>(),[error,setError]=useState(""),[busy,setBusy]=useState(false),[payload,setPayload]=useState(""),
-    [minutes,setMinutes]=useState(""),[referenceLevel,setReference]=useState(0),[message,setMessage]=useState(""),[copyFallback,setCopyFallback]=useState("");
+    [minutes,setMinutes]=useState(""),[referenceLevel,setReference]=useState(0),[message,setMessage]=useState(""),[copyFallback,setCopyFallback]=useState(""),
+    [sourceContext,setSourceContext]=useState<View['sourceContext']>();
   const request=(action:string,extra:Record<string,unknown>={})=>post<View>("/api/transfer-training",{key:trainingKey,action,...extra});
-  useEffect(()=>{let active=true;request("view").then(v=>{if(active)setView(v)}).catch(e=>{if(active)setError(String(e.message))});return()=>{active=false};},[trainingKey]);
+  useEffect(()=>{let active=true;setSourceContext(undefined);request("view").then(v=>{if(active)setView(v)}).catch(e=>{if(active)setError(String(e.message))});return()=>{active=false};},[trainingKey]);
+  const inspectSource=async()=>{setBusy(true);setError('');try{setSourceContext((await request('lineage')).sourceContext)}catch(e){setError(e instanceof Error?e.message:String(e))}finally{setBusy(false)}};
   const act=async(action:string,copy=false)=>{
     setBusy(true);setError("");setMessage("");setCopyFallback("");
     try{const response=await request(action,{text:payload,answer_medium:"paper_image",answer_completed:action==="submit",minutes,referenceLevel});
@@ -24,6 +27,10 @@ export function TransferTrainingPanel({trainingKey,onSaved}:{trainingKey:string;
     <h3>転移確認</h3><p>別問題1問の転移訓練です。生成プロンプトで出題意図を知る可能性があるため、本番での独立転移とは数えません。API・キー設定は不要です。</p>
     {error&&<p role="alert">{error}</p>}{message&&<p role="status">{message}</p>}{!view&&<p>確認中…</p>}
     {copyFallback&&<label>コピー用プロンプト<textarea aria-label="コピー用プロンプト" readOnly rows={5} value={copyFallback} onFocus={e=>e.currentTarget.select()} style={{width:"100%"}}/></label>}
+    {view&&!content&&<><button className="ghost" disabled={busy} onClick={inspectSource}>転移元との対応を確認（訓練の説明）</button>
+      {sourceContext&&<section aria-label="転移元の対応"><p>元問題：{sourceContext.sourceLabel}（{sourceContext.sourceProblemId}）／根拠答案 #{sourceContext.sourceAttemptId}</p>
+        <p>確認する技能：{sourceContext.skillName}</p><p>元の対象範囲：{sourceContext.sourceScopeText}</p>
+        <p>転移先：{sourceContext.destinationProblemId||'開始時に別問題を割り当てます'}</p><small>{sourceContext.evidenceKind}。問題を開いた後の解答前画面には、この情報を自動表示しません。</small></section>}</>}
     {view?.existingProblemId&&!content&&<><p>高信頼の既存問題を使用します。生成は不要です。</p><button disabled={busy} onClick={()=>act("start")}>既存の転移確認問題を開く</button></>}
     {view&&!content&&!view.existingProblemId&&<>
       <p>ChatGPTに手動で渡し、問題文だけのJSONを戻してください。形式確認後、別の新しい会話で品質確認します。解答・採点基準は答案確定後に取り込みます。</p>
@@ -49,7 +56,7 @@ export function TransferTrainingPanel({trainingKey,onSaved}:{trainingKey:string;
         <label>参照<select value={referenceLevel} onChange={e=>setReference(Number(e.target.value))}><option value={0}>参照なし</option><option value={3}>ヒント・資料・解答を見た</option></select></label>
         <button disabled={busy} onClick={()=>act("submit")}>答案完成・採点へ進む</button>
       </>:<>
-        <p>対象能力：{view.afterSubmission.rootSkillId}／source：{view.afterSubmission.sourceProblemId}</p>
+        <p>確認した技能：{view.afterSubmission.rootSkillName||view.afterSubmission.rootSkillId}／元問題：{view.afterSubmission.sourceProblemId}／転移先：{content.problem_id}</p>
         <p>{view.afterSubmission.result}</p><p>{view.afterSubmission.evidence}</p>
         {view.afterSubmission.feedback&&<div>
           <p>今回の得点：{view.afterSubmission.feedback.score??"未測定"} / {view.afterSubmission.feedback.scoreMax}</p>

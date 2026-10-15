@@ -18,6 +18,14 @@ test('existing candidate completes the same blind submit → scoped grading → 
   const call=(action,extra={})=>localPost('/api/transfer-training',{key,action,...extra});
   const state=await localGet('/api/bootstrap');assert.ok(state.today.tasks.some(t=>t.transfer_training_key===key));
   await assert.rejects(()=>call('grading-prompt'));
+  // Isolated reservation-conflict fixture: a destination must not silently use
+  // the source/skill context of a DIFFERENT training key.
+  const contextKey=`transfer-training-context:${p.problem_id}`;
+  const other={key:'training:moment_generating_function',rootSkillId:'moment_generating_function',sourceProblemId:'PY-fixture-other',sourceAttemptId:8001};
+  await db.meta.put({key:contextKey,value:JSON.stringify(other)});
+  await assert.rejects(()=>call('start'),/別の転移課題/);
+  assert.deepEqual(JSON.parse((await db.meta.get(contextKey)).value),other,'refusal never overwrites the other assignment');
+  await db.meta.delete(contextKey); // remove ONLY the artificial Node fixture
   await call('start');const blind=await call('view');assert.ok(!JSON.stringify(blind).includes(skill),'blind response has no target identity');
   await call('submit',{answer:'固定個数の二次積を用いて分散まで導出した（試験fixture答案）',minutes:12,referenceLevel:0});
   const prompt=await call('grading-prompt');assert.ok(prompt.prompt.includes(skill));

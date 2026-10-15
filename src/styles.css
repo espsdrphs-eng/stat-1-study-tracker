@@ -1,3 +1,4 @@
+.current-skill-card header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px}.current-skill-card h3{margin:0}.weakness-scopes{font-weight:600;overflow-wrap:anywhere}.weakness-next{padding:10px;border-left:3px solid var(--accent,#315cfb);margin:10px 0}.weakness-next p{margin-bottom:0}
 :root{
   font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Hiragino Sans","Noto Sans JP",sans-serif;
   color:var(--text-primary);

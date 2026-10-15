@@ -59,6 +59,22 @@ export function confidentGrading(attempt:Attempt){
   const normalized=confidence>1?confidence/100:confidence;
   return Number.isFinite(normalized)&&normalized>=.8&&normalized<=1;
 }
+/** Read-only explanation of an assessed part, never a new mastery state.
+ * A high total score, missing reference data or contradictory finding is not
+ * independent success. Identity still comes from the existing grounded path. */
+export function findingEvidenceStatus(attempt:Attempt,finding:GradedFinding){
+  const skillIds=findingSkillIds(attempt,finding);
+  const assisted=!!attempt.hint_used||Number(attempt.actual_reference_level??attempt.reference_level)>0;
+  const referenceKnown=Number.isInteger(attempt.actual_reference_level??attempt.reference_level);
+  const good=finding.resolved&&finding.error_type==='none';
+  const bad=!finding.resolved&&finding.error_type!=='none';
+  const outcome=!attemptPlanningEligible(attempt)||attempt.exclude_from_planning||!findingPlanningEligible(attempt,finding)?'excluded':
+    !confidentGrading(attempt)||!finding.evidence?.trim()||!referenceKnown||!good&&!bad?'uncertain':
+    good?assisted?'assisted_success':'success':'failure';
+  const labels={excluded:'採点対象外',uncertain:'判定保留・証拠不足',assisted_success:'援助ありの成功（独立成功ではない）',success:'対象内の自力成功',failure:assisted?'援助あり・未解消':'対象内の未解消'};
+  return {outcome,label:labels[outcome],skillIds:[...skillIds],assisted,attemptId:attempt.id,date:attempt.date,
+    partId:finding.graded_part_id,evidence:finding.evidence||''};
+}
 export function successfulSkillIds(attempt:Attempt){
   const cached=activeMemo?.successes.get(attempt);if(cached)return cached;
   const result=calculateSuccessfulSkillIds(attempt);activeMemo?.successes.set(attempt,result);return result;
@@ -72,6 +88,16 @@ export function transferTrainingOutcome(attempt:Attempt,confirmedSuccess=false){
     return "転移未確認（採点の根拠・確信度が不足）";
   if(!target.self_selected||!target.major_calculation_success||!target.no_major_error)return "training transfer failure";
   return confirmedSuccess?"training transfer success":"転移未確認（対象技能の対応が未確定）";
+}
+export function transferEvidenceStatus(attempt:Attempt,confirmedSuccess=false){
+  const target=attempt.target_skill_assessment,lineage=attempt.transfer_lineage;
+  const assisted=!!attempt.hint_used||Number(attempt.actual_reference_level??attempt.reference_level)>0;
+  const valid=!!lineage&&lineage.sourceProblemId!==attempt.problem_id&&confidentGrading(attempt)&&!!target?.evidence.trim();
+  const passed=!!target&&target.self_selected&&target.major_calculation_success&&target.no_major_error;
+  const outcome=!valid?'uncertain':assisted?passed?'assisted_success':'failure':!independentReferenceFree(attempt)?'uncertain':!passed?'failure':confirmedSuccess?'success':'uncertain';
+  const labels={uncertain:'別問題の判定保留',assisted_success:'援助ありの訓練成功（独立成功ではない）',failure:assisted?'援助ありの訓練・未解消':'別問題で対象技能を再現できなかった',success:'別問題で対象技能を確認'};
+  return {outcome,label:labels[outcome],skillIds:lineage?[lineage.rootSkillId]:[],assisted,attemptId:attempt.id,date:attempt.date,
+    partId:'転移対象技能',evidence:target?.evidence||''};
 }
 function calculateSuccessfulSkillIds(attempt:Attempt){
   if(!independentReferenceFree(attempt)||!confidentGrading(attempt))return [];
@@ -190,7 +216,7 @@ function calculateTransferEvidence(attempts:Attempt[]):TransferEvidence[]{
 /** Historical successes stay immutable; current capability needs evidence newer
  * than a subsequent verified failure for that source/skill. */
 export function currentTransferEvidence(attempts:Attempt[]){
-  return deriveTransferEvidence(attempts).filter(row=>!attempts.some(a=>a.id>row.successAttemptId&&
+  const current=deriveTransferEvidence(attempts).filter(row=>!attempts.some(a=>a.id>row.successAttemptId&&
     !a.exclude_from_metrics&&!a.duplicate_of_attempt_id&&(
       a.problem_id===row.sourceProblemId&&(a.graded_findings||[]).some(f=>findingPlanningEligible(a,f)&&
         !f.resolved&&f.error_type!=='none'&&findingSkillIds(a,f).includes(row.skillId))||
@@ -198,4 +224,13 @@ export function currentTransferEvidence(attempts:Attempt[]){
         independentReferenceFree(a)&&confidentGrading(a)&&!!a.target_skill_assessment&&
         (!a.target_skill_assessment.self_selected||!a.target_skill_assessment.major_calculation_success||!a.target_skill_assessment.no_major_error)
     )));
+  const opportunities=new Map<string,TransferEvidence>();
+  for(const row of current){
+    const key=JSON.stringify([row.sourceProblemId,row.skillId,row.successProblemId]),old=opportunities.get(key);
+    // Regrading/repeating one destination is not a new different problem.
+    // Keep the strongest current proof, then the latest equal-strength proof.
+    if(!old||old.evidenceStrength==='training'&&row.evidenceStrength==='strong'||
+      old.evidenceStrength===row.evidenceStrength&&row.successAttemptId>old.successAttemptId)opportunities.set(key,row);
+  }
+  return [...opportunities.values()];
 }

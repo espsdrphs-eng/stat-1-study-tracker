@@ -3799,7 +3799,7 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
       save:input=>db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.answerIndex,db.problemAliases,db.correctionLogs],()=>saveAttempt(input))}));
     transferRequestQueue=request;
     const result=await request;
-    if(!["view","grading-prompt","validation-prompt"].includes(String(body.action)))notifyStudyDataChanged({operation:"transfer-training"});
+    if(!["view","lineage","grading-prompt","validation-prompt"].includes(String(body.action)))notifyStudyDataChanged({operation:"transfer-training"});
     return result as T;
   }
   if(path==="/api/database/repair"){

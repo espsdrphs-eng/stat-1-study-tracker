@@ -1,14 +1,16 @@
 import type {Bootstrap,Task,Review,Attempt,Problem,GradingContractSnapshot,StudyUpdate,ExamReferenceCatalogItem} from "./types.ts";
 import {selectCurrentReviewsForProblem} from "./integrityEngine.ts";
-import {deriveTransferEvidence,currentTransferEvidence,transferTrainingOutcome,rootProgress,rootTargetKeys,verifiedTransferRediagnosis} from "./skillEvidence.ts";
+import {deriveTransferEvidence,currentTransferEvidence,transferTrainingOutcome,transferEvidenceStatus,rootProgress,rootTargetKeys,verifiedTransferRediagnosis,findingEvidenceStatus,successfulSkillIds,findingSkillIds} from "./skillEvidence.ts";
 import {delayedTrainingPrerequisites} from './generatedTransfer.ts';
 import {buildStableTargetIndex} from './stableTargetIdentity.ts';
 import {attemptPlanningEligible} from "./legacyKPolicy.ts";
 import {deriveFailureEpisode} from "./failureEpisode.ts";
 import {currentTaskIdentity,isPastExamSessionTask} from "./examOptimizationPolicy.ts";
-import {resolveCanonicalProblemId} from "./examReadiness.ts";
+import {resolveCanonicalProblemId,calculateExamReadinessMetrics,type MetricEvidence} from "./examReadiness.ts";
 import {deriveTaskAnswerScope,taskAnswerScopeText} from "./taskAnswerScope.ts";
 import {resolvePersistedAttemptLifecycle} from './reviewTransition.ts';
+import {BUILT_IN_EXAM_REFERENCE_PACK} from './builtinExamReferencePack.ts';
+import {deriveExamReadinessAssessment} from './examCapability.ts';
 
 // Neutral projections of existing grading slots/criteria, not new mastery rules.
 const targetLabels:Record<string,string>={problem_type:"型の判断",first_step:"初手",focal_quantity:"対象の量",critical_condition:"条件確認",major_calculation:"主要計算",answer_conclusion:"最終結論"};
@@ -158,7 +160,7 @@ export function deriveProblemLearningViews(data:Bootstrap){
   const evidence=currentTransferEvidence(data.attempts.filter(attemptPlanningEligible));
   return Object.fromEntries(data.problems.map(p=>[p.problem_id,deriveProblemLearningView(data,p,evidence)]));
 }
-export function deriveLearningUpdateSummary(data:Pick<Bootstrap,'attempts'|'dashboard'>){
+export function deriveLearningUpdateSummary(data:Pick<Bootstrap,'attempts'|'dashboard'>&Partial<Pick<Bootstrap,'problems'|'pastSessions'|'problemAliases'|'reviews'|'today'|'masteryByProblem'>>){
   const latest=[...data.attempts].filter(attemptPlanningEligible).sort((a,b)=>b.id-a.id)[0];
   if(!latest)return null;
   const local=['error_repair','retrieval_check','transfer_check'].includes(String(latest.learning_purpose));
@@ -168,9 +170,50 @@ export function deriveLearningUpdateSummary(data:Pick<Bootstrap,'attempts'|'dash
     latest.learning_purpose==='transfer_check'?'今回は意図的な転移訓練です。本番session得点や自然な転移成功へ加算しません。':
     ids.includes(latest.id)?'今回の答案は本番sessionの測定証拠です。得点・時間・選題の資格を別々に再評価します。':
     '今回の答案は保存済みです。本番session指標は、その対象証拠が増えた場合だけ更新されます。';
+  const facts=data.attempts.filter(attemptPlanningEligible),before=facts.filter(a=>a.id!==latest.id);
+  const source=facts.find(a=>a.id===latest.grading_contract?.sourceAttemptId&&a.problem_id===latest.problem_id);
+  const index=buildStableTargetIndex({attempts:facts,reviews:data.reviews||[]});
+  const targets=(latest.graded_findings||[]).map(f=>{
+    const observation=findingEvidenceStatus(latest,f),key=index.attemptPart(latest.id,f.graded_part_id)?.identityKey;
+    const prior=source?.graded_findings?.find(old=>key&&index.attemptPart(source.id,old.graded_part_id)?.identityKey===key);
+    const previous=prior?findingEvidenceStatus(source!,prior):undefined;
+    const improved=!!previous&&['failure','uncertain'].includes(previous.outcome)&&['success','assisted_success'].includes(observation.outcome);
+    const newFailure=observation.outcome==='failure'&&!!previous&&previous.outcome!=='failure';
+    return {...observation,title:targetLabels[f.graded_part_id]||'今回の採点対象',previous:previous?.label||'対応する比較元なし',improved,newFailure};
+  });
+  const stageChanges:Array<{rootIds:string[];skillName:string;before:string;after:string}>=[];
+  if(data.reviews&&data.today&&data.masteryByProblem){
+    const affected=new Set([latest.transfer_lineage?.sourceProblemId||latest.problem_id]);
+    if(!latest.transfer_lineage&&!['error_repair','retrieval_check'].includes(String(latest.learning_purpose))){
+      const passed=successfulSkillIds(latest);
+      for(const a of before)if((a.graded_findings||[]).some(f=>findingSkillIds(a,f).some(id=>passed.includes(id))))affected.add(a.problem_id);
+    }
+    const current=deriveCurrentWeaknessRows(data as Bootstrap,affected),previous=deriveCurrentWeaknessRows({...data,attempts:before} as Bootstrap,affected);
+    const old=new Map(previous.flatMap(r=>r.sources).map(s=>[s.rootId,s]));
+    for(const row of current)for(const s of row.sources.filter(s=>s.lastCheckedAttemptId===latest.id||s.latestFailureAttemptId===latest.id)){
+      const prior=old.get(s.rootId)?.status||'この対象の過去証拠なし';
+      const skillName=s.skillIds.map(id=>BUILT_IN_EXAM_REFERENCE_PACK.data.concepts.find(c=>c.concept_id===id)?.display_name||'技能名未登録').join(' / ')||'技能対応未確定';
+      const existing=stageChanges.find(r=>r.skillName===skillName&&r.before===prior&&r.after===s.status);
+      if(existing)existing.rootIds.push(s.rootId);else stageChanges.push({rootIds:[s.rootId],skillName,before:prior,after:s.status});
+    }
+  }
+  const metricChanges:Array<{name:string;before:number|null;after:number|null;changed:boolean;evidenceChanged:boolean;date:string|null;rule:string;evidenceIds:string[];nextEvidence:string}>=[];
+  let levelChange:{before:number;after:number;changed:boolean}|undefined;
+  if(data.problems&&data.pastSessions){
+    const measure=(attempts:Attempt[])=>calculateExamReadinessMetrics({problems:data.problems!,attempts,pastSessions:data.pastSessions!,aliases:data.problemAliases||[],today:data.dashboard.today||latest.date});
+    const previous=measure(before),current=measure(facts);
+    const values=[['selectedThree','選択3問得点','参照なしの新しい本番3問sessionまたは元答案の正式な再採点'],['timed','時間内完走','scanを含む90分sessionの正味時間と3問の完遂結果'],['selection','選題','scan・選択3問と比較可能な5問の採点結果'],['transfer','自然な本番転移','解法を事前提示しない別過去問で、同技能の自力成功']] as const;
+    for(const [key,name,nextEvidence]of values){
+      const old=previous.evidence?.[key],now=current.evidence?.[key];if(!old||!now)continue;
+      const proof=(m:MetricEvidence)=>JSON.stringify([m.numerator,m.denominator,m.lastUpdated,[...m.eligibleEvidenceIds].sort()]);
+      metricChanges.push({name,before:old.value,after:now.value,changed:old.value!==now.value,evidenceChanged:proof(old)!==proof(now),date:now.lastUpdated,rule:now.eligibleEvidenceRule,evidenceIds:now.eligibleEvidenceIds,nextEvidence});
+    }
+    const priorLevel=deriveExamReadinessAssessment(previous,data.dashboard.today||latest.date),nextLevel=deriveExamReadinessAssessment(current,data.dashboard.today||latest.date);
+    levelChange={before:priorLevel.level,after:nextLevel.level,changed:priorLevel.level!==nextLevel.level};
+  }
   return {attemptId:latest.id,problemId:latest.problem_id,date:latest.date,score:latest.score_numeric,
     unresolved:(latest.graded_findings||[]).filter(f=>!f.resolved&&f.error_type!=='none'&&f.planning_eligible!==false).length,
-    reason,local,change:latest.answer_change_summary||latest.result_summary||'',sourceAttemptId:latest.grading_contract?.sourceAttemptId};
+    reason,local,change:latest.answer_change_summary||latest.result_summary||'',sourceAttemptId:source?.id,targets,stageChanges,metricChanges,levelChange};
 }
 
 export function deriveWeaknessDisplayRows(data:Bootstrap){
@@ -182,7 +225,26 @@ export function deriveWeaknessDisplayRows(data:Bootstrap){
       if(order.indexOf(row.status)<order.indexOf(old.status))old.status=row.status;}
     else groups.set(key,{...row,id:key,sources:[...row.sources]});
   }
-  return [...groups.values()].sort((a,b)=>a.rank-b.rank||a.id.localeCompare(b.id));
+  const index=buildStableTargetIndex({attempts:data.attempts,reviews:data.reviews});
+  return [...groups.values()].sort((a,b)=>a.rank-b.rank||a.id.localeCompare(b.id)).map(row=>{
+    const ids=[...new Set(row.sources.flatMap(s=>s.skillIds))];
+    const skillName=ids.map(id=>data.adaptiveLearning?.conceptWeaknesses?.find(c=>c.conceptId===id)?.displayName||
+      BUILT_IN_EXAM_REFERENCE_PACK.data.concepts.find(c=>c.concept_id===id)?.display_name||'技能名未登録').join(' / ')||'技能の対応を確認中';
+    const sources=row.sources.map(s=>{
+      const problem=data.problems.find(p=>p.problem_id===s.problemId);
+      const latest=data.attempts.find(a=>a.id===s.lastCheckedAttemptId);
+      const review=data.reviews.find(r=>r.problem_id===s.problemId&&r.source_attempt_id===s.latestFailureAttemptId&&['pending','overdue'].includes(r.status));
+      const task=s.task&&!s.task.transfer_training_key?s.task:review;
+      const answerScope=problem&&task?deriveTaskAnswerScope({problem,task,attempts:data.attempts,overrides:data.taskAnswerScopeOverrides}):undefined;
+      const linked=latest?.transfer_lineage?.sourceProblemId===s.problemId&&s.skillIds.includes(latest.transfer_lineage.rootSkillId);
+      const observations=linked?[transferEvidenceStatus(latest!,s.transferAttemptId===latest!.id)]:(latest?.graded_findings||[]).filter(f=>
+        s.targetKeys.includes(index.attemptPart(latest!.id,f.graded_part_id)?.identityKey||'')||
+        !s.targetKeys.length&&s.findingIds.includes(f.graded_part_id)||latest!.problem_id!==s.problemId&&findingSkillIds(latest!,f).some(id=>s.skillIds.includes(id))).map(f=>findingEvidenceStatus(latest!,f));
+      return {...s,answerScope,answerScopeText:answerScope?taskAnswerScopeText(answerScope):'対象小問未特定',observations,
+        improvement:latest?.answer_change_summary||'',successCriterion:completionCriterionText(task?.grading_contract)};
+    });
+    return {...row,skillName,sources};
+  });
 }
 
 export function completionCriterionText(contract?:GradingContractSnapshot){
@@ -199,12 +261,12 @@ export function preAnswerReason(item:Partial<Task&Review>){
 }
 /** Read-only view of canonical root evidence. No memo toggles, new lifecycle or
  * persisted skill merge: separate source targets remain independently scoped. */
-export function deriveCurrentWeaknessRows(data:Bootstrap){
+export function deriveCurrentWeaknessRows(data:Bootstrap,sourceProblemIds?:ReadonlySet<string>){
   const facts=data.attempts.filter(a=>attemptPlanningEligible(a)&&!a.exclude_from_planning&&!a.exclude_from_metrics&&!a.duplicate_of_attempt_id);
   const index=buildStableTargetIndex({attempts:facts,reviews:data.reviews});
   const evidence=deriveTransferEvidence(facts),seen=new Set<string>();
   const sources=[];
-  for(const source of facts.filter(a=>!a.transfer_lineage&&a.source_type!=='generated').sort((a,b)=>a.id-b.id))for(const root of deriveFailureEpisode(source).rootWeaknesses){
+  for(const source of facts.filter(a=>!a.transfer_lineage&&a.source_type!=='generated'&&(!sourceProblemIds||sourceProblemIds.has(a.problem_id))).sort((a,b)=>a.id-b.id))for(const root of deriveFailureEpisode(source).rootWeaknesses){
     if(!root.requiredRepair||seen.has(root.rootWeaknessId))continue;seen.add(root.rootWeaknessId);
     const progress=rootProgress(source,root,facts,index),delayed=delayedTrainingPrerequisites(source,root,facts);
     const repair=progress.transferFailure?undefined:delayed.repair||(!source.grading_contract?.gradedParts.length?progress.repairSuccess:undefined);
@@ -217,19 +279,20 @@ export function deriveCurrentWeaknessRows(data:Bootstrap){
     const status=transfer?transfer.evidenceStrength==='strong'?'本番転移確認済み':'転移訓練確認済み・本番転移未確認':
       retrieval?'保持成功・転移未確認':repair?'補修成功・保持未確認':
         root.confidence==='low'||data.masteryByProblem?.[source.problem_id]?.normalReviewComplete&&!progress.transferFailure?'証拠不足':'補修が必要';
-    const last=[progress.latestFailure,repair,retrieval,facts.find(a=>a.id===(progress.transferFailure?.id||transfer?.successAttemptId))]
+    const latestTraining=facts.filter(a=>a.transfer_lineage?.sourceProblemId===source.problem_id&&root.skillIds.includes(a.transfer_lineage.rootSkillId)).sort((a,b)=>a.id-b.id).at(-1);
+    const last=[progress.latestFailure,repair,retrieval,latestTraining,facts.find(a=>a.id===(progress.transferFailure?.id||transfer?.successAttemptId))]
       .filter((a):a is Attempt=>!!a).sort((a,b)=>b.id-a.id)[0];
     sources.push({rootId:root.rootWeaknessId,problemId:source.problem_id,sourceAttemptId:source.id,
       targetKeys:[...rootTargetKeys(source,root,facts,index)].sort(),
-      findingIds:root.sourceFindingIds,skillIds:root.skillIds,status,description:progress.latestFailure.id===source.id?root.description:
+      findingIds:root.sourceFindingIds,skillIds:root.skillIds,examImpact:root.examImpact,status,description:progress.latestFailure.id===source.id?root.description:
         deriveFailureEpisode(progress.latestFailure).rootWeaknesses.find(r=>r.rootWeaknessId===root.rootWeaknessId)?.description||root.description,
       latestFailureAttemptId:progress.latestFailure.id,repairAttemptId:repair?.id,retrievalAttemptId:retrieval?.id,
       repairAssisted:!!repair&&(!!repair.hint_used||Number(repair.actual_reference_level??repair.reference_level)>0),
       problemReviewComplete:!!data.masteryByProblem?.[source.problem_id]?.normalReviewComplete,
       transferAttemptId:transfer?.successAttemptId,transferFailureAttemptId:progress.transferFailure?.id,
       lastCheckedDate:last?.date,lastCheckedAttemptId:last?.id,task,
-      nextAction:task?`${task.title}（Today 優先 ${task.ranking?.rank||'未設定'}）`:waiting?`${waiting.reason}。再評価：${waiting.reevaluateWhen}`:
-        transfer?'次の自然な過去問で再測定':retrieval?'別問題候補のskill照合・開始条件を確認':repair?'参照なしの遅延保持を確認':'有効な採点で対象範囲を確認',
+      nextAction:task?`${task.title}（Today 優先 ${task.ranking?.rank||'未設定'}）`:transfer?'次の自然な過去問で再測定':
+        waiting?`${waiting.reason}。再評価：${waiting.reevaluateWhen}`:retrieval?'別問題候補のskill照合・開始条件を確認':repair?'参照なしの遅延保持を確認':'有効な採点で対象範囲を確認',
       identityPending:!root.skillIds.length});
   }
   const groups=new Map<string,typeof sources>();

@@ -227,11 +227,15 @@ function TaskPurposeSummary({introduction}:{introduction:ReturnType<typeof deriv
   </div>;
 }
 function LearningUpdateSummary({data}:{data:Bootstrap}){
-  const summary=deriveLearningUpdateSummary(data);
+  const summary=useMemo(()=>deriveLearningUpdateSummary(data),[data]);
   if(!summary)return null;
   return <section className="panel learning-update" aria-label="最新の学習と評価への反映"><h3>最新の学習：保存済み</h3>
     <p>{summary.problemId}・{summary.date}・{summary.score??'―'}点。今回の実施完了と、弱点の解消は別判定です。</p>
     <p>{summary.reason}</p><p>今回の採点で未解消の対象 {summary.unresolved}件。次の行動はTodayの最新順位・待機条件で確認できます。</p>
+    {summary.levelChange&&<p>本番対応力：{summary.levelChange.changed?`${summary.levelChange.before} → ${summary.levelChange.after}`:`据置（Level ${summary.levelChange.after}）`}。本番資格のある証拠だけで再評価します。</p>}
+    {!!summary.targets.length&&<details><summary>今回の対象ごとの改善・未解消</summary><p>課題が明示する比較元の採点と照合します。対象内成功を保持・転移成功へ読み替えません。</p>{summary.targets.map((t,i)=><p key={i}><strong>{t.title}：{t.label}</strong> ／ {t.improved?'対象内の改善':t.newFailure?'新しく確認した未解消':'今回の確認'}<br/>比較元：{t.previous}</p>)}</details>}
+    {!!summary.stageChanges.length&&<details><summary>補修・保持・転移の変化</summary><small>この記録を含む／含まない証拠集合の比較です。履歴を変更しません。</small>{summary.stageChanges.map((s,i)=><p key={i}>{s.skillName}：{s.before===s.after?`${s.after}（継続）`:`${s.before} → ${s.after}`}</p>)}</details>}
+    {!!summary.metricChanges.length&&<details><summary>指標の更新条件と据置理由</summary>{summary.metricChanges.map(m=><div className="history" key={m.name}><div><strong>{m.name}：{m.changed?`${m.before?.toFixed(1)??'未測定'} → ${m.after?.toFixed(1)??'未測定'}`:m.evidenceChanged?'根拠更新（値は同じ）':'据置'}</strong><p>最終測定：{m.date||'未測定'}。{m.changed||m.evidenceChanged?'今回の対象証拠を反映しました。':'この記録では対象証拠が変わっていません。'}</p><p>次に必要な証拠：{m.nextEvidence}</p><small>資格：{m.rule}<br/>根拠：{m.evidenceIds.join('・')||'判定材料不足'}</small></div></div>)}</details>}
     {summary.change&&<details><summary>採点に記録された改善・残る課題</summary><p>{summary.change}</p></details>}
   </section>;
 }
@@ -1371,25 +1375,36 @@ function CurrentWeaknessPanel({data,onToday}:{data:Bootstrap;onToday:()=>void}){
   const names=useMemo(()=>Object.fromEntries(data.problems.map(p=>[p.problem_id,problemDisplayLabel(p)])),[data.problems]);
   const visible=rows.filter(row=>(focus==='all'||focus==='improved'&&row.sources.some(s=>s.repairAttemptId||s.retrievalAttemptId||s.transferAttemptId)||focus==='known'&&!row.identityPending||focus==='current'&&row.sources.some(s=>
     !!s.task||data.today.canonicalStudyPlan.ranked?.waiting.some(w=>w.task.problem_id===s.problemId&&s.problemId.startsWith('PY-'))))&&
-    row.sources.some(s=>[s.problemId,names[s.problemId],s.description,...s.skillIds].filter(Boolean).join(' ').toLowerCase().includes(query.trim().toLowerCase())));
+    [row.skillName,...row.sources.flatMap(s=>[s.problemId,names[s.problemId],s.description,...s.skillIds])].filter(Boolean).join(' ').toLowerCase().includes(query.trim().toLowerCase()));
   return <section className="panel" aria-label="現在の弱点と成功証拠"><h2>現在の弱点・保持・転移</h2>
-    <p>採点結果を取り込むと自動更新します。旧弱点メモは履歴として保持し、未解消フラグの件数を現在の弱点数には使いません。同じcanonical技能の行でも、各問題の対象と根拠は別々に保持します。</p>
+    <p>採点の証拠で自動更新します。同じ技能をまとめ、各問題の対象と根拠は残します。旧弱点メモの件数は、現在の弱点数ではありません。</p>
     <label>問題・技能で絞り込む<input type="search" value={query} onChange={e=>{setQuery(e.target.value);setLimit(10)}} placeholder="例：2019年問2、PY-2019-Q2"/></label>
     <label>表示対象<select aria-label="表示対象" value={focus} onChange={e=>{setFocus(e.target.value);setLimit(10)}}><option value="current">現在の学習対象</option><option value="improved">補修・保持・別問題の成功証拠</option><option value="known">確定技能</option><option value="all">全履歴・証拠不足も確認</option></select></label>
-    {visible.slice(0,limit).map(row=><article className="card" key={row.id}><h3>{row.status}</h3>
-      <p>{row.sources.map(s=>`${names[s.problemId]||s.problemId}（${s.problemId}）`).filter((id,i,a)=>a.indexOf(id)===i).join(' / ')}</p>
+    {visible.slice(0,limit).map(row=>{
+      const next=row.sources.find(s=>s.task&&s.task.ranking?.rank===row.rank)||row.sources[0];
+      const latest=[...row.sources].sort((a,b)=>(b.lastCheckedAttemptId||0)-(a.lastCheckedAttemptId||0))[0];
+      const scopes=[...new Set(row.sources.map(s=>`${names[s.problemId]||s.problemId} ／ ${s.answerScopeText}`))];
+      const proofIds=new Set(row.sources.flatMap(s=>[s.repairAttemptId,s.retrievalAttemptId,s.transferAttemptId]).filter(Boolean));
+      const action=next.task?next.task.title:next.nextAction;
+      return <article className="card current-skill-card" key={row.id}><header><h3>{row.skillName}</h3><Badge tone={row.status==='補修が必要'?'orange':row.status==='証拠不足'?'gray':'green'}>{row.status}</Badge></header>
+      <small>{Number.isFinite(row.rank)?`Todayの優先 ${row.rank}`:'待機・再評価'} ／ {row.sources.some(s=>s.examImpact==='high')?'本番の主要失点に関連':'局所確認・証拠の補強'}</small>
+      <div className="weakness-scopes">{scopes.map(scope=><p key={scope}>{scope}</p>)}</div>
       {row.identityPending&&<small>技能の対応が未確定の対象です。保持の証拠は残し、別問題との照合は保留します。</small>}
       <div className="weakness-stages"><span>補修の証拠 {row.sources.filter(s=>!!s.repairAttemptId).length}/{row.sources.length}</span><span>保持の証拠 {row.sources.filter(s=>!!s.retrievalAttemptId).length}/{row.sources.length}</span><span>別問題の証拠 {row.sources.filter(s=>!!s.transferAttemptId).length}/{row.sources.length}</span></div>
-      <small>同じ問題の対象はまとめて表示します。数字は根拠対象の件数で、習得率ではありません。</small>
+      <small>数字は根拠対象の件数で、習得率ではありません。重複を除く根拠答案は {proofIds.size}件です。援助の有無は詳細で区別します。</small>
+      <p>最新の確認：{latest.lastCheckedDate||'未確認'}・答案 #{latest.lastCheckedAttemptId||'未登録'}{latest.observations.length?` ／ ${[...new Set(latest.observations.map(o=>o.label))].join('・')}`:''}</p>
+      <div className="weakness-next"><strong>次の課題：{action}</strong><p>成功条件：{next.successCriterion}</p></div>
       <details><summary>根拠・改善した点・残る課題・次の操作</summary>{row.sources.map(s=><div className="history" key={s.rootId}><div>
         <strong>{s.problemId}：{s.status}</strong><p>{s.description}</p>
+        {!!s.improvement&&<p>採点に記録された改善：{s.improvement}</p>}
+        {s.observations.map((o,i)=><p key={i}>{o.label}：{o.evidence}</p>)}
         {s.problemReviewComplete&&s.status==='証拠不足'&&<p>同一問題の通常Reviewは終了済みです。この旧rootへの成功対応は未確定であり、古い失敗だけから再補修を要求しません。</p>}
         <small>失敗根拠 Attempt #{s.latestFailureAttemptId} ／ 採点対象 {s.findingIds.join('・')}（内部採点項目であり小問番号ではありません）</small>
         <p>最終確認 {s.lastCheckedDate||'未確認'}・Attempt #{s.lastCheckedAttemptId||'未登録'}</p>
         <p>補修成功 {s.repairAttemptId?`#${s.repairAttemptId}${s.repairAssisted?'（援助あり・独立成功ではない）':''}`:'未確認'} ／ 遅延保持成功 {s.retrievalAttemptId?`#${s.retrievalAttemptId}`:'未確認'} ／ 別問題成功 {s.transferAttemptId?`#${s.transferAttemptId}`:'未確認'}{s.transferFailureAttemptId&&` ／ 別問題失敗 #${s.transferFailureAttemptId}`}</p>
         <p>次の行動：{s.nextAction}</p>
-      </div></div>)}</details><button className="ghost" onClick={onToday}>Todayの現在順位を確認</button>
-    </article>)}
+      </div></div>)}</details><button className="ghost" onClick={onToday}>{Number.isFinite(row.rank)?`Todayの優先 ${row.rank} を確認`:'Todayの待機条件を確認'}</button>
+    </article>})}
     {visible.length>limit&&<button className="ghost" onClick={()=>setLimit(n=>n+10)}>続きを表示（残り{visible.length-limit}件）</button>}
     {!!rows.length&&!visible.length&&<p>この条件に一致するrootはありません。問題一覧の現在状態・採点履歴も確認してください。</p>}
     {!rows.length&&<p>確定した失敗targetの証拠がありません。未測定は習得済みとは扱いません。</p>}
@@ -1426,8 +1441,8 @@ function WeakView({data,run,busy,onToday}:{data:Bootstrap;run:(a:()=>Promise<unk
   };
   if(!trend.attemptCount) return <><CurrentLearningDiagnosis data={data} onToday={onToday}/><CoachPanel data={data} run={run} busy={busy}/><ConceptWeaknessPanel data={data}/><section className="weak-trend-hero"><div><span className="eyebrow">WEAKNESS TRENDS</span><h2>GPT採点が集まると、苦手の傾向が見えてきます</h2><p>この画面はK/W/N/Cが付いた採点だけから、繰り返すミスを探します。ミスなしの採点は学習履歴には残りますが、弱点グラフには加算しません。</p></div></section><section className="panel weak-empty-explanation">{trend.totalAttemptCount?<><Check size={28}/><h3>採点は{trend.totalAttemptCount}件ありますが、弱点として数えるミスは0件です</h3><p>現在の採点はすべて「none（ミスなし）」です。K/W/N/Cが付いた結果を保存すると、テーマ別・分類別・週別のグラフが表示されます。</p></>:<Empty>まだ採点記録がありません。GPT採点結果を取り込むと自動で蓄積されます</Empty>}</section></>;
   return <>
-    <CurrentLearningDiagnosis data={data} onToday={onToday}/>
     <CurrentWeaknessPanel data={data} onToday={onToday}/>
+    <CurrentLearningDiagnosis data={data} onToday={onToday}/>
     <details className="panel"><summary>Coachの補足・過去の失敗傾向を確認（履歴）</summary>
     <CoachPanel data={data} run={run} busy={busy}/>
     <ConceptWeaknessPanel data={data}/>
