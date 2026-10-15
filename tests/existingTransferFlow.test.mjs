@@ -46,7 +46,9 @@ test('a recorded hint cannot be downgraded by the quick Review result body',asyn
   // Synthetic source only; this test never alters the production export.
   await localPost('/api/attempts',{problem_id:'PY-2022-Q4',problem_id_confirmed:true,problem_id_source:'manual',date:'2026-10-10',mode:'full',
     mark:'△',score_label:'C',score_numeric:30,error_types:['W'],error_type:'W',error_point:'計算途中で停止',next_action:'局所確認',actual_reference_level:0});
-  let s=await localGet('/api/bootstrap');const review=s.reviews.find(r=>r.problem_id==='PY-2022-Q4'&&r.status==='pending');assert.ok(review);
+  // The fixed-date fixture becomes canonically overdue after 10/13; it is still
+  // actionable. Hint monotonicity must not depend on the wall-clock date.
+  let s=await localGet('/api/bootstrap');const review=s.reviews.find(r=>r.problem_id==='PY-2022-Q4'&&['pending','overdue'].includes(r.status));assert.ok(review);
   await localPost(`/api/reviews/${review.id}/reference`,{actual_reference_level:2});
   await localPost(`/api/reviews/${review.id}/complete`,{result:'success',actual_reference_level:0,time_minutes:10});
   const a=(await db.attempts.where('problem_id').equals(review.problem_id).toArray()).find(a=>a.generated_from_review_id===review.id);

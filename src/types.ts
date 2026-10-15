@@ -403,18 +403,19 @@ export type CoachDiagnosis = {
   textIntegrity?:"complete";
   sourceEvidenceVersion?:string;
   reviewContextVersion?:string;
+  reviewDataVersion?:string;
   reviewEvidenceIds?:string[];
-  schemaVersion:"stat1-coach-v1";reviewedAt:string;evidenceCutoffAttemptId:number;
-  level:{value:number;label:string;passOutlook:string;confidence:CoachConfidence;rationale:string};
-  primaryBottleneck:{title:string;explanation:string;evidenceProblemIds:string[];effectOnExam:string};
-  nextActions:Array<{title:string;purpose:string;practiceMethod:string;successCondition:string}>;
+  schemaVersion:"stat1-coach-v1"|"stat1-coach-v2";reviewedAt:string;evidenceCutoffAttemptId:number;
+  level:{value:number;label:string;passOutlook:string;confidence:CoachConfidence;rationale:string;evidenceIds?:string[]};
+  primaryBottleneck:{title:string;explanation:string;evidenceProblemIds:string[];effectOnExam:string;evidenceIds?:string[]};
+  nextActions:Array<{title:string;purpose:string;practiceMethod:string;successCondition:string;evidenceIds?:string[];taskIdentity?:string|null}>;
   strengths:Array<{title:string;evidence:string}>;
-  improvements:Array<{title:string;evidence:string}>;
-  unknowns:Array<{title:string;evidenceNeeded:string}>;
+  improvements:Array<{title:string;evidence:string;evidenceIds?:string[]}>;
+  unknowns:Array<{title:string;evidenceNeeded:string;evidenceIds?:string[]}>;
   optionalPassProbability?:{range:string;confidence:CoachConfidence;rationale:string}|null;
 };
 export type CoachDiagnosisState = {
-  reviewContext?:{version:string;evidenceIds:string[]};
+  reviewContext?:{version:string;evidenceIds:string[];dataVersion?:string;referenceIds?:string[];taskIds?:string[]};
   assessment?:import("./examCapability.ts").ExamReadinessAssessment;
   needsTextRefresh?:boolean;
   current:CoachDiagnosis|null;display:CoachDiagnosis;history:CoachDiagnosis[];

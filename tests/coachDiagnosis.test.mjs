@@ -110,13 +110,16 @@ test("confidence低は自動暫定として明示され、concept evidenceを変
   assert.match(state.display.level.rationale,/自動暫定/);assert.deepEqual(concepts,before);
 });
 
-test("レビューpromptは代表Attemptを12件に圧縮し精密確率を要求しない",()=>{
+test("レビューpromptは意味の異なる代表証拠を選び、全ID復唱と精密確率を要求しない",()=>{
   const attempts=Array.from({length:20},(_,index)=>({id:index+1,problem_id:"WB-6-A-20",date:"2026-08-17",mode:"full",
     time_minutes:10,mark:"○",score_label:"A",error_type:"none",error_point:"",next_action:"",memo:""}));
   const prompt=buildCoachReviewPrompt({attempts,reviews:[],problems:[],concepts:[],dashboard:{readiness:{}},
     planner:{phase:"foundation_to_A",daysRemaining:90,weeklyActual:{},weeklyTarget:{}},today:"2026-08-17"});
-  const payload=JSON.parse(prompt.match(/RECENT_REPRESENTATIVE_ATTEMPTS: (\[[^\n]+\])/)[1]);
-  assert.equal(payload.length,12);assert.match(prompt,/根拠のない精密な合格確率は出さず/);
+  // Last-12 sampling is intentionally retired. Repeated equivalent attempts
+  // are summarized; old priority-source/latest pairs have separate regression coverage.
+  const payload=JSON.parse(prompt.match(/FACT: ([^\n]+)/)[1]);
+  assert.ok(payload.evidence.length<=3);assert.match(prompt,/根拠のない精密な合格確率は出さず/);
+  assert.doesNotMatch(prompt,/"evidence_ids"/);
   assert.match(prompt,/"evidence_cutoff_attempt_id": 20/);
   assert.match(prompt,/JSON objectを1個だけ/);assert.doesNotMatch(prompt,/次のYAMLだけ/);
   assert.match(prompt,/ASCII double quote U\+0022/);assert.match(prompt,/typographic quotation marks/);

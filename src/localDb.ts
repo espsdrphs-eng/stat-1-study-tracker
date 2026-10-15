@@ -3249,8 +3249,10 @@ async function bootstrap(readOnly=false):Promise<Bootstrap>{
   let coachHistory:CoachDiagnosis[]=[];
   try{coachHistory=JSON.parse(metaEntries.find(entry=>entry.key===COACH_HISTORY_META_KEY)?.value||"[]")}catch{coachHistory=[]}
   const assessment=deriveExamReadinessAssessment(dashboard.readiness,new Date().toISOString());
+  const masteryByProblem=deriveMasteryByProblem({problemIds:problems.map(problem=>problem.problem_id),attempts:activeAttempts,reviews});
   const coach=buildCoachDiagnosisState({assessment,history:coachHistory,attempts:activeAttempts,concepts:conceptWeaknesses,
-    dashboard,reviews,problems,planner:plannerShadow,today});
+    dashboard,reviews,problems,planner:plannerShadow,today,tasks,masteryByProblem,
+    scopeOverrides:Object.fromEntries(metaEntries.filter(m=>m.key.startsWith('task-answer-scope:')).flatMap(m=>{try{const v=JSON.parse(m.value);return [[v.scopeKey,v]];}catch{return [];}}))});
   const horizon=examHorizonPolicy(plannerShadow.daysRemaining);
   const dashboardWithKpis={...dashboard,kpis:deriveDashboardKpis({assessment,today,updatedAt:assessment.generatedAt,coach,
     readiness:dashboard.readiness,concepts:conceptWeaknesses,currentTask:canonicalStudyPlan.primaryAction||undefined,
@@ -3298,7 +3300,6 @@ async function bootstrap(readOnly=false):Promise<Bootstrap>{
   };
   const adaptiveLearning={referencePack:buildReferencePackStatus(referenceRecord),pastExamCatalog,
     conceptWeaknesses,pastExamRepairCandidates,plannerShadow,plannerMode,weaknessModel:"concept_evidence_v1" as const};
-  const masteryByProblem=deriveMasteryByProblem({problemIds:problems.map(problem=>problem.problem_id),attempts:activeAttempts,reviews});
   return {problems:problems.sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.category.localeCompare(b.category)||a.problem_number-b.problem_number),attempts,reviews,roadmap,weakNotes,pastSessions,answerIndex,problemAliases,dashboard:dashboardWithKpis,settings,masterStatus,databaseStatus,adaptiveLearning,
     coach,masteryByProblem,learningWorkByProblem:Object.fromEntries(metaEntries.filter(m=>m.key.startsWith("learning-work:")).flatMap(m=>{try{const w=JSON.parse(m.value);return [[w.problemId,w]];}catch{return [];}})),
     taskAnswerScopeOverrides:Object.fromEntries(metaEntries.filter(m=>m.key.startsWith('task-answer-scope:')).flatMap(m=>{try{const v=JSON.parse(m.value);return [[v.scopeKey,v]];}catch{return [];}})),

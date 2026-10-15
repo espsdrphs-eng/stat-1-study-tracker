@@ -1,4 +1,15 @@
 import type {Bootstrap,Task} from './types.ts';
+import {currentTaskIdentity} from './examOptimizationPolicy.ts';
+/** Advice can change presentation, never the measured KPIs or Today ordering. */
+export function coachDashboardAdvice(data:Pick<Bootstrap,'coach'|'today'>){
+ const {current,stale,reviewContext}=data.coach;
+ if(!current||stale||current.reviewContextVersion!==reviewContext?.version)return null;
+ const action=current.nextActions[0];
+ const task=action?.taskIdentity?data.today.tasks.find(t=>!t.checked&&t.ranking?.eligible&&currentTaskIdentity(t)===action.taskIdentity):undefined;
+ const blind=task&&(task.stable_session_key||task.transfer_training_key||(task.grading_contract?.learningPurpose||task.learning_purpose)==='transfer_check');
+ return {level:current.level.value,readiness:current.level.label,bottleneck:current.primaryBottleneck.title,
+  changes:current.improvements.slice(0,3).map(r=>r.title),action:blind?task.stable_session_key?'本番形式で自力確認':'別問題での転移訓練':action?.title,successCondition:action?.successCondition,task};
+}
 /** Presentation of existing measurements; never a new score, budget or planner. */
 export function deriveLearningOverview(data:Bootstrap){
  const d=data.dashboard,e=d.readiness.evidence,k=d.kpis!;
