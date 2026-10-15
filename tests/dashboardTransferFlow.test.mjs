@@ -1,0 +1,32 @@
+import test from 'node:test';import assert from 'node:assert/strict';import 'fake-indexeddb/auto';
+import {GENERATION_CHECKS} from '../src/generatedTransfer.ts';
+import yaml from 'js-yaml';import {deriveTransferEvidence} from '../src/skillEvidence.ts';
+const {db,localGet,localPost,exportBackup,restoreBackup}=await import('../src/localDb.ts');
+const skill='finite_population_correction',key=`training:${skill}`,pid='PY-2023-Q5';
+const fact=(id,date,purpose,ok)=>({id,problem_id:pid,date,mode:'main_calc',score_numeric:ok?100:35,mark:ok?'○':'△',error_type:ok?'none':'W',error_types:[ok?'none':'W'],actual_reference_level:0,grading_confidence:.99,learning_purpose:purpose,assessment_timing:purpose==='retrieval_check'?'delayed_retrieval':'independent_performance',
+ grading_contract:{gradedParts:[{id:'major_calculation',stableTargetKey:`target:${pid}:slot:major_calculation`,rootSkillIds:[skill],masteryLevel:2}]},graded_findings:[{graded_part_id:'major_calculation',error_type:ok?'none':'W',resolved:ok,materiality:'major',evidence:'非復元抽出の負の共分散から有限母集団修正を計算'}]});
+test('explicit bundle generation does not require Whitebook; validates, hides answers, holds a flawed problem without failing the skill',async()=>{
+ await localGet('/api/bootstrap');await db.attempts.bulkPut([fact(9001,'2026-09-20','exam_performance',false),fact(9002,'2026-09-21','error_repair',true),fact(9003,'2026-09-23','retrieval_check',true)]);
+ await db.pastSessions.put({id:9001,year:2023,date:'2026-09-20',session_kind:'individual_full',linked_attempt_ids:[9001],initial_selected_problem_ids:[pid],final_selected_problem_ids:[pid],questions:[],execution_status:'completed'});
+ await db.meta.put({key:'exam-reference-pack:exposure-overrides',value:JSON.stringify({'PY-2018-Q2':'answer_exposed'})});
+ await db.problems.put({id:9999,problem_id:'WB-fixture-alternative',source_type:'whitebook',category:'A',chapter:1,problem_number:99,title:'既存候補fixture',theme:'fixture',recommended_mode:'full',priority:'A',role:'repair',notes:'',completion_status:'未着手',classification_confidence:'high',root_skill_ids:[skill],solution_operation_ids:[skill],fine_concept_ids:[skill],schedulable:true,gradable:true});
+ const call=(action,extra={})=>localPost('/api/transfer-training',{key,action,...extra});
+ assert.ok((await localGet('/api/bootstrap')).today.tasks.some(t=>t.transfer_training_key===key&&t.ranking?.eligible));
+ const started=await call('start-generated');assert.match(started.prompt,/reference_solution/);
+ const draft={problem_text:'N個の有限母集団の値a1,...,aNから、2≤n<N個を単純無作為に非復元抽出する。母平均と母分散を明確に定義し、標本平均の期待値と分散を指示変数の二次積から求めよ。',reference_solution:'各要素の採用指示をI_iとし、E[I_i]=n/N、E[I_iI_j]=n(n-1)/(N(N-1))を使う。母分散を(1/N)Σ(a_i-μ)^2とすれば分散は(N-n)/(n(N-1))倍。',grading_rubric:'非復元の二次積、負の共分散、有限母集団修正の係数を本人の答案で確認する。',difficulty:'統計検定1級',estimated_minutes:12,surface_features:['有限集合の指示変数','二次積の集約'],generator_pass_id:'fixture-generation'};
+ await call('draft',{text:JSON.stringify(draft)});const record=JSON.parse((await db.meta.get(`transfer-generation:${key}`)).value);
+ await call('validate',{text:JSON.stringify({draft_hash:record.rounds[0].hash,validator_pass_id:'fixture-independent-check',checks:Object.fromEntries(GENERATION_CHECKS.map(k=>[k,{pass:true,evidence:'FIXTURE: 条件と指示変数の二次積を独立に検算'}]))})});
+ const blind=await call('view');assert.notEqual(blind.problem.problem_id,pid);assert.ok(!JSON.stringify(blind).includes(draft.reference_solution));
+ await call('submit',{answer_medium:'paper_image',answer_completed:true,referenceLevel:0});const count=await db.attempts.count();
+ const held=await call('grade',{text:JSON.stringify({problem_issue:{problem_id:blind.problem.problem_id,reason:'FIXTURE: 条件の指定に矛盾がある疑いがあり、問題自体を再検証する必要がある'}})});
+ assert.equal(held.status,'problem_pending');assert.equal(await db.attempts.count(),count);assert.match((await call('view')).pendingReason,/問題/);
+ const backup=await exportBackup();await restoreBackup(backup);assert.equal((await call('view')).status,'problem_pending');assert.equal(await db.attempts.count(),count);
+ const prompt=(await call('grading-prompt')).prompt,blocks=[...prompt.matchAll(/```yaml\s*([\s\S]*?)```/g)],u=blocks.map(m=>yaml.load(m[1])).find(x=>x?.study_update)?.study_update;assert.ok(u);
+ Object.assign(u,{score_numeric:90,score_max:100,score_label:'A',mark:'○',error_type:'none',error_types:['none'],actual_reference_level:0,reference_level:0,grading_confidence:99,target_skill_assessment:{self_selected:true,major_calculation_success:true,no_major_error:true,evidence:'FIXTURE: 対象の二次積と有限修正を自力で適用'}});
+ u.graded_findings=u.graded_findings.map(f=>({...f,error_type:'none',resolved:true,evidence:'FIXTURE: 本人の対象計算を確認'}));
+ await assert.rejects(()=>call('grade',{text:JSON.stringify({study_update:u})}));assert.equal(await db.attempts.count(),count,'pending quality cannot become a skill score without revalidation');
+ const p=await db.problems.get(blind.problem.problem_id),review={problem_id:p.problem_id,content_hash:p.generated_transfer.content_hash,reference_solution:draft.reference_solution,grading_rubric:draft.grading_rubric,checks:Object.fromEntries(['well_defined','solution_correct','rubric_aligned'].map(k=>[k,{pass:true,evidence:'FIXTURE: 問題の条件と完全解を独立に検算'}]))};
+ const payload=JSON.stringify({study_update:u,mathematical_review:review});await call('grade',{text:payload});await call('grade',{text:payload});assert.equal(await db.attempts.count(),count+1);
+ assert.equal((await call('view')).status,'graded');assert.ok(JSON.parse((await db.meta.get(`transfer-generation:${key}`)).value).problemIssue.resolvedAt);
+ assert.equal(deriveTransferEvidence(await db.attempts.toArray()).filter(e=>e.evidenceStrength==='training').length,1);assert.equal(deriveTransferEvidence(await db.attempts.toArray()).filter(e=>e.evidenceStrength==='strong').length,0);
+});

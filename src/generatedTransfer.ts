@@ -31,6 +31,7 @@ export type GeneratedTransferContent=GeneratedDraft&{
     checks:Record<"well_defined"|"solution_correct"|"rubric_aligned",{pass:boolean;evidence:string}>;method:"manual_chatgpt"};
 };
 export type TransferGenerationRecord={key:string;lineage:TransferTrainingLineage;createdAt:string;
+  problemIssue?:{problemId:string;reason:string;reportedAt:string;resolvedAt?:string};
   input_format?:"statement_only_v1";
   status:"requested"|"validation_pending"|"registered"|"pending";
   rounds:Array<{draft:GeneratedDraft;hash:string;validation?:GenerationValidation}>;problemId?:string;pendingReason?:string};
@@ -112,10 +113,10 @@ export function deriveTransferTrainingCandidates(args:{record:StoredExamReferenc
         // Ranking, not a calendar milestone, selects qualified training in
         // normal Today. Repair/retention, validation and JIT gates remain.
         const generationDeferred=args.planningMode!=="ranked"&&!!args.pastSessions&&!benchmarkComplete&&!repeatedFailure;
-        candidates.set(key,{key,lineage,kind:prior?"generated":existing.length?"existing":
+        candidates.set(key,{key,lineage,kind:prior&&args.generationStates?.[key]==='pending'?"pending":prior?"generated":existing.length?"existing":
           generationDeferred||args.generationStates?.[key]==="pending"?"pending":"generated",
           generatedProblemId:prior?.problem_id,existingProblemId:prior?undefined:existing[0]?.problem_id,
-          reason:prior?"検証済みの同じ生成問題を継続":existing.length?"明示skillが一致する既存問題を優先":
+          reason:prior&&args.generationStates?.[key]==='pending'?"生成問題の品質を再確認するまで保留。技能の失敗とは扱わない":prior?"検証済みの同じ生成問題を継続":existing.length?"明示skillが一致する既存問題を優先":
             generationDeferred?"2022/2024の本番測定を先に使い、別問題候補がないrootの生成はその後に再評価":
             "補修・遅延確認成功後の別問題確認。高信頼の既存候補がないため実行時に生成を依頼"});
       }

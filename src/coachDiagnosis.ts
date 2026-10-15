@@ -86,6 +86,7 @@ export function normalizeCoachUpdate(raw:unknown):CoachDiagnosis{
   if(cutoff<0)throw new CoachImportError("semantic","coach_update.evidence_cutoff_attempt_id","cutoff must be zero or greater");
   const diagnosis:CoachDiagnosis={
     schemaVersion:COACH_SCHEMA_VERSION,textIntegrity:"complete",reviewedAt:text(source.reviewed_at)||new Date().toISOString(),
+    ...(source.review_context_version!==undefined?{reviewContextVersion:text(source.review_context_version,100),reviewEvidenceIds:requiredArray(source,'evidence_ids').map(String)}:{}),
     evidenceCutoffAttemptId:cutoff,
     level:{value,label:text(level.label,80),passOutlook:completeText(level.pass_outlook),
       confidence:confidence(level.confidence),rationale:text(level.rationale,600)},
@@ -234,6 +235,7 @@ export function deriveProvisionalCoachDiagnosis(args:{
 
 const jsonLine=(value:unknown)=>JSON.stringify(value);
 export function buildCoachReviewPrompt(args:{
+  history?:CoachDiagnosis[];
   attempts:Attempt[];reviews:Review[];problems:Problem[];concepts:ConceptWeaknessInsight[];
   dashboard:Dashboard;planner:AdaptivePlannerShadow;today:string;
   assessment?:ExamReadinessAssessment;
@@ -255,20 +257,24 @@ export function buildCoachReviewPrompt(args:{
   const reviewSummary={active:args.reviews.filter(row=>["pending","overdue"].includes(row.status)).length,
     success:args.reviews.filter(row=>row.completion_result==="success").length,
     failed:args.reviews.filter(row=>row.completion_result==="failed").length};
-  const outputShape=coachPromptContract(cutoff);
+  const context=coachReviewContext(args),outputShape=coachPromptContract(cutoff,context);
+  const previous=[...(args.history||[])].sort((a,b)=>b.reviewedAt.localeCompare(a.reviewedAt))[0];
   return `あなたは統計検定1級・統計数理の学習コーチです。以下のFACTだけを根拠に、本番得点力としての現在地を評価してください。\n`+
     `テーマ別件数を言い換えるだけでなく、複数問題に共通する横断能力の最大ボトルネックを1件に絞ってください。根拠のない精密な合格確率は出さず、証拠不足はconfidenceとunknownsへ反映してください。\n\n`+
     `FACT_EVIDENCE_CUTOFF_ATTEMPT_ID: ${cutoff}\nDATE: ${args.today}\n`+
     `READINESS: ${jsonLine(args.dashboard.readiness)}\nREVIEW_SUMMARY: ${jsonLine(reviewSummary)}\n`+
     `CURRENT_EXAM_ASSESSMENT: ${jsonLine(args.assessment||null)}\n現在の本番対応力はこの共通実測評価です。GPTの評価・見通しは別途保存する助言で、現在の実測LevelやKPIを上書きしません。\n`+
-    `PLANNER_READINESS: ${jsonLine({phase:args.planner.phase,days_remaining:args.planner.daysRemaining,weekly_actual:args.planner.weeklyActual,weekly_target:args.planner.weeklyTarget})}\n`+
+    `PLANNER_READINESS: ${jsonLine({phase:args.planner.phase,days_remaining:args.planner.daysRemaining})}\n`+
     `RECENT_REPRESENTATIVE_ATTEMPTS: ${jsonLine(attempts)}\nTOP_CONCEPT_EVIDENCE: ${jsonLine(concepts)}\n\n`+
+    `PREVIOUS_REVIEW: ${jsonLine(previous?{reviewed_at:previous.reviewedAt,evidence_cutoff_attempt_id:previous.evidenceCutoffAttemptId,level:previous.level,primary_bottleneck:previous.primaryBottleneck.title}:null)}\n前回との差は比較可能な証拠がある場合だけ記述し、比較不能ならunknownsへ入れる。\n`+
+    `review_context_version と evidence_ids は識別用です。下の値を削除・追加せず、そのまま返してください。個別の根拠はprimary_bottleneck等へ記述します。未測定を0%や失敗と扱わず、局所補修の得点を本番得点へ混ぜない。optional_pass_probabilityはnullとし、合格確率を数値化しない。\n`+
     `JSON objectを1個だけ返してください。Markdown・code fence・説明文は禁止です。JSONのキーと文字列には必ずASCII double quote U+0022 (\")を使用し、typographic quotation marks “ ” や全角＂をdelimiterに使用しないでください。次のJSON shapeに完全準拠し、level.valueのnullは1〜5の0.5刻みの数値へ置き換えてください。reviewed_atは現在時刻、evidence_cutoff_attempt_idは${cutoff}をそのまま使用してください。optional_pass_probabilityは十分な根拠がなければnullにしてください。\n`+
     `${JSON.stringify(outputShape,null,2)}`;
 }
 
-export function coachPromptContract(cutoff:number){
+export function coachPromptContract(cutoff:number,context?:{version:string;evidenceIds:string[]}){
   return {coach_update:{schema_version:COACH_SCHEMA_VERSION,reviewed_at:"YYYY-MM-DDTHH:mm:ss+09:00",
+    ...(context?{review_context_version:context.version,evidence_ids:context.evidenceIds}:{}),
     evidence_cutoff_attempt_id:cutoff,level:{value:null,label:"",pass_outlook:"",confidence:"low | medium | high",rationale:""},
     primary_bottleneck:{title:"",explanation:"",evidence_problem_ids:[],effect_on_exam:""},
     next_actions:[{title:"",purpose:"",practice_method:"",success_condition:""}],
@@ -286,13 +292,15 @@ export function buildCoachDiagnosisState(args:{
   const current=history[0]||null;
   const needsTextRefresh=!!current&&legacyTruncatedOutlook(current);
   const newAttemptCount=current?args.attempts.filter(row=>row.id>current.evidenceCutoffAttemptId&&!row.exclude_from_metrics&&!row.duplicate_of_attempt_id).length:args.attempts.length;
-  const evidenceChanged=!!current?.sourceEvidenceVersion&&current.sourceEvidenceVersion!==coachEvidenceVersion(args.attempts);
+  const reviewContext=coachReviewContext(args);
+  const evidenceChanged=!!current?.sourceEvidenceVersion&&current.sourceEvidenceVersion!==coachEvidenceVersion(args.attempts)||
+    !!current?.reviewContextVersion&&current.reviewContextVersion!==reviewContext.version;
   const useCurrent=!!current&&!needsTextRefresh&&newAttemptCount===0&&!evidenceChanged;
   const assessment=args.assessment||deriveExamReadinessAssessment(args.dashboard.readiness,args.today);
   const provisional=deriveProvisionalCoachDiagnosis({...args,assessment});
   const display={...(useCurrent?current!:provisional),level:{value:assessment.level,label:assessment.label,
     passOutlook:assessment.passOutlook,confidence:assessment.confidence,rationale:assessment.rationale}};
-  return {assessment,current,display,history,source:useCurrent?"gpt":"local_provisional",stale:!!current&&(newAttemptCount>0||evidenceChanged),
+  return {assessment,current,display,history,reviewContext,source:useCurrent?"gpt":"local_provisional",stale:!!current&&(newAttemptCount>0||evidenceChanged),
     needsTextRefresh,
     newAttemptCount,prompt:buildCoachReviewPrompt({...args,assessment}),lastReviewedAt:current?.reviewedAt||null};
 }
@@ -305,6 +313,23 @@ export function coachEvidenceVersion(attempts:Attempt[]){
       a.graded_findings,a.grading_contract,a.transfer_lineage,a.target_skill_assessment]);
   let hash=2166136261;for(const char of JSON.stringify(rows))hash=Math.imul(hash^char.charCodeAt(0),16777619);
   return `coach:${(hash>>>0).toString(36)}`;
+}
+
+export function coachReviewContext(args:{attempts:Attempt[];reviews:Review[];problems:Problem[];dashboard:Pick<Dashboard,'readiness'>}){
+  const attempts=args.attempts.filter(a=>!a.exclude_from_metrics&&!a.duplicate_of_attempt_id);
+  const evidence=args.dashboard.readiness.evidence;
+  const evidenceIds=[...new Set([...attempts.map(a=>`attempt:${a.id}`),...Object.values(evidence||{}).flatMap(m=>m.eligibleEvidenceIds||[])])].sort();
+  const payload=[coachEvidenceVersion(attempts),evidence,
+    [...args.reviews].sort((a,b)=>a.id-b.id).map(r=>[r.id,r.problem_id,r.status,r.source_attempt_id,r.contract_hash,r.earliest_date,r.due_date,r.targeted_parts]),
+    [...args.problems].sort((a,b)=>a.problem_id.localeCompare(b.problem_id)).map(p=>[p.problem_id,p.source_type,p.simulation_protection_default])];
+  let hash=2166136261;for(const c of JSON.stringify(payload))hash=Math.imul(hash^c.charCodeAt(0),16777619);
+  return {version:`coach-review:${(hash>>>0).toString(36)}`,evidenceIds};
+}
+
+export function validateCoachReviewContext(diagnosis:CoachDiagnosis,context:{version:string;evidenceIds:string[]},required=false){
+  if(!diagnosis.reviewContextVersion){if(required)throw new Error('評価対象の識別情報がありません。現在の再評価プロンプトをコピーして依頼し直してください。');return;}
+  if(diagnosis.reviewContextVersion!==context.version)throw new Error('評価に使った学習データが更新されています。現在のプロンプトで再評価してください。');
+  if(JSON.stringify([...(diagnosis.reviewEvidenceIds||[])].sort())!==JSON.stringify(context.evidenceIds))throw new Error('評価の証拠IDが一致しません。現在のプロンプトの識別情報を変更せず返してください。');
 }
 
 export function coachPreview(current:CoachDiagnosis|null,next:CoachDiagnosis){

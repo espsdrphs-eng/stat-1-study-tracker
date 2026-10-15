@@ -59,7 +59,7 @@ import { summarizeReviewPortfolio } from "./reviewPortfolio.ts";
 import { BUILT_IN_EXAM_REFERENCE_PACK, builtInReferencePackValidation } from "./builtinExamReferencePack.ts";
 import { analyzeReviewReconciliation, reconciliationForProblem, type ReconciliationAudit } from "./reviewReconciliation.ts";
 import {isValidStableTargetKey,issueStableTargetKey,stableTargetKeyForPart,withStableTargetKey} from "./stableTargetIdentity.ts";
-import {buildCoachDiagnosisState, coachEvidenceVersion, coachPreview, COACH_HISTORY_META_KEY, parseCoachUpdate} from "./coachDiagnosis.ts";
+import {buildCoachDiagnosisState, coachEvidenceVersion, coachPreview, validateCoachReviewContext, COACH_HISTORY_META_KEY, parseCoachUpdate} from "./coachDiagnosis.ts";
 import {deriveMasteryByProblem} from "./masteryProjection.ts";
 import {materializeObservedOutOfScopeFindings} from "./outOfScopeObservations.ts";
 import {deriveCurrentTodayProjection} from "./currentTodayProjection.ts";
@@ -3814,6 +3814,7 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     return await repairIntegrity(false) as T;
   } else if(path==="/api/coach/preview"){
     const diagnosis=parseCoachUpdate(String(body.text||body.yaml||""));
+    if(diagnosis.reviewContextVersion||body.require_current_evidence)validateCoachReviewContext(diagnosis,(await bootstrap(true)).coach.reviewContext!,!!body.require_current_evidence);
     const [attempts,problems,row]=await Promise.all([db.attempts.toArray(),db.problems.toArray(),db.meta.get(COACH_HISTORY_META_KEY)]);
     const cutoff=Math.max(0,...attempts.filter(item=>attemptPlanningEligible(item)).map(item=>item.id));
     if(diagnosis.evidenceCutoffAttemptId!==cutoff)
@@ -3826,6 +3827,7 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
       b.evidenceCutoffAttemptId-a.evidenceCutoffAttemptId)[0]||null,diagnosis) as T;
   } else if(path==="/api/coach/save"){
     const diagnosis=parseCoachUpdate(String(body.text||body.yaml||""));
+    if(diagnosis.reviewContextVersion||body.require_current_evidence)validateCoachReviewContext(diagnosis,(await bootstrap(true)).coach.reviewContext!,!!body.require_current_evidence);
     const [attempts,problems,row]=await Promise.all([db.attempts.toArray(),db.problems.toArray(),db.meta.get(COACH_HISTORY_META_KEY)]);
     const cutoff=Math.max(0,...attempts.filter(item=>attemptPlanningEligible(item)).map(item=>item.id));
     if(diagnosis.evidenceCutoffAttemptId!==cutoff)
@@ -3834,7 +3836,9 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     const unknown=diagnosis.primaryBottleneck.evidenceProblemIds.filter(id=>!known.has(id));
     if(unknown.length)throw new Error(`根拠problem_idが問題マスターにありません: ${unknown.join("、")}`);
     let history:CoachDiagnosis[]=[];try{history=JSON.parse(row?.value||"[]")}catch{history=[]}
-    const duplicate=history.some(item=>item.reviewedAt===diagnosis.reviewedAt&&item.evidenceCutoffAttemptId===diagnosis.evidenceCutoffAttemptId);
+    const content=(item:CoachDiagnosis)=>{const {reviewedAt,sourceEvidenceVersion,...rest}=item;return JSON.stringify(rest)};
+    const duplicate=history.some(item=>content(item)===content(diagnosis));
+    if(!duplicate&&history.some(item=>item.reviewedAt===diagnosis.reviewedAt&&item.evidenceCutoffAttemptId===diagnosis.evidenceCutoffAttemptId))throw new Error('同じ評価日時・対象で内容が異なります。新しい評価日時で再確認してください。');
     if(!duplicate)await db.meta.put({key:COACH_HISTORY_META_KEY,value:JSON.stringify([...history,{...diagnosis,sourceEvidenceVersion:coachEvidenceVersion(attempts.filter(attemptPlanningEligible))}])});
     notifyStudyDataChanged({operation:"save-coach-diagnosis"});
     return {ok:true,diagnosis,duplicate} as T;

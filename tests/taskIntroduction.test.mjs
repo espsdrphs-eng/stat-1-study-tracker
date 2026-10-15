@@ -58,7 +58,12 @@ test('original locator uses recorded subject, year and question without defaulti
 
 test('Next Action and list expose the common task purpose but do not require a question document',async()=>{
  const src=await readFile(new URL('../src/App.tsx',import.meta.url),'utf8');
- assert.match(src.slice(src.indexOf('function DashboardView'),src.indexOf('function TodayView')),/TaskPurposeSummary/);
+ // The new compact Next Action carries the same task and shared answer scope;
+ // full purpose/evidence lives on the actual task screen, not on the dashboard.
+ const dashboard=await readFile(new URL('../src/LearningDashboard.tsx',import.meta.url),'utf8');
+ assert.match(src.slice(src.indexOf('function DashboardView'),src.indexOf('function TaskRow')),/LearningDashboard/);
+ assert.match(dashboard,/deriveTaskAnswerScope\(\{problem,task/);assert.match(dashboard,/taskAnswerScopeText/);assert.match(dashboard,/onStart\(task\)/);
+ assert.doesNotMatch(dashboard,/previousMistake|correction_rule|one_line_hint/);
  assert.match(src.slice(src.indexOf('function ProblemsView'),src.indexOf('function ProblemDetail')),/TaskPurposeSummary/);
  assert.doesNotMatch(src,/問題PDF・画像・ページ番号は未登録|問題文・原本の場所/);
 });

@@ -14,6 +14,7 @@ import {deriveExamReadinessAssessment} from './examCapability.ts';
 
 // Neutral projections of existing grading slots/criteria, not new mastery rules.
 const targetLabels:Record<string,string>={problem_type:"型の判断",first_step:"初手",focal_quantity:"対象の量",critical_condition:"条件確認",major_calculation:"主要計算",answer_conclusion:"最終結論"};
+export function learningTargetLabel(id:string){return targetLabels[id]||'採点対象の操作';}
 const criterionLabels:Record<string,string>={identify_problem_type:"問題の型を判断できる",choose_first_step:"最初の一手を自力で選べる",identify_focal_quantity:"求める量を特定できる",track_critical_condition:"必要な条件を確認できる",complete_major_calculation:"主要計算を最後まで完了できる",reach_requested_conclusion:"問われた結論まで答案化できる",retrieval_short_recall:"型・初手・対象の量・重要条件を参照なしで想起できる",reconstruct_full_structure:"問題全体の構成を参照なしで再現できる",reproduce_targeted_points:"指定対象を参照なしで整合的に再現できる",reproduce_current_unresolved_parts:"指定された未解消の対象を再現できる",complete_assigned_scope:"指定範囲を参照なしで完了できる"};
 const errorLabels:Record<string,string>={K:"入口・知識の不足",W:"計算・答案化の誤り",N:"条件・理由の不足",C:"記号・表記の誤り"};
 // Quote only neutral topics actually present in a recorded target. Never expose

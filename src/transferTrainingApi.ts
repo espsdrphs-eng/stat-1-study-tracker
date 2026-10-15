@@ -47,7 +47,7 @@ function savedTrainingFeedback(a:Attempt|undefined,success:boolean,criterion:str
 /** This is the existing offline GPT copy/paste interface, not a model API. */
 export async function transferTrainingRequest(args:{db:typeof database;body:any;
   current:()=>Promise<Bootstrap>;save:(input:StudyUpdate&Record<string,unknown>)=>Promise<number>}){
-  const {db,body}=args,key=String(body.key||""),action=String(body.action||"view");
+  const {db,body}=args,key=String(body.key||""),forceGenerated=body.action==='start-generated',action=forceGenerated?'start':String(body.action||"view");
   if(!key.startsWith("training:"))throw new Error("転移確認の計画キーが必要です");
   const [problems,attempts,pastSessions,answers,meta,exposure]=await Promise.all([db.problems.toArray(),db.attempts.toArray(),
     db.pastSessions.toArray(),db.answerIndex.toArray(),db.meta.get(EXAM_REFERENCE_PACK_META_KEY),db.meta.get(EXAM_REFERENCE_EXPOSURE_META_KEY)]);
@@ -56,12 +56,13 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
     problems,attempts,pastSessions,answers,planningMode:"ranked",exposureOverrides:JSON.parse(exposure?.value||"{}")});
   const candidate=candidates.find(c=>c.key===key);
   const savedAttempt=attempts.find(a=>a.transfer_lineage?.key===key&&!a.exclude_from_metrics&&!a.duplicate_of_attempt_id);
-  const existingId=candidate?.existingProblemId||(!problems.find(p=>p.problem_id===savedAttempt?.problem_id)?.generated_transfer?savedAttempt?.problem_id:undefined);
+  let record:TransferGenerationRecord|undefined;
+  const stored=await db.meta.get(generationMetaKey(key));if(stored)record=JSON.parse(stored.value);
+  if(forceGenerated&&candidate?.existingProblemId&&await db.meta.get(`transfer-training-context:${candidate.existingProblemId}`))throw new Error('既存の転移問題を割り当て済みです。その問題の結果を確認してから次の課題へ進んでください。');
+  const existingId=!forceGenerated&&!record?(candidate?.existingProblemId||(!problems.find(p=>p.problem_id===savedAttempt?.problem_id)?.generated_transfer?savedAttempt?.problem_id:undefined)):undefined;
   const contextRow=existingId?await db.meta.get(`transfer-training-context:${existingId}`):undefined;
   let context=contextRow?JSON.parse(contextRow.value) as import("./generatedTransfer.ts").TransferTrainingLineage&{answer_submission?:import("./generatedTransfer.ts").GeneratedTransferContent["answer_submission"]}:undefined;
   if(context&&context.key!==key)throw new Error('この転移先は別の転移課題に割り当て済みです。元問題・技能を取り違えないよう、その課題を確認してから再計画してください。');
-  let record:TransferGenerationRecord|undefined;
-  const stored=await db.meta.get(generationMetaKey(key));if(stored)record=JSON.parse(stored.value);
   let problem=problems.find(p=>p.generated_transfer?.lineage.key===key);
   const source=problems.find(p=>p.problem_id===(candidate?.lineage.sourceProblemId||record?.lineage.sourceProblemId));
   const sourceFeatures=[source?.canonical_problem_type||"",source?.theme||"",...(source?.canonical_keywords||[])].filter(Boolean);
@@ -90,7 +91,7 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
     if(candidate.kind==="pending"||!current.today.tasks.some(t=>t.transfer_training_key===key&&
       (t.ranking?.eligible===true||!current.today.canonicalStudyPlan.ranked&&t.triage==="must")&&!t.checked))
       throw new Error("まだCanonical Study Planの実行対象ではありません");
-    if(candidate.kind==="existing"){
+    if(candidate.kind==="existing"&&!forceGenerated&&!record){
       if(action==="start"&&!context){context=candidate.lineage;
         await db.meta.put({key:`transfer-training-context:${candidate.existingProblemId}`,value:JSON.stringify(context)});}
       if(!context)throw new Error("先に転移確認を開始してください");
@@ -101,6 +102,7 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
     if(!candidate||candidate.kind==="pending"||!current.today.tasks.some(t=>t.transfer_training_key===key&&t.ranking?.eligible&&!t.checked))
       throw new Error("現在は転移の開始資格がありません。補修・遅延保持を再確認してください");
   }
+  if(record?.problemIssue&&!record.problemIssue.resolvedAt&&['start','submit','draft','validate'].includes(action))throw new Error('問題不備の確認待ちです。採点を再確認し、能力の失敗とは分けてください。');
   if(existingId&&context||existingId&&savedAttempt){
     const existing=problems.find(p=>p.problem_id===existingId)!;
     const lineage=context||savedAttempt!.transfer_lineage!;
@@ -134,9 +136,7 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
         evidence:attempt?.target_skill_assessment?.evidence||"",feedback:savedTrainingFeedback(attempt,!!attempt&&deriveTransferEvidence(facts).some(e=>e.successAttemptId===attempt.id),lineage.successCriteria),solution:"公式の解答資料で確認してください。",rubric:"対象能力の自力選択・主要計算・major errorを独立に判定"}:undefined};
   }
   if(action==="start"){
-    if(!record&&!problem){record={key,lineage:candidate!.lineage,createdAt:new Date().toISOString(),status:"requested",rounds:[],input_format:"statement_only_v1"};await saveRecord();}
-    // An unused old request can use the new protocol without touching a draft or historical problem.
-    if(record?.status==="requested"&&!record.rounds.length&&!record.input_format){record={...record,input_format:"statement_only_v1"};await saveRecord();}
+    if(!record&&!problem){record={key,lineage:candidate!.lineage,createdAt:new Date().toISOString(),status:"requested",rounds:[],...(!forceGenerated?{input_format:"statement_only_v1" as const}:{})};await saveRecord();}
     if(record?.status==="requested")return {status:record.status,prompt:generationPrompt(record,sourceFeatures)};
   }else if(action==="draft"){
     if(!record||problem)throw new Error("生成依頼がない、または登録済みです");
@@ -173,11 +173,20 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
       imageGradingPrompt(`\n出力はJSONのstudy_updateを1件。actual_reference_level=${submission.referenceLevel}。`,submission.referenceLevel,submission.minutes)+
       `\nstudy_update内にtarget_skill_assessment: {self_selected:boolean,major_calculation_success:boolean,no_major_error:boolean,evidence:string}を必ず含める。`+
       `対象=${content.root_skill_id}。総合点とは独立に、初手と主要計算の実答案から判定。target外minorでは対象失敗にしない。模範解答の内容を本人の答案と混同しない。`+
+      `\n問題自体の条件矛盾・解答不能を発見した場合は能力を採点せず、study_updateを返す代わりに {"problem_issue":{"problem_id":"${problem!.problem_id}","reason":"具体的な問題不備の根拠"}} を返す。`+
+      (record?.problemIssue&&!record.problemIssue.resolvedAt?`\n品質の再確認が必要です。正常に採点できると確認した場合のみmathematical_reviewを返す：${JSON.stringify({problem_id:problem!.problem_id,content_hash:content.content_hash,reference_solution:'独立に導いた完全な解答',grading_rubric:'対象操作の採点基準',checks:Object.fromEntries(['well_defined','solution_correct','rubric_aligned'].map(k=>[k,{pass:false,evidence:'具体的な検算根拠'}]))})}`:'')+
       transferContextPrompt(transferGradingContext(content.lineage,problem!.problem_id,sourceScope(content.lineage)))};
   }else if(action==="grade"){
     if(!problem?.generated_transfer?.answer_submission)throw new Error("答案未提出です");
-    const raw=transferJson(String(body.text||""));validateTransferGrade(raw,problem.problem_id,transferGradingContext(problem.generated_transfer.lineage,problem.problem_id,sourceScope(problem.generated_transfer.lineage)));
-    const reference=problem.generated_transfer.input_format?validateManualGradingReference(problem,raw.mathematical_review):undefined;
+    const raw=transferJson(String(body.text||""));
+    if(raw.problem_issue){
+      if(raw.problem_issue.problem_id!==problem.problem_id||typeof raw.problem_issue.reason!=='string'||raw.problem_issue.reason.trim().length<10)throw new Error('問題不備の対象IDと具体的な理由を確認してください。');
+      if(savedAttempt)throw new Error('保存済み採点は変更しません。採点履歴から再確認してください。');
+      record={...(record||{key,lineage:problem.generated_transfer.lineage,createdAt:problem.generated_transfer.created_at,rounds:[],problemId:problem.problem_id}),status:'pending',pendingReason:'問題不備のため判定保留。技能の失敗には数えません。',problemIssue:record?.problemIssue||{problemId:problem.problem_id,reason:raw.problem_issue.reason.trim(),reportedAt:new Date().toISOString()}};
+      await saveRecord();return {status:'problem_pending',pendingReason:record.pendingReason};
+    }
+    validateTransferGrade(raw,problem.problem_id,transferGradingContext(problem.generated_transfer.lineage,problem.problem_id,sourceScope(problem.generated_transfer.lineage)));
+    const reference=problem.generated_transfer.input_format||record?.problemIssue&&!record.problemIssue.resolvedAt?validateManualGradingReference(problem,raw.mathematical_review):undefined;
     const parsed=parseStudyText(yaml.dump(raw),problems,answers,await db.problemAliases.toArray());
     if(parsed.updates.length!==1||parsed.updates[0].problem_id!==problem.problem_id)throw new Error("この問題の採点1件だけを保存してください");
     const submission=problem.generated_transfer.answer_submission;
@@ -185,11 +194,13 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
     await args.save({...parsed.updates[0],actual_minutes:minutes,time_minutes:minutes,memo:[typeof raw.study_update?.memo==="string"?raw.study_update.memo:"","答案：紙／Goodnotes画像、採点方法：手動ChatGPT（モデル採点・訓練証拠）"].filter(Boolean).join("\n"),target_skill_assessment:raw.study_update?.target_skill_assessment,
       manual_generated_reference:reference,
       submission_id:`generated:${problem.problem_id}`});
+    if(record?.problemIssue&&!record.problemIssue.resolvedAt){record={...record,status:'registered',pendingReason:undefined,problemIssue:{...record.problemIssue,resolvedAt:new Date().toISOString()}};await saveRecord();}
     problem=await db.problems.get(problem.problem_id);
   }else if(action!=="view"&&action!=="start")throw new Error("不明な転移確認操作です");
   const content=problem?.generated_transfer;
-  const result:Record<string,unknown>={status:content?.lifecycle_status||record?.status||candidate?.kind||"pending",
-    problem:problem?blindGeneratedView(problem):undefined,existingProblemId:candidate?.existingProblemId,
+  const result:Record<string,unknown>={status:record?.problemIssue&&!record.problemIssue.resolvedAt?'problem_pending':content?.lifecycle_status||record?.status||candidate?.kind||"pending",
+    statementOnly:(content?.input_format||record?.input_format)==='statement_only_v1',
+    problem:problem?blindGeneratedView(problem):undefined,existingProblemId:!record&&!problem?candidate?.existingProblemId:undefined,
     rounds:record?.rounds.length||0,pendingReason:record?.pendingReason||candidate?.reason};
   if(content?.answer_submission){
     const facts=await db.attempts.toArray();

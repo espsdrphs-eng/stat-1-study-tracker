@@ -82,7 +82,13 @@ test("stale coach UI describes the displayed objective fallback, not the old dia
   const {readFile}=await import("node:fs/promises");
   const ui=await readFile(new URL("../src/App.tsx",import.meta.url),"utf8");
   assert.doesNotMatch(ui,/前回診断の本番レベル|上記は前回の診断であり/);
-  assert.match(ui,/上記は最新の実測からの暫定診断です/);
+  // The accepted compact dashboard removes that long legacy message. Keep the
+  // safety property: stale GPT opinion is hidden and cannot replace measured Level.
+  const dashboard=await readFile(new URL('../src/LearningDashboard.tsx',import.meta.url),'utf8');
+  assert.match(dashboard,/!data\.coach\.stale/);assert.match(dashboard,/自動・暫定 Level/);
+  const {deriveLearningOverview}=await import('../src/learningOverview.ts');
+  const view=deriveLearningOverview({coach:{stale:true,current:{level:{value:4.5}}},dashboard:{kpis:{support:{daysRemaining:31},assessment:{level:2.5},bottleneck:{value:'時間'}},readiness:{evidence:{selectedThree:{value:52,evidenceCount:5}}}}});
+  assert.equal(view.level,2.5);
 });
 
 test("PastExam repair details use the same resolved contract as Today and Review",async()=>{

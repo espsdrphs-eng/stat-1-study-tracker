@@ -1,6 +1,8 @@
 import { useEffect, useState, useRef, useMemo } from "react";
 import {createStateReloadCoordinator} from "./stateReload.ts";
 import {TransferTrainingPanel} from "./TransferTrainingPanel";
+import {LearningDashboard,CoachReviewControls} from './LearningDashboard';
+import {WeaknessFocus} from './WeaknessFocus';
 import {deriveWeaknessDisplayRows,deriveLearningUpdateSummary,deriveCurrentWeaknessRows,deriveCurrentLearningDiagnosis,deriveTaskIntroduction,deriveProblemReference,taskAssistanceText,preAnswerReason,completionCriterionText,deriveProblemLearningView,deriveProblemLearningViews,imageGradingPrompt,optionalNetMinutes,netMinutesText} from "./learningFeedback";
 import {appendTaskAnswerScope,type TaskAnswerScope} from './taskAnswerScope';
 import { useRegisterSW } from "virtual:pwa-register/react";
@@ -159,10 +161,9 @@ export default function App() {
   return <div className="app-shell">
     <aside className={`sidebar ${menu?"open":""}`}>
       <div className="brand"><div className="brand-mark">1</div><div><strong>統計一級</strong><span>STUDY TRACKER</span></div><button className="mobile-close" onClick={()=>setMenu(false)}><X/></button></div>
-      {data.today.canonicalStudyPlan.ranked?<div className="today-mini"><span>学習価値順の候補</span><strong>{data.today.tasks.filter(t=>t.ranking&&!t.checked).length}件から選べます</strong><small>今日の記録：{data.today.completed_minutes_today}分</small><small>取り組む量は自分で決められます</small></div>:
-      <div className={`today-mini ${data.today.warning?"over":""}`}><span>今日の進捗</span><strong>確定課題の残り {data.today.confirmed_remaining_minutes}分</strong><div className="load-track"><i style={{width:`${Math.min(100,data.today.capacityPercent)}%`}}/></div><small>完了 {data.today.completed_minutes_today}分・目標まであと {data.today.target_remaining_minutes}分</small><small>追加可能 最大{data.today.additional_capacity_minutes}分</small><small>先送り候補 {data.today.postpone_candidate_minutes}分（計画外）</small></div>}
+      <div className="today-mini"><span>学習価値順の候補</span><strong>{data.today.tasks.filter(t=>!t.checked).length}件から選べます</strong><small>取り組む量は自分で決められます</small></div>
       <nav>{navGroups.map(group=><div className="nav-group" key={group.label}><span className="nav-section-label">{group.label}</span>{group.items.map(([key,Icon])=><button key={key} className={page===key?"active":""} onClick={()=>go(key)}><Icon size={19}/><span>{pageTitles[key]}</span>{key==="reviews"&&data.dashboard.pending>0&&<b>{data.dashboard.pending}</b>}</button>)}</div>)}</nav>
-      <div className="sidebar-foot"><Gauge size={17}/><div><span>2週間ペース</span><strong className={`pace-${data.dashboard.pace.label}`}>{data.dashboard.pace.label}</strong></div><small className="app-version">v{__APP_VERSION__} · {__APP_COMMIT__.slice(0,7)}</small></div>
+      <div className="sidebar-foot"><BookOpen size={17}/><span>紙・Goodnotesで解答</span><small className="app-version">v{__APP_VERSION__} · {__APP_COMMIT__.slice(0,7)}</small></div>
     </aside>
     {menu&&<div className="scrim" onClick={()=>setMenu(false)}/>}
     <main>
@@ -174,13 +175,13 @@ export default function App() {
       {!data.databaseStatus.valid&&<div className="update-banner database-required" role="alert"><div><strong>アプリのデータベース更新が必要です</strong><span>既存履歴は閲覧できますが、安全のため書き込み操作を一時停止しています。不足：{data.databaseStatus.missingStores.join("、")}</span></div><button className="primary small" disabled={busy} onClick={repairDatabase}>安全に更新</button></div>}
       <div className="content">
         {selected?.generated_transfer?<><button onClick={()=>setSelected(null)}>戻る</button><TransferTrainingPanel trainingKey={selected.generated_transfer.lineage.key}/></>:selected?<ProblemDetail problem={selected} startingTask={startingStudyTask?.problem_id===selected.problem_id?startingStudyTask:undefined} data={data} run={run} busy={busy} onBack={()=>{setSelected(null);setStartingStudyTask(null)}} onImport={()=>{setSelected(null);setPage("import")}}/>:
-        page==="dashboard"?<DashboardView data={data} go={go} select={(p,task)=>{setStartingStudyTask(task||deriveProblemLearningView(data,p).nextTask||null);setSelected(p)}}/>:
+        page==="dashboard"?<DashboardView data={data} go={go} run={run} busy={writeBusy} select={(p,task)=>{setStartingStudyTask(task||deriveProblemLearningView(data,p).nextTask||null);setSelected(p)}}/>:
         page==="today"?<TodayView data={data} busy={writeBusy} run={run} go={go} select={(p,task)=>{setStartingStudyTask(task||null);setSelected(p)}}/>:
         page==="problems"?<ProblemsView data={data} select={p=>{setStartingStudyTask(deriveProblemLearningView(data,p).nextTask||null);setSelected(p)}} run={run} busy={writeBusy}/>:
         page==="attempt"?<AttemptView problems={data.problems} run={run} busy={writeBusy}/>:
-        page==="import"?<AdvancedImportView problems={data.problems} answerIndex={data.answerIndex} problemAliases={data.problemAliases} attempts={data.attempts} reviews={data.reviews} run={run} busy={writeBusy}/>:
+        page==="import"?<><details className="panel"><summary>採点の反映・据置理由を確認</summary><LearningUpdateSummary data={data}/></details><AdvancedImportView problems={data.problems} answerIndex={data.answerIndex} problemAliases={data.problemAliases} attempts={data.attempts} reviews={data.reviews} run={run} busy={writeBusy}/></>:
         page==="reviews"?<ReviewsView data={data} run={run} busy={writeBusy} select={(p,task)=>{setStartingStudyTask(task);setSelected(p)}}/>:
-        page==="weak"?<WeakView data={data} run={run} busy={writeBusy} onToday={()=>go("today")}/>:
+        page==="weak"?<WeakView data={data} run={run} busy={writeBusy} onToday={()=>go("today")} select={(p,task)=>{setStartingStudyTask(task);setSelected(p)}}/>:
         page==="past"?<PastView data={data} go={go} run={run} busy={writeBusy} startingTask={startingPastTask}/>:
         <SettingsView data={data} run={run} busy={busy}/>}
       </div>
@@ -239,112 +240,19 @@ function LearningUpdateSummary({data}:{data:Bootstrap}){
     {summary.change&&<details><summary>採点に記録された改善・残る課題</summary><p>{summary.change}</p></details>}
   </section>;
 }
-function DashboardView({data,go,select}:{data:Bootstrap;go:(p:Page)=>void;select:(p:Problem,task?:Task)=>void}) {
-  const d=data.dashboard;
-  const pmap=Object.fromEntries(data.problems.map(problem=>[problem.problem_id,problem]));
-  const next=nextQueueTask(data);
-  const nextTask=next.task;
-  const nextProblem=nextTask&&!nextTask.stable_session_key&&!nextTask.transfer_training_key?pmap[nextTask.problem_id]:undefined;
-  const k=d.kpis!,currentDiagnosis=deriveCurrentLearningDiagnosis(data);
-  const confidence=(value:string)=>value==="high"?"高":value==="medium"?"中":"低";
-  return <>
-    <section className="dashboard-kpi-intro"><div><strong>本番まで {k.support.daysRemaining}日</strong><span>{k.support.phaseLabel}</span></div>
-      {data.coach.stale&&<small>過去のGPTコメントは最新証拠と一致しません。現在評価は自動再計算済みです。</small>}</section>
-    <LearningUpdateSummary data={data}/>
-    <section className="panel evidence-dates"><strong>本番測定と、日々の改善は別に更新します</strong><p>本番得点の最終測定：{d.readiness.evidence?.selectedThree.lastUpdated||'未測定'} ／ 時間：{d.readiness.evidence?.timed.lastUpdated||'未測定'} ／ 再計算：{k.examReadiness.updatedAt.slice(0,10)}</p>
-      <small>改善後の本番形式をまだ測っていない場合、測定値は据え置きます。Levelと合格判定は内部基準による暫定分類であり、正式な合格基準・合格確率ではありません。</small>
-      {d.readiness.evidence?.transfer?.statusCounts&&<p>自然な別過去問での転移：測定 {d.readiness.evidence.transfer.statusCounts.attempted}件・成功 {d.readiness.evidence.transfer.statusCounts.successful}件・失敗 {d.readiness.evidence.transfer.statusCounts.failed}件・判定保留 {d.readiness.evidence.transfer.statusCounts.uncertain}件・未測定 {d.readiness.evidence.transfer.statusCounts.unattempted}件。生成訓練とは別集計です。</p>}
-      <p>現在の別問題訓練の成功証拠 {currentDiagnosis.transfer.trainingSuccess}件 ／ 未達 {currentDiagnosis.transfer.failed}件。保持の◎・自然な本番転移とは別です。</p>
-    </section>
-    <section className="dashboard-kpi-grid" aria-label="合格判断の主要4指標">
-      <article className="panel dashboard-kpi"><span className="eyebrow">EXAM PERFORMANCE</span><h3>本番対応力</h3><strong>{k.examReadiness.value}</strong><p>{k.examReadiness.detail}</p><details><summary>Levelの根拠・証拠の範囲</summary><p>{k.examReadiness.levelRationale}</p></details>{!!k.examReadiness.missingEvidence?.length&&<><small>不足：{k.examReadiness.missingEvidence.join("／")}</small><b className="kpi-next-evidence">評価を進めるには：{k.examReadiness.nextEvidenceAction}</b></>}<small>信頼度：{confidence(k.examReadiness.confidence)}</small></article>
-      <article className="panel dashboard-kpi dashboard-pass-judgement"><span className="eyebrow">PASS JUDGEMENT</span><h3>本番合格判定</h3><PassJudgementContent value={k.passZone}/><small>信頼度：{confidence(k.passZone.confidence)}</small></article>
-      <article className="panel dashboard-kpi"><span className="eyebrow">BOTTLENECK</span><h3>最大ボトルネック</h3><strong>{k.bottleneck.value}</strong><p>{k.bottleneck.detail}</p><button className="text-btn" onClick={()=>go("weak")}>診断の根拠を見る <ChevronRight size={15}/></button></article>
-      <article className="panel dashboard-kpi dashboard-kpi-action"><span className="eyebrow">NEXT ACTION</span><h3>今やること</h3><strong>{k.nextAction.value}</strong><p>{k.nextAction.detail}</p>{nextProblem&&<TaskPurposeSummary introduction={deriveTaskIntroduction(data,nextProblem,nextTask||undefined)}/>}<div className="button-row"><button className="primary" onClick={()=>go("today")}><Play size={17}/>今日の課題へ</button>{nextProblem&&<button className="ghost" onClick={()=>select(nextProblem,nextTask||undefined)}><BookOpen size={17}/>問題を開く</button>}</div></article>
-    </section>
-    <section className="dashboard-support-strip"><span>復習課題 <strong>{k.support.pendingReviews}件</strong>（技能数ではありません）</span><span>次の課題はTodayと同じ順位です</span></section>
-    {!data.today.canonicalStudyPlan.ranked&&data.today.warning&&<div className="warning"><AlertTriangle/><div><strong>予定時間を調整してください</strong><p>{data.today.warning}</p></div></div>}
-    <details className="dashboard-details"><summary>詳細指標を見る</summary><div className="dashboard-details-body">
-      <section className="panel readiness-panel">
-      <div className="panel-title"><div><span className="eyebrow">EXAM READINESS</span><h3>本番得点に直結する指標</h3></div><Badge tone={d.stableRelease.isStable?"green":"orange"}>{d.stableRelease.isStable?"学習運用安定版":"運用調整中"}</Badge></div>
-      <div className="metrics-grid readiness-grid">
-        {(()=>{const m=readinessValue(d.readiness.unseenScoreRate,d.readiness.sampleSizes.unseen);return <Metric label="未見・長期未実施得点率" value={m.value} unit={m.unit} hint={m.hint}/>})()}
-        {(()=>{const m=readinessValue(d.readiness.timedCompletionRate,d.readiness.sampleSizes.timed);return <Metric label="時間内完走率" value={m.value} unit={m.unit} hint={m.hint} tone={(d.readiness.timedCompletionRate??100)<60?"amber":""}/>})()}
-        {(()=>{const m=readinessValue(d.readiness.selectionSuccessRate,d.readiness.sampleSizes.scans);return <Metric label="5問スキャン選題成功率" value={m.value} unit={m.unit} hint={m.hint}/>})()}
-        {(()=>{const m=readinessValue(d.readiness.pastExamScoreRate,d.readiness.sampleSizes.pastExams);return <Metric label="過去問得点" value={m.value} unit={m.unit} hint={m.hint}/>})()}
-        {(()=>{const m=readinessValue(d.readiness.kRecurrenceRate,d.readiness.sampleSizes.kReviews);return <Metric label="K再発率" value={m.value} unit={m.unit} hint={m.hint} tone={(d.readiness.kRecurrenceRate??0)>25?"red":""}/>})()}
-        {(()=>{const m=readinessValue(d.readiness.repeatedWRate,d.readiness.sampleSizes.wReviews);return <Metric label="同一W再発率" value={m.value} unit={m.unit} hint={m.hint} tone={(d.readiness.repeatedWRate??0)>25?"amber":""}/>})()}
-      </div>
-      <p className="stable-release-message">{d.stableRelease.message}</p>
-      {d.readiness.evidence&&<details><summary>指標の母数・対象・更新日</summary>
-        {Object.entries(d.readiness.evidence).map(([key,e])=><p key={key}><b>{({selectedThree:"選択3問",individual:"個別答案",diagnostic:"非選択・診断",timed:"時間内完走",selection:"選題",transfer:"本番での転移",trainingTransfer:"転移training（本番対応力とは別）",unseen:"未見答案",repeatedMajor:"major root再発"} as Record<string,string>)[key]}</b>：{e.numerator.toFixed(1)} / {e.denominator}（標本{e.evidenceCount}・信頼度{confidence(e.confidence)}）<br/>{e.eligibleEvidenceRule}<br/>対象 {e.modeScope.join(" / ")}・更新 {e.lastUpdated||"未計測"}{e.missingEvidenceReason&&<small>{e.missingEvidenceReason}</small>}</p>)}
-      </details>}
-      {!!d.stableRelease.blockingIssues.length&&<ul className="stable-blockers">{d.stableRelease.blockingIssues.map(item=><li key={item}>{item}</li>)}</ul>}
-      <div className="weekly-soft-quota"><strong>今週の不足候補</strong>{d.weeklyQuota.candidates.length
-        ?d.weeklyQuota.candidates.map(item=><span key={item.kind}>{item.kind==="full_skeleton"?"全体統合":item.kind==="timed_full"?"時間制限答案":"5問スキャン"}・{item.minutes}分</span>)
-        :<span>今週の最低構成を満たしています</span>}<small>soft quotaのため、今日の上限を超えて自動追加しません。</small></div>
-      </section>
-      <section className="panel adaptive-shadow-card">
-      <div className="panel-title"><div><span className="eyebrow">ADAPTIVE PLANNER</span><h3>合格逆算プランナー</h3></div>
-        <Badge tone={data.adaptiveLearning.plannerMode==="adaptive"?"green":"orange"}>
-          {data.adaptiveLearning.plannerMode==="adaptive"?"正式運用":"旧方式（ロールバック）"}
-        </Badge></div>
-      {!data.adaptiveLearning.plannerShadow.available?<p>参照データを確認できないため、正式計画を生成できません。</p>:<>
-        <div className="adaptive-shadow-summary">
-          <span>フェーズ<strong>{data.adaptiveLearning.plannerShadow.phase}</strong></span>
-          <span>30日 scan5<strong>{data.adaptiveLearning.plannerShadow.plan30.counts.scan5}</strong></span>
-          <span>30日 full<strong>{data.adaptiveLearning.plannerShadow.plan30.counts.full}</strong></span>
-          <span>30日 timed<strong>{data.adaptiveLearning.plannerShadow.plan30.counts.timed}</strong></span>
-        </div>
-        <p>本番演習65〜70%と、過去問・答案証拠に直結する補修30〜35%をrolling 7日で調整します。日数経過だけのmaintenanceは必須枠に入れません。</p>
-        {!!data.adaptiveLearning.plannerShadow.plan30.weeklyMinimumViolations.length&&
-          <div className="match-warning"><AlertTriangle size={17}/><span>{data.adaptiveLearning.plannerShadow.plan30.weeklyMinimumViolations.slice(0,3).join("／")}</span></div>}
-        <details><summary>14日計画とフェーズ診断</summary>
-          <div className="adaptive-plan-preview">{data.adaptiveLearning.plannerShadow.plan14.plan.map(day=><div key={day.date}>
-            <strong>{day.date}</strong><span>{day.tasks.map(task=>`${task.todayCategory==="exam_practice"?"本番演習":"補修"}：${task.label}［${task.purposeLabel||"通常配置"}］（${task.minutes}分）`).join("／")}</span>
-            <small>合計{day.totalMinutes}分</small>
-          </div>)}</div>
-          <div className="phase-diagnostic-grid">{data.adaptiveLearning.plannerShadow.phaseDiagnostics.map(item=><div key={item.checkpoint}>
-            <strong>{item.checkpoint}・{item.phase}</strong>
-            <span>scan5 {item.scan5}／full {item.full}／timed {item.timed}</span>
-            <small>過去問系 {item.pastExamShare}%・未達 {item.weeklyMinimumViolations.length}件</small>
-            {item.assumption&&<small>仮定：{item.assumption}</small>}
-          </div>)}</div>
-        </details>
-      </>}
-      </section>
-      <section className="section-head"><div><span className="eyebrow">OVERVIEW</span><h2>今週の学習状況</h2></div><span className="muted">直近7日間</span></section>
-      <div className="metrics-grid">
-      <Metric label="確定課題の残り" value={data.today.confirmed_remaining_minutes} unit="分" hint={`目標まであと${data.today.target_remaining_minutes}分・追加可能${data.today.additional_capacity_minutes}分`} tone={data.today.warning?"red":""}/>
-      <Metric label="A問題進捗" value={d.weekA} unit="題" hint="今週の新規・復習"/>
-      <Metric label={d.pace.phase==="foundation"?"過去問（任意）":"過去問GPT採点"} value={d.weekPast} unit="件" hint={d.pace.phase==="foundation"?"基礎期は未実施でも可":"今週の取り込み"}/>
-      <Metric label="K再発" value={d.kRecurrence} unit="題" hint="直近2週間" tone={d.kRecurrence>2?"red":""}/>
-      <Metric label="復習待ち" value={d.pending} unit="件" hint={`期限超過 ${d.reviewPortfolio.overdue}・今日 ${d.reviewPortfolio.dueToday}`} tone={d.overdue?"amber":""}/>
-      <Metric label="S問題安定率" value={d.sStableRate} unit="%" hint={`要確認 ${d.sForgotten}件`}/>
-      </div>
-      <section className="progress-phase">
-      <div className="days-remaining"><strong>{d.pace.daysRemaining}</strong><span>日</span><small>{d.pace.examDateIsEstimate?"試験日未設定のため概算":"本番まで"}</small></div>
-      <div><span className="eyebrow">CURRENT PHASE</span><h2>{d.pace.phaseLabel}</h2><p>{d.pace.summary}</p><strong className="phase-allocation">{d.pace.allocation}</strong><b>次の切替：{d.pace.nextPhase}</b></div>
-      </section>
-      <div className="two-col">
-      <section className="panel">
-        <div className="panel-title"><div><span className="eyebrow">TODAY</span><h3>今日やること</h3></div><button className="text-btn" onClick={()=>go("today")}>すべて見る <ChevronRight size={16}/></button></div>
-        <div className="task-list">{data.today.tasks.filter(task=>!task.checked&&task.triage!=="tomorrow").slice(0,4).map((t,i)=><TaskRow key={`${t.problem_id}-${i}`} task={t}/>)}</div>
-        {!data.today.tasks.some(task=>!task.checked&&task.triage!=="tomorrow")&&<Empty>今日の確定課題はありません</Empty>}
-      </section>
-      <section className="panel pace-panel">
-        <div className="panel-title"><div><span className="eyebrow">14 DAY CHECK</span><h3>合格ペース判定</h3></div><Badge tone={d.pace.label==="合格ペース"?"green":d.pace.label==="注意"?"orange":d.pace.label==="危険"?"red":""}>{d.pace.label}</Badge></div>
-        <div className="pace-score"><strong>{d.pace.items.filter(item=>item.status==="ok").length}</strong><span>/ {d.pace.items.filter(item=>item.status!=="pending").length} 判定可能項目を達成</span></div>
-        <div className="check-grid">{d.pace.items.map(item=><div key={item.label} className={item.status==="ok"?"ok":item.status==="pending"?"pending":""}>{item.status==="ok"?<Check size={15}/>:item.status==="pending"?<Clock3 size={15}/>:<X size={15}/>}<span><strong>{item.label}</strong><small>{item.detail}</small></span></div>)}</div>
-        {d.pace.suggestion&&<p className="pace-advice">{d.pace.suggestion}</p>}
-        <details className="danger-criteria"><summary>「危険」の判定基準</summary><ul>{d.pace.dangerCriteria.map(item=><li key={item}>{item}</li>)}</ul><small>危険は不合格確定ではなく、今週の配分を復習・復旧優先へ切り替えるサインです。</small></details>
-      </section>
-      </div>
-      <section className="panel exam-roadmap"><div className="panel-title"><div><span className="eyebrow">4 MONTH ROADMAP</span><h3>残り4か月の得点最大化フェーズ</h3></div><Badge>{d.pace.phaseLabel}</Badge></div>
-      <div>{EXAM_PHASES.map(phase=><article className={d.pace.daysRemaining>=phase.from&&d.pace.daysRemaining<=phase.to?"active":""} key={phase.title}><strong>{phase.to===999?"残り91日以上":`残り${phase.to}〜${phase.from}日`}</strong><span>{phase.title}</span><small>{phase.allocation}</small><p>{phase.summary}</p></article>)}</div>
-      </section>
-    </div></details>
-  </>
+function DashboardView({data,go,select,run,busy}:{data:Bootstrap;go:(p:Page)=>void;select:(p:Problem,task?:Task)=>void;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean}) {
+  const [panel,setPanel]=useState<'review'|'evidence'|null>(null);
+  const start=(task?:Task)=>{if(!task||task.transfer_training_key||task.stable_session_key){go("today");return;}const p=data.problems.find(p=>p.problem_id===task.problem_id);if(p)select(p,task);};
+  return <><LearningDashboard data={data} onStart={start} onReview={()=>setPanel('review')} onEvidence={()=>setPanel('evidence')}/>
+    {panel==='review'&&<Modal title="ChatGPTで実力を再評価" close={()=>setPanel(null)}><CoachReviewControls data={data} run={run} busy={busy}/></Modal>}
+    {panel==='evidence'&&<Modal title="本番測定の根拠と更新条件" close={()=>setPanel(null)}><p>補修・保持・生成訓練は、本番形式の得点や自然な転移成功に加算しません。改善後の本番形式を再測定するまで、測定値は据え置きます。</p>
+      <ExamEvidenceSummary assessment={data.dashboard.kpis!.assessment}/>
+      <p>Levelはアプリの暫定分類で、合格確率ではありません。3指標は定義と母数が異なり、平均しません。</p>
+      <p>転移の棒は、自然な別問題で測定済みの対象についての成功割合です。未測定は失敗に含めません。</p>
+      <p>採点ごとの改善・据置理由は「GPT取り込み」で確認できます。</p><button className="ghost" onClick={()=>{setPanel(null);go("import")}}>採点の反映内容を見る</button>
+      {!!data.coach.history.length&&<details><summary>GPT総合診断との違い</summary><p>自動評価 Level {data.dashboard.kpis?.assessment?.level} ／ 最新GPT参考評価 Level {data.coach.current?.level.value}。実測値はGPTの文章で変更しません。{data.coach.stale?'前回GPT評価の後に証拠が更新されています。':''}</p></details>}
+    </Modal>}
+  </>;
 }
 
 function TaskRow({task}:{task:Task}) {
@@ -1284,57 +1192,7 @@ type CoachPreviewResult={next:CoachDiagnosis;diff:{level:string;unchanged:boolea
   bottleneck:{before:string;after:string};nextActions:CoachListDiff;strengths:CoachListDiff;
   improvements:CoachListDiff;unknowns:CoachListDiff}};
 function CoachPanel({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean}){
-  const coach=data.coach,diagnosis=coach.display;
-  const currentBottleneck=data.dashboard.kpis?.bottleneck;
-  const passJudgement=data.dashboard.kpis?.passZone;
-  const masteryRows=Object.values(data.masteryByProblem);
-  const masteryCounts=[1,2,3].map(level=>masteryRows.filter(row=>row.currentLevel===level).length);
-  const [copied,setCopied]=useState(false),[text,setText]=useState(""),[error,setError]=useState<{message:string;stage?:string;path?:string;reason?:string}|null>(null);
-  const [preview,setPreview]=useState<CoachPreviewResult|null>(null);
-  const copy=async()=>{await navigator.clipboard.writeText(coach.prompt);setCopied(true);setTimeout(()=>setCopied(false),1800)};
-  const parse=async()=>{setError(null);try{setPreview(await post<CoachPreviewResult>("/api/coach/preview",{text}))}catch(reason){const row=reason as Error&{stage?:string;path?:string;reason?:string};setError({message:row instanceof Error?row.message:String(reason),stage:row.stage,path:row.path,reason:row.reason})}};
-  const save=()=>{if(!preview)return;setPreview(null);run(()=>post("/api/coach/save",{text}),"学習コーチ診断を履歴へ保存しました")};
-  return <>
-    <section className="coach-hero">
-      <div className="coach-level"><span>本番対応力（現在の実測評価）</span><strong>{diagnosis.level.value}<small>/ 5</small></strong><b>{diagnosis.level.passOutlook}</b></div>
-      <div className="coach-current"><div className="coach-meta"><Badge tone={diagnosis.level.confidence==="high"?"green":diagnosis.level.confidence==="medium"?"orange":""}>信頼度 {coachConfidenceText(diagnosis.level.confidence)}</Badge>
-        <span>最終レビュー：{coach.lastReviewedAt?coach.lastReviewedAt.slice(0,10):"GPTレビュー未実施"}</span>
-        {coach.source==="local_provisional"&&<Badge>自動暫定診断</Badge>}</div>
-        {coach.needsTextRefresh&&<p className="coach-stale">前回の合格見通しは旧版の80文字制限で途切れている可能性があります。履歴は保持し、ここでは最新の実測から暫定診断を表示しています。GPT現在地レビューを更新してください。</p>}
-        <h2>{diagnosis.level.label}</h2><p>{diagnosis.level.rationale}</p>
-        <small>問題別到達段階：骨格 {masteryCounts[0]}件 / 主要計算 {masteryCounts[1]}件 / 転移 {masteryCounts[2]}件（本番対応力とは別指標）</small>
-        <ExamEvidenceSummary assessment={coach.assessment}/>
-        {coach.stale&&<div className="coach-stale"><AlertTriangle size={17}/><strong>前回診断後に新しい採点 {coach.newAttemptCount}件。上記は最新の実測からの暫定診断です。以前のGPT診断は履歴に保持しています。現在地レビューを更新してください。</strong></div>}
-      </div>
-    </section>
-    {passJudgement&&<section className="panel coach-pass-judgement"><div className="panel-title"><div><span className="eyebrow">PASS JUDGEMENT</span><h3>本番合格判定</h3></div><Badge tone={passJudgement.confidence==="high"?"green":passJudgement.confidence==="medium"?"orange":""}>信頼度 {coachConfidenceText(passJudgement.confidence)}</Badge></div><PassJudgementContent value={passJudgement}/></section>}
-    <section className="coach-summary-grid">
-      <article className="panel coach-bottleneck"><span className="eyebrow">PRIMARY BOTTLENECK</span><h3>最大ボトルネック</h3><strong>{currentBottleneck?.value||diagnosis.primaryBottleneck.title}</strong>
-        <p>{currentBottleneck?.detail||diagnosis.primaryBottleneck.explanation}</p>{!coach.stale&&<small>{diagnosis.primaryBottleneck.effectOnExam}</small>}
-        {!coach.stale&&!!diagnosis.primaryBottleneck.evidenceProblemIds.length&&<div className="coach-evidence-ids">根拠：{diagnosis.primaryBottleneck.evidenceProblemIds.join(" / ")}</div>}</article>
-      <article className="panel"><span className="eyebrow">NEXT ACTIONS</span><h3>次に鍛えること</h3><div className="coach-list">{diagnosis.nextActions.length?diagnosis.nextActions.map((row,index)=><div key={`${row.title}-${index}`}><b>{index+1}</b><span><strong>{row.title}</strong><small>{row.practiceMethod}</small><em>成功条件：{row.successCondition}</em></span></div>):<p>GPTレビューで具体化してください。</p>}</div></article>
-      <article className="panel"><span className="eyebrow">IMPROVEMENTS</span><h3>最近改善したこと</h3><CoachFactList rows={diagnosis.improvements}/></article>
-      <article className="panel"><span className="eyebrow">STRENGTHS</span><h3>現在の強み</h3><CoachFactList rows={diagnosis.strengths}/></article>
-      <article className="panel"><span className="eyebrow">UNKNOWNS</span><h3>まだ判断できないこと</h3><div className="coach-fact-list">{diagnosis.unknowns.length?diagnosis.unknowns.map((row,index)=><div key={`${row.title}-${index}`}><strong>{row.title}</strong><span>必要な証拠：{row.evidenceNeeded}</span></div>):<p>大きな未確認項目はありません。</p>}</div></article>
-    </section>
-    <section className="panel coach-review-panel">
-      <div className="panel-title"><div><span className="eyebrow">GPT COACH REVIEW</span><h3>GPTで現在地をレビュー</h3></div><Badge>API不使用</Badge></div>
-      <p>代表Attempt・concept evidence・本番系指標だけをまとめた入力済みプロンプトです。raw履歴や計画は変更せず、保存されるのはコーチ診断だけです。</p>
-      <div className="button-row"><button className="primary" onClick={copy}><Copy size={16}/>{copied?"コピーしました":"入力済みGPTプロンプトをコピー"}</button></div>
-      <details><summary>GPTのcoach_updateを取り込む</summary><p className="helper-text">現在保存中のコーチ診断と、今回のGPT診断を比較します。確認するまで保存されません。</p>
-        <textarea className="paste-area coach-paste" value={text} onChange={event=>setText(event.target.value)} placeholder="GPTが返したcoach_update JSONをそのまま貼り付け"/>
-        <button className="secondary" disabled={busy||!text.trim()} onClick={parse}>診断の変更内容を確認</button>{error&&<div className="field-error"><p>{error.message}</p>{error.stage&&<details className="coach-import-error-details"><summary>詳細</summary><code>stage: {error.stage}{error.path?`\npath: ${error.path}`:""}{error.reason?`\nreason: ${error.reason}`:""}</code></details>}</div>}</details>
-      {!!coach.history.length&&<details><summary>過去のコーチ診断（{coach.history.length}件）</summary><div className="coach-history">{coach.history.map((row,index)=><div key={`${row.reviewedAt}-${index}`}><strong>{row.reviewedAt.slice(0,10)}・LEVEL {row.level.value}</strong><span>{row.primaryBottleneck.title}</span></div>)}</div></details>}
-    </section>
-    {preview&&<Modal title="コーチ診断の変更内容" close={()=>setPreview(null)}><div className="coach-preview"><dl><dt>本番レベル</dt><dd>{preview.diff.level}</dd>
-      <dt>合格見通し</dt><dd>{preview.diff.passOutlook.before} → {preview.diff.passOutlook.after}</dd>
-      <dt>信頼度</dt><dd>{coachConfidenceText(preview.diff.confidence.before)} → {coachConfidenceText(preview.diff.confidence.after)}</dd>
-      <dt>最大ボトルネック</dt><dd>{preview.diff.bottleneck.before} → {preview.diff.bottleneck.after}</dd></dl>
-      {preview.diff.unchanged?<p>保存中の診断から変更はありません。</p>:<div className="coach-diff-lists">
-        <CoachDiffList title="次に鍛えること" diff={preview.diff.nextActions}/><CoachDiffList title="現在の強み" diff={preview.diff.strengths}/>
-        <CoachDiffList title="最近の改善" diff={preview.diff.improvements}/><CoachDiffList title="未確認事項" diff={preview.diff.unknowns}/></div>}
-      <p>Attempt・Review・problem masterは変更しません。この診断を履歴へ追加します。</p><div className="form-actions"><button className="ghost" onClick={()=>setPreview(null)}>キャンセル</button><button className="primary" disabled={busy} onClick={save}>確認して保存</button></div></div></Modal>}
-  </>;
+  return <CoachReviewControls data={data} run={run} busy={busy}/>;
 }
 function CoachDiffList({title,diff}:{title:string;diff:CoachListDiff}){
   if(!diff.added.length&&!diff.removed.length&&!diff.changed.length)return <div><strong>{title}</strong><span>変更なし</span></div>;
@@ -1410,7 +1268,11 @@ function CurrentWeaknessPanel({data,onToday}:{data:Bootstrap;onToday:()=>void}){
     {!rows.length&&<p>確定した失敗targetの証拠がありません。未測定は習得済みとは扱いません。</p>}
   </section>;
 }
-function WeakView({data,run,busy,onToday}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean;onToday:()=>void}) {
+function WeakView({data,run,busy,onToday,select}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean;onToday:()=>void;select:(p:Problem,t:Task)=>void}){
+  const [history,setHistory]=useState(false);
+  return <><WeaknessFocus data={data} onStart={select} onToday={onToday} onSaved={()=>run(async()=>{},'転移結果を反映しました')}/><details className="panel" onToggle={e=>setHistory(e.currentTarget.open)}><summary>全技能・保持・転移の根拠と履歴</summary>{history&&<WeakEvidenceHistory data={data} run={run} busy={busy} onToday={onToday}/>}</details></>;
+}
+function WeakEvidenceHistory({data,run,busy,onToday}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean;onToday:()=>void}) {
   const [editing,setEditing]=useState<Attempt|null>(null);
   const [form,setForm]=useState<Record<string,string>>({});
   const trend=analyzeWeakTrends(data.problems,data.attempts,data.weakNotes,"",data.problemAliases);
@@ -2035,4 +1897,4 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
 }
 
 function Field({label,children,wide=false}:{label:string;children:React.ReactNode;wide?:boolean}) {return <label className={`field ${wide?"wide":""}`}><span>{label}</span>{children}</label>}
-function Modal({title,close,children}:{title:string;close:()=>void;children:React.ReactNode}) {return <div className="modal-backdrop" onMouseDown={close}><div className="modal" onMouseDown={e=>e.stopPropagation()}><div className="modal-head"><h2>{title}</h2><button onClick={close}><X/></button></div>{children}</div></div>}
+function Modal({title,close,children}:{title:string;close:()=>void;children:React.ReactNode}) {return <div className="modal-backdrop" onMouseDown={close}><div className="modal" role="dialog" aria-modal="true" aria-label={title} onMouseDown={e=>e.stopPropagation()}><div className="modal-head"><h2>{title}</h2><button onClick={close} aria-label="閉じる"><X/></button></div>{children}</div></div>}

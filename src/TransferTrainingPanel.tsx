@@ -1,10 +1,10 @@
 import {useEffect,useState} from "react";
 import {post} from "./api";
-type View={status:string;problem?:{problem_id:string;display_label:string;difficulty:string;estimated_minutes:number;problem_text:string};existingProblemId?:string;prompt?:string;pendingReason?:string;
+type View={status:string;statementOnly?:boolean;problem?:{problem_id:string;display_label:string;difficulty:string;estimated_minutes:number;problem_text:string};existingProblemId?:string;prompt?:string;pendingReason?:string;
   sourceContext?:{sourceProblemId:string;sourceLabel:string;skillName:string;sourceAttemptId:number;sourceScopeText:string;destinationProblemId?:string;evidenceKind:string};
   afterSubmission?:{rootSkillId:string;rootSkillName?:string;sourceProblemId:string;result:string;evidence:string;solution:string;rubric:string;
     feedback?:{score:number|null;scoreMax:number;errorPoint:string;nextAction:string;successCriterion:string}}};
-export function TransferTrainingPanel({trainingKey,onSaved}:{trainingKey:string;onSaved?:()=>void;onExisting?:(id:string)=>void}){
+export function TransferTrainingPanel({trainingKey,onSaved,allowBundle=true}:{trainingKey:string;onSaved?:()=>void;onExisting?:(id:string)=>void;allowBundle?:boolean}){
   const [view,setView]=useState<View>(),[error,setError]=useState(""),[busy,setBusy]=useState(false),[payload,setPayload]=useState(""),
     [minutes,setMinutes]=useState(""),[referenceLevel,setReference]=useState(0),[message,setMessage]=useState(""),[copyFallback,setCopyFallback]=useState(""),
     [sourceContext,setSourceContext]=useState<View['sourceContext']>();
@@ -18,8 +18,9 @@ export function TransferTrainingPanel({trainingKey,onSaved}:{trainingKey:string;
         try{await navigator.clipboard.writeText(response.prompt);setMessage(action==="grading-prompt"?"コピーしました。確定答案と問題資料をGPTへ渡し、採点JSONを取り込んでください。":"コピーしました。生成と検証は別のGPT会話で実行してください。");}
         catch{setCopyFallback(response.prompt);setMessage("自動コピーが許可されていません。下のプロンプトを全選択してコピーしてください。");}
       }
-      if(action==="grade")onSaved?.();
-      setPayload("");setView(await request("view"));
+      if(action==="grade"||action==="validate")onSaved?.();
+      if(['draft','validate','grade'].includes(action)&&response.status!=='problem_pending')setPayload(current=>current===payload?'':current);
+      setView(await request("view"));
     }catch(e){setError(e instanceof Error?e.message:String(e));}finally{setBusy(false);}
   };
   const content=view?.problem;
@@ -32,9 +33,10 @@ export function TransferTrainingPanel({trainingKey,onSaved}:{trainingKey:string;
         <p>確認する技能：{sourceContext.skillName}</p><p>元の対象範囲：{sourceContext.sourceScopeText}</p>
         <p>転移先：{sourceContext.destinationProblemId||'開始時に別問題を割り当てます'}</p><small>{sourceContext.evidenceKind}。問題を開いた後の解答前画面には、この情報を自動表示しません。</small></section>}</>}
     {view?.existingProblemId&&!content&&<><p>高信頼の既存問題を使用します。生成は不要です。</p><button disabled={busy} onClick={()=>act("start")}>既存の転移確認問題を開く</button></>}
+    {view?.existingProblemId&&!content&&allowBundle&&<button disabled={busy} onClick={()=>act('start-generated',true)}>新しい転移問題の生成プロンプトをコピー</button>}
     {view&&!content&&!view.existingProblemId&&<>
-      <p>ChatGPTに手動で渡し、問題文だけのJSONを戻してください。形式確認後、別の新しい会話で品質確認します。解答・採点基準は答案確定後に取り込みます。</p>
-      {["generated","requested"].includes(view.status)&&<button disabled={busy} onClick={()=>act("start",true)}>問題生成プロンプトをコピー</button>}
+      <p>{view.statementOnly?'この既存依頼は問題文のみの形式です。解答・採点基準は答案確定後に取り込みます。':allowBundle?'ChatGPTの問題・正答・採点基準を取り込み、別の会話で品質確認します。登録後の解答前画面には問題文だけを表示します。':'ChatGPTに問題文だけのJSONを戻してもらい、別の新しい会話で品質確認します。'}</p>
+      {["generated","requested"].includes(view.status)&&<button disabled={busy} onClick={()=>act(allowBundle?'start-generated':"start",true)}>問題生成プロンプトをコピー</button>}
       {view.status==="validation_pending"&&<button disabled={busy} onClick={()=>act("validation-prompt",true)}>品質確認プロンプトをコピー</button>}
       {["requested","validation_pending"].includes(view.status)&&<div>
         <label>{view.status==="requested"?"生成結果を貼り付け":"品質確認結果を貼り付け"}<textarea rows={5} autoComplete="off" value={payload} onChange={e=>setPayload(e.target.value)} style={{width:"100%"}}/></label>
@@ -43,6 +45,7 @@ export function TransferTrainingPanel({trainingKey,onSaved}:{trainingKey:string;
       {view.status==="pending"&&<p>候補は保留です。{view.pendingReason}無理に生成せず本番演習へ戻ってください。</p>}
     </>}
     {content&&<>
+      {view.status==='problem_pending'&&<p role="status">{view.pendingReason} 新しい会話で問題の条件を再確認してください。</p>}
       <h4>{content.display_label}</h4><p>{content.difficulty}・目安{content.estimated_minutes}分</p>
       {!view?.afterSubmission&&<section className="task-introduction" aria-label="課題の対象と回収目標">
         <p>対象：{content.display_label}（{content.problem_id}）</p><p>今回の作業：別問題の転移訓練</p>
