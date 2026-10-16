@@ -3,6 +3,7 @@ import {createStateReloadCoordinator} from "./stateReload.ts";
 import {TransferTrainingPanel} from "./TransferTrainingPanel";
 import {LearningDashboard,CoachReviewControls} from './LearningDashboard';
 import {WeaknessFocus} from './WeaknessFocus';
+import {PastExamResults} from './PastExamResults';
 import {deriveWeaknessDisplayRows,deriveLearningUpdateSummary,deriveCurrentWeaknessRows,deriveCurrentLearningDiagnosis,deriveTaskIntroduction,deriveProblemReference,taskAssistanceText,preAnswerReason,completionCriterionText,deriveProblemLearningView,deriveProblemLearningViews,imageGradingPrompt,optionalNetMinutes,netMinutesText} from "./learningFeedback";
 import {appendTaskAnswerScope,type TaskAnswerScope} from './taskAnswerScope';
 import { useRegisterSW } from "virtual:pwa-register/react";
@@ -1362,6 +1363,7 @@ function PastView({data,go,run,busy,startingTask}:{data:Bootstrap;go:(p:Page)=>v
   const blankQuestions=():ScanQuestion[]=>Array.from({length:5},(_,index)=>({questionLabel:`問${index+1}`,predictedType:"",firstStep:"",predictedScore:null,predictedMinutes:null,sinkRisk:"medium",selected:index<3,selectionReason:"",plannedOrder:index<3?index+1:null,actualScore:null,actualMinutes:null,typeJudgmentCorrect:null,firstStepCorrect:null,sank:null,hintUsed:false,referenceUsed:false,completed:false}));
   const [session,setSession]=useState<{session_kind:PastExamSessionKind;date:string;year:string;scan_set_source:string;scan_minutes:string;actual_total_minutes:string;selection_strategy:string;selection_change_reason:string;notes:string;answer_exposure:boolean;initial_selected_problem_ids:string[];questions:ScanQuestion[]}>({session_kind:workspace.recommended?.taskType==="timed_three_question_session"||workspace.recommended?.taskType==="simulation"?"selected_three_timed":defaultSessionKind(days),date:todayString(),year:String(workspace.recommended?.year||catalogYears[0]||""),scan_set_source:"past_exam_year",scan_minutes:"10",actual_total_minutes:"",selection_strategy:"",selection_change_reason:"",notes:"",answer_exposure:false,initial_selected_problem_ids:[],questions:blankQuestions()});
   const [analysisText,setAnalysisText]=useState<Record<number,string>>({});
+  const [resultSession,setResultSession]=useState<{id:number}>();
   const [editingSessionId,setEditingSessionId]=useState<number|null>(null);
   useEffect(()=>{
     if(!startingTask||!isPastExamSessionTask(startingTask))return;
@@ -1425,10 +1427,12 @@ function PastView({data,go,run,busy,startingTask}:{data:Bootstrap;go:(p:Page)=>v
         </details>
       </section>
     </section>:
-    <section className="panel past-workspace-next"><div><span className="eyebrow">NEXT PAST-EXAM SESSION</span><h2>次の推奨過去問session</h2>{workspace.recommended?<><strong>{workspace.recommended.year}年・{workspace.recommended.label}</strong><p>{workspace.recommended.workflow}</p><small>{workspace.recommended.clean?"clean selection evidenceとして記録できます":"practice scanとして扱い、clean指標とは分離します"}</small><p><b>なぜこの年度：</b>{workspace.recommended.selectedYearReason}</p>{workspace.unseenIndividualPool.length>0&&<small>前年度などの未見残問は個別演習poolに保持：{workspace.unseenIndividualPool.slice(0,5).map(row=>row.canonicalProblemId).join("、")}</small>}</>:<p>{workspace.warning}</p>}</div>{workspace.recommended&&<button className="primary" onClick={()=>{setEditingSessionId(null);setSession({...session,year:String(workspace.recommended!.year),session_kind:workspace.recommended!.taskType==="timed_three_question_session"||workspace.recommended!.taskType==="simulation"?"selected_three_timed":"scan_only",questions:blankQuestions()});document.getElementById("past-session-form")?.scrollIntoView({behavior:"smooth"})}}><Play size={17}/>開始</button>}</section>}
+    null}
+    <PastExamResults data={data} focusSession={resultSession} defaultYear={startingTask?.past_exam_year||workspace.recommended?.year} eligibleYears={workspace.candidates.filter(c=>c.eligibleRows.length>=5).map(c=>c.year)} onSaved={()=>void run(async()=>{},'演習の状態を更新しました')} onImport={()=>go('import')} onRepair={()=>go('today')}/>
+    <details className="panel past-legacy-details"><summary>スキャン詳細・以前の分析を確認</summary>
     <section className="past-analysis-intro">
       <div><span className="eyebrow">PAST EXAM WORKSPACE</span><h2>過去問演習</h2><p>scan5 → 3問選択 → 答案 → 採点を一つの本番型workflowとして記録します。未解答問題は0点にしません。</p></div>
-      <button className="primary" onClick={()=>go("import")}><ClipboardPaste size={17}/>解いた問題をGPT採点</button>
+      <button className="primary" onClick={()=>document.querySelector('.past-year-workspace')?.scrollIntoView({behavior:'smooth'})}>年度別の採点・成績へ</button>
     </section>
     {!blindSessionStart&&<><details className="panel past-analytics-detail"><summary>詳細分析</summary><div className="past-analysis-metrics">
       <Metric label="取り込み済み" value={attempts.length} unit="件" hint="過去問の採点履歴"/>
@@ -1458,7 +1462,7 @@ function PastView({data,go,run,busy,startingTask}:{data:Bootstrap;go:(p:Page)=>v
       </>}
     </details>
     </>}
-    <details className="panel past-session-quick" id="past-session-form" open><summary>{editingSessionId?"5問スキャンの事後結果を入力":"演習形式を選ぶ"}</summary><form className="scan5-form" onSubmit={event=>{event.preventDefault();void submitSession()}}>
+    <details className="panel past-session-quick" id="past-session-form" open={!!editingSessionId}><summary>{editingSessionId?"5問スキャンの事後結果を入力":"スキャン形式・詳細記録"}</summary><form className="scan5-form" onSubmit={event=>{event.preventDefault();void submitSession()}}>
       <div className="form-grid"><Field label="形式"><select value={session.session_kind} onChange={event=>setSession({...session,session_kind:event.target.value as PastExamSessionKind})}><option value="scan_only">scan only</option><option value="scan_plus_one">scan＋1問</option><option value="selected_three_timed">3問90分</option><option value="retrospective_review">事後レビュー</option></select></Field>
       <Field label="実施日"><input type="date" value={session.date} onChange={event=>setSession({...session,date:event.target.value})}/></Field>
       <Field label="年度"><select value={session.year} onChange={event=>setSession({...session,year:event.target.value})}>{catalogYears.map(year=><option key={year} value={year}>{year}</option>)}</select></Field>
@@ -1501,7 +1505,7 @@ function PastView({data,go,run,busy,startingTask}:{data:Bootstrap;go:(p:Page)=>v
         </div>
         {!!calibrationRows.length&&<p className="past-calibration"><b>較正用追加採点：</b>{calibrationRows.map(row=>`${row.questionLabel}=${row.actualScore}`).join(" / ")}</p>}
         {!!saved.score_calibration?.length&&<p className="past-calibration"><b>得点予測較正：</b>{saved.score_calibration.map(row=>`${row.problemId} ${row.error>0?"+":""}${row.error}`).join(" / ")}</p>}
-        <div className="task-actions"><button className="secondary" onClick={()=>editPastSession(saved)}><Pencil size={15}/>事後結果を入力</button><button className="secondary" onClick={()=>navigator.clipboard.writeText(buildScan5Prompt(saved,days))}><Copy size={15}/>GPT分析プロンプト</button>{metrics.solvedCount>0&&<button className="secondary" onClick={()=>go("import")}><ClipboardPaste size={15}/>解いた問題を採点</button>}</div>
+        <div className="task-actions"><button className="secondary" onClick={()=>editPastSession(saved)}><Pencil size={15}/>事後結果を入力</button><button className="secondary" onClick={()=>navigator.clipboard.writeText(buildScan5Prompt(saved,days))}><Copy size={15}/>GPT分析プロンプト</button>{metrics.solvedCount>0&&<button className="secondary" onClick={()=>saved.session_kind==='selected_three_timed'?setResultSession({id:saved.id}):go('import')}><ClipboardPaste size={15}/>解いた問題を採点</button>}</div>
         <details><summary>GPT分析結果を取り込む（session完了とは別）</summary><textarea value={analysisText[saved.id]||""} onChange={event=>setAnalysisText({...analysisText,[saved.id]:event.target.value})} placeholder="scan_update YAMLを貼り付け"/><button className="secondary" disabled={busy||!analysisText[saved.id]} onClick={()=>run(()=>post(`/api/past-sessions/${saved.id}/analysis`,{text:analysisText[saved.id]}),"scan5分析を保存しました")}>専用分析を保存</button></details>
       </article>})}</div>
     <section className="section-head"><div><span className="eyebrow">REPAIR TARGETS</span><h2>過去問で明らかになった要復習箇所</h2></div></section>
@@ -1535,6 +1539,7 @@ function PastView({data,go,run,busy,startingTask}:{data:Bootstrap;go:(p:Page)=>v
       {pastProblems.map(problem=><div className="past-master-row" key={problem.problem_id}><div><strong>{problemDisplayLabel(problem)}</strong><span>{problem.problem_id} ・ {problem.theme}</span></div><small>関連A/S：{[problem.linked_a_problems,...(problem.related_s_problem_ids||[])].filter(Boolean).join(" / ")||"未設定"}</small></div>)}
     </section>
     </>}
+    </details>
   </>;
 }
 

@@ -295,6 +295,9 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
   ].filter(Boolean) as string[];
   const mergedCorrectionFields=[...new Set([...(Array.isArray(raw.correction_fields)?raw.correction_fields.map(String):[]),...autoCorrectionFields])];
   const normalized:StudyUpdate={
+    parent_past_session_id:raw.parent_past_session_id==null?undefined:Number(raw.parent_past_session_id),
+    past_exam_session_instance_id:scalar(raw.past_exam_session_instance_id)||undefined,
+    session_role:['selected_timed','counterfactual_calibration','individual_transfer'].includes(scalar(raw.session_role))?scalar(raw.session_role) as StudyUpdate['session_role']:undefined,
     task_context:raw.task_context as StudyUpdate['task_context'],
     source_attempt_id:raw.source_attempt_id==null?undefined:Number(raw.source_attempt_id),
     source_review_id:raw.source_review_id==null?undefined:Number(raw.source_review_id),

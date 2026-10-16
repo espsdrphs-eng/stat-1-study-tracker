@@ -230,6 +230,7 @@ export function derivePastExamSessionState(session?:Partial<PastSession>|null):P
     return "planned";
   }
   if(session.simulation_completed_at||session.attempt_completed_at&&Number((session.questions||[]).filter(row=>row.completed).length)>=3)return "completed";
+  if(session.answer_finished_at)return "grading_pending";
   const selected=(session.final_selected_problem_ids||session.initial_selected_problem_ids||[]).filter(Boolean);
   const solved=(session.questions||[]).filter(row=>row.completed);
   if(solved.length&&solved.some(row=>row.actualScore==null))return "grading_pending";
@@ -340,6 +341,7 @@ export function reconcilePastExamSessionEvidence(session:PastSession,attempts:At
   const selected=selectedProblemIds(session),selectedSet=new Set(selected);
   const existingIds=new Set([...(session.selected_timed_attempt_ids||[]),...(session.counterfactual_calibration_attempt_ids||[]),...(session.linked_attempt_ids||[])]);
   const candidates=attempts.filter(attempt=>attemptIsUsable(attempt)&&questionIds.has(resolvePastExamProblemId(session.year,attempt.problem_id))&&
+    (!session.grading_contracts||attempt.parent_past_session_id===session.id||existingIds.has(attempt.id))&&
     (existingIds.has(attempt.id)||aliases.has(Number(attempt.parent_past_session_id||0))||
       (problemYear(attempt.problem_id)===Number(session.year)&&String(attempt.date)>=String(session.date)&&
         String(attempt.date)<=addDays(String(session.date),14))))
@@ -371,7 +373,8 @@ export function reconcilePastExamSessionEvidence(session:PastSession,attempts:At
   });
   const timingUnknown=selected.some(id=>{const q=questions.find(row=>row.problemId===id);return !!q?.sourceAttemptId&&q.actualMinutes==null});
   const selectedSolveMinutes=timingUnknown?undefined:selected.reduce((sum,id)=>sum+Number(questions.find(row=>row.problemId===id)?.actualMinutes||0),0);
-  const scanMinutes=Number(session.scan_minutes||0),sessionElapsedMinutes=selectedSolveMinutes==null?undefined:scanMinutes+selectedSolveMinutes;
+  const scanMinutes=Number(session.scan_minutes||0),sessionElapsedMinutes=selectedSolveMinutes==null?
+    (session.answer_finished_at&&Number(session.actual_total_minutes)>0?Number(session.actual_total_minutes):undefined):scanMinutes+selectedSolveMinutes;
   const selectedComplete=selected.length===3&&selectedAttempts.length===3;
   const allComparable=questions.length===5&&questions.every(row=>row.actualScore!=null);
   const optimal=allComparable?[...questions].sort((a,b)=>Number(b.actualScore)-Number(a.actualScore)).slice(0,3).map(row=>row.problemId||row.questionLabel):[];

@@ -295,6 +295,8 @@ export type Roadmap = {
   id:number; order_index:number; problem_id:string; block_name:string; expected_mode:string; load_score:number; is_active:number;
 };
 export type PastSession = Record<string, unknown> & {
+  answer_finished_at?:string;answered_problem_ids?:string[];
+  grading_contracts?:Record<string,GradingContractSnapshot>;
   id:number;year:number;session_type:string;date:string;session_kind?:PastExamSessionKind;stage?:PastExamStage;
   scan_set_source?:ScanSetSource;source_label?:string;questions?:ScanQuestion[];scan_minutes?:number;
   initial_selected_problem_ids?:string[];final_selected_problem_ids?:string[];solve_order?:string[];
@@ -659,6 +661,7 @@ export type StudyUpdate = {
   chapter?:number|null; problem_number?:number; difficulty?:number|null; themes?:string[];
   related_s_problem_ids?:string[]; linked_s_problems?:string[]; linked_past_exams?:string[];
   parent_past_session_id?:number|string;
+  past_exam_session_instance_id?:string;session_role?:'selected_timed'|'counterfactual_calibration'|'individual_transfer';
   ignored_parts?:string[]; score_text?:string; score_numeric?:number|null; score_max?:number|null;
   result_summary?:string; exam_selection_rank?:string; error_types?:string[];
   improvement_guidance?:string; required_derivation?:string; corrected_answer?:string;

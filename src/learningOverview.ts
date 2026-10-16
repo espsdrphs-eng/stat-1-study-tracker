@@ -30,6 +30,11 @@ export function priorityRepairTasks(data:Bootstrap){
  return data.today.tasks.filter(t=>!t.checked&&t.ranking?.eligible&&!t.stable_session_key&&!t.transfer_training_key&&
   (t.grading_contract?.learningPurpose||t.learning_purpose)==='error_repair').sort((a,b)=>(a.ranking?.rank||Infinity)-(b.ranking?.rank||Infinity)).slice(0,3);
 }
+export function weaknessTransferAction(task:Task,transfers:Task[]){
+ const candidate=transfers.find(t=>t.problem_id===task.problem_id&&t.ranking?.eligible&&!t.checked&&t.transfer_training_key&&
+  (task.repair_lineage?.weaknessSkillIds||[]).includes(t.transfer_training_key.replace(/^training:/,'')));
+ return candidate?{key:candidate.transfer_training_key,reason:null}:{key:undefined,reason:task.repair_lineage?.weaknessSkillIds?.length?'先に対象の補修と参照なしの遅延保持を確認します。':'採点根拠による技能の対応付けと、補修・遅延保持の確認が必要です。'};
+}
 export function overviewNextTask(data:Bootstrap):Task|undefined{
  const current=data.today.currentTask;if(current&&!current.checked&&(current.ranking?.eligible||!data.today.canonicalStudyPlan.ranked))return current;
  return [...data.today.tasks].filter(t=>!t.checked&&t.ranking?.eligible).sort((a,b)=>(a.ranking?.rank||Infinity)-(b.ranking?.rank||Infinity))[0];

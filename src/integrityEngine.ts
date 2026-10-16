@@ -383,7 +383,8 @@ function calculateIntegrityAudit(args: {
       const attempt=attemptsById.get(question.sourceAttemptId);if(!attempt)continue;
       if(question.actualScore!==Number(attempt.score_numeric))issues.push({category:"session_attempt_score_mismatch",severity:"active",attemptIds:[attempt.id],
         detail:`${question.problemId} session score ${question.actualScore} differs from Attempt ${attempt.score_numeric}`,repairable:true});
-      if(question.actualMinutes!==Number(attempt.time_minutes||0))issues.push({category:"session_attempt_minutes_mismatch",severity:"active",attemptIds:[attempt.id],
+      const attemptMinutes=attempt.time_minutes==null?null:Number(attempt.time_minutes);
+      if((question.actualMinutes??null)!==attemptMinutes)issues.push({category:"session_attempt_minutes_mismatch",severity:"active",attemptIds:[attempt.id],
         detail:`${question.problemId} session minutes ${question.actualMinutes} differs from Attempt ${attempt.time_minutes}`,repairable:true});
     }
   }

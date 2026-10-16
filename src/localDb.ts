@@ -30,6 +30,7 @@ import { attemptPlanningEligible, classifyKPolicyValidity, excludeLegacyKFromPla
 import { analyzeSourceMismatchRepair, resolveReviewOrigin, REVIEW_ORIGIN_POLICY_VERSION } from "./reviewOrigin.ts";
 import { normalizePastExamSession, parseScan5Update, sessionStudyMinutes, validatePastExamSession } from "./pastExamWorkflow.ts";
 import { auditLegacyReviewContracts, buildGradingContractSnapshot, buildInitialGradingContract, buildProblemContextPack, computeContractHash, contractDifferences, completeGradingTaskContext, prescriptionFromContract, repairTargets, taskFieldsFromContract } from "./gradingContract.ts";
+import {buildPastSessionContract,buildPastSessionGradingPrompt,sessionSelectedIds} from './pastExamGrading.ts';
 import { primaryErrorFromFindings, validateGradedFindings } from "./gradedParts.ts";
 import {
   addCalendarDays, auditReviewSchedules, differenceInCalendarDays, pendingReviewIdentityKey, resolveReviewSchedule,
@@ -71,7 +72,7 @@ import {deriveDashboardKpis} from "./dashboardKpi.ts";
 import {deriveExamReadinessAssessment} from "./examCapability.ts";
 import {reviewDueState,reviewPlanningDecision} from "./todayLearningPolicy.ts";
 import {deriveCanonicalStudyPlan,deriveRankedStudyCandidates} from "./canonicalStudyPlan.ts";
-import {canonicalizePastExamSessions,currentPastExamSessionExplanation,derivePastExamSessionState,pastExamSessionKey,pastExamSessionPurpose,reconcilePastExamSessionEvidence,stablePastExamSessionKey,validatePastExamSessionIdentity,validatePastExamTaskIdentity,projectPastExamSessionAdmissions} from "./pastExamPlanning.ts";
+import {canonicalizePastExamSessions,currentPastExamSessionExplanation,derivePastExamWorkspace,derivePastExamSessionState,pastExamSessionKey,pastExamSessionPurpose,reconcilePastExamSessionEvidence,stablePastExamSessionKey,validatePastExamSessionIdentity,validatePastExamTaskIdentity,projectPastExamSessionAdmissions} from "./pastExamPlanning.ts";
 
 const PLANNER_RUNTIME_MODE_META_KEY="planner-runtime-mode";
 const CURRENT_PLAN_PROJECTION_META_KEY="current-plan-projection-version";
@@ -1022,6 +1023,8 @@ async function saveGptUpdates(updates:(StudyUpdate&Record<string,unknown>)[]):Pr
   updates=updates.map(row=>normalizeGradingContextInput(row) as StudyUpdate&Record<string,unknown>);
   if(!updates.length)throw new Error('保存する採点結果がありません。');
   for(const update of updates){
+    if(update.parent_past_session_id&&!String(update.contract_id||'').startsWith(`past-session:${Number(update.parent_past_session_id)}:`))
+      throw new Error('session採点の識別情報には、演習から取得した採点契約が必要です。');
     const score=update.score_numeric,max=Number(update.score_max??100);
     if(score!=null&&(!Number.isFinite(Number(score))||!Number.isFinite(max)||max<=0||Number(score)<0||Number(score)>max))
       throw new Error('採点点数が範囲外です。入力を保持し、点数と満点を確認してください。');
@@ -1032,7 +1035,7 @@ async function saveGptUpdates(updates:(StudyUpdate&Record<string,unknown>)[]):Pr
   try{await assertDatabaseSchema('saveGptEvaluation', [...GPT_SAVE_REQUIRED_STORES,STORES.correctionLogs]);}
   catch(error){if(!(error instanceof IndexedDbSchemaError))throw error;await repairDatabaseSchema();await assertDatabaseSchema('saveGptEvaluation',[...GPT_SAVE_REQUIRED_STORES,STORES.correctionLogs]);}
   const logs:PendingCorrectionLog[]=[],ids:number[]=[];let replayed=true;
-  await db.transaction('rw',[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.answerIndex,db.problemAliases,db.correctionLogs],async()=>{
+  await db.transaction('rw',[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.answerIndex,db.problemAliases,db.correctionLogs,db.pastSessions],async()=>{
     for(let i=0;i<updates.length;i++){
       const prior=await db.meta.get(keys[i].key);
       if(prior){const receipt=JSON.parse(prior.value) as {payload:string;attemptId:number};
@@ -1133,6 +1136,21 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     assertReviewExecutionAdmission(sourceReview,todayString());
   }
   const requestedContractId=String(input.contract_id||"");
+  const requestedSessionId=Number(requestedContractId.match(/^past-session:(\d+):/)?.[1]||0);
+  const sessionRecord=requestedSessionId?await db.pastSessions.get(requestedSessionId):undefined;
+  const sessionContract=sessionRecord?.grading_contracts?.[problem.problem_id];
+  if(requestedSessionId){
+    if(!sessionRecord||!sessionContract||sessionContract.contractId!==requestedContractId||input.generated_from_review_id||
+      Number(input.parent_past_session_id)!==requestedSessionId||input.session_role!=='selected_timed'||input.past_exam_session_instance_id!==sessionRecord.session_instance_id)
+      throw new Error('sessionの採点契約・対象問題・識別情報が一致しません。演習結果から採点プロンプトを再取得してください。');
+    buildPastSessionContract(sessionRecord,problem);
+    if((await db.attempts.where('problem_id').equals(problem.problem_id).toArray()).some(a=>a.parent_past_session_id===requestedSessionId&&!a.invalidated_at&&!a.superseded_by_attempt_id))
+      throw new Error('このsessionの対象問題は採点済みです。同じ結果を再試行するか、答案差し替えを使用してください。');
+    if(input.learning_purpose!=='exam_performance'||input.assessment_timing!=='independent_performance')throw new Error('本番sessionと補修の採点区分が一致しません。');
+    if(input.score_max!=null&&Number(input.score_max)!==100)throw new Error('本番sessionの各問題は100点満点の得点率で採点してください。選択3問の本番100点換算はアプリで行います。');
+    const question=sessionRecord.questions?.find(q=>q.problemId===problem.problem_id);
+    input={...input,date:sessionRecord.date,actual_reference_level:Math.max(Number(input.actual_reference_level??input.reference_level??0),sessionRecord.answer_exposure?4:question?.referenceUsed?5:question?.hintUsed?3:0)};
+  }
   const requestedInitialContract=requestedContractId.startsWith(`initial:${problem.problem_id}:`);
   // Root-level interventions have a contract but no Review ID. Only an app-
   // validated, started task snapshot may authorize that contract; never GPT IDs.
@@ -1151,7 +1169,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     input={...input,task_origin:"review_attempt",mode:c.mode,learning_purpose:c.learningPurpose,learning_stage:c.learningStage,
       assessment_timing:startedTask.assessment_timing||"same_session_correction",allowed_reference_level:c.allowedReferenceLevel};
   }
-  if(!sourceReview&&requestedContractId&&!requestedInitialContract&&!startedTask)
+  if(!sourceReview&&requestedContractId&&!requestedInitialContract&&!startedTask&&!sessionContract)
     throw new Error("Review採点契約には対象Reviewが必要です。現在の採点プロンプトを再生成してください");
   if(requestedInitialContract){
     const [existingAttempts,existingReviews]=await Promise.all([
@@ -1167,7 +1185,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
   const initialContract=requestedInitialContract
     ?buildInitialGradingContract({problem,mode:String(input.mode||problem.recommended_mode),createdAt:String(input.date||todayString())})
     :undefined;
-  const gradingContract=sourceReview?.grading_contract||initialContract||startedTask?.grading_contract;
+  const gradingContract=sourceReview?.grading_contract||initialContract||startedTask?.grading_contract||sessionContract;
   if(gradingContract){
     if(!startedTask){
       const task=sourceReview||{problem_id:problem.problem_id,grading_contract:gradingContract};
@@ -1221,7 +1239,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
   // A root-based task has no Review ID. Its explicit aid is stored in the
   // existing paper-work record and must survive any grading import entrypoint.
   const workRow=await db.meta.get(`learning-work:${problem.problem_id}`);
-  if(workRow){
+  if(workRow&&!sessionContract){
     const work=JSON.parse(workRow.value) as import("./types.ts").LearningWork;
     if(work.problemId!==problem.problem_id||!Number.isFinite(work.baselineAttemptId)||!Number.isFinite(work.referenceLevel)||work.referenceLevel<0||work.referenceLevel>5)
       throw new Error("作業の参照記録が不正です。保存済みデータを確認してください");
@@ -3406,6 +3424,8 @@ async function savePastExamSession(body:Record<string,unknown>,existingId?:numbe
     const normalized=normalizePastExamSession({...previous,...body,id:existingId||0,stable_session_key:identity,
       session_instance_id:sessionInstanceId,session_purpose:stablePurpose,session_ordinal:ordinal,
       exposure_snapshot_at_start:snapshot,scan_evidence_kind:snapshot.classification}),validation=validatePastExamSession(normalized);
+    if(previous?.answer_finished_at&&JSON.stringify(sessionSelectedIds(previous).sort())!==JSON.stringify(sessionSelectedIds(normalized).sort()))
+      throw new Error('終了した演習の選択問題は変更できません。再挑戦は別の演習として記録してください。');
     if(!validation.valid)throw new Error(validation.errors.join(" "));
     const identityValidation=validatePastExamSessionIdentity(normalized);
     if(!identityValidation.valid)throw new Error(identityValidation.errors.join(" "));
@@ -4032,6 +4052,46 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     const id=Number(path.split("/")[3]),note=await db.weakNotes.get(id);
     if(!note) throw new Error("弱点ノートが見つかりません");
     await db.weakNotes.update(id,applyWeakNoteQuizResult(note,body.result==="remembered"?"remembered":"retry"));
+  } else if(path==='/api/past-sessions/start'){
+    const current=await bootstrap(),year=Number(body.year),workspace=derivePastExamWorkspace({catalog:current.adaptiveLearning.pastExamCatalog,attempts:current.attempts,pastSessions:current.pastSessions,today:current.dashboard.today,daysRemaining:current.dashboard.pace.daysRemaining});
+    const c=workspace.candidates.find(c=>c.year===year);
+    if(!c||c.eligibleRows.length<5)throw new Error('この年度は現在の保護・前提条件を満たしていません。Todayの待機条件を確認してください。');
+    const numbers=[...new Set<number>((Array.isArray(body.selectedQuestionNumbers)?body.selectedQuestionNumbers:[]).map(Number))];
+    if(numbers.length!==3||numbers.some(n=>!Number.isInteger(n)||n<1||n>5))throw new Error('問1〜問5から3問を選択してください。');
+    const selection=numbers.map(n=>c.eligibleRows.find(p=>p.questionNumber===n)?.canonicalProblemId);
+    if(selection.some(id=>!id))throw new Error('選択した問題の登録情報が不足しています。');
+    const active=current.pastSessions.find(s=>s.year===year&&s.session_kind==='selected_three_timed'&&!['completed','deferred','cancelled','invalidated'].includes(derivePastExamSessionState(s)));
+    if(active?.prompt_scanned_at||active?.attempt_started_at)return {sessionId:active.id,resumed:true} as T;
+    const ids=selection as string[];
+    return await savePastExamSession({year,date:current.dashboard.today,session_kind:'selected_three_timed',scan_set_source:'past_exam_year',scan_minutes:10,initial_selected_problem_ids:ids,
+      questions:c.eligibleRows.map(p=>({problemId:p.canonicalProblemId,questionLabel:`問${p.questionNumber}`,selected:ids.includes(p.canonicalProblemId),completed:false,actualScore:null,actualMinutes:null})),
+      past_exam_year_role:c.yearRole,scan_evidence_kind:c.cleanScanEligible?'clean':'practice',selected_year_reason:workspace.recommended?.year===year?workspace.recommended.selectedYearReason:`現在の保護条件を満たす${year}年を利用者が選択`,
+      exposure_snapshot_at_start:{classification:c.cleanScanEligible?'clean':'practice',exposed_problem_ids:c.eligibleRows.filter(p=>!['unseen','unknown'].includes(p.exposure)).map(p=>p.canonicalProblemId),total_problem_count:5,captured_at:new Date().toISOString()}},active?.id) as T;
+  } else if(/^\/api\/past-sessions\/\d+\/grading$/.test(path)){
+    const id=Number(path.split('/')[3]);
+    const initial=await db.pastSessions.get(id);
+    if(body.action==='finish'&&initial&&!initial.prompt_scanned_at&&!initial.attempt_started_at&&!initial.attempt_completed_at&&!initial.answer_finished_at){
+      const current=await bootstrap(),workspace=derivePastExamWorkspace({catalog:current.adaptiveLearning.pastExamCatalog,attempts:current.attempts,pastSessions:current.pastSessions,today:current.dashboard.today,daysRemaining:current.dashboard.pace.daysRemaining});
+      if(!workspace.candidates.some(c=>c.year===initial.year&&c.eligibleRows.length>=5))throw new Error('未開始の演習は現在の保護・前提条件を満たしてから開始してください。');
+    }
+    return await db.transaction('rw',[db.pastSessions,db.problems],async()=>{
+      const s=await db.pastSessions.get(id);if(!s||s.superseded_by_session_id)throw new Error('対象sessionが見つからないか更新されています。');
+      if(body.action==='finish'){
+        if(s.session_kind!=='selected_three_timed')throw new Error('この操作は3問90分演習の終了用です。');
+        if(s.answer_finished_at)return {ok:true,sessionId:id};
+        const answered=[...new Set<string>((Array.isArray(body.answeredProblemIds)?body.answeredProblemIds:[]).map(String))],selected=sessionSelectedIds(s);
+        if(answered.length!==3||answered.some(pid=>!selected.includes(pid)))throw new Error('選択3問の答案を採点対象として指定してください。未完の箇所は採点時に明示し、終了だけでは完答と判定しません。');
+        const total=body.totalMinutes==null||body.totalMinutes===''?undefined:Number(body.totalMinutes);
+        if(total!==undefined&&(!Number.isFinite(total)||total<=0))throw new Error('全体時間は正の分数か未入力で指定してください。');
+        await db.pastSessions.update(id,{answer_finished_at:new Date().toISOString(),answered_problem_ids:answered,...(total===undefined?{}:{actual_total_minutes:total})});
+        notifyStudyDataChanged({operation:'past-session-finish'});return {ok:true,sessionId:id};
+      }
+      if(body.action!=='prompt')throw new Error('演習の操作を確認してください。');
+      const p=await db.problems.get(String(body.problemId||''));if(!p)throw new Error('対象問題が見つかりません。');
+      const contract=s.grading_contracts?.[p.problem_id]||buildPastSessionContract(s,p);
+      await db.pastSessions.update(id,{grading_contracts:{...s.grading_contracts,[p.problem_id]:contract}});
+      return {prompt:buildPastSessionGradingPrompt(s,p,contract),contract,sessionId:id};
+    }) as T;
   } else if(path==="/api/past-sessions") {
     return await savePastExamSession(body) as T;
   } else if(/^\/api\/past-sessions\/\d+\/update$/.test(path)){
