@@ -72,7 +72,7 @@ import {deriveDashboardKpis} from "./dashboardKpi.ts";
 import {deriveExamReadinessAssessment} from "./examCapability.ts";
 import {reviewDueState,reviewPlanningDecision} from "./todayLearningPolicy.ts";
 import {deriveCanonicalStudyPlan,deriveRankedStudyCandidates} from "./canonicalStudyPlan.ts";
-import {canonicalizePastExamSessions,currentPastExamSessionExplanation,derivePastExamWorkspace,derivePastExamSessionState,pastExamSessionKey,pastExamSessionPurpose,reconcilePastExamSessionEvidence,stablePastExamSessionKey,validatePastExamSessionIdentity,validatePastExamTaskIdentity,projectPastExamSessionAdmissions} from "./pastExamPlanning.ts";
+import {canonicalizePastExamSessions,currentPastExamSessionExplanation,derivePastExamWorkspace,derivePastExamSessionState,pastExamSessionKey,pastExamSessionPurpose,reconcilePastExamSessionEvidence,stablePastExamSessionKey,validatePastExamSessionIdentity,validatePastExamTaskIdentity,projectPastExamSessionAdmissions,derivePastExamProblemStart} from "./pastExamPlanning.ts";
 
 const PLANNER_RUNTIME_MODE_META_KEY="planner-runtime-mode";
 const CURRENT_PLAN_PROJECTION_META_KEY="current-plan-projection-version";
@@ -3796,9 +3796,8 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     const problem=await db.problems.get(String(body.problemId||""));
     if(!problem||!["preparing","awaiting_grading"].includes(body.stage))throw new Error("問題と作業段階を確認してください");
     const current=await bootstrap();
-    const catalog=current.adaptiveLearning.pastExamCatalog.find(c=>c.canonicalProblemId===problem.problem_id);
-    if(catalog?.simulationProtected&&!current.today.tasks.some(t=>t.problem_id===problem.problem_id&&!t.stable_session_key&&t.ranking?.eligible))
-      throw new Error("この年度はblind本番測定の保護対象です。Todayまたは過去問sessionの解除条件を確認してください");
+    const admission=derivePastExamProblemStart({problemId:problem.problem_id,catalog:current.adaptiveLearning.pastExamCatalog,attempts:current.attempts,tasks:current.today.tasks,pastSessions:current.pastSessions,today:current.dashboard.today,daysRemaining:current.dashboard.pace.daysRemaining});
+    if(admission.blocked)throw new Error(`この年度はblind本番測定の保護対象です。${admission.reasons.join(' ')} ${admission.year}年の過去問演習から開始してください。`);
     if(body.reviewId)assertReviewExecutionAdmission(await db.reviews.get(Number(body.reviewId)),todayString());
     const key=`learning-work:${problem.problem_id}`,oldRow=await db.meta.get(key);
     const old=oldRow?JSON.parse(oldRow.value) as import("./types.ts").LearningWork:undefined;

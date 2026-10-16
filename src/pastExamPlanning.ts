@@ -506,6 +506,26 @@ export function buildPastExamYearCandidates(args:{
   }).filter((row):row is NonNullable<typeof row>=>!!row);
 }
 
+/** Same individual-start rule for the problem screen and the write endpoint. */
+export function derivePastExamProblemStart(args:{problemId:string;catalog:ExamReferenceCatalogItem[];attempts:Attempt[];tasks:Task[];pastSessions:PastSession[];today:string;daysRemaining:number}){
+ const row=args.catalog.find(r=>r.canonicalProblemId===args.problemId),year=row?.year;
+ const graded=args.attempts.some(a=>a.problem_id===args.problemId&&attemptPlanningEligible(a)&&!a.exclude_from_metrics&&!a.invalidated_at&&!a.superseded_by_attempt_id&&!a.duplicate_of_attempt_id&&a.score_numeric!=null);
+ const individual=args.tasks.some(t=>t.problem_id===args.problemId&&!t.stable_session_key&&t.ranking?.eligible);
+ const blocked=!!row?.simulationProtected&&!graded&&!individual;
+ if(!blocked)return {blocked:false,year,sessionEligible:false,reasons:[] as string[]};
+ const candidates=buildPastExamYearCandidates(args),sessionEligible=candidates.some(c=>c.year===year&&c.eligibleRows.length>=5);
+ const release=derivePastExamRoleRelease(args),role=year?pastExamYearRole(year):null,reasons:string[]=[];
+ if(role==='current_benchmark_simulation'){
+  if(!release.cleanMeasurement)reasons.push('先行するclean本番測定の完了が必要です。');
+  if(release.pendingRoots.length)reasons.push(`先行答案の必要な補修を参照なしで確認：${[...new Set(release.pendingRoots.map(r=>r.attempt.problem_id))].join('、')}`);
+ }else if(role==='historical_retest'&&!release.historicalRetestReleased)reasons.push('current benchmarkを完了し、その後の演習または別問題への転移を確認します。');
+ const window=year?deriveLearningPolicy(args.daysRemaining).holdoutPolicy.releaseWindowDaysByYear[year]:undefined;
+ if(window!=null&&args.daysRemaining>window)reasons.push(`本番まで残り${window}日以内が開始条件です（現在${args.daysRemaining}日）。`);
+ if(!reasons.length&&!sessionEligible)reasons.push('年度の問題情報と本番形式の前提条件を確認してください。');
+ if(sessionEligible)reasons.push('本番形式90分（scanを含む）から3問を選択して開始できます。');
+ return {blocked,year,sessionEligible,reasons};
+}
+
 export function selectPastExamYear(args:{candidates:PastExamYearCandidate[];taskType:PastExamTaskType;excludedYears?:Set<number>}){
   const session=["clean_scan5","practice_scan5","timed_three_question_session","simulation"].includes(args.taskType);
   const available=args.candidates.filter(row=>!args.excludedYears?.has(row.year)&&

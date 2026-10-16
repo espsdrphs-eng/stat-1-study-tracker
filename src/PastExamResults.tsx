@@ -1,7 +1,8 @@
 import {useEffect,useState} from 'react';
 import type {Bootstrap,PastSession} from './types';
-import {pastSessionResult,sessionSelectedIds} from './pastExamGrading';
+import {pastExamIndividualResults,pastSessionResult,sessionSelectedIds} from './pastExamGrading';
 import {post} from './api';
+import {derivePastExamProblemStart} from './pastExamPlanning';
 type Props={data:Bootstrap;eligibleYears:number[];defaultYear?:number;focusSession?:{id:number};onImport:()=>void;onRepair:(problemId:string)=>void;onSaved:()=>void};
 export function PastExamResults({data,eligibleYears,defaultYear,focusSession,onImport,onRepair,onSaved}:Props){
  const years=[...new Set(data.adaptiveLearning.pastExamCatalog.map(p=>p.year))].sort((a,b)=>b-a);
@@ -9,6 +10,9 @@ export function PastExamResults({data,eligibleYears,defaultYear,focusSession,onI
  const sessions=data.pastSessions.filter(s=>s.year===year&&!s.superseded_by_session_id&&s.session_kind==='selected_three_timed').sort((a,b)=>b.id-a.id);
  useEffect(()=>{const s=data.pastSessions.find(s=>s.id===focusSession?.id);if(s){setYear(s.year);setActive(s.id);setPrompt('');document.querySelector('.past-year-workspace')?.scrollIntoView({behavior:'smooth'})}},[focusSession]);
  const s=sessions.find(s=>s.id===active)||sessions[0],result=s?pastSessionResult(s,data.attempts):null;
+ const individual=pastExamIndividualResults(year,data.attempts);
+ const unseen=data.adaptiveLearning.pastExamCatalog.find(p=>p.year===year&&p.simulationProtected&&!data.attempts.some(a=>a.problem_id===p.canonicalProblemId&&a.score_numeric!=null&&!a.exclude_from_metrics));
+ const protection=unseen?derivePastExamProblemStart({problemId:unseen.canonicalProblemId,catalog:data.adaptiveLearning.pastExamCatalog,attempts:data.attempts,tasks:data.today.tasks,pastSessions:data.pastSessions,today:data.dashboard.today,daysRemaining:data.dashboard.pace.daysRemaining}):undefined;
  const canFinish=!!s&&(eligibleYears.includes(s.year)||!!s.prompt_scanned_at||!!s.attempt_started_at||!!s.attempt_completed_at);
  const action=async(fn:()=>Promise<unknown>)=>{setBusy(true);setError('');setMessage('');try{await fn();onSaved()}catch(e){setError(e instanceof Error?e.message:String(e))}finally{setBusy(false)}};
  const copy=async(s:PastSession,pid:string)=>action(async()=>{const r=await post<{prompt:string}>(`/api/past-sessions/${s.id}/grading`,{action:'prompt',problemId:pid});setPrompt(r.prompt);try{await navigator.clipboard.writeText(r.prompt);setMessage('コピーしました。ChatGPTへ問題資料と答案画像を直接添付してください。')}catch{setMessage('下のプロンプトを全選択してコピーしてください。')}});
@@ -20,9 +24,11 @@ export function PastExamResults({data,eligibleYears,defaultYear,focusSession,onI
   </div>
   {error&&<p role="alert">{error}</p>}{message&&<p role="status">{message}</p>}
   <article className="panel past-year-dashboard" data-year={year}>
-   <header><h3>{year}年 過去問演習</h3><span className="past-grade-status">{result?.status||'未実施'}</span></header>
-   <div className="past-grade-summary"><div><span>選択3問・本番100点換算</span><strong>{result?.examScore==null?'未採点':`${Math.round(result.examScore*10)/10}点`}</strong><small>{result&&result.gradedCount<3?`${result.gradedCount}/3問 採点済み`:'選択3問の得点率の平均'}</small></div><div><span>90分以内の完答</span><strong>{result?.timed?(result.timed.within?'確認済み':'未達'):'未判定'}</strong><small>scanを含む本番形式</small></div></div>
-   <h4>問1〜問5の成績</h4><div className="past-question-bars">{(result?.questions||[1,2,3,4,5].map(q=>({problemId:`PY-${year}-Q${q}`,label:`問${q}`,role:'未実施',score:null,selected:false}))).map(q=><div className="past-question-bar" key={q.problemId}><b>{q.label}</b><div><div className="past-score-track" role="progressbar" aria-label={`${q.label}の得点率`} aria-valuemin={0} aria-valuemax={100} {...(q.score==null?{'aria-valuetext':'未採点'}:{'aria-valuenow':q.score})}><i style={{width:q.score==null?'0%':`${q.score}%`}}/></div><small>{q.role}</small></div><strong>{q.score==null?'未採点':`${Math.round(q.score)}%`}</strong></div>)}</div>
+   <header><h3>{year}年 過去問演習</h3><span className="past-grade-status">{result?.status||'本番形式は未測定'}</span></header>
+   <p>{individual.studiedCount}/5問 学習済み・解答履歴{individual.attemptCount}件。本番形式と個別学習は別に表示します。</p>
+   <div className="past-grade-summary"><div><span>選択3問・本番100点換算</span><strong>{result?.examScore==null?(s?'未採点':'未測定'):`${Math.round(result.examScore*10)/10}点`}</strong><small>{!s?'個別の得点から本番点を推定しません':result&&result.gradedCount<3?`${result.gradedCount}/3問 採点済み`:'選択3問の得点率の平均'}</small></div><div><span>90分以内の完答</span><strong>{result?.timed?(result.timed.within?'確認済み':'未達'):'未判定'}</strong><small>scanを含む本番形式</small></div></div>
+   <h4>{s?'この本番形式の問1〜問5':'個別学習の初回記録'}</h4><div className="past-question-bars">{(result?.questions||individual.questions.map(q=>({problemId:q.problemId,label:q.label,role:q.initial?`初回記録・${q.initial.attempt.date}`:q.history.length?'履歴あり・初回未特定':'未着手',score:q.initial?.score??null,selected:false}))).map(q=><div className="past-question-bar" key={q.problemId}><b>{q.label}</b><div><div className="past-score-track" role="progressbar" aria-label={`${q.label}の得点率`} aria-valuemin={0} aria-valuemax={100} {...(q.score==null?{'aria-valuetext':'未採点'}:{'aria-valuenow':q.score})}><i style={{width:q.score==null?'0%':`${q.score}%`}}/></div><small>{q.role}</small></div><strong>{q.score==null?'未採点':`${Math.round(q.score)}%`}</strong></div>)}</div>
+   {!!individual.attemptCount&&<details className="past-individual-history"><summary>問題別の初回・補修・再挑戦履歴</summary><p>個別の得点率を本番100点へ合算しません。後の補修は初回得点を上書きしません。</p>{individual.questions.map(q=><details key={q.problemId}><summary>{q.label}・初回 {q.initial?.score==null?'未特定':`${Math.round(q.initial.score)}%`}・最新 {q.latest?.score==null?'未採点':`${Math.round(q.latest.score)}%`}・{q.history.length}記録</summary>{q.history.map(({attempt:a,score})=><p key={a.id}>{a.date} ／ {a.task_origin==='first_attempt'?'初回':a.learning_purpose==='error_repair'?'補修':a.learning_purpose==='retrieval_check'?'保持確認':a.learning_purpose==='transfer_check'?'転移':'演習・再挑戦'} ／ {score==null?'未採点':`${Math.round(score)}%`}（Attempt {a.id}）</p>)}</details>)}</details>}
    {s&&result&&<>
     {!!result.loss&&<details className="past-loss-card"><summary>最大の失点要因</summary><p>{result.loss}</p></details>}
     <div className="past-next-action"><strong>次の操作</strong>
@@ -46,6 +52,7 @@ export function PastExamResults({data,eligibleYears,defaultYear,focusSession,onI
    <p>本番形式90分（scanを含む）。手元の原問題を開き、5問から3問を選びます。</p>
    <div className="past-answered">{[1,2,3,4,5].map(q=><label key={q}><input type="checkbox" checked={chosen.includes(q)} onChange={e=>setChosen(e.target.checked?[...chosen,q]:chosen.filter(v=>v!==q))}/>問{q}</label>)}</div>
    {!eligibleYears.includes(year)&&<p>この年度は現在の保護・前提条件により新規開始できません。Todayの待機条件を確認してください。保存済み演習の採点は再開できます。</p>}
+   {!eligibleYears.includes(year)&&protection?.reasons.length? <ul>{protection.reasons.map(reason=><li key={reason}>{reason}</li>)}</ul>:null}
    <button className="primary" disabled={busy||chosen.length!==3||!eligibleYears.includes(year)} onClick={()=>action(async()=>{const r=await post<{sessionId:number}>('/api/past-sessions/start',{year,selectedQuestionNumbers:chosen});setActive(r.sessionId);setPrompt('');setTotal('')})}>3問を選んで演習開始</button>
   </details>
  </section>;

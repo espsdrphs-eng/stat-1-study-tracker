@@ -22,7 +22,7 @@ function value(key:string,v:unknown):unknown{
  if(key==='graded_part_ids'){if(!Array.isArray(v)||!v.every(x=>typeof x==='string'))throw new Error('graded_part_ids は採点項目IDの配列にしてください。');return v.map(x=>x.trim());}
  if(key==='source_attempt_id'||key==='source_review_id'){const n=Number(v);if(key==='source_review_id'&&n===0)return undefined;if(!Number.isSafeInteger(n)||n<=0)throw new Error(`${key} は有効な元記録IDにしてください。`);return n;}
  if(typeof v!=='string')throw new Error(`${key} は文字列で返してください。`);
- const text=v.trim();if(key==='target_kind'&&!['mathematical_patch','skeleton_expression_patch'].includes(text))throw new Error(`target_kind に未対応の値があります: ${text}`);return text||undefined;
+ const text=v.trim();if(key==='target_kind'&&!['mathematical_patch','skeleton_expression_patch','full_answer'].includes(text))throw new Error(`target_kind に未対応の値があります: ${text}`);return text||undefined;
 }
 function fields(row:Record<string,unknown>){const out:Record<string,unknown>={};for(const [key,aliases] of Object.entries(names)){
  const candidates=aliases.filter(a=>row[a]!=null&&row[a]!=='').map(a=>value(key,row[a])).filter(v=>v!==undefined);
@@ -42,11 +42,22 @@ export function normalizeGradingContextInput(raw:Record<string,unknown>){
  for(const key of Object.keys(names)){const supplied=rows.filter(r=>r[key]!==undefined).map(r=>r[key]);const signature=(v:unknown)=>JSON.stringify(key==='graded_part_ids'?[...(v as string[])].sort():v);
   if(supplied.some(v=>signature(v)!==signature(supplied[0])))throw new Error(`${key} が本文と課題コンテキストで一致しません。`);if(supplied.length)out[key]=supplied[0];
  }
+ // Known GPT scope/kind confusion. full_answer is a scope, not a repair kind.
+ // Keep purpose/contract identity unchanged; save-time exact contract matching
+ // still verifies the persisted initial/session/transfer contract and parts.
+ const fullScopeAlias=out.target_kind==='full_answer';
+ if(fullScopeAlias){
+  if(out.review_scope!=='full_answer'||out.mode!=='full'||!['exam_performance','transfer_check'].includes(String(out.learning_purpose))||
+    !out.contract_id||!out.contract_version||!out.contract_hash||!out.problem_id||!Array.isArray(out.graded_part_ids)||!out.graded_part_ids.length)
+   throw new Error('target_kind: full_answer は答案全体の範囲です。review_scope=full_answer・mode=full・学習目的・契約ID/hash・採点項目の一致が必要です。補修課題には変換できません。');
+  delete out.target_kind;
+ }
  if(out.source_review_id){
   if(raw.generated_from_review_id!=null&&Number(raw.generated_from_review_id)!==0&&Number(raw.generated_from_review_id)!==out.source_review_id)throw new Error('generated_from_review_id と source_review_id が一致しません。');
   if(raw.generated_from_review_id==null)out.generated_from_review_id=out.source_review_id;
  }
  if(nested.length){const echo:Record<string,unknown>={};for(const row of nested)Object.assign(echo,fields(row));
+  if(fullScopeAlias)delete echo.target_kind;
   const versions=nested.map(r=>r.context_version??r.contextVersion).filter(v=>v!=null&&v!=='');if(versions.some(v=>v!==GRADING_TASK_CONTEXT_VERSION))throw new Error('task_context の形式バージョンが未対応です。現行プロンプトを使用してください。');if(versions.length)echo.context_version=versions[0];
   const scopes=nested.map(r=>r.answer_scope??r.answerScope).filter(v=>v!=null).map(answerScope);if(scopes.some(s=>JSON.stringify(s)!==JSON.stringify(scopes[0])))throw new Error('対象小問のコンテキストが矛盾しています。');if(scopes.length)echo.answer_scope=scopes[0];
   out.task_context=echo as GradingTaskContext;

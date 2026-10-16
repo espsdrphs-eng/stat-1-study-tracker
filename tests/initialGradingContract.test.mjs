@@ -22,6 +22,15 @@ const updateFor=(problem,contract,submissionId,failed=false)=>{
     actual_reference_level:0,allowed_reference_level:0};
 };
 
+test('whole-answer GPT scope alias on a genuine initial answer preserves first-attempt identity',async()=>{
+ await localGet('/api/bootstrap');const attempts=await db.attempts.toArray(),reviews=await db.reviews.toArray();
+ const problem=(await db.problems.toArray()).find(p=>p.category==='past_exam'&&!attempts.some(a=>a.problem_id===p.problem_id)&&!reviews.some(r=>r.problem_id===p.problem_id));assert.ok(problem);
+ const contract=buildInitialGradingContract({problem,mode:'full'}),raw={...updateFor(problem,contract,'initial-full-answer-alias',true),target_kind:'full_answer',task_origin:'first_attempt'};
+ const {parseStudyText}=await import('../src/importParser.ts');const updates=parseStudyText(JSON.stringify({study_update:raw}),await db.problems.toArray()).updates;
+ const saved=await localPost('/api/import',{updates}),again=await localPost('/api/import',{updates});assert.deepEqual(saved.savedAttemptIds,again.savedAttemptIds);
+ const a=await db.attempts.get(saved.savedAttemptIds[0]);assert.equal(a.task_origin,'first_attempt');assert.equal(a.learning_purpose,'exam_performance');assert.equal(a.generated_from_review_id,undefined);assert.equal(a.target_kind,undefined);assert.equal(a.grading_contract.contractId,contract.contractId);
+});
+
 test("Whitebook完全初回はReviewなしで固定initial contractと採点promptを生成する",async()=>{
   await localGet("/api/bootstrap");
   const problem=await db.problems.get("WB-4-A-05");

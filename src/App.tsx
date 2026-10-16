@@ -35,7 +35,7 @@ import { EXAM_PHASES } from "./studyProgress";
 import { type ExamPhase } from "./examReadiness";
 import { resolveReviewCard, type ResolvedReviewCard } from "./reviewCardResolver";
 import { buildScan5Prompt, deriveExposure, scanMetrics, stageForDays, defaultSessionKind } from "./pastExamWorkflow";
-import {derivePastExamSessionState,derivePastExamWorkspace} from "./pastExamPlanning.ts";
+import {derivePastExamSessionState,derivePastExamWorkspace,derivePastExamProblemStart} from "./pastExamPlanning.ts";
 import {attemptPlanningEligible} from "./legacyKPolicy.ts";
 import {deriveCurrentActionClass,reviewDueState,todayLearningCategory} from "./todayLearningPolicy.ts";
 import {isPastExamSessionTask,currentTaskIdentity} from "./examOptimizationPolicy.ts";
@@ -117,6 +117,7 @@ export default function App() {
   const [selected,setSelected]=useState<Problem|null>(null);
   const [startingStudyTask,setStartingStudyTask]=useState<Task|null>(null);
   const [startingPastTask,setStartingPastTask]=useState<Task|null>(null);
+  const [pastYear,setPastYear]=useState<number|undefined>(undefined);
   const [busy,setBusy]=useState(false);
   const [refreshing,setRefreshing]=useState(false);
   const [message,setMessage]=useState("");
@@ -175,7 +176,7 @@ export default function App() {
       {needRefresh&&<div className="update-banner" role="alert"><div><strong>新しいバージョンがあります</strong><span>未保存内容を確認してから、安全に更新できます。</span></div><button className="primary small" onClick={safelyUpdateApp}>安全に更新</button><button className="ghost small" onClick={()=>setNeedRefresh(false)}>後で</button></div>}
       {!data.databaseStatus.valid&&<div className="update-banner database-required" role="alert"><div><strong>アプリのデータベース更新が必要です</strong><span>既存履歴は閲覧できますが、安全のため書き込み操作を一時停止しています。不足：{data.databaseStatus.missingStores.join("、")}</span></div><button className="primary small" disabled={busy} onClick={repairDatabase}>安全に更新</button></div>}
       <div className="content">
-        {selected?.generated_transfer?<><button onClick={()=>setSelected(null)}>戻る</button><TransferTrainingPanel trainingKey={selected.generated_transfer.lineage.key}/></>:selected?<ProblemDetail problem={selected} startingTask={startingStudyTask?.problem_id===selected.problem_id?startingStudyTask:undefined} data={data} run={run} busy={busy} onBack={()=>{setSelected(null);setStartingStudyTask(null)}} onImport={()=>{setSelected(null);setPage("import")}}/>:
+        {selected?.generated_transfer?<><button onClick={()=>setSelected(null)}>戻る</button><TransferTrainingPanel trainingKey={selected.generated_transfer.lineage.key}/></>:selected?<ProblemDetail problem={selected} startingTask={startingStudyTask?.problem_id===selected.problem_id?startingStudyTask:undefined} data={data} run={run} busy={busy} onBack={()=>{setSelected(null);setStartingStudyTask(null)}} onImport={()=>{setSelected(null);setPage("import")}} onOpenPastExam={year=>{go('past');setPastYear(year)}}/>:
         page==="dashboard"?<DashboardView data={data} go={go} run={run} busy={writeBusy} select={(p,task)=>{setStartingStudyTask(task||deriveProblemLearningView(data,p).nextTask||null);setSelected(p)}}/>:
         page==="today"?<TodayView data={data} busy={writeBusy} run={run} go={go} select={(p,task)=>{setStartingStudyTask(task||null);setSelected(p)}}/>:
         page==="problems"?<ProblemsView data={data} select={p=>{setStartingStudyTask(deriveProblemLearningView(data,p).nextTask||null);setSelected(p)}} run={run} busy={writeBusy}/>:
@@ -183,7 +184,7 @@ export default function App() {
         page==="import"?<><details className="panel"><summary>採点の反映・据置理由を確認</summary><LearningUpdateSummary data={data}/></details><AdvancedImportView problems={data.problems} answerIndex={data.answerIndex} problemAliases={data.problemAliases} attempts={data.attempts} reviews={data.reviews} run={run} busy={writeBusy}/></>:
         page==="reviews"?<ReviewsView data={data} run={run} busy={writeBusy} select={(p,task)=>{setStartingStudyTask(task);setSelected(p)}}/>:
         page==="weak"?<WeakView data={data} run={run} busy={writeBusy} onToday={()=>go("today")} select={(p,task)=>{setStartingStudyTask(task);setSelected(p)}}/>:
-        page==="past"?<PastView data={data} go={go} run={run} busy={writeBusy} startingTask={startingPastTask}/>:
+        page==="past"?<PastView data={data} go={go} run={run} busy={writeBusy} startingTask={startingPastTask} defaultYear={pastYear}/>:
         <SettingsView data={data} run={run} busy={busy}/>}
       </div>
     </main>
@@ -811,7 +812,7 @@ function MasteryLevels({levels}:{levels:MasteryLevelState[]}){
   </div>)}</div>;
 }
 
-function ProblemDetail({problem,data,run,busy,onBack,onImport,startingTask}:{problem:Problem;data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>Promise<boolean>;busy:boolean;onBack:()=>void;onImport:()=>void;startingTask?:Task}) {
+function ProblemDetail({problem,data,run,busy,onBack,onImport,startingTask,onOpenPastExam}:{problem:Problem;data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>Promise<boolean>;busy:boolean;onBack:()=>void;onImport:()=>void;startingTask?:Task;onOpenPastExam:(year:number)=>void}) {
   const learningView=deriveProblemLearningView(data,problem);
   const [blindAnswerSubmitted,setBlindAnswerSubmitted]=useState(learningView.workStatus==="awaiting_grading");
   const [hintOpen,setHintOpen]=useState(false),[hintBusy,setHintBusy]=useState(false),[showGradingImport,setShowGradingImport]=useState(false);
@@ -917,6 +918,8 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport,startingTask}:{pro
   };
   if(problem.generated_transfer)return <section className="panel"><button className="back" onClick={onBack}>← 戻る</button>
     <TransferTrainingPanel trainingKey={problem.generated_transfer.lineage.key}/></section>;
+  const admission=derivePastExamProblemStart({problemId:problem.problem_id,catalog:data.adaptiveLearning.pastExamCatalog,attempts:data.attempts,tasks:data.today.tasks,pastSessions:data.pastSessions,today:data.dashboard.today,daysRemaining:data.dashboard.pace.daysRemaining});
+  if(admission.blocked)return <section className="panel protected-problem" aria-label="未見問題の保護と開始方法"><button className="back" onClick={onBack}>← 戻る</button><h2>{problemDisplayLabel(problem)}</h2><h3>未見の本番測定を保護しています</h3><p>個別の解答ではなく、年度の本番形式から開始します。解答・解説は表示していません。</p><ul>{admission.reasons.map(reason=><li key={reason}>{reason}</li>)}</ul><button className="primary" onClick={()=>onOpenPastExam(admission.year!)}>{admission.year}年の本番形式・開始条件を開く</button></section>;
   if(!blindAnswerSubmitted)return <section className="panel blind-problem" aria-label="解答前の問題">
     <button className="back" onClick={onBack}>← 戻る</button><h2>{problemDisplayLabel(problem)}</h2>
     <section className="task-introduction" aria-label="課題の対象と回収目標" data-task-identity={introduction.taskIdentity}>
@@ -1344,7 +1347,7 @@ function WeakEvidenceHistory({data,run,busy,onToday}:{data:Bootstrap;run:(a:()=>
   </details></>;
 }
 
-function PastView({data,go,run,busy,startingTask}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()=>Promise<unknown>,s:string)=>Promise<boolean>;busy:boolean;startingTask?:Task|null}) {
+function PastView({data,go,run,busy,startingTask,defaultYear}:{data:Bootstrap;go:(p:Page)=>void;run:(a:()=>Promise<unknown>,s:string)=>Promise<boolean>;busy:boolean;startingTask?:Task|null;defaultYear?:number}) {
   const days=data.dashboard.pace.daysRemaining;
   // Starting a blind timed session is not the historical problem workspace.
   // Keep prior individual failures, solutions and taxonomy out of this view.
@@ -1428,7 +1431,7 @@ function PastView({data,go,run,busy,startingTask}:{data:Bootstrap;go:(p:Page)=>v
       </section>
     </section>:
     null}
-    <PastExamResults data={data} focusSession={resultSession} defaultYear={startingTask?.past_exam_year||workspace.recommended?.year} eligibleYears={workspace.candidates.filter(c=>c.eligibleRows.length>=5).map(c=>c.year)} onSaved={()=>void run(async()=>{},'演習の状態を更新しました')} onImport={()=>go('import')} onRepair={()=>go('today')}/>
+    <PastExamResults data={data} focusSession={resultSession} defaultYear={startingTask?.past_exam_year||defaultYear||workspace.recommended?.year} eligibleYears={workspace.candidates.filter(c=>c.eligibleRows.length>=5).map(c=>c.year)} onSaved={()=>void run(async()=>{},'演習の状態を更新しました')} onImport={()=>go('import')} onRepair={()=>go('today')}/>
     <details className="panel past-legacy-details"><summary>スキャン詳細・以前の分析を確認</summary>
     <section className="past-analysis-intro">
       <div><span className="eyebrow">PAST EXAM WORKSPACE</span><h2>過去問演習</h2><p>scan5 → 3問選択 → 答案 → 採点を一つの本番型workflowとして記録します。未解答問題は0点にしません。</p></div>

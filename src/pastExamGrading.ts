@@ -4,6 +4,17 @@ import {buildFirstAttemptGradingPrompt} from './gradingPrompt.ts';
 import {imageGradingPrompt} from './learningFeedback.ts';
 import {resolvePastExamProblemId} from './examReferencePack.ts';
 export const sessionSelectedIds=(s:PastSession)=>(s.final_selected_problem_ids?.length?s.final_selected_problem_ids:s.initial_selected_problem_ids||[]).map(id=>resolvePastExamProblemId(s.year,id));
+/** Individual study history is not a simulated exam. Never aggregate these scores into examScore. */
+export function pastExamIndividualResults(year:number,attempts:Attempt[]){
+ const questions=[1,2,3,4,5].map(q=>{
+  const problemId=`PY-${year}-Q${q}`;
+  const history=attempts.filter(a=>a.problem_id===problemId&&!a.invalidated_at&&!a.superseded_by_attempt_id&&!a.duplicate_of_attempt_id&&!a.exclude_from_metrics)
+   .sort((a,b)=>a.date.localeCompare(b.date)||a.id-b.id).map(a=>({attempt:a,score:a.score_numeric==null?null:Number(a.score_numeric)/Number(a.score_max||100)*100}));
+  const initial=history.find(r=>r.attempt.task_origin==='first_attempt')||history.find(r=>!r.attempt.generated_from_review_id&&!['error_repair','retrieval_check','transfer_check'].includes(String(r.attempt.learning_purpose)));
+  return {problemId,label:`問${q}`,history,initial,latest:history.at(-1)};
+ });
+ return {questions,studiedCount:questions.filter(q=>q.history.length).length,attemptCount:questions.reduce((n,q)=>n+q.history.length,0)};
+}
 export function buildPastSessionContract(s:PastSession,p:Problem):GradingContractSnapshot{
  if(!s.answer_finished_at&&!s.attempt_completed_at)throw new Error('演習を終了してから採点へ進んでください。');
  const selected=sessionSelectedIds(s),answered=s.answered_problem_ids||selected;
