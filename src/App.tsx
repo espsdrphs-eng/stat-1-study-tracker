@@ -3,6 +3,7 @@ import {createStateReloadCoordinator} from "./stateReload.ts";
 import {TransferTrainingPanel} from "./TransferTrainingPanel";
 import {LearningDashboard,CoachReviewControls} from './LearningDashboard';
 import {WeaknessFocus} from './WeaknessFocus';
+import {weaknessSourceTransferAction} from './learningOverview';
 import {PastExamResults} from './PastExamResults';
 import {deriveWeaknessDisplayRows,deriveLearningUpdateSummary,deriveCurrentWeaknessRows,deriveCurrentLearningDiagnosis,deriveTaskIntroduction,deriveProblemReference,taskAssistanceText,preAnswerReason,completionCriterionText,deriveProblemLearningView,deriveProblemLearningViews,imageGradingPrompt,optionalNetMinutes,netMinutesText} from "./learningFeedback";
 import {appendTaskAnswerScope,type TaskAnswerScope} from './taskAnswerScope';
@@ -1229,7 +1230,7 @@ function CurrentLearningDiagnosis({data,onToday}:{data:Bootstrap;onToday:()=>voi
     <button className="primary" onClick={onToday}>Todayの最新順位で学習する</button>
   </section>;
 }
-function CurrentWeaknessPanel({data,onToday}:{data:Bootstrap;onToday:()=>void}){
+function CurrentWeaknessPanel({data,onToday,onTransfer}:{data:Bootstrap;onToday:()=>void;onTransfer:(key:string)=>void}){
   const [limit,setLimit]=useState(10);
   const [query,setQuery]=useState('');
   const [focus,setFocus]=useState('current');
@@ -1248,6 +1249,7 @@ function CurrentWeaknessPanel({data,onToday}:{data:Bootstrap;onToday:()=>void}){
       const scopes=[...new Set(row.sources.map(s=>`${names[s.problemId]||s.problemId} ／ ${s.answerScopeText}`))];
       const proofIds=new Set(row.sources.flatMap(s=>[s.repairAttemptId,s.retrievalAttemptId,s.transferAttemptId]).filter(Boolean));
       const action=next.task?next.task.title:next.nextAction;
+      const transfer=row.sources.map(source=>weaknessSourceTransferAction(source,data.today.tasks)).find(a=>a.key)||weaknessSourceTransferAction(next,data.today.tasks);
       return <article className="card current-skill-card" key={row.id}><header><h3>{row.skillName}</h3><Badge tone={row.status==='補修が必要'?'orange':row.status==='証拠不足'?'gray':'green'}>{row.status}</Badge></header>
       <small>{Number.isFinite(row.rank)?`Todayの優先 ${row.rank}`:'待機・再評価'} ／ {row.sources.some(s=>s.examImpact==='high')?'本番の主要失点に関連':'局所確認・証拠の補強'}</small>
       <div className="weakness-scopes">{scopes.map(scope=><p key={scope}>{scope}</p>)}</div>
@@ -1256,6 +1258,8 @@ function CurrentWeaknessPanel({data,onToday}:{data:Bootstrap;onToday:()=>void}){
       <small>数字は根拠対象の件数で、習得率ではありません。重複を除く根拠答案は {proofIds.size}件です。援助の有無は詳細で区別します。</small>
       <p>最新の確認：{latest.lastCheckedDate||'未確認'}・答案 #{latest.lastCheckedAttemptId||'未登録'}{latest.observations.length?` ／ ${[...new Set(latest.observations.map(o=>o.label))].join('・')}`:''}</p>
       <div className="weakness-next"><strong>次の課題：{action}</strong><p>成功条件：{next.successCriterion}</p></div>
+      <button className="primary" disabled={row.identityPending||!transfer.key} onClick={()=>transfer.key&&onTransfer(transfer.key)}>転移問題を作成</button>
+      {(row.identityPending||transfer.reason)&&<p className="muted">{row.identityPending?'採点根拠による技能対応が未確定です。':transfer.reason}</p>}
       <details><summary>根拠・改善した点・残る課題・次の操作</summary>{row.sources.map(s=><div className="history" key={s.rootId}><div>
         <strong>{s.problemId}：{s.status}</strong><p>{s.description}</p>
         {!!s.improvement&&<p>採点に記録された改善：{s.improvement}</p>}
@@ -1274,9 +1278,11 @@ function CurrentWeaknessPanel({data,onToday}:{data:Bootstrap;onToday:()=>void}){
 }
 function WeakView({data,run,busy,onToday,select}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean;onToday:()=>void;select:(p:Problem,t:Task)=>void}){
   const [history,setHistory]=useState(false);
-  return <><WeaknessFocus data={data} onStart={select} onToday={onToday} onSaved={()=>run(async()=>{},'転移結果を反映しました')}/><details className="panel" onToggle={e=>setHistory(e.currentTarget.open)}><summary>全技能・保持・転移の根拠と履歴</summary>{history&&<WeakEvidenceHistory data={data} run={run} busy={busy} onToday={onToday}/>}</details></>;
+  const [training,setTraining]=useState<string|null>(null);
+  useEffect(()=>{if(training)document.querySelector('[aria-label="弱点からの転移訓練"]')?.scrollIntoView({block:'start',behavior:'smooth'})},[training]);
+  return <><WeaknessFocus data={data} onStart={select} onToday={onToday} onTransfer={setTraining}/>{training&&<div className="transfer-workspace" aria-label="弱点からの転移訓練"><button className="ghost" onClick={()=>setTraining(null)}>転移操作を閉じる</button><TransferTrainingPanel key={training} trainingKey={training} onSaved={()=>run(async()=>{},'転移データを反映しました')} allowBundle/></div>}<details className="panel" onToggle={e=>setHistory(e.currentTarget.open)}><summary>全技能・保持・転移の根拠と履歴</summary>{history&&<WeakEvidenceHistory data={data} run={run} busy={busy} onToday={onToday} onTransfer={setTraining}/>}</details></>;
 }
-function WeakEvidenceHistory({data,run,busy,onToday}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean;onToday:()=>void}) {
+function WeakEvidenceHistory({data,run,busy,onToday,onTransfer}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean;onToday:()=>void;onTransfer:(key:string)=>void}) {
   const [editing,setEditing]=useState<Attempt|null>(null);
   const [form,setForm]=useState<Record<string,string>>({});
   const trend=analyzeWeakTrends(data.problems,data.attempts,data.weakNotes,"",data.problemAliases);
@@ -1307,7 +1313,7 @@ function WeakEvidenceHistory({data,run,busy,onToday}:{data:Bootstrap;run:(a:()=>
   };
   if(!trend.attemptCount) return <><CurrentLearningDiagnosis data={data} onToday={onToday}/><CoachPanel data={data} run={run} busy={busy}/><ConceptWeaknessPanel data={data}/><section className="weak-trend-hero"><div><span className="eyebrow">WEAKNESS TRENDS</span><h2>GPT採点が集まると、苦手の傾向が見えてきます</h2><p>この画面はK/W/N/Cが付いた採点だけから、繰り返すミスを探します。ミスなしの採点は学習履歴には残りますが、弱点グラフには加算しません。</p></div></section><section className="panel weak-empty-explanation">{trend.totalAttemptCount?<><Check size={28}/><h3>採点は{trend.totalAttemptCount}件ありますが、弱点として数えるミスは0件です</h3><p>現在の採点はすべて「none（ミスなし）」です。K/W/N/Cが付いた結果を保存すると、テーマ別・分類別・週別のグラフが表示されます。</p></>:<Empty>まだ採点記録がありません。GPT採点結果を取り込むと自動で蓄積されます</Empty>}</section></>;
   return <>
-    <CurrentWeaknessPanel data={data} onToday={onToday}/>
+    <CurrentWeaknessPanel data={data} onToday={onToday} onTransfer={onTransfer}/>
     <CurrentLearningDiagnosis data={data} onToday={onToday}/>
     <details className="panel"><summary>Coachの補足・過去の失敗傾向を確認（履歴）</summary>
     <CoachPanel data={data} run={run} busy={busy}/>

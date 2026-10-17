@@ -210,11 +210,17 @@ export function validateManualGradingReference(problem:Problem,raw:unknown):NonN
   }
   return {problem_id:problem.problem_id,content_hash:c.content_hash,reference_solution:solution,grading_rubric:rubric,checks:r.checks,method:"manual_chatgpt"};
 }
-export function generationPrompt(record:TransferGenerationRecord,sourceFeatures:string[]){
-  if(record.input_format==="statement_only_v1")return `手動ChatGPT連携の転移訓練問題を1問生成。元問題全文は与えません。新しい文脈・記号を使い、数値変更版や表面コピーを避ける。内部で解答可能性を検算するが、解答・解説・採点基準・対象技能は出力しない。問題文では使用公式や対象技能を指定しない。ユーザーは生成意図を知る可能性があるため、本番での独立転移とは判定しない。\n`+
+export function generationDraftPreview(record?:Pick<TransferGenerationRecord,'rounds'>){
+  const draft=record?.rounds.at(-1)?.draft;
+  return draft?{problem_text:draft.problem_text,difficulty:draft.difficulty,estimated_minutes:draft.estimated_minutes}:undefined;
+}
+export function generationPrompt(record:TransferGenerationRecord,sourceFeatures:string[],source?:{displayLabel?:string;answerScopeText?:string}){
+  const context=`統計検定1級・統計数理の転移訓練です。同じ原理を別の状況で自分で選ぶ問題にする。元問題の数字・記号だけの置換は禁止。解法名・分野名・使用公式を問題文に書かない。ユーザーは紙・Goodnotesに解答前の方針と理由、その後の答案を書きます。\n原問題の本文・条件はアプリに未登録です。元問題を知っていると仮定せず、下記の採点根拠だけを使い、新問題は自己完結する条件で作る。厳密な原問題との比較に不足する情報を推測で埋めない。\n`+
+    JSON.stringify({source_problem_id:record.lineage.sourceProblemId,source_label:source?.displayLabel||null,source_scope:source?.answerScopeText||'対象小問未特定',original_statement:null})+'\n';
+  if(record.input_format==="statement_only_v1")return context+`手動ChatGPT連携の転移訓練問題を1問生成。元問題全文は与えません。新しい文脈・記号を使い、数値変更版や表面コピーを避ける。内部で解答可能性を検算するが、解答・解説・採点基準・対象技能は出力しない。問題文では使用公式や対象技能を指定しない。ユーザーは生成意図を知る可能性があるため、本番での独立転移とは判定しない。\n`+
     JSON.stringify({target_operation:record.lineage.rootSkillId,observed_failure:record.lineage.observedFailure,success_criteria:record.lineage.successCriteria,forbidden_source_features:sourceFeatures})+
     `\nIDはアプリが管理する。次のJSONだけ返す：`+JSON.stringify({problem_text:"問題文のみ",difficulty:"統計検定1級",estimated_minutes:12,surface_features:["新文脈","新記号"],generator_pass_id:"distinct generation pass"});
-  return `転移確認問題の生成pass。解答者にtargetや解答を見せない運用です。元問題全文は与えません。新しい文脈・記号で、数字変更版を避けてください。\n`+
+  return context+`転移確認問題の生成pass。解答者にtargetや解答を見せない運用です。元問題全文は与えません。新しい文脈・記号で、数字変更版を避けてください。\n`+
     JSON.stringify({lineage:record.lineage,target_difficulty:"統計検定1級",estimated_minutes:[10,15],forbidden_source_features:sourceFeatures})+
     `\ntargetを問題文で明示せず、その操作が主要解答に不可欠な問題を1問だけ生成。次のJSONだけ返す：`+
     JSON.stringify({problem_text:"...",reference_solution:"完全な導出",grading_rubric:"target選択・主要計算・major errorを独立採点する基準",difficulty:"統計検定1級",estimated_minutes:12,surface_features:["新文脈","新記号"],generator_pass_id:"unique generation pass id"});

@@ -3,12 +3,12 @@ import yaml from "js-yaml";
 import type {Bootstrap,Problem,StudyUpdate,Attempt} from "./types.ts";
 import {deriveTransferTrainingCandidates,generationMetaKey,generationPrompt,validationPrompt,
   acceptGenerationDraft,acceptGenerationValidation,registerGeneratedProblem,blindGeneratedView,
-  transferJson,validateManualGradingReference,type TransferGenerationRecord,type TransferTrainingLineage} from "./generatedTransfer.ts";
+  validateManualGradingReference,generationDraftPreview,type TransferGenerationRecord,type TransferTrainingLineage} from "./generatedTransfer.ts";
 import {EXAM_REFERENCE_PACK_META_KEY,EXAM_REFERENCE_EXPOSURE_META_KEY,type StoredExamReferencePack} from "./examReferencePack.ts";
 import {buildInitialGradingContract} from "./gradingContract.ts";
 import {buildFirstAttemptGradingPrompt} from "./gradingPrompt.ts";
 import {parseStudyText} from "./importParser.ts";
-import {deriveTransferEvidence,transferTrainingOutcome} from "./skillEvidence.ts";
+import {deriveTransferEvidence,transferTrainingOutcome,confidentGrading} from "./skillEvidence.ts";
 import {optionalNetMinutes,imageGradingPrompt} from "./learningFeedback.ts";
 import {deriveTaskAnswerScope,taskAnswerScopeText,type TaskAnswerScope} from './taskAnswerScope.ts';
 
@@ -27,6 +27,19 @@ function contextValue(value:unknown):unknown{
   if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).sort(([a],[b])=>a.localeCompare(b)).map(([k,v])=>[k,contextValue(v)]));
   return value;
 }
+/** Accept the common grading prompt's YAML as well as existing transfer JSON.
+ * Generation/quality remain strict JSON. Identity checks run after this reader. */
+export function transferGradingPayload(input:string){
+  const blocks=[...input.matchAll(/```(?:json|yaml|yml)\s*([\s\S]*?)```/gi)];
+  const candidates=blocks.length?blocks.map(m=>m[1]):[input.trim()];
+  try{
+    const valid=candidates.map(text=>yaml.load(text)).filter((r:any)=>r&&typeof r==='object'&&!Array.isArray(r)&&
+      (r.study_update&&typeof r.study_update==='object'&&!Array.isArray(r.study_update)||r.problem_issue&&typeof r.problem_issue==='object'&&!Array.isArray(r.problem_issue)));
+    if(valid.length!==1)throw new Error('ambiguous grading payload');
+    JSON.stringify(valid[0]); // Refuse cyclic YAML instead of guessing a structure.
+    return valid[0] as Record<string,any>;
+  }catch{throw new Error('採点JSON / YAMLを確認してください。study_updateまたは問題不備の結果を1件だけ貼り付けてください。');}
+}
 
 export function transferAnswerSubmission(body:any){
   const text=String(body.answer||"").trim(),paper=body.answer_medium==="paper_image";
@@ -42,6 +55,10 @@ function savedTrainingFeedback(a:Attempt|undefined,success:boolean,criterion:str
     errorPoint:(a.graded_findings||[]).find(f=>!f.resolved&&f.error_type!=="none")?.evidence||a.error_point||"採点上の失点記録なし（正しさの保証ではありません）",
     nextAction:success?"Todayの次の本番型候補で、自然な転移を再測定する":"Todayの最新順位で、対象技能の補修・参照なし確認を再評価する",
     successCriterion:`${criterion}。参照なしで操作を選び、対象の主要計算を完遂し、対象major errorがないこと。`};
+}
+function targetResults(a:Attempt|undefined){
+  const label=(ok:boolean|undefined)=>!a?'未測定':!confidentGrading(a)||ok===undefined?'判定不能':a.hint_used||Number(a.actual_reference_level??a.reference_level??0)>0?'援助あり':ok?'成功':'未達';
+  return {strategy:label(a?.target_skill_assessment?.self_selected),calculation:label(a?.target_skill_assessment?.major_calculation_success)};
 }
 
 /** This is the existing offline GPT copy/paste interface, not a model API. */
@@ -116,12 +133,12 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
       const contract=buildInitialGradingContract({problem:existing,mode:"full"});
       return {status:"submitted",prompt:buildFirstAttemptGradingPrompt({problemId:existingId,mode:"full",gradingContract:contract})+
         imageGradingPrompt(`\n答案完成記録：${JSON.stringify(submission)}\n公式の問題文・解答と本人の答案画像を添付して照合すること。資料がなければ推測採点しない。`,submission.referenceLevel,submission.minutes)+
-        `\n出力はJSONのstudy_updateを1件だけ（YAMLではない）。grading_confidenceは既存採点契約の0〜100。`+
+        `\n返答は既存採点契約に沿ったstudy_updateを1件だけ、標準JSONまたはYAMLのコードブロックで返す。grading_confidenceは0〜100。`+
         `\n対象=${lineage.rootSkillId}。study_update内にtarget_skill_assessment: {self_selected:boolean,major_calculation_success:boolean,no_major_error:boolean,evidence:string}を必ず含める。総合点ではなく実答案の対象操作を独立判定。target外minorは対象失敗にしない。`+
         transferContextPrompt(transferGradingContext(lineage,existingId,sourceScope(lineage)))};
     }else if(action==="grade"&&!savedAttempt){
       if(!context?.answer_submission)throw new Error("答案未提出です");
-      const raw=transferJson(String(body.text||""));validateTransferGrade(raw,existingId,transferGradingContext(lineage,existingId,sourceScope(lineage)));
+      const raw=transferGradingPayload(String(body.text||""));validateTransferGrade(raw,existingId,transferGradingContext(lineage,existingId,sourceScope(lineage)));
       const parsed=parseStudyText(yaml.dump(raw),problems,answers,await db.problemAliases.toArray());
       if(parsed.updates.length!==1||parsed.updates[0].problem_id!==existingId)throw new Error("この問題の採点1件だけを保存してください");
       const minutes=context.answer_submission.medium==="paper_image"?optionalNetMinutes(body.minutes):context.answer_submission.minutes;
@@ -131,13 +148,16 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
     return {status:attempt?"graded":context?.answer_submission?"submitted":"existing_ready",existingProblemId:existingId,
       problem:{problem_id:existingId,display_label:existing.display_label||existing.title||existingId,difficulty:"統計検定1級",estimated_minutes:12,
         problem_text:"書籍・公式PDFの問題文だけを開いて解答してください。問題文の全文はアプリに収録されていません。"},
-      afterSubmission:context?.answer_submission||attempt?{rootSkillId:lineage.rootSkillId,rootSkillName:skillName(lineage.rootSkillId),sourceProblemId:lineage.sourceProblemId,
+      afterSubmission:context?.answer_submission||attempt?{...targetResults(attempt),rootSkillId:lineage.rootSkillId,rootSkillName:skillName(lineage.rootSkillId),sourceProblemId:lineage.sourceProblemId,
         result:attempt?deriveTransferEvidence(facts).some(e=>e.successAttemptId===attempt.id)?"training transfer success":transferTrainingOutcome(attempt):"採点待ち",
         evidence:attempt?.target_skill_assessment?.evidence||"",feedback:savedTrainingFeedback(attempt,!!attempt&&deriveTransferEvidence(facts).some(e=>e.successAttemptId===attempt.id),lineage.successCriteria),solution:"公式の解答資料で確認してください。",rubric:"対象能力の自力選択・主要計算・major errorを独立に判定"}:undefined};
   }
   if(action==="start"){
     if(!record&&!problem){record={key,lineage:candidate!.lineage,createdAt:new Date().toISOString(),status:"requested",rounds:[],...(!forceGenerated?{input_format:"statement_only_v1" as const}:{})};await saveRecord();}
-    if(record?.status==="requested")return {status:record.status,prompt:generationPrompt(record,sourceFeatures)};
+    // Upgrade only an explicitly requested, still empty legacy configuration.
+    // Never change a draft's immutable format or any registered/grading history.
+    if(forceGenerated&&record?.input_format==='statement_only_v1'&&record.status==='requested'&&!record.rounds.length){record={...record,input_format:undefined};await saveRecord();}
+    if(record?.status==="requested"){const scope=sourceScope(record.lineage);return {status:record.status,prompt:generationPrompt(record,sourceFeatures,{displayLabel:source?.display_label||source?.title,answerScopeText:scope?taskAnswerScopeText(scope):undefined})};}
   }else if(action==="draft"){
     if(!record||problem)throw new Error("生成依頼がない、または登録済みです");
     const next=await acceptGenerationDraft(record,String(body.text||""));
@@ -170,15 +190,16 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
       (content.input_format?`\n新しい会話で問題を独立に解き直し、条件不足・解答不能・採点不能がないか検算してから採点する。study_updateと並べてmathematical_reviewを必ず返す：`+
         JSON.stringify({problem_id:problem!.problem_id,content_hash:content.content_hash,reference_solution:"完全な導出",grading_rubric:"得点配分・対象操作の採点基準",checks:{well_defined:{pass:false,evidence:"条件と解答可能性の具体的根拠"},solution_correct:{pass:false,evidence:"独立検算の具体的根拠"},rubric_aligned:{pass:false,evidence:"解答と採点基準の対応"}}})+
         `\n不確実ならpass=falseとし、成功の採点を捏造しない。解答は今の提出後に初めて取り込む。`:"")+
-      imageGradingPrompt(`\n出力はJSONのstudy_updateを1件。actual_reference_level=${submission.referenceLevel}。`,submission.referenceLevel,submission.minutes)+
+      imageGradingPrompt(`\n返答はstudy_updateを1件、標準JSONまたはYAMLのコードブロックにする。actual_reference_level=${submission.referenceLevel}。`,submission.referenceLevel,submission.minutes)+
       `\nstudy_update内にtarget_skill_assessment: {self_selected:boolean,major_calculation_success:boolean,no_major_error:boolean,evidence:string}を必ず含める。`+
       `対象=${content.root_skill_id}。総合点とは独立に、初手と主要計算の実答案から判定。target外minorでは対象失敗にしない。模範解答の内容を本人の答案と混同しない。`+
+      `\n解答前の方針・理由が答案に記載されているか確認する。対象操作を選んだ根拠を判定できなければ成功を推測せず、確信度を下げ、target_skill_assessment.evidenceに判定不能の理由を書く。`+
       `\n問題自体の条件矛盾・解答不能を発見した場合は能力を採点せず、study_updateを返す代わりに {"problem_issue":{"problem_id":"${problem!.problem_id}","reason":"具体的な問題不備の根拠"}} を返す。`+
       (record?.problemIssue&&!record.problemIssue.resolvedAt?`\n品質の再確認が必要です。正常に採点できると確認した場合のみmathematical_reviewを返す：${JSON.stringify({problem_id:problem!.problem_id,content_hash:content.content_hash,reference_solution:'独立に導いた完全な解答',grading_rubric:'対象操作の採点基準',checks:Object.fromEntries(['well_defined','solution_correct','rubric_aligned'].map(k=>[k,{pass:false,evidence:'具体的な検算根拠'}]))})}`:'')+
       transferContextPrompt(transferGradingContext(content.lineage,problem!.problem_id,sourceScope(content.lineage)))};
   }else if(action==="grade"){
     if(!problem?.generated_transfer?.answer_submission)throw new Error("答案未提出です");
-    const raw=transferJson(String(body.text||""));
+    const raw=transferGradingPayload(String(body.text||""));
     if(raw.problem_issue){
       if(raw.problem_issue.problem_id!==problem.problem_id||typeof raw.problem_issue.reason!=='string'||raw.problem_issue.reason.trim().length<10)throw new Error('問題不備の対象IDと具体的な理由を確認してください。');
       if(savedAttempt)throw new Error('保存済み採点は変更しません。採点履歴から再確認してください。');
@@ -200,12 +221,13 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
   const content=problem?.generated_transfer;
   const result:Record<string,unknown>={status:record?.problemIssue&&!record.problemIssue.resolvedAt?'problem_pending':content?.lifecycle_status||record?.status||candidate?.kind||"pending",
     statementOnly:(content?.input_format||record?.input_format)==='statement_only_v1',
+    draftPreview:!problem?generationDraftPreview(record):undefined,
     problem:problem?blindGeneratedView(problem):undefined,existingProblemId:!record&&!problem?candidate?.existingProblemId:undefined,
     rounds:record?.rounds.length||0,pendingReason:record?.pendingReason||candidate?.reason};
   if(content?.answer_submission){
     const facts=await db.attempts.toArray();
     const attempt=facts.find(a=>a.problem_id===problem!.problem_id&&!a.exclude_from_metrics);
-    result.afterSubmission={rootSkillId:content.root_skill_id,rootSkillName:skillName(content.root_skill_id),sourceProblemId:content.lineage.sourceProblemId,
+    result.afterSubmission={...targetResults(attempt),rootSkillId:content.root_skill_id,rootSkillName:skillName(content.root_skill_id),sourceProblemId:content.lineage.sourceProblemId,
       result:attempt?(deriveTransferEvidence(facts).some(r=>r.successAttemptId===attempt.id)?"training transfer success":transferTrainingOutcome(attempt)):"採点待ち",
       evidence:attempt?.target_skill_assessment?.evidence||"",feedback:savedTrainingFeedback(attempt,!!attempt&&deriveTransferEvidence(facts).some(r=>r.successAttemptId===attempt.id),content.lineage.successCriteria),solution:content.grading_reference?.reference_solution||content.reference_solution,rubric:content.grading_reference?.grading_rubric||content.grading_rubric};
   }
