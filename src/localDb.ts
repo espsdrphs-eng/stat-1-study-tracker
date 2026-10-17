@@ -30,7 +30,8 @@ import { attemptPlanningEligible, classifyKPolicyValidity, excludeLegacyKFromPla
 import { analyzeSourceMismatchRepair, resolveReviewOrigin, REVIEW_ORIGIN_POLICY_VERSION } from "./reviewOrigin.ts";
 import { normalizePastExamSession, parseScan5Update, sessionStudyMinutes, validatePastExamSession } from "./pastExamWorkflow.ts";
 import { auditLegacyReviewContracts, buildGradingContractSnapshot, buildInitialGradingContract, buildProblemContextPack, computeContractHash, contractDifferences, completeGradingTaskContext, prescriptionFromContract, repairTargets, taskFieldsFromContract } from "./gradingContract.ts";
-import {buildPastSessionContract,buildPastSessionGradingPrompt,sessionSelectedIds} from './pastExamGrading.ts';
+import {buildPastSessionContract,buildPastSessionGradingPrompt,sessionSelectedIds,bindPastSessionGradingInput} from './pastExamGrading.ts';
+import {assertSessionSelectionUnchanged} from './pastExamSessionScope.ts';
 import { primaryErrorFromFindings, validateGradedFindings } from "./gradedParts.ts";
 import {
   addCalendarDays, auditReviewSchedules, differenceInCalendarDays, pendingReviewIdentityKey, resolveReviewSchedule,
@@ -1022,6 +1023,12 @@ type PendingCorrectionLog=Omit<CorrectionLog,"id">;
 async function saveGptUpdates(updates:(StudyUpdate&Record<string,unknown>)[]):Promise<GradingSaveReceipt>{
   updates=updates.map(row=>normalizeGradingContextInput(row) as StudyUpdate&Record<string,unknown>);
   if(!updates.length)throw new Error('保存する採点結果がありません。');
+  updates=await Promise.all(updates.map(async update=>{
+    if(!update.parent_past_session_id)return update;
+    const session=await db.pastSessions.get(Number(update.parent_past_session_id));
+    if(!session)throw new Error('採点対象の演習が見つかりません。年度別演習から採点プロンプトを再取得してください。');
+    return bindPastSessionGradingInput(session,update);
+  }));
   for(const update of updates){
     if(update.parent_past_session_id&&!String(update.contract_id||'').startsWith(`past-session:${Number(update.parent_past_session_id)}:`))
       throw new Error('session採点の識別情報には、演習から取得した採点契約が必要です。');
@@ -1140,16 +1147,18 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
   const sessionRecord=requestedSessionId?await db.pastSessions.get(requestedSessionId):undefined;
   const sessionContract=sessionRecord?.grading_contracts?.[problem.problem_id];
   if(requestedSessionId){
+    const sessionRole=sessionRecord&&sessionSelectedIds(sessionRecord).includes(problem.problem_id)?'selected_timed':'counterfactual_calibration';
     if(!sessionRecord||!sessionContract||sessionContract.contractId!==requestedContractId||input.generated_from_review_id||
-      Number(input.parent_past_session_id)!==requestedSessionId||input.session_role!=='selected_timed'||input.past_exam_session_instance_id!==sessionRecord.session_instance_id)
+      Number(input.parent_past_session_id)!==requestedSessionId||input.session_role!==sessionRole||input.past_exam_session_instance_id!==sessionRecord.session_instance_id)
       throw new Error('sessionの採点契約・対象問題・識別情報が一致しません。演習結果から採点プロンプトを再取得してください。');
-    buildPastSessionContract(sessionRecord,problem);
+    buildPastSessionContract(sessionRecord,problem,sessionRole);
+    if(sessionRole==='counterfactual_calibration'&&!sessionRecord.post_session_answers?.[problem.problem_id])throw new Error('未選択問題は後日答案として開始してから採点してください。');
     if((await db.attempts.where('problem_id').equals(problem.problem_id).toArray()).some(a=>a.parent_past_session_id===requestedSessionId&&!a.invalidated_at&&!a.superseded_by_attempt_id))
       throw new Error('このsessionの対象問題は採点済みです。同じ結果を再試行するか、答案差し替えを使用してください。');
     if(input.learning_purpose!=='exam_performance'||input.assessment_timing!=='independent_performance')throw new Error('本番sessionと補修の採点区分が一致しません。');
     if(input.score_max!=null&&Number(input.score_max)!==100)throw new Error('本番sessionの各問題は100点満点の得点率で採点してください。選択3問の本番100点換算はアプリで行います。');
     const question=sessionRecord.questions?.find(q=>q.problemId===problem.problem_id);
-    input={...input,date:sessionRecord.date,actual_reference_level:Math.max(Number(input.actual_reference_level??input.reference_level??0),sessionRecord.answer_exposure?4:question?.referenceUsed?5:question?.hintUsed?3:0)};
+    input={...input,date:sessionRole==='selected_timed'?sessionRecord.date:sessionRecord.post_session_answers![problem.problem_id].date,actual_reference_level:Math.max(Number(input.actual_reference_level??input.reference_level??0),sessionRecord.answer_exposure?4:question?.referenceUsed?5:question?.hintUsed?3:0)};
   }
   const requestedInitialContract=requestedContractId.startsWith(`initial:${problem.problem_id}:`);
   // Root-level interventions have a contract but no Review ID. Only an app-
@@ -1261,6 +1270,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     evaluation_scope:String(input.evaluation_scope||""),assessment_timing:requestedAssessmentTiming,
     time_limit_minutes:Number(input.time_limit_minutes||0)||undefined,
     conclusion_reached:input.conclusion_reached,incomplete_reason:input.incomplete_reason,
+    session_role:input.session_role,
   };
   const examEligibility=examScoreEligibility(scoreCandidate,problem);
   const lifecycleSource=sourceReview||(startedTask?{...startedTask,generated_from_attempt_id:gradingContract!.sourceAttemptId!,grading_contract:gradingContract} as Review:undefined);
@@ -3424,8 +3434,7 @@ async function savePastExamSession(body:Record<string,unknown>,existingId?:numbe
     const normalized=normalizePastExamSession({...previous,...body,id:existingId||0,stable_session_key:identity,
       session_instance_id:sessionInstanceId,session_purpose:stablePurpose,session_ordinal:ordinal,
       exposure_snapshot_at_start:snapshot,scan_evidence_kind:snapshot.classification}),validation=validatePastExamSession(normalized);
-    if(previous?.answer_finished_at&&JSON.stringify(sessionSelectedIds(previous).sort())!==JSON.stringify(sessionSelectedIds(normalized).sort()))
-      throw new Error('終了した演習の選択問題は変更できません。再挑戦は別の演習として記録してください。');
+    if(previous)assertSessionSelectionUnchanged(previous,normalized);
     if(!validation.valid)throw new Error(validation.errors.join(" "));
     const identityValidation=validatePastExamSessionIdentity(normalized);
     if(!identityValidation.valid)throw new Error(identityValidation.errors.join(" "));
@@ -4082,12 +4091,19 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
         if(answered.length!==3||answered.some(pid=>!selected.includes(pid)))throw new Error('選択3問の答案を採点対象として指定してください。未完の箇所は採点時に明示し、終了だけでは完答と判定しません。');
         const total=body.totalMinutes==null||body.totalMinutes===''?undefined:Number(body.totalMinutes);
         if(total!==undefined&&(!Number.isFinite(total)||total<=0))throw new Error('全体時間は正の分数か未入力で指定してください。');
-        await db.pastSessions.update(id,{answer_finished_at:new Date().toISOString(),answered_problem_ids:answered,...(total===undefined?{}:{actual_total_minutes:total})});
+        await db.pastSessions.update(id,{answer_finished_at:new Date().toISOString(),answered_problem_ids:answered,exam_selected_problem_ids:[...selected],...(total===undefined?{}:{actual_total_minutes:total})});
         notifyStudyDataChanged({operation:'past-session-finish'});return {ok:true,sessionId:id};
       }
-      if(body.action!=='prompt')throw new Error('演習の操作を確認してください。');
+      if(!['prompt','post-answer'].includes(body.action))throw new Error('演習の操作を確認してください。');
       const p=await db.problems.get(String(body.problemId||''));if(!p)throw new Error('対象問題が見つかりません。');
-      const contract=s.grading_contracts?.[p.problem_id]||buildPastSessionContract(s,p);
+      const role=sessionSelectedIds(s).includes(p.problem_id)?'selected_timed':'counterfactual_calibration';
+      if(role==='counterfactual_calibration'&&!s.post_session_answers?.[p.problem_id]){
+        if(body.action!=='post-answer')throw new Error('採点対象の問題は未選択です。後日答案を紙・Goodnotesで解き、「後日答案の採点」から進んでください。');
+        buildPastSessionContract(s,p,role);
+        s.post_session_answers={...s.post_session_answers,[p.problem_id]:{date:todayString(),finished_at:new Date().toISOString()}};
+        await db.pastSessions.update(id,{post_session_answers:s.post_session_answers});
+      }
+      const contract=s.grading_contracts?.[p.problem_id]||buildPastSessionContract(s,p,role);
       await db.pastSessions.update(id,{grading_contracts:{...s.grading_contracts,[p.problem_id]:contract}});
       return {prompt:buildPastSessionGradingPrompt(s,p,contract),contract,sessionId:id};
     }) as T;

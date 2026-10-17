@@ -6,6 +6,7 @@ export function taskScoreForAttempt(attempt:Partial<Attempt>){
 }
 
 export function examScoreEligibility(attempt:Partial<Attempt>,problem?:Problem){
+  if(attempt.session_role==='counterfactual_calibration')return {eligible:false,timeLimitMinutes:0,examScore:null};
   if(problem?.source_type==="generated"||attempt.source_type==="generated"||attempt.evidence_strength==="training")
     return {eligible:false,timeLimitMinutes:0,examScore:null};
   const mode=String(attempt.mode||"");

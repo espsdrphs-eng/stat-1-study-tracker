@@ -39,7 +39,8 @@ test("latest 2018 current stateはduplicateを保持したままAttempt evidence
   assert.equal(session.selected_answer_count,3);assert.deepEqual(session.questions.filter(row=>row.completed).map(row=>row.actualScore),[56,50,32]);
   assert.equal(session.selected_solve_minutes,80);assert.equal(session.scan_minutes,10);assert.equal(session.session_elapsed_minutes,90);
   assert.deepEqual(session.questions.filter(row=>!row.completed&&row.actualScore!=null).map(row=>row.actualScore),[24,12]);
-  assert.equal(session.selection_success_count,3);assert.equal(session.selection_success_rate,1);assert.equal(session.analysis_status,"not_started");
+  // Same scoring date is not evidence of the same exam conditions for all five.
+  assert.equal(session.selection_success_count,undefined);assert.equal(session.selection_success_rate,null);assert.equal(session.analysis_status,"not_started");
   const supersededId=raw.find(row=>row.year===2018&&row.superseded_by_session_id)?.id;
   assert.ok([cleanId,practiceId].includes(supersededId));
 
@@ -64,7 +65,7 @@ rubric_version: “STAT1-SCAN5-v1”`});
   await restoreBackup(roundtrip);
   const restored=await localGet("/api/bootstrap"),restored2018=restored.pastSessions.filter(row=>row.year===2018);
   assert.equal(restored2018.length,1);assert.equal(restored2018[0].session_state,"completed");
-  assert.equal(restored2018[0].selected_answer_count,3);assert.equal(restored2018[0].selection_success_count,3);
+  assert.equal(restored2018[0].selected_answer_count,3);assert.equal(restored2018[0].selection_success_count,undefined);
   assert.deepEqual(restored2018[0].questions.filter(row=>row.completed).map(row=>row.actualScore),[56,50,32]);
   assert.equal(restored.today.tasks.some(task=>!task.checked&&task.past_exam_year===2018&&task.minutes===90),false);
 

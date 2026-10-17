@@ -74,9 +74,11 @@ test("2018 selected_three_timedへ翌日の5 Attemptを役割別に照合し90�
   assert.deepEqual(result.selected_timed_attempt_ids,[236,237,238]);
   assert.deepEqual(result.counterfactual_calibration_attempt_ids,[239,240]);
   assert.equal(result.selected_solve_minutes,80);assert.equal(result.session_elapsed_minutes,90);assert.equal(result.actual_total_minutes,90);
-  assert.equal(result.selection_success_count,3);assert.equal(result.selection_success_rate,1);
-  assert.deepEqual(result.score_calibration.map(row=>row.error),[-4,4,-30,12,-28]);
-  assert.equal(scanMetrics(result).predictedScoreDifference,-9);
+  // Later/unknown-condition non-selected grades cannot prove optimal exam choice.
+  assert.equal(result.selection_success_count,undefined);assert.equal(result.selection_success_rate,null);
+  assert.equal(result.selection_evaluation_status,'pending');
+  assert.deepEqual(result.score_calibration.map(row=>row.error),[-4,-30,-28]);
+  assert.equal(scanMetrics(result).predictedScoreDifference,-21);
   assert.equal(result.analysis_status,"not_started");assert.equal(result.questions.filter(row=>row.completed).length,3);
   assert.deepEqual(result.questions.slice(0,3).map(row=>row.sourceAttemptId),[236,239,237]);
   assert.ok(result.questions.every(row=>row.actualScoreSource==="attempt"&&row.actualMinutesSource==="attempt"));

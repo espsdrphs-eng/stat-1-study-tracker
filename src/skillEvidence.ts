@@ -179,6 +179,7 @@ export function verifiedTransferRediagnosis(task:Task,attempts:Attempt[]){
   return progress.transferFailure?.id===lineage.transferFailureEvidenceId&&!progress.repairSuccess&&!progress.transfer;
 }
 export function transferEvidenceStrength(a:Attempt):"training"|"strong"{
+  if(a.session_role==='counterfactual_calibration')return 'training';
   // A previously studied exam year can measure improvement, but not blind
   // transfer in a new exam context.
   if(/^PY-2025-Q\d+$/.test(a.problem_id))return "training";

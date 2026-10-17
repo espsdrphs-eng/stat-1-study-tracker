@@ -71,6 +71,7 @@ export type ScanQuestion = {
   actualScoreSource?:"attempt"|"manual_override";actualMinutesSource?:"attempt"|"manual_override";
   sourceAttemptId?:number;attemptScore?:number|null;attemptMinutes?:number|null;
   firstStepCorrect?:boolean|null;sank?:boolean|null;hintUsed?:boolean;referenceUsed?:boolean;completed?:boolean;
+  answerTiming?:'during_exam'|'after_exam'|'unknown';
 };
 export type LearningPurpose="error_repair"|"retrieval_check"|"integration_check"|"transfer_check"|"exam_performance";
 export type LearningStage="acquisition"|"repair"|"maintenance"|"integration"|"discrimination"|"transfer"|"performance"|"stable";
@@ -296,6 +297,8 @@ export type Roadmap = {
 };
 export type PastSession = Record<string, unknown> & {
   answer_finished_at?:string;answered_problem_ids?:string[];
+  exam_selected_problem_ids?:string[];
+  post_session_answers?:Record<string,{date:string;finished_at:string}>;
   grading_contracts?:Record<string,GradingContractSnapshot>;
   id:number;year:number;session_type:string;date:string;session_kind?:PastExamSessionKind;stage?:PastExamStage;
   scan_set_source?:ScanSetSource;source_label?:string;questions?:ScanQuestion[];scan_minutes?:number;

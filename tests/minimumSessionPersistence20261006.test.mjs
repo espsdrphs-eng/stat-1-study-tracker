@@ -79,7 +79,10 @@ test('fixture storage E2E: fresh derivation → short scan → save → reload �
   assert.equal(reload.pastSessions.find(s=>s.id===saved.sessionId).session_state,'completed');
   assert.ok(!reload.today.tasks.some(t=>[correction.stable_session_key,raw.stable_session_key].includes(t.stable_session_key)&&!t.checked));
   const observed=reload.pastSessions.find(s=>s.id===722);
-  assert.equal(observed.session_elapsed_minutes,100);assert.equal(observed.selection_success_rate,1);
+  assert.equal(observed.session_elapsed_minutes,100);
+  // Non-selected manual/later scores do not establish identical exam conditions.
+  // Keep the real timing deficit while withholding an unsupported choice verdict.
+  assert.equal(observed.selection_success_rate,null);assert.equal(observed.selection_evaluation_status,'pending');
   const backup=await exportBackup();await restoreBackup(backup);
   const restored=await localGet('/api/bootstrap');
   assert.equal(restored.pastSessions.find(s=>s.id===saved.sessionId).stable_session_key,scan.stable_session_key);

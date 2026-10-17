@@ -4,6 +4,7 @@ import {resolvePastExamProblemId} from "./examReferencePack.ts";
 import {deriveLearningPolicy,pastExamYearRole,type PastExamYearRole} from "./examOptimizationPolicy.ts";
 import {deriveTransferEvidence,rootProgress} from "./skillEvidence.ts";
 import {deriveFailureEpisode} from "./failureEpisode.ts";
+import {sessionSelectedIds} from './pastExamSessionScope.ts';
 
 export type PastExamTaskType="clean_scan5"|"practice_scan5"|"individual_full"|"timed_three_question_session"|"simulation";
 export type {PastExamSessionState} from "./types.ts";
@@ -313,9 +314,7 @@ const attemptIsUsable=(attempt:Attempt)=>!attempt.invalidated_at&&!attempt.super
   !attempt.duplicate_of_attempt_id&&!attempt.exclude_from_metrics&&attempt.score_numeric!=null;
 const problemYear=(problemId:string)=>Number(String(problemId).match(/(?:PY-|PE-)(\d{4})/i)?.[1]||0);
 export const selectedProblemIds=(session:PastSession)=>{
-  const explicit=(session.final_selected_problem_ids?.length?session.final_selected_problem_ids:session.initial_selected_problem_ids)||[];
-  return [...new Set((explicit.length?explicit:(session.questions||[]).filter(row=>row.selected).map(row=>row.problemId||row.questionLabel))
-    .filter(Boolean).map(value=>resolvePastExamProblemId(session.year,value)))];
+  return sessionSelectedIds(session);
 };
 
 const addDays=(date:string,days:number)=>{
@@ -341,6 +340,7 @@ export function reconcilePastExamSessionEvidence(session:PastSession,attempts:At
   const selected=selectedProblemIds(session),selectedSet=new Set(selected);
   const existingIds=new Set([...(session.selected_timed_attempt_ids||[]),...(session.counterfactual_calibration_attempt_ids||[]),...(session.linked_attempt_ids||[])]);
   const candidates=attempts.filter(attempt=>attemptIsUsable(attempt)&&questionIds.has(resolvePastExamProblemId(session.year,attempt.problem_id))&&
+    (selectedSet.has(resolvePastExamProblemId(session.year,attempt.problem_id))?attempt.session_role!=='counterfactual_calibration':attempt.session_role!=='selected_timed')&&
     (!session.grading_contracts||attempt.parent_past_session_id===session.id||existingIds.has(attempt.id))&&
     (existingIds.has(attempt.id)||aliases.has(Number(attempt.parent_past_session_id||0))||
       (problemYear(attempt.problem_id)===Number(session.year)&&String(attempt.date)>=String(session.date)&&
@@ -369,6 +369,7 @@ export function reconcilePastExamSessionEvidence(session:PastSession,attempts:At
       actualMinutesSource:manualMinutes?"manual_override" as const:"attempt" as const,
       sourceAttemptId:attempt.id,attemptScore:Number(attempt.score_numeric),attemptMinutes:attempt.time_minutes==null?null:Number(attempt.time_minutes),
       referenceUsed:Number(attempt.actual_reference_level??attempt.reference_level??0)>0,
+      answerTiming:selectedSet.has(question.problemId||'')?'during_exam' as const:attempt.session_role==='counterfactual_calibration'?'after_exam' as const:'unknown' as const,
       completed:selectedSet.has(question.problemId||"")};
   });
   const timingUnknown=selected.some(id=>{const q=questions.find(row=>row.problemId===id);return !!q?.sourceAttemptId&&q.actualMinutes==null});
@@ -376,10 +377,10 @@ export function reconcilePastExamSessionEvidence(session:PastSession,attempts:At
   const scanMinutes=Number(session.scan_minutes||0),sessionElapsedMinutes=selectedSolveMinutes==null?
     (session.answer_finished_at&&Number(session.actual_total_minutes)>0?Number(session.actual_total_minutes):undefined):scanMinutes+selectedSolveMinutes;
   const selectedComplete=selected.length===3&&selectedAttempts.length===3;
-  const allComparable=questions.length===5&&questions.every(row=>row.actualScore!=null);
+  const allComparable=questions.length===5&&questions.every(row=>row.actualScore!=null&&row.answerTiming==='during_exam');
   const optimal=allComparable?[...questions].sort((a,b)=>Number(b.actualScore)-Number(a.actualScore)).slice(0,3).map(row=>row.problemId||row.questionLabel):[];
   const successCount=allComparable?selected.filter(id=>optimal.includes(id)).length:0;
-  const scoreCalibration=questions.filter(row=>row.predictedScore!=null&&Number.isFinite(row.predictedScore)&&
+  const scoreCalibration=questions.filter(row=>selectedSet.has(row.problemId||'')&&row.predictedScore!=null&&Number.isFinite(row.predictedScore)&&
     row.predictedScore>=0&&row.predictedScore<=100&&row.actualScore!=null).map(row=>({
     problemId:row.problemId||row.questionLabel,predictedScore:Number(row.predictedScore),actualScore:Number(row.actualScore),
     error:Number(row.actualScore)-Number(row.predictedScore),

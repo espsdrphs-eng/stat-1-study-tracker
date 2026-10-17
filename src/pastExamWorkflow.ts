@@ -179,7 +179,7 @@ export function scanMetrics(session:PastSession){
   const assessedType=solved.filter(row=>row.typeJudgmentCorrect!=null),assessedStep=solved.filter(row=>row.firstStepCorrect!=null);
   // Counterfactual non-selected scores calibrate pre-scan score prediction,
   // but never become selected timed answers or session time.
-  const scoreDiff=questions.filter(row=>row.actualScore!=null&&row.predictedScore!=null&&
+  const scoreDiff=questions.filter(row=>(session.session_kind!=='selected_three_timed'||row.selected)&&row.actualScore!=null&&row.predictedScore!=null&&
     Number.isFinite(row.predictedScore)&&row.predictedScore>=0&&row.predictedScore<=100).map(row=>Number(row.actualScore)-Number(row.predictedScore));
   const timeDiff=solved.filter(row=>row.actualMinutes!=null&&row.predictedMinutes!=null).map(row=>Number(row.actualMinutes)-Number(row.predictedMinutes));
   return {selectionSuccessRate:selectionSuccessRate(session),typeIdentificationAccuracy:assessedType.length?Math.round(assessedType.filter(row=>row.typeJudgmentCorrect).length/assessedType.length*100):null,

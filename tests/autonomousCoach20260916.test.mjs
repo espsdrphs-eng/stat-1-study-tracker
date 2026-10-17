@@ -28,7 +28,11 @@ test("blank manual override cannot erase a linked graded outcome; numeric overri
   assert.equal(s.questions[3].actualScoreSource,"attempt");
   assert.equal(s.session_state,"completed");assert.equal(s.selected_answer_count,3);
   assert.equal(s.selected_solve_minutes,105);assert.equal(s.session_elapsed_minutes,115);
-  assert.equal(s.selection_success_count,3);
+  // A later/unknown-time nonselected answer cannot prove the original choice.
+  // Keep the linked grades and timing checks above; only the choice verdict is pending.
+  assert.equal(s.selection_success_count,undefined);
+  assert.equal(s.selection_success_rate,null);
+  assert.equal(s.selection_evaluation_status,"pending");
   f.session.questions[3].actualScore=0;
   assert.equal(reconcilePastExamSessionEvidence(f.session,f.attempts).questions[3].actualScore,0);
 });
