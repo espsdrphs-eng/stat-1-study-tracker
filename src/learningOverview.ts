@@ -36,7 +36,7 @@ export function weaknessTransferAction(task:Task,transfers:Task[]){
 export function weaknessSourceTransferAction(source:{problemId:string;skillIds:string[]},transfers:Task[]){
  const candidate=transfers.find(t=>t.problem_id===source.problemId&&t.ranking?.eligible&&!t.checked&&t.transfer_training_key&&
   source.skillIds.includes(t.transfer_training_key.replace(/^training:/,'')));
- return candidate?{key:candidate.transfer_training_key,reason:null}:{key:undefined,reason:source.skillIds.length?'先に対象の補修と参照なしの遅延保持を確認します。':'採点根拠による技能の対応付けと、補修・遅延保持の確認が必要です。'};
+ return candidate?{key:candidate.transfer_training_key,reason:null}:{key:undefined,reason:source.skillIds.length?'現在は実行可能な別問題課題がありません。対象技能の補修成功 → 別日の参照なし保持確認 → 別問題の資格判定の順に進みます。確認済み・再評価中の場合も自動では追加生成しません。':'対象技能の対応付けが未確定です。まず今回の補修を採点し、対象操作の根拠を記録してください。技能対応と補修成功・別日の参照なし保持が確認されると転移候補になります。'};
 }
 export function overviewNextTask(data:Bootstrap):Task|undefined{
  const current=data.today.currentTask;if(current&&!current.checked&&(current.ranking?.eligible||!data.today.canonicalStudyPlan.ranked))return current;

@@ -8,16 +8,18 @@ type View={status:string;statementOnly?:boolean;problem?:{problem_id:string;disp
 export function TransferTrainingPanel({trainingKey,onSaved,allowBundle=true}:{trainingKey:string;onSaved?:()=>void;onExisting?:(id:string)=>void;allowBundle?:boolean}){
   const [view,setView]=useState<View>(),[error,setError]=useState(""),[busy,setBusy]=useState(false),[payload,setPayload]=useState(""),
     [minutes,setMinutes]=useState(""),[referenceLevel,setReference]=useState(0),[message,setMessage]=useState(""),[copyFallback,setCopyFallback]=useState(""),
+    [preparedPrompt,setPreparedPrompt]=useState(''),
     [sourceContext,setSourceContext]=useState<View['sourceContext']>();
   const request=(action:string,extra:Record<string,unknown>={})=>post<View>("/api/transfer-training",{key:trainingKey,action,...extra});
-  useEffect(()=>{let active=true;setView(undefined);setPayload('');setError('');setMessage('');setCopyFallback('');setSourceContext(undefined);request("view").then(v=>{if(active)setView(v)}).catch(e=>{if(active)setError(String(e.message))});return()=>{active=false};},[trainingKey]);
+  useEffect(()=>{let active=true;setView(undefined);setPayload('');setError('');setMessage('');setCopyFallback('');setPreparedPrompt('');setSourceContext(undefined);request("view").then(v=>{if(active)setView(v)}).catch(e=>{if(active)setError(String(e.message))});return()=>{active=false};},[trainingKey]);
   const inspectSource=async()=>{setBusy(true);setError('');try{setSourceContext((await request('lineage')).sourceContext)}catch(e){setError(e instanceof Error?e.message:String(e))}finally{setBusy(false)}};
   const act=async(action:string,copy=false)=>{
-    setBusy(true);setError("");setMessage("");setCopyFallback("");
+    setBusy(true);setError("");setMessage("");setCopyFallback("");setPreparedPrompt('');
     try{const response=await request(action,{text:payload,answer_medium:"paper_image",answer_completed:action==="submit",minutes,referenceLevel});
       if(copy&&response.prompt){
+        setPreparedPrompt(response.prompt);
         try{await navigator.clipboard.writeText(response.prompt);setMessage(action==="grading-prompt"?"コピーしました。確定答案と問題資料をGPTへ渡し、採点JSON / YAMLを取り込んでください。":['draft','validation-prompt'].includes(action)?"品質確認プロンプトをコピーしました。生成とは別のChatGPT会話で確認し、返ったJSONを下へ貼り付けてください。":"生成プロンプトをコピーしました。ChatGPTの生成結果を下へ貼り付けてください。");}
-        catch{setCopyFallback(response.prompt);setMessage("自動コピーが許可されていません。下のプロンプトを全選択してコピーしてください。");}
+        catch{setCopyFallback(response.prompt);setMessage("自動コピーが許可されていません。「用意したプロンプトをコピー」をタップしてください。コピーできない場合は下の文面を全選択できます。");}
       }
       if(action==="grade"||action==="validate")onSaved?.();
       if(action==='validate'&&response.problem)setMessage('問題を保存しました。下の問題文を紙・Goodnotesで解答してください。模範解答は答案完成後まで表示しません。');
@@ -32,7 +34,8 @@ export function TransferTrainingPanel({trainingKey,onSaved,allowBundle=true}:{tr
     <h3>{!content?'転移問題を作成':view?.afterSubmission?'転移問題の採点・結果':'転移問題を解く'}</h3><p>ChatGPTとのコピー・貼り付けで進めます。生成意図を知る可能性がある転移訓練であり、自然な本番転移とは別記録です。</p>
     <ol className="transfer-steps" aria-label="転移問題の手順">{['生成','品質確認・登録','紙で解答','採点・保存'].map((label,i)=><li key={label} aria-current={step===i+1?'step':undefined}>{i+1}. {label}{step===i+1?'（現在）':''}</li>)}</ol>
     {error&&<p role="alert">{error}</p>}{message&&<p role="status">{message}</p>}{!view&&<p>確認中…</p>}
-    {copyFallback&&<details><summary>コピー用プロンプトを開く（全選択してコピー）</summary><label>コピー用プロンプト<textarea aria-label="コピー用プロンプト" readOnly rows={5} value={copyFallback} onFocus={e=>e.currentTarget.select()} style={{width:"100%"}}/></label></details>}
+    {preparedPrompt&&<button className="primary" disabled={busy} onClick={async()=>{try{await navigator.clipboard.writeText(preparedPrompt);setCopyFallback('');setMessage('用意したプロンプトをコピーしました。ChatGPTへ貼り付けてください。')}catch{setCopyFallback(preparedPrompt);setMessage('コピー用プロンプトを全選択してコピーしてください。')}}}>用意したプロンプトをコピー</button>}
+    {copyFallback&&<details><summary>全選択用のプロンプトを開く（生成条件・検算内容を含みます）</summary><label>コピー用プロンプト<textarea aria-label="コピー用プロンプト" readOnly rows={5} value={copyFallback} onFocus={e=>e.currentTarget.select()} style={{width:"100%"}}/></label></details>}
     {view&&!content&&<><button className="ghost" disabled={busy} onClick={inspectSource}>転移元との対応を確認（訓練の説明）</button>
       {sourceContext&&<section aria-label="転移元の対応"><p>元問題：{sourceContext.sourceLabel}（{sourceContext.sourceProblemId}）／根拠答案 #{sourceContext.sourceAttemptId}</p>
         <p>確認する技能：{sourceContext.skillName}</p><p>元の対象範囲：{sourceContext.sourceScopeText}</p>

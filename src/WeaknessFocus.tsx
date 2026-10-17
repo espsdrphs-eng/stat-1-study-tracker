@@ -2,6 +2,7 @@ import {useMemo} from 'react';import type {Bootstrap,Problem,Task} from './types
 import {priorityRepairTasks,weaknessTransferAction} from './learningOverview';import {deriveCurrentLearningDiagnosis,completionCriterionText,learningTargetLabel} from './learningFeedback';
 import {deriveTaskAnswerScope,taskAnswerScopeText} from './taskAnswerScope';import {currentTaskIdentity} from './examOptimizationPolicy';
 import {findingPlanningEligible} from './legacyKPolicy';
+import {repairCheckForTask,repairStageLabel} from './repairCheck';
 export function WeaknessFocus({data,onStart,onToday,onTransfer}:{data:Bootstrap;onStart:(problem:Problem,task:Task)=>void;onToday:()=>void;onTransfer:(key:string)=>void}){
  const tasks=useMemo(()=>priorityRepairTasks(data),[data]),diagnosis=useMemo(()=>deriveCurrentLearningDiagnosis(data),[data]);
  const transfers=data.today.tasks.filter(t=>t.ranking?.eligible&&!t.checked&&t.transfer_training_key);
@@ -13,6 +14,7 @@ export function WeaknessFocus({data,onStart,onToday,onTransfer}:{data:Bootstrap;
    const scope=taskAnswerScopeText(deriveTaskAnswerScope({problem:p,task,attempts:data.attempts,overrides:data.taskAnswerScopeOverrides}));
    const transfer=weaknessTransferAction(task,transfers);
    return <article className="priority-weakness-card" key={currentTaskIdentity(task)} data-problem-id={p.problem_id}><header><h3>{p.display_label||p.title||p.problem_id}</h3><span>補修が必要</span></header><strong>{scope}</strong><p className="weakness-one-line">{line}</p><p>次の課題：{task.kind==='局所再診断'?'解き直す前に、つまずいた対象を局所的に確認':'対象小問を紙・Goodnotesで再現'}</p>
+    <p>詰まった段階（自己申告）：{repairStageLabel(repairCheckForTask(data.learningWorkByProblem?.[p.problem_id]?.repairCheck,task)||source?.repair_check)}</p><p>完了条件：{completionCriterionText(task.grading_contract)}</p>
     <div className="button-row"><button className="primary" onClick={()=>onStart(p,task)}>補修を始める</button><button className="ghost" disabled={!transfer.key} aria-describedby={transfer.reason?`transfer-wait-${p.problem_id}`:undefined} onClick={()=>transfer.key&&onTransfer(transfer.key)}>転移問題を作成</button></div>
     {transfer.reason&&<small id={`transfer-wait-${p.problem_id}`}>{transfer.reason}</small>}
     <details><summary>成功条件と根拠</summary><p>{d?.evidence||source?.error_point||'診断未登録'}</p><p>成功条件：{completionCriterionText(task.grading_contract)}</p><small>根拠答案 #{source?.id||'未特定'} ／ {source?.date||'日付未登録'}。技能対応が未確定の対象は、他問題と推測統合しません。</small></details>

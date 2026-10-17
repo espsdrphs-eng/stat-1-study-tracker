@@ -1,5 +1,6 @@
 import type {db as database} from "./localDb";
 import yaml from "js-yaml";
+import {repairStageLabel} from './repairCheck.ts';
 import type {Bootstrap,Problem,StudyUpdate,Attempt} from "./types.ts";
 import {deriveTransferTrainingCandidates,generationMetaKey,generationPrompt,validationPrompt,
   acceptGenerationDraft,acceptGenerationValidation,registerGeneratedProblem,blindGeneratedView,
@@ -157,7 +158,7 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
     // Upgrade only an explicitly requested, still empty legacy configuration.
     // Never change a draft's immutable format or any registered/grading history.
     if(forceGenerated&&record?.input_format==='statement_only_v1'&&record.status==='requested'&&!record.rounds.length){record={...record,input_format:undefined};await saveRecord();}
-    if(record?.status==="requested"){const scope=sourceScope(record.lineage);return {status:record.status,prompt:generationPrompt(record,sourceFeatures,{displayLabel:source?.display_label||source?.title,answerScopeText:scope?taskAnswerScopeText(scope):undefined})};}
+    if(record?.status==="requested"){const scope=sourceScope(record.lineage),repair=attempts.find(a=>a.id===record!.lineage.repairAttemptId);return {status:record.status,prompt:generationPrompt(record,sourceFeatures,{displayLabel:source?.display_label||source?.title,answerScopeText:scope?taskAnswerScopeText(scope):undefined,stuckStage:repairStageLabel(repair?.repair_check)})};}
   }else if(action==="draft"){
     if(!record||problem)throw new Error("生成依頼がない、または登録済みです");
     const next=await acceptGenerationDraft(record,String(body.text||""));

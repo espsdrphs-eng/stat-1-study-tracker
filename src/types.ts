@@ -170,6 +170,7 @@ export type ProblemContextPack={
   previousReviews:Array<{reviewId:number;status:string;reviewType:string;dueDate:string}>;verifiedRelations:ProblemRelation[];
 };
 export type Attempt = {
+  repair_check?:RepairCheck;
   target_kind?:TargetKind;
   task_context?:import('./gradingTaskContext.ts').GradingTaskContext;
   source_type?:Problem["source_type"];
@@ -593,7 +594,8 @@ export type Dashboard = {
     suggestion:string;dangerCriteria:string[];phase:string;phaseLabel:string;summary:string;allocation:string;nextPhase:string;daysRemaining:number;examDateIsEstimate:boolean};
   kpis?:DashboardKpiProjection;
 };
-export type LearningWork={id:string;problemId:string;mode:string;reviewId?:number;baselineAttemptId:number;stage:"preparing"|"awaiting_grading";referenceLevel:number;updatedAt:string;task?:Task};
+export type RepairCheck={taskIdentity:string;problemId:string;clue:string;knowledge:string;approach:string;reason:string;stage:"structure"|"recall"|"selection"|"calculation"|"unknown";recordedAt:string;beforeAssistance:boolean;selfReported:true};
+export type LearningWork={id:string;problemId:string;mode:string;reviewId?:number;baselineAttemptId:number;stage:"preparing"|"awaiting_grading";referenceLevel:number;updatedAt:string;task?:Task;repairCheck?:RepairCheck};
 export type Bootstrap = {
   learningWorkByProblem?:Record<string,LearningWork>;
   taskAnswerScopeOverrides?:Record<string,import('./taskAnswerScope.ts').TaskAnswerScopeOverride>;

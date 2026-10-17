@@ -1,4 +1,5 @@
 import Dexie, { type EntityTable } from "dexie";
+import {buildRepairCheck,repairCheckForTask,repairTaskKey} from './repairCheck.ts';
 import {gradingSubmissionKey,type GradingSaveReceipt} from './gradingSubmission.ts';
 import {normalizeGradingContextInput} from './gradingTaskContext.ts';
 import {deriveTaskAnswerScope,validateTaskAnswerScopeOverride,taskAnswerScopeKey} from './taskAnswerScope.ts';
@@ -1248,11 +1249,13 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
   // A root-based task has no Review ID. Its explicit aid is stored in the
   // existing paper-work record and must survive any grading import entrypoint.
   const workRow=await db.meta.get(`learning-work:${problem.problem_id}`);
+  let recordedRepairCheck:Attempt['repair_check'];
   if(workRow&&!sessionContract){
     const work=JSON.parse(workRow.value) as import("./types.ts").LearningWork;
     if(work.problemId!==problem.problem_id||!Number.isFinite(work.baselineAttemptId)||!Number.isFinite(work.referenceLevel)||work.referenceLevel<0||work.referenceLevel>5)
       throw new Error("作業の参照記録が不正です。保存済みデータを確認してください");
     const consumed=(await db.attempts.where("problem_id").equals(problem.problem_id).toArray()).some(a=>a.id>work.baselineAttemptId&&!a.exclude_from_metrics&&!a.duplicate_of_attempt_id);
+    if(!consumed)recordedRepairCheck=repairCheckForTask(work.repairCheck,sourceReview||startedTask);
     if(!consumed&&work.referenceLevel>0)input={...input,
       actual_reference_level:Math.max(work.referenceLevel,Number(input.actual_reference_level??input.reference_level??0)),
       hint_used:true,no_hint:false};
@@ -1301,6 +1304,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
   const localizedErrorPoint=japaneseizeMathText(input.error_point||(hasRealError?"":"大きな問題なし"));
   const completionResult=evaluation.reviewOutcome,objectiveGraduation=evaluation.graduated;
   const id=Number(await db.attempts.add({
+    ...(recordedRepairCheck?{repair_check:recordedRepairCheck}:{}),
     id:undefined as unknown as number,problem_id:input.problem_id,date,mode:input.mode||problem.recommended_mode,
     source_problem_id:input.source_problem_id||undefined,
     time_minutes:actualMinutes,mark:input.mark||"△",score_label:input.score_label||"B",
@@ -3807,19 +3811,26 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     const current=await bootstrap();
     const admission=derivePastExamProblemStart({problemId:problem.problem_id,catalog:current.adaptiveLearning.pastExamCatalog,attempts:current.attempts,tasks:current.today.tasks,pastSessions:current.pastSessions,today:current.dashboard.today,daysRemaining:current.dashboard.pace.daysRemaining});
     if(admission.blocked)throw new Error(`この年度はblind本番測定の保護対象です。${admission.reasons.join(' ')} ${admission.year}年の過去問演習から開始してください。`);
-    if(body.reviewId)assertReviewExecutionAdmission(await db.reviews.get(Number(body.reviewId)),todayString());
+    const workReview=body.reviewId?await db.reviews.get(Number(body.reviewId)):undefined;
+    if(body.reviewId)assertReviewExecutionAdmission(workReview,todayString());
     const key=`learning-work:${problem.problem_id}`,oldRow=await db.meta.get(key);
     const old=oldRow?JSON.parse(oldRow.value) as import("./types.ts").LearningWork:undefined;
     const latestId=Math.max(0,...current.attempts.filter(a=>a.problem_id===problem.problem_id&&!a.exclude_from_metrics).map(a=>a.id));
     const pending=old&&latestId<=old.baselineAttemptId;
     const requestedTask=body.contractId?current.today.tasks.find(t=>!t.id&&!t.stable_session_key&&!t.transfer_training_key&&t.problem_id===problem.problem_id&&t.ranking?.eligible&&t.grading_contract?.contractId===body.contractId):undefined;
+    const checkTask=workReview||requestedTask;
+    if(workReview&&workReview.problem_id!==problem.problem_id)throw new Error('復習と問題の対応が一致しません。');
     if(body.contractId&&!body.reviewId&&!requestedTask)throw new Error("課題が更新されたか適格ではありません。現在のTodayから開き直してください");
     if(pending&&old.task&&requestedTask&&old.task.grading_contract?.contractId!==requestedTask.grading_contract?.contractId)
       throw new Error("開始済みの課題と現在の課題が異なります。採点対象を確認してください");
+    if(body.repairCheck&&!checkTask)throw new Error('骨格チェックの対象課題を現在のTodayから選択してください。');
+    const referenceLevel=Math.max(pending?old.referenceLevel:0,Number(body.referenceLevel||0));
+    const repairCheck=body.repairCheck?buildRepairCheck(body.repairCheck,checkTask!,referenceLevel):pending?repairCheckForTask(old.repairCheck,checkTask):undefined;
+    if(body.repairCheck&&pending&&old.repairCheck&&checkTask&&old.repairCheck.taskIdentity!==repairTaskKey(checkTask))throw new Error('別の課題の作業記録があります。採点対象を確認してください。');
     const work:import("./types.ts").LearningWork={id:pending?old.id:crypto.randomUUID(),problemId:problem.problem_id,
       mode:String(body.mode||old?.mode||"full"),reviewId:Number(body.reviewId)||undefined,baselineAttemptId:pending?old.baselineAttemptId:latestId,
       stage:pending&&old.stage==="awaiting_grading"?old.stage:body.stage,
-      referenceLevel:Math.max(pending?old.referenceLevel:0,Number(body.referenceLevel||0)),updatedAt:new Date().toISOString(),
+      referenceLevel,updatedAt:new Date().toISOString(),repairCheck,
       task:requestedTask||(pending?old.task:undefined)};
     await db.meta.put({key,value:JSON.stringify(work)});notifyStudyDataChanged({operation:"learning-work"});return {ok:true,work} as T;
   }

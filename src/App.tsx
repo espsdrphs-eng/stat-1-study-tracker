@@ -4,6 +4,8 @@ import {TransferTrainingPanel} from "./TransferTrainingPanel";
 import {LearningDashboard,CoachReviewControls} from './LearningDashboard';
 import {WeaknessFocus} from './WeaknessFocus';
 import {weaknessSourceTransferAction} from './learningOverview';
+import {RepairCheckPanel} from './RepairCheckPanel';
+import {repairCheckForTask,repairCheckPrompt,repairStageLabel} from './repairCheck';
 import {PastExamResults} from './PastExamResults';
 import {deriveWeaknessDisplayRows,deriveLearningUpdateSummary,deriveCurrentWeaknessRows,deriveCurrentLearningDiagnosis,deriveTaskIntroduction,deriveProblemReference,taskAssistanceText,preAnswerReason,completionCriterionText,deriveProblemLearningView,deriveProblemLearningViews,imageGradingPrompt,optionalNetMinutes,netMinutesText} from "./learningFeedback";
 import {appendTaskAnswerScope,type TaskAnswerScope} from './taskAnswerScope';
@@ -619,10 +621,10 @@ function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a
 function copyText(text:string,label:string,setCopied:(value:string)=>void){
   return navigator.clipboard.writeText(text).then(()=>{setCopied(label);setTimeout(()=>setCopied(""),1800)});
 }
-function StudyPromptButtons({item,resolved,answerScope}:{item:Partial<Review&Task>;resolved?:ResolvedReviewCard;answerScope:TaskAnswerScope}) {
+function StudyPromptButtons({item,resolved,answerScope,repairCheck}:{item:Partial<Review&Task>;resolved?:ResolvedReviewCard;answerScope:TaskAnswerScope;repairCheck?:import('./types').RepairCheck}) {
   const [copied,setCopied]=useState("");
   const [fallback,setFallback]=useState("");
-  const withAnswer=(prompt:string)=>appendTaskAnswerScope(imageGradingPrompt(prompt,Math.max(Number(item.actual_reference_level||0),readReferenceState(item.id).actual_reference_level)),answerScope,resolved?.gradingContract||item.grading_contract);
+  const withAnswer=(prompt:string)=>appendTaskAnswerScope(imageGradingPrompt(prompt+repairCheckPrompt(repairCheck),Math.max(Number(item.actual_reference_level||0),readReferenceState(item.id).actual_reference_level)),answerScope,resolved?.gradingContract||item.grading_contract);
   const firstPrompt=buildFirstAttemptGradingPrompt({
     problemId:item.problem_id||"",displayLabel:item.title||item.problem_id,theme:item.theme,
     canonicalProblemType:item.canonical_problem_type,mode:item.mode,estimatedMinutes:item.minutes||item.estimated_minutes,
@@ -646,7 +648,7 @@ function StudyPromptButtons({item,resolved,answerScope}:{item:Partial<Review&Tas
   const prompt=reviewPrompt||firstPrompt;
   return <div className="prompt-button-row">
     <button type="button" className="ghost small" disabled={['unknown','conflict'].includes(answerScope.status)} onClick={async()=>{try{const scoped=withAnswer(prompt);if(item.id)await post(`/api/reviews/${item.id}/contract-lock`,{});try{await copyText(scoped,"grading",setCopied);setFallback("")}catch{setFallback(scoped)}}catch(error){window.alert(error instanceof Error?error.message:"この復習課題は現在実行できません")}}}><Copy size={14}/>{copied==="grading"?"コピー済み":"採点プロンプトをコピー"}</button>
-    {fallback&&<label>自動コピーが許可されていません。全選択してコピーしてください。<textarea aria-label="コピー用採点プロンプト" readOnly value={fallback} onFocus={e=>e.currentTarget.select()}/></label>}
+    {fallback&&<div><p>自動コピーが許可されていません。下のボタンを直接タップするか、文面を全選択してください。</p><button type="button" className="primary" onClick={async()=>{try{await copyText(fallback,'grading',setCopied);setFallback('')}catch{setCopied('')}}}>用意した採点プロンプトをコピー</button><label>コピー用採点プロンプト<textarea aria-label="コピー用採点プロンプト" readOnly value={fallback} onFocus={e=>e.currentTarget.select()}/></label></div>}
   </div>;
 }
 function resolveCanonicalProblemId(problemId:string,aliases:ProblemAlias[]):string {
@@ -901,6 +903,9 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport,startingTask,onOpe
   const problemReference=deriveProblemReference(problem,data.adaptiveLearning.pastExamCatalog);
   const hintReview=currentReviewCards.find(c=>c.review.id===gradingTask?.id);
   const hintText=taskAssistanceText(data,gradingTask);
+  const repairCheck=repairCheckForTask(learningView.work?.repairCheck,gradingTask);
+  const isRepair=(gradingTask?.grading_contract?.learningPurpose||gradingTask?.learning_purpose)==='error_repair';
+  const saveRepairCheck=async(input:Pick<import('./types').RepairCheck,'clue'|'knowledge'|'approach'|'reason'|'stage'>)=>run(()=>post('/api/learning-work',{problemId:canonicalId,mode:initialMode,reviewId:gradingTask?.id,contractId:gradingTask?.id?undefined:gradingTask?.grading_contract?.contractId,stage:learningView.work?.stage||'preparing',referenceLevel:Math.max(Number(learningView.work?.referenceLevel||0),Number(hintReview?.review.actual_reference_level||0),readReferenceState(gradingTask?.id).actual_reference_level),repairCheck:input}),'骨格チェックを保存しました（採点・習得の判定とは別）');
   const revealHint=async()=>{if(!hintText)return;setHintBusy(true);try{
     if(hintReview){
       await post(`/api/reviews/${hintReview.review.id}/reference`,{actual_reference_level:2});
@@ -932,6 +937,7 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport,startingTask,onOpe
       <p>問題文を確認 → 紙／Goodnotesで解答 → 答案完成 → 採点プロンプトをコピー → ChatGPTに画像答案を添付 → 採点JSONを取り込む</p>
     </section>
     <TaskScopeSelection scope={introduction.answerScope} problemId={canonicalId} run={run} busy={busy}/>
+    {isRepair&&gradingTask&&<RepairCheckPanel task={gradingTask} check={repairCheck} busy={busy} onSave={saveRepairCheck}/>}
     <p>今回の範囲：{modes[initialMode]||initialMode}・{startingTask?.minutes||gradingTask?.estimated_minutes||"―"}分目安</p>
     <p>{preAnswerReason(startingTask||gradingTask||{})}</p>
     <details className="problem-reference"><summary>問題を参照</summary>
@@ -947,7 +953,7 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport,startingTask,onOpe
       {hintOpen&&<p role="status">参照あり：{hintText}</p>}</div>}
   </section>;
   const savedResult=latest&&latest.id>firstSeenAttempt.current?latest:undefined;
-  return <><button className="back" onClick={onBack}>← Todayへ戻る</button><section className="panel answer-summary"><h2>{problemDisplayLabel(problem)}：解答後</h2>
+  return <><button className="back" onClick={onBack}>← 戻る</button><section className="panel answer-summary"><h2>{problemDisplayLabel(problem)}：解答後</h2>
     <section className="task-introduction" aria-label="課題の対象と回収目標" data-task-identity={introduction.taskIdentity}>
       <h3>対象・今回の回収目標</h3><dl><dt>対象</dt><dd>{introduction.target} ／ {introduction.subparts}</dd>
       <dt>今回の作業</dt><dd>{introduction.workLabel} ・ {introduction.scope}</dd>
@@ -965,7 +971,8 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport,startingTask,onOpe
     <p>採点プロンプトと答案画像をChatGPTへ送り、返された採点結果を取り込んでください。</p>
     <p className="answer-scope"><strong>今回解く箇所：{introduction.subparts}</strong></p>
     <TaskScopeSelection scope={introduction.answerScope} problemId={canonicalId} run={run} busy={busy}/>
-    {gradingTask?<StudyPromptButtons item={gradingTask} resolved={hintReview?.card} answerScope={introduction.answerScope}/>:initialPrompt&&<button className="ghost" onClick={copyInitialPrompt}>{initialPromptCopied?"コピー済み":"採点プロンプトをコピー"}</button>}
+    {isRepair&&<p>詰まった段階（自己申告）：{repairStageLabel(repairCheck||savedResult?.repair_check)}。骨格・計算・転移の成功は採点の証拠で別々に確認します。</p>}
+    {gradingTask?<StudyPromptButtons item={gradingTask} resolved={hintReview?.card} answerScope={introduction.answerScope} repairCheck={repairCheck}/>:initialPrompt&&<button className="ghost" onClick={copyInitialPrompt}>{initialPromptCopied?"コピー済み":"採点プロンプトをコピー"}</button>}
     {initialPromptFallback&&<label>自動コピーが許可されていません。全選択してコピーしてください。<textarea aria-label="コピー用採点プロンプト" readOnly value={initialPromptFallback} onFocus={e=>e.currentTarget.select()}/></label>}
     <button className="primary" onClick={()=>setShowGradingImport(true)}>GPT採点結果を取り込む</button>
   </section>
