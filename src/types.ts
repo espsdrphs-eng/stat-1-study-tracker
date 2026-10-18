@@ -176,7 +176,8 @@ export type Attempt = {
   source_type?:Problem["source_type"];
   evidence_strength?:"training"|"strong";
   target_skill_prompted?:boolean;
-  target_skill_assessment?:{self_selected:boolean;major_calculation_success:boolean;no_major_error:boolean;evidence:string;outcome?:"success"|"failure"|"uncertain"};
+  target_skill_assessment?:{self_selected:boolean;major_calculation_success:boolean;no_major_error:boolean;evidence:string;outcome?:"success"|"failure"|"uncertain";
+    next_focus?:{name:string;goal:string;part_ids:string[];evidence:string}};
   transfer_lineage?:import("./generatedTransfer.ts").TransferTrainingLineage;
   id:number; problem_id:string; date:string; mode:string; time_minutes:number|null; mark:string;
   score_label:string; error_type:string; error_point:string; next_action:string; memo:string;

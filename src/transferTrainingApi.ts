@@ -1,6 +1,6 @@
 import type {db as database} from "./localDb";
 import yaml from "js-yaml";
-import {deriveAbilityProfiles,buildAbilityLineage,validAbilityLineage,abilityTrainingOutcome} from './abilityTraining.ts';
+import {deriveTrainingProfiles,buildAbilityLineage,validAbilityLineage,abilityTrainingOutcome,abilityTrainingPlan} from './abilityTraining.ts';
 import type {Bootstrap,Problem,StudyUpdate,Attempt} from "./types.ts";
 import {deriveTransferTrainingCandidates,generationMetaKey,generationPrompt,validationPrompt,
   acceptGenerationDraft,acceptGenerationValidation,registerGeneratedProblem,blindGeneratedView,
@@ -68,15 +68,22 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
   current:()=>Promise<Bootstrap>;save:(input:StudyUpdate&Record<string,unknown>)=>Promise<number>}){
   const {db,body}=args,key=String(body.key||""),forceGenerated=body.action==='start-generated',action=forceGenerated?'start':String(body.action||"view");
   if(action==='begin-ability'){
-    const current=await args.current(),profile=deriveAbilityProfiles(current).find(p=>p.id===body.profileId);
-    if(!profile?.trainable)throw new Error(profile?.reason||'能力プロフィールがありません。先にGPT診断を取り込んでください。');
+    const current=await args.current(),profile=deriveTrainingProfiles(current).find(p=>p.id===body.profileId);
+    if(!profile?.trainable)throw new Error(profile?.reason||'この訓練対象の採点根拠を確認できません。現在の弱点トレーニングから開き直してください。プロフィール更新は任意です。');
     const records=(await db.meta.where('key').startsWith('transfer-generation:training:ability:').toArray()).map(r=>JSON.parse(r.value) as TransferGenerationRecord);
     const same=records.filter(r=>r.lineage.abilityProfile?.id===profile.id);
     const active=same.find(r=>r.status!=='pending'&&!current.attempts.some(a=>a.transfer_lineage?.key===r.key&&!a.exclude_from_metrics&&!a.duplicate_of_attempt_id));
-    // One pending opportunity per capability, even after a new diagnosis.
-    if(active)return {key:active.key,status:active.status};
-    const lineage=buildAbilityLineage(profile,current,same.length+1),record:TransferGenerationRecord={key:lineage.key,lineage,createdAt:new Date().toISOString(),status:'requested',rounds:[]};
-    await db.meta.add({key:generationMetaKey(lineage.key),value:JSON.stringify(record)});
+    // Drafted/registered opportunities keep their immutable contract. An unused
+    // request may be superseded after an optional diagnosis, with a new identity
+    // so an old model response cannot silently target the revised ability.
+    const supersede=active?.status==='requested'&&!active.rounds.length&&active.lineage.abilityProfile?.revision!==profile.revision;
+    if(active&&!supersede)return {key:active.key,status:active.status};
+    const lineage=buildAbilityLineage(profile,current,same.length+1),createdAt=new Date().toISOString(),record:TransferGenerationRecord={key:lineage.key,lineage,createdAt,status:'requested',rounds:[],
+      generation_context:{schema_version:'STAT1-GENERATION-v2',request_key:lineage.key,problem_id:`GEN-${crypto.randomUUID().toUpperCase()}`,ability_id:profile.id,created_at:createdAt,source:'manual_chatgpt'}};
+    await db.transaction('rw',db.meta,async()=>{
+      if(supersede)await db.meta.put({key:generationMetaKey(active!.key),value:JSON.stringify({...active,status:'pending',pendingReason:'プロフィールが更新されたため、未使用の旧依頼を保留しました。現在の訓練問題作成から新しいプロンプトを使ってください。'})});
+      await db.meta.add({key:generationMetaKey(lineage.key),value:JSON.stringify(record)});
+    });
     return {key:lineage.key,status:record.status};
   }
   if(!key.startsWith("training:"))throw new Error("転移確認の計画キーが必要です");
@@ -190,7 +197,7 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
     record=acceptGenerationValidation(record,String(body.text||""));
     if(record.status==="validation_pending"){
       if(problems.some(p=>p.generated_transfer?.problem_text.trim()===record!.rounds.at(-1)!.draft.problem_text.trim()))throw new Error("同じ問題文が登録済みです。新しい別問題を依頼してください。");
-      problem=registerGeneratedProblem(record,`GEN-${crypto.randomUUID().toUpperCase()}`,new Date().toISOString());
+      problem=registerGeneratedProblem(record,record.generation_context?.problem_id||`GEN-${crypto.randomUUID().toUpperCase()}`,new Date().toISOString());
       record={...record,status:"registered",problemId:problem.problem_id};
       await db.transaction("rw",[db.problems,db.meta],async()=>{await db.problems.add(problem!);await saveRecord();});
     }else await saveRecord();
@@ -211,7 +218,8 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
       imageGradingPrompt(`\n返答はstudy_updateを1件、標準JSONまたはYAMLのコードブロックにする。actual_reference_level=${submission.referenceLevel}。`,submission.referenceLevel,submission.minutes)+
       `\nstudy_update内にtarget_skill_assessment: {self_selected:boolean,major_calculation_success:boolean,no_major_error:boolean,evidence:string}を必ず含める。`+
       `対象=${content.lineage.abilityProfile?JSON.stringify(content.lineage.abilityProfile):content.root_skill_id}。総合点とは独立に、初手と主要計算の実答案から判定。target外minorでは対象失敗にしない。模範解答の内容を本人の答案と混同しない。`+
-      (ability?'\nこれはGPT能力プロフィールに対する訓練。canonical技能や自然な本番転移の確定ではない。target_skill_assessment.outcomeをsuccess / failure / uncertainで返す。判定不能ならuncertainとし、3つのbooleanはfalse、evidenceに理由を書く。高い総合点だけで能力成功にしない。':'')+
+      (ability?'\nこれは採点根拠・能力プロフィールに基づく仮説の訓練。canonical技能や自然な本番転移の確定ではない。target_skill_assessment.outcomeをsuccess / failure / uncertainで返す。判定不能ならuncertainとし、3つのbooleanはfalse、evidenceに理由を書く。高い総合点だけで能力成功にしない。':'')+
+      (ability?'\n別の未解消操作を今回の実答案で新たに確認した場合だけ、target_skill_assessment.next_focusに {name:"短い能力仮説",goal:"観察できる成功条件",part_ids:["今回のgraded_findings内で未解消のID"],evidence:"具体的な答案根拠"} を任意で追加する。分からなければ項目自体を省略する。これは次の検証候補であり、元能力の成功を失敗へ付け替えたり、習得を確定したりしない。':'')+
       `\n解答前の方針・理由が答案に記載されているか確認する。対象操作を選んだ根拠を判定できなければ成功を推測せず、確信度を下げ、target_skill_assessment.evidenceに判定不能の理由を書く。`+
       `\n問題自体の条件矛盾・解答不能を発見した場合は能力を採点せず、study_updateを返す代わりに {"problem_issue":{"problem_id":"${problem!.problem_id}","reason":"具体的な問題不備の根拠"}} を返す。`+
       (record?.problemIssue&&!record.problemIssue.resolvedAt?`\n品質の再確認が必要です。正常に採点できると確認した場合のみmathematical_reviewを返す：${JSON.stringify({problem_id:problem!.problem_id,content_hash:content.content_hash,reference_solution:'独立に導いた完全な解答',grading_rubric:'対象操作の採点基準',checks:Object.fromEntries(['well_defined','solution_correct','rubric_aligned'].map(k=>[k,{pass:false,evidence:'具体的な検算根拠'}]))})}`:'')+
@@ -239,6 +247,7 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
   }else if(action!=="view"&&action!=="start")throw new Error("不明な転移確認操作です");
   const content=problem?.generated_transfer;
   const result:Record<string,unknown>={status:record?.problemIssue&&!record.problemIssue.resolvedAt?'problem_pending':content?.lifecycle_status||record?.status||candidate?.kind||"pending",
+    sourceStatementAvailable:!!source?.generated_transfer?.problem_text,
     statementOnly:(content?.input_format||record?.input_format)==='statement_only_v1',
     draftPreview:!problem?generationDraftPreview(record):undefined,
     problem:problem?blindGeneratedView(problem):undefined,existingProblemId:!record&&!problem?candidate?.existingProblemId:undefined,
@@ -248,7 +257,7 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
     const attempt=facts.find(a=>a.problem_id===problem!.problem_id&&!a.exclude_from_metrics);
     result.afterSubmission={...targetResults(attempt),rootSkillId:content.root_skill_id,rootSkillName:skillName(content.root_skill_id),sourceProblemId:content.lineage.sourceProblemId,
       result:attempt?(ability?({success:'training transfer success',failure:'training transfer failure',uncertain:'能力の判定保留',assisted:'援助ありの能力訓練（独立成功ではない）'}[abilityTrainingOutcome(attempt)]):deriveTransferEvidence(facts).some(r=>r.successAttemptId===attempt.id)?"training transfer success":transferTrainingOutcome(attempt)):"採点待ち",
-      evidence:attempt?.target_skill_assessment?.evidence||"",feedback:ability&&attempt?{score:attempt.score_numeric??null,scoreMax:attempt.score_max||100,errorPoint:attempt.target_skill_assessment?.evidence||'判定根拠未登録',nextAction:'プロフィールを更新し、直近の結果を次の異なる設定の訓練へ反映する',successCriterion:content.lineage.successCriteria}:savedTrainingFeedback(attempt,!!attempt&&deriveTransferEvidence(facts).some(r=>r.successAttemptId===attempt.id),content.lineage.successCriteria),solution:content.grading_reference?.reference_solution||content.reference_solution,rubric:content.grading_reference?.grading_rubric||content.grading_rubric};
+      evidence:attempt?.target_skill_assessment?.evidence||"",feedback:ability&&attempt?{score:attempt.score_numeric??null,scoreMax:attempt.score_max||100,errorPoint:attempt.target_skill_assessment?.evidence||'判定根拠未登録',nextAction:abilityTrainingPlan({attempts:facts,problems},{...content.lineage.abilityProfile!,origin:'training_history',state:'uncertain',trainable:true,reason:''}).next,successCriterion:content.lineage.successCriteria}:savedTrainingFeedback(attempt,!!attempt&&deriveTransferEvidence(facts).some(r=>r.successAttemptId===attempt.id),content.lineage.successCriteria),solution:content.grading_reference?.reference_solution||content.reference_solution,rubric:content.grading_reference?.grading_rubric||content.grading_rubric};
   }
   return result;
 }
@@ -283,6 +292,11 @@ export function validateTransferGrade(raw:any,problemId:string,context?:ReturnTy
     if(u[key]!=null&&(typeof u[key]!=="number"||!Number.isInteger(u[key])||u[key]<0||u[key]>5))throw new Error("参照段階は0〜5の整数で必要です。");
   }
   const t=u.target_skill_assessment;
+  if(t?.next_focus!==undefined){
+    const n=t.next_focus;
+    if(!n||typeof n!=='object'||Array.isArray(n)||typeof n.name!=='string'||!n.name.trim()||n.name.length>120||typeof n.goal!=='string'||!n.goal.trim()||n.goal.length>180||typeof n.evidence!=='string'||n.evidence.trim().length<10||n.evidence.length>2000||!Array.isArray(n.part_ids)||!n.part_ids.length||new Set(n.part_ids).size!==n.part_ids.length||n.part_ids.some((id:unknown)=>typeof id!=='string'||!u.graded_findings?.some((f:any)=>f.graded_part_id===id&&f.resolved===false&&f.error_type!=='none')))
+      throw new Error('次の能力仮説 next_focus は、今回の未解消採点項目IDと具体的な答案根拠に対応させてください。根拠がなければ省略して再採点してください。');
+  }
   if(context?.ability_profile_id&&(!u.transfer_task_context||!['success','failure','uncertain'].includes(t?.outcome)))throw new Error('能力プロフィールとの対応情報と対象能力のsuccess / failure / uncertain判定が必要です。現在の採点プロンプトを使ってください。');
   if(t?.outcome==='success'&&(!t.self_selected||!t.major_calculation_success||!t.no_major_error)||t?.outcome==='failure'&&t.self_selected&&t.major_calculation_success&&t.no_major_error)throw new Error('能力の総合判定と個別判定が矛盾しています。ChatGPTで再確認してください。');
   if(!t||[t.self_selected,t.major_calculation_success,t.no_major_error].some(v=>typeof v!=="boolean")||typeof t.evidence!=="string"||!t.evidence.trim())

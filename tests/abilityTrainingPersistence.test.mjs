@@ -5,7 +5,7 @@ import {GENERATION_CHECKS} from '../src/generatedTransfer.ts';
 import {transferGradingContext} from '../src/transferTrainingApi.ts';
 import {abilityTrainingHistory,deriveAbilityProfiles} from '../src/abilityTraining.ts';
 import {successfulSkillIds,deriveTransferEvidence} from '../src/skillEvidence.ts';
-import {contentHash} from '../src/generatedTransfer.ts';
+import {contentHash,generationDraftContract} from '../src/generatedTransfer.ts';
 
 test('shared-record capability loop: create → validate → paper → grade → GPT profile update → next generation; preserve formal records',async()=>{
  await localGet('/api/bootstrap');
@@ -24,6 +24,7 @@ test('shared-record capability loop: create → validate → paper → grade →
   const outcome=outcomes[round],prompt=(await call('start-generated')).prompt;assert.match(prompt,/条件を数式/);assert.match(prompt,/数字・記号だけ/);assert.doesNotMatch(prompt,/self_reported_stuck_stage/);
   if(round)assert.match(prompt,/previousResults/);
   const draft={problem_text:`FIXTURE-${round}: 区間(0,1)に値を取る変数Uを考え、P(U≤u)=u²が0≤u≤1で成立するとする。V=1-Uの密度を、密度が正の値となる範囲とともに求めよ。`,reference_solution:'FIXTURE: f_U(u)=2u (0<u<1)。逆変換u=1-vの微分の絶対値は1なので、f_V(v)=2(1-v) (0<v<1)、その他は0。',grading_rubric:'FIXTURE: 条件と変換後の範囲、逆変換、微分、密度の完成を別々に照合する。',difficulty:'統計検定1級',estimated_minutes:12,surface_features:['FIXTURE new situation',`round-${round}`],generator_pass_id:`generator-${round}`};
+  const requested=JSON.parse((await db.meta.get(`transfer-generation:${key}`)).value),contractDraft=generationDraftContract(requested);Object.assign(draft,{generation_context:contractDraft.generation_context,self_check:Object.fromEntries(['well_defined','solution_correct','rubric_aligned'].map(k=>[k,{pass:true,evidence:'FIXTURE: 自己確認の入出力。実ChatGPT・数学的品質の実証ではない。'}]))});
   await call('draft',{text:JSON.stringify(draft)});let record=JSON.parse((await db.meta.get(`transfer-generation:${key}`)).value);
   await call('validate',{text:JSON.stringify({draft_hash:record.rounds.at(-1).hash,validator_pass_id:`independent-${round}`,checks:Object.fromEntries(GENERATION_CHECKS.map(k=>[k,{pass:true,evidence:`FIXTURE: ${k} の独立検証を行ったというテスト専用の報告。`}]))})});
   let view=await call('view'),problem=await db.problems.get(view.problem.problem_id);assert.equal(view.status,'ready');assert.ok(!JSON.stringify(view).includes(draft.reference_solution));assert.ok(!JSON.stringify(view).includes(profile.name));

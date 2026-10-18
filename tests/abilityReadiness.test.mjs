@@ -24,9 +24,9 @@ test('readiness explains invalid evidence precisely without bypassing source or 
  const old={...source,graded_findings:[],error_point:'FIXTURE: 条件の取り落としを記録した旧採点'},note={...d,abilityProfiles:[{...d.abilityProfiles[0],sources:[{attemptId:1,partIds:[]}]}]};
  assert.equal(deriveAbilityProfiles({...data(note),attempts:[old]})[0].trainable,true);assert.equal(deriveAbilityProfiles({...data(note),attempts:[{...old,error_point:''}]})[0].trainable,false);
 });
-test('blocked training offers a preparation action and import preview distinguishes diagnosis saved from training ready',async()=>{
+test('training entry uses current evidence without mandatory profile preparation; preview distinguishes diagnosis from training evidence',async()=>{
  const focus=await readFile('src/WeaknessFocus.tsx','utf8'),controls=await readFile('src/LearningDashboard.tsx','utf8');
- assert.match(focus,/訓練の準備をする/);assert.doesNotMatch(focus,/disabled=\{busy\|\|!p.trainable\}/);assert.match(controls,/訓練準備は未完了/);assert.match(controls,/deriveAbilityProfiles/);
+ assert.doesNotMatch(focus,/>訓練の準備をする</);assert.match(focus,/disabled=\{busy\|\|!p.trainable\}/);assert.match(controls,/採点根拠/);assert.match(controls,/deriveTrainingProfiles/);
 });
 test('manual list start is separate from Planner protection and requires an explicit acknowledgement',()=>{
  assert.equal(typeof planning.canStartProtectedProblemIndividually,'function');const f=planning.canStartProtectedProblemIndividually;

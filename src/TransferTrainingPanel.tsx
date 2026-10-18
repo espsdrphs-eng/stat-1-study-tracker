@@ -1,6 +1,6 @@
 import {useEffect,useState} from "react";
 import {post} from "./api";
-type View={status:string;statementOnly?:boolean;problem?:{problem_id:string;display_label:string;difficulty:string;estimated_minutes:number;problem_text:string};existingProblemId?:string;prompt?:string;pendingReason?:string;
+type View={status:string;statementOnly?:boolean;sourceStatementAvailable?:boolean;problem?:{problem_id:string;display_label:string;difficulty:string;estimated_minutes:number;problem_text:string};existingProblemId?:string;prompt?:string;pendingReason?:string;
   draftPreview?:{problem_text:string;difficulty:string;estimated_minutes:number};
   sourceContext?:{sourceProblemId:string;sourceLabel:string;skillName:string;sourceAttemptId:number;sourceScopeText:string;destinationProblemId?:string;evidenceKind:string};
   afterSubmission?:{rootSkillId:string;rootSkillName?:string;sourceProblemId:string;result:string;evidence:string;solution:string;rubric:string;strategy?:string;calculation?:string;
@@ -20,11 +20,12 @@ export function TransferTrainingPanel({trainingKey,onSaved,allowBundle=true}:{tr
       if(copy&&response.prompt){
         setPreparedPrompt(response.prompt);
         try{await navigator.clipboard.writeText(response.prompt);setMessage(action==="grading-prompt"?"コピーしました。確定答案と問題資料をGPTへ渡し、採点JSON / YAMLを取り込んでください。":['draft','validation-prompt'].includes(action)?"品質確認プロンプトをコピーしました。生成とは別のChatGPT会話で確認し、返ったJSONを下へ貼り付けてください。":"生成プロンプトをコピーしました。ChatGPTの生成結果を下へ貼り付けてください。");}
-        catch{setCopyFallback(response.prompt);setMessage("自動コピーが許可されていません。「用意したプロンプトをコピー」をタップしてください。コピーできない場合は下の文面を全選択できます。");}
+        catch{setCopyFallback(response.prompt);setError("自動コピーできませんでした。用意したプロンプトを再コピーするか、下の文面を全選択してコピーしてください。");}
       }
-      if(action==="grade"||action==="validate")onSaved?.();
+      if(action==="grade"||action==="validate"&&response.problem)onSaved?.();
       if(action==='validate'&&response.problem)setMessage('問題を保存しました。下の問題文を紙・Goodnotesで解答してください。模範解答は答案完成後まで表示しません。');
-      if(['draft','validate','grade'].includes(action)&&response.status!=='problem_pending')setPayload(current=>current===payload?'':current);
+      if(action==='validate'&&(response.status==='requested'||response.status==='pending')&&response.pendingReason)setError(response.pendingReason);
+      if(action==='draft'||action==="validate"&&response.problem||action==='grade'&&response.status==='graded')setPayload(current=>current===payload?'':current);
       setView(await request("view"));
     }catch(e){setError(e instanceof Error?e.message:String(e));}finally{setBusy(false);}
   };
@@ -32,10 +33,10 @@ export function TransferTrainingPanel({trainingKey,onSaved,allowBundle=true}:{tr
   const step=!content?(view?.status==='validation_pending'?2:1):view?.afterSubmission?4:3;
   const resultLabel=view?.afterSubmission?.result==='training transfer success'?'転移訓練：成功（自然な本番転移とは別記録）':view?.afterSubmission?.result==='training transfer failure'?'転移訓練：未達（対象技能を再補修）':view?.afterSubmission?.result;
   return <section className="card" aria-label="転移確認">
-    <h3>{ability?(!content?'能力トレーニング問題を作成':view?.afterSubmission?'能力トレーニングの採点・結果':'能力トレーニング問題を解く'):!content?'転移問題を作成':view?.afterSubmission?'転移問題の採点・結果':'転移問題を解く'}</h3><p>ChatGPTとのコピー・貼り付けで進めます。{ability?'GPT診断の能力仮説を別問題で検証する訓練':'生成意図を知る可能性がある転移訓練'}であり、自然な本番転移とは別記録です。</p>
+    <h3>{ability?(!content?'能力トレーニング問題を作成':view?.afterSubmission?'能力トレーニングの採点・結果':'能力トレーニング問題を解く'):!content?'転移問題を作成':view?.afterSubmission?'転移問題の採点・結果':'転移問題を解く'}</h3><p>ChatGPTとのコピー・貼り付けで進めます。{ability?'採点根拠・プロフィールに基づく能力仮説を別問題で検証する訓練':'生成意図を知る可能性がある転移訓練'}であり、自然な本番転移とは別記録です。</p>
     <ol className="transfer-steps" aria-label="転移問題の手順">{['生成','品質確認・登録','紙で解答','採点・保存'].map((label,i)=><li key={label} aria-current={step===i+1?'step':undefined}>{i+1}. {label}{step===i+1?'（現在）':''}</li>)}</ol>
     {error&&<p role="alert">{error}</p>}{message&&<p role="status">{message}</p>}{!view&&<p>確認中…</p>}
-    {preparedPrompt&&<button className="primary" disabled={busy} onClick={async()=>{try{await navigator.clipboard.writeText(preparedPrompt);setCopyFallback('');setMessage('用意したプロンプトをコピーしました。ChatGPTへ貼り付けてください。')}catch{setCopyFallback(preparedPrompt);setMessage('コピー用プロンプトを全選択してコピーしてください。')}}}>用意したプロンプトをコピー</button>}
+    {preparedPrompt&&<button className="primary" disabled={busy} onClick={async()=>{try{await navigator.clipboard.writeText(preparedPrompt);setCopyFallback('');setError('');setMessage('用意したプロンプトをコピーしました。ChatGPTへ貼り付けてください。')}catch{setCopyFallback(preparedPrompt);setError('コピーできませんでした。コピー用プロンプトを全選択してコピーしてください。')}}}>用意したプロンプトをコピー</button>}
     {copyFallback&&<details><summary>全選択用のプロンプトを開く（生成条件・検算内容を含みます）</summary><label>コピー用プロンプト<textarea aria-label="コピー用プロンプト" readOnly rows={5} value={copyFallback} onFocus={e=>e.currentTarget.select()} style={{width:"100%"}}/></label></details>}
     {view&&!content&&<><button className="ghost" disabled={busy} onClick={inspectSource}>転移元との対応を確認（訓練の説明）</button>
       {sourceContext&&<section aria-label="転移元の対応"><p>元問題：{sourceContext.sourceLabel}（{sourceContext.sourceProblemId}）／根拠答案 #{sourceContext.sourceAttemptId}</p>
@@ -44,7 +45,7 @@ export function TransferTrainingPanel({trainingKey,onSaved,allowBundle=true}:{tr
     {view?.existingProblemId&&!content&&<><p>高信頼の既存問題を使用します。生成は不要です。</p><button disabled={busy} onClick={()=>act("start")}>既存の転移確認問題を開く</button></>}
     {view?.existingProblemId&&!content&&allowBundle&&<button disabled={busy} onClick={()=>act('start-generated',true)}>新しい転移問題の生成プロンプトをコピー</button>}
     {view&&!content&&!view.existingProblemId&&<>
-      <p>採点で確認した弱点を生成条件に使います。元問題の本文・条件はアプリに未登録です。</p>
+      <p>採点で確認した弱点を生成条件に使います。{view.sourceStatementAvailable?'保存済みの元の生成問題と採点根拠を引き継ぎます。':'元問題の本文・条件はアプリに未登録です。'}</p>
       <p>{view.statementOnly?'この既存依頼は問題文のみの形式です。解答・採点基準は答案確定後に取り込みます。':allowBundle?'ChatGPTの問題・正答・採点基準を取り込み、別の会話で品質確認します。登録後の解答前画面には問題文だけを表示します。':'ChatGPTに問題文だけのJSONを戻してもらい、別の新しい会話で品質確認します。'}</p>
       {["generated","requested"].includes(view.status)&&<button disabled={busy} onClick={()=>act(allowBundle?'start-generated':"start",true)}>問題生成プロンプトをコピー</button>}
       {view.status==="validation_pending"&&<button disabled={busy} onClick={()=>act("validation-prompt",true)}>品質確認プロンプトをコピー</button>}

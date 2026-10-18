@@ -1289,7 +1289,7 @@ function WeakView({data,run,busy,onToday,onReview,onProblems}:{data:Bootstrap;ru
   const create=async(profileId:string)=>{setCreating(true);setError('');try{const result=await post<{key:string}>('/api/transfer-training',{action:'begin-ability',profileId});setTraining(result.key)}catch(e){setError(e instanceof Error?e.message:String(e))}finally{setCreating(false)}};
   useEffect(()=>{if(training)document.querySelector('[aria-label="弱点からの転移訓練"]')?.scrollIntoView({block:'start',behavior:'smooth'})},[training]);
   return <><WeaknessFocus data={data} busy={busy||creating} onCreate={id=>void create(id)} onTransfer={setTraining} onReview={onReview} onProblems={onProblems} onDiagnose={()=>setDiagnose(true)}/>{error&&<p role="alert">{error}</p>}
-   {training&&<div className="transfer-workspace" aria-label="弱点からの転移訓練"><button className="ghost" onClick={()=>setTraining(null)}>訓練操作を閉じる</button><TransferTrainingPanel key={training} trainingKey={training} onSaved={()=>run(async()=>{},'訓練の結果を反映しました。能力プロフィールはGPT診断で更新します。')} allowBundle/></div>}
+   {training&&<div className="transfer-workspace" aria-label="弱点からの転移訓練"><button className="ghost" onClick={()=>setTraining(null)}>訓練操作を閉じる</button><TransferTrainingPanel key={training} trainingKey={training} onSaved={()=>run(async()=>{},'訓練の状態を反映しました。作成・コピーだけでは能力の改善にしません。プロフィール更新は任意です。')} allowBundle/></div>}
    {diagnose&&<Modal title="能力プロフィールを更新" close={()=>setDiagnose(false)}><CoachReviewControls data={data} run={run} busy={busy}/></Modal>}
    <details className="panel" onToggle={e=>setHistory(e.currentTarget.open)}><summary>個別問題・技能の旧根拠と履歴（任意）</summary>{history&&<WeakEvidenceHistory data={data} run={run} busy={busy} onToday={onToday} onTransfer={setTraining}/>}</details></>;
 }

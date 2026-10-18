@@ -22,6 +22,11 @@ export function buildCoachReviewFacts(args:CoachReviewInput){
  const add=(a:Attempt|undefined,reason:string)=>{if(a){const reasons=chosen.get(a.id)||new Set<string>();reasons.add(reason);chosen.set(a.id,reasons);}};
  // New training results depend on saved answers, not diagnosis-history changes.
  const abilities=new Map<string,number>();for(const a of attempts){const id=a.transfer_lineage?.abilityProfile?.id;if(id&&(abilities.get(id)||0)<3){abilities.set(id,(abilities.get(id)||0)+1);add(a,'ability_training_result');}}
+ // Optional profile updates must be able to cite the actual sources of a
+ // provisional training, not only its latest generated answers. Bound by the
+ // same three representative results per capability; never dump full history.
+ for(const[id,reasons]of [...chosen])if(reasons.has('ability_training_result'))for(const s of amap.get(id)?.transfer_lineage?.abilityProfile?.sources||[])add(amap.get(s.attemptId),'ability_source');
+ add(attempts.find(a=>!a.transfer_lineage&&(a.graded_findings||[]).some(f=>findingPlanningEligible(a,f)&&findingEvidenceStatus(a,f).outcome==='failure')),'provisional_candidate');
  const profileIds=new Set((previous?.abilityProfiles||[]).flatMap(p=>p.sources.map(s=>s.attemptId)));
  for(const ref of previous?.primaryBottleneck.evidenceIds||[])if(/^attempt:\d+$/.test(ref))profileIds.add(Number(ref.split(':')[1]));
  for(const id of previous?.primaryBottleneck.evidenceProblemIds||[]){const rows=attempts.filter(a=>a.problem_id===id);for(const a of [rows[0],rows.find(a=>a.id<=(previous?.evidenceCutoffAttemptId||0))])if(a)profileIds.add(a.id);}
@@ -66,7 +71,7 @@ export function buildCoachReviewFacts(args:CoachReviewInput){
  }
  const evidence=[...chosen].map(([id,reasons])=>{const a=amap.get(id)!;
   const relevant=new Set(tasks.filter(t=>t.problem_id===a.problem_id).flatMap(t=>t.repair_lineage?.sourceFindingIds||t.targeted_parts||t.grading_contract?.gradedParts.map(p=>p.id)||[]));
-  const priority=reasons.has('current_task_source')||reasons.has('latest_same_problem')||reasons.has('ability_training_result')||reasons.has('benchmark_candidate');
+  const priority=reasons.has('current_task_source')||reasons.has('latest_same_problem')||reasons.has('ability_training_result')||reasons.has('ability_source')||reasons.has('provisional_candidate')||reasons.has('benchmark_candidate');
   const eligible=(a.graded_findings||[]).filter(f=>findingPlanningEligible(a,f)).sort((a,b)=>
    Number(relevant.has(b.graded_part_id))-Number(relevant.has(a.graded_part_id))||Number(!b.resolved)-Number(!a.resolved));
   // Keep all scoped priority evidence intact. Other examples are explicit excerpts.
