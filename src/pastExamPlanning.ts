@@ -508,6 +508,10 @@ export function buildPastExamYearCandidates(args:{
 }
 
 /** Same individual-start rule for the problem screen and the write endpoint. */
+export function canStartProtectedProblemIndividually(args:{year?:number;entryPoint?:string;acknowledged:boolean}){
+ return args.entryPoint==='problem_list'&&args.acknowledged===true&&[2024,2025].includes(Number(args.year));
+}
+
 export function derivePastExamProblemStart(args:{problemId:string;catalog:ExamReferenceCatalogItem[];attempts:Attempt[];tasks:Task[];pastSessions:PastSession[];today:string;daysRemaining:number}){
  const row=args.catalog.find(r=>r.canonicalProblemId===args.problemId),year=row?.year;
  const graded=args.attempts.some(a=>a.problem_id===args.problemId&&attemptPlanningEligible(a)&&!a.exclude_from_metrics&&!a.invalidated_at&&!a.superseded_by_attempt_id&&!a.duplicate_of_attempt_id&&a.score_numeric!=null);

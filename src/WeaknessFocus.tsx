@@ -13,7 +13,7 @@ export function WeaknessFocus({data,onCreate,onTransfer,onReview,onProblems,onDi
     <header><span>{i===0?'現在の最大ボトルネック':'重点課題'}</span><span className="ability-state">{p.origin==='legacy_diagnosis'?'改善状態：未判定':`GPT評価：${abilityStateLabels[p.state]}`}</span></header>
     <h3>{p.name}</h3>{p.goal!==p.name&&<p><strong>確認すること：</strong>{p.goal}</p>}<p><strong>次の検証：</strong>{p.next}</p>
     {p.origin==='legacy_diagnosis'&&<small>既存の総合診断を参照しています。能力別の改善状態はまだ未判定です。</small>}
-    <div className="button-row"><button className="primary" disabled={busy||!p.trainable} onClick={()=>onCreate(p.id)}>{active?'訓練を再開':'訓練問題を作成'}</button></div>
+    <div className="button-row">{p.trainable?<button className="primary" disabled={busy} onClick={()=>onCreate(p.id)}>{active?'訓練を再開':'訓練問題を作成'}</button>:<button className="primary" disabled={busy} onClick={onDiagnose}>訓練の準備をする</button>}</div>
     {!p.trainable&&<p role="status">{p.reason}</p>}
     <p className="muted">生成問題は能力トレーニングです。過去問の正式得点・自然な本番転移とは別に記録します。</p>
     <h4>直近の訓練結果</h4>{history.length?<ul className="ability-results">{history.slice(0,5).map(h=><li key={h.attemptId}><strong>{labels[h.outcome]}</strong><span>{h.date}・{h.problemId}</span><p>{h.evidence}</p><button className="text-btn" onClick={()=>onTransfer(data.attempts.find(a=>a.id===h.attemptId)!.transfer_lineage!.key)}>結果を確認</button></li>)}</ul>:<p>まだ訓練していません。問題の作成・コピーだけでは成功になりません。</p>}

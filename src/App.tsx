@@ -37,7 +37,7 @@ import { EXAM_PHASES } from "./studyProgress";
 import { type ExamPhase } from "./examReadiness";
 import { resolveReviewCard, type ResolvedReviewCard } from "./reviewCardResolver";
 import { buildScan5Prompt, deriveExposure, scanMetrics, stageForDays, defaultSessionKind } from "./pastExamWorkflow";
-import {derivePastExamSessionState,derivePastExamWorkspace,derivePastExamProblemStart} from "./pastExamPlanning.ts";
+import {derivePastExamSessionState,derivePastExamWorkspace,derivePastExamProblemStart,canStartProtectedProblemIndividually} from "./pastExamPlanning.ts";
 import {attemptPlanningEligible} from "./legacyKPolicy.ts";
 import {deriveCurrentActionClass,reviewDueState,todayLearningCategory} from "./todayLearningPolicy.ts";
 import {isPastExamSessionTask,currentTaskIdentity} from "./examOptimizationPolicy.ts";
@@ -178,7 +178,7 @@ export default function App() {
       {needRefresh&&<div className="update-banner" role="alert"><div><strong>新しいバージョンがあります</strong><span>未保存内容を確認してから、安全に更新できます。</span></div><button className="primary small" onClick={safelyUpdateApp}>安全に更新</button><button className="ghost small" onClick={()=>setNeedRefresh(false)}>後で</button></div>}
       {!data.databaseStatus.valid&&<div className="update-banner database-required" role="alert"><div><strong>アプリのデータベース更新が必要です</strong><span>既存履歴は閲覧できますが、安全のため書き込み操作を一時停止しています。不足：{data.databaseStatus.missingStores.join("、")}</span></div><button className="primary small" disabled={busy} onClick={repairDatabase}>安全に更新</button></div>}
       <div className="content">
-        {selected?.generated_transfer?<><button onClick={()=>setSelected(null)}>戻る</button><TransferTrainingPanel trainingKey={selected.generated_transfer.lineage.key}/></>:selected?<ProblemDetail problem={selected} startingTask={startingStudyTask?.problem_id===selected.problem_id?startingStudyTask:undefined} data={data} run={run} busy={busy} onBack={()=>{setSelected(null);setStartingStudyTask(null)}} onImport={()=>{setSelected(null);setPage("import")}} onOpenPastExam={year=>{go('past');setPastYear(year)}}/>:
+        {selected?.generated_transfer?<><button onClick={()=>setSelected(null)}>戻る</button><TransferTrainingPanel trainingKey={selected.generated_transfer.lineage.key}/></>:selected?<ProblemDetail problem={selected} entryPoint={page==='problems'?'problem_list':undefined} startingTask={startingStudyTask?.problem_id===selected.problem_id?startingStudyTask:undefined} data={data} run={run} busy={busy} onBack={()=>{setSelected(null);setStartingStudyTask(null)}} onImport={()=>{setSelected(null);setPage("import")}} onOpenPastExam={year=>{go('past');setPastYear(year)}}/>:
         page==="dashboard"?<DashboardView data={data} go={go} run={run} busy={writeBusy} select={(p,task)=>{setStartingStudyTask(task||deriveProblemLearningView(data,p).nextTask||null);setSelected(p)}}/>:
         page==="today"?<TodayView data={data} busy={writeBusy} run={run} go={go} select={(p,task)=>{setStartingStudyTask(task||null);setSelected(p)}}/>:
         page==="problems"?<ProblemsView data={data} select={p=>{setStartingStudyTask(deriveProblemLearningView(data,p).nextTask||null);setSelected(p)}} run={run} busy={writeBusy}/>:
@@ -814,7 +814,7 @@ function MasteryLevels({levels}:{levels:MasteryLevelState[]}){
   </div>)}</div>;
 }
 
-function ProblemDetail({problem,data,run,busy,onBack,onImport,startingTask,onOpenPastExam}:{problem:Problem;data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>Promise<boolean>;busy:boolean;onBack:()=>void;onImport:()=>void;startingTask?:Task;onOpenPastExam:(year:number)=>void}) {
+function ProblemDetail({problem,data,run,busy,onBack,onImport,startingTask,onOpenPastExam,entryPoint}:{problem:Problem;data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>Promise<boolean>;busy:boolean;onBack:()=>void;onImport:()=>void;startingTask?:Task;onOpenPastExam:(year:number)=>void;entryPoint?:'problem_list'}) {
   const learningView=deriveProblemLearningView(data,problem);
   const [blindAnswerSubmitted,setBlindAnswerSubmitted]=useState(learningView.workStatus==="awaiting_grading");
   const [hintOpen,setHintOpen]=useState(false),[hintBusy,setHintBusy]=useState(false),[showGradingImport,setShowGradingImport]=useState(false);
@@ -908,13 +908,13 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport,startingTask,onOpe
       await post(`/api/reviews/${hintReview.review.id}/reference`,{actual_reference_level:2});
       rememberReferenceState(hintReview.review.id,revealReference(readReferenceState(hintReview.review.id),2));
     }else{
-      const ok=await run(()=>post("/api/learning-work",{problemId:canonicalId,mode:initialMode,stage:learningView.work?.stage||"preparing",referenceLevel:2,contractId:gradingTask?.grading_contract?.contractId}),"具体的なヒントを参照ありとして記録しました");
+      const ok=await run(()=>post("/api/learning-work",{problemId:canonicalId,entryPoint,mode:initialMode,stage:learningView.work?.stage||"preparing",referenceLevel:2,contractId:gradingTask?.grading_contract?.contractId}),"具体的なヒントを参照ありとして記録しました");
       if(!ok)return;
     }
     setHintOpen(true);
   }catch(e){window.alert(e instanceof Error?e.message:"参照を記録できないため表示しません")}finally{setHintBusy(false)}};
   const setWork=async(stage:"preparing"|"awaiting_grading")=>{
-    const ok=await run(()=>post("/api/learning-work",{problemId:canonicalId,mode:initialMode,
+    const ok=await run(()=>post("/api/learning-work",{problemId:canonicalId,entryPoint,mode:initialMode,
       reviewId:gradingTask?.id,contractId:gradingTask?.id?undefined:gradingTask?.grading_contract?.contractId,stage,referenceLevel:Math.max(Number(learningView.work?.referenceLevel||0),Number(hintReview?.review.actual_reference_level||0),readReferenceState(gradingTask?.id).actual_reference_level)}),
       stage==="awaiting_grading"?"答案完成を記録しました。ChatGPTへ答案画像を添付して採点してください":"採点準備中として記録しました");
     if(ok&&stage==="awaiting_grading")setBlindAnswerSubmitted(true);
@@ -922,7 +922,10 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport,startingTask,onOpe
   if(problem.generated_transfer)return <section className="panel"><button className="back" onClick={onBack}>← 戻る</button>
     <TransferTrainingPanel trainingKey={problem.generated_transfer.lineage.key}/></section>;
   const admission=derivePastExamProblemStart({problemId:problem.problem_id,catalog:data.adaptiveLearning.pastExamCatalog,attempts:data.attempts,tasks:data.today.tasks,pastSessions:data.pastSessions,today:data.dashboard.today,daysRemaining:data.dashboard.pace.daysRemaining});
-  if(admission.blocked)return <section className="panel protected-problem" aria-label="未見問題の保護と開始方法"><button className="back" onClick={onBack}>← 戻る</button><h2>{problemDisplayLabel(problem)}</h2><h3>未見の本番測定を保護しています</h3><p>個別の解答ではなく、年度の本番形式から開始します。解答・解説は表示していません。</p><ul>{admission.reasons.map(reason=><li key={reason}>{reason}</li>)}</ul><button className="primary" onClick={()=>onOpenPastExam(admission.year!)}>{admission.year}年の本番形式・開始条件を開く</button></section>;
+  const manualStart=canStartProtectedProblemIndividually({year:admission.year,entryPoint,acknowledged:!!learningView.work?.individualStartAcknowledgedAt});
+  if(admission.blocked&&!manualStart)return <section className="panel protected-problem" aria-label="未見問題の保護と開始方法"><button className="back" onClick={onBack}>← 戻る</button><h2>{problemDisplayLabel(problem)}</h2><h3>未見の本番測定を保護しています</h3><p>Plannerは本番形式の機会を保護しています。解答・解説は表示していません。</p>
+   {canStartProtectedProblemIndividually({year:admission.year,entryPoint,acknowledged:true})&&<section aria-label="問題一覧からの個別演習"><p>問題一覧からは個別に開始できます。手元の原本で問題文を確認すると、この問題は未見の本番測定には使えなくなります。他の未見問題の保護や過去の成績は変更しません。</p><button className="primary" disabled={busy} onClick={()=>run(()=>post('/api/learning-work',{problemId:canonicalId,mode:'full',stage:'preparing',entryPoint:'problem_list',confirmIndividualStart:true}),'個別演習を開始しました。本番形式の成績とは別に記録します。')}>問題文を確認し、個別演習として開始</button></section>}
+   <details><summary>本番形式の開始条件</summary><ul>{admission.reasons.map(reason=><li key={reason}>{reason}</li>)}</ul></details><button className="ghost" onClick={()=>onOpenPastExam(admission.year!)}>{admission.year}年の本番形式・開始条件を開く</button></section>;
   if(!blindAnswerSubmitted)return <section className="panel blind-problem" aria-label="解答前の問題">
     <button className="back" onClick={onBack}>← 戻る</button><h2>{problemDisplayLabel(problem)}</h2>
     <section className="task-introduction" aria-label="課題の対象と回収目標" data-task-identity={introduction.taskIdentity}>

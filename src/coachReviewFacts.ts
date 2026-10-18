@@ -44,8 +44,11 @@ export function buildCoachReviewFacts(args:CoachReviewInput){
    {value:m&&m.evidenceCount>0?m.value:null,n:m?.numerator??0,d:m?.denominator??0,samples:m?.evidenceCount??0})}];}));
  const measuredSessions=args.dashboard.readiness.evidence?.selectedThree?.sessions||[];
  // Keep a non-recent worst session as well as the latest measurement, not last-N answers.
- const sessions=[...new Map([measuredSessions[0],[...measuredSessions].sort((a,b)=>a.score-b.score)[0]].filter(Boolean).map(s=>[s.sessionId,s])).values()]
-  .map(s=>({id:`session:${s.sessionId}`,year:s.year,score:s.score}));
+ const representativeSessions=[...new Map([measuredSessions[0],[...measuredSessions].sort((a,b)=>a.score-b.score)[0]].filter(Boolean).map(s=>[s.sessionId,s])).values()];
+ const sessions=representativeSessions.map(s=>({id:`session:${s.sessionId}`,year:s.year,score:s.score,attempt_ids:s.attemptIds||[]}));
+ // These are explicitly linked measurement answers, not automatic skill assignments.
+ // Keep latest/worst measurements bounded; aggregate timing alone proves no math deficit.
+ for(const s of representativeSessions)for(const id of s.attemptIds||[])add(amap.get(id),'benchmark_candidate');
  const transfers=currentTransferEvidence(attempts),confirmed=new Set(transfers.map(e=>e.successAttemptId));
  const trainingLatest=[...new Map([...attempts].reverse().filter(a=>a.transfer_lineage).map(a=>[a.transfer_lineage!.key,a])).values()];
  const training={success:0,failure:0,uncertain:0,assisted:0},ability_training={success:0,failure:0,uncertain:0,assisted:0};
@@ -57,13 +60,13 @@ export function buildCoachReviewFacts(args:CoachReviewInput){
  const seen=new Set<string>();
  for(const a of attempts){
   const purpose=a.transfer_lineage?'transfer_training':a.learning_purpose;
-  if(!['error_repair','retrieval_check','transfer_training'].includes(purpose||''))continue;
+  if(!['exam_performance','error_repair','retrieval_check','transfer_training'].includes(purpose||''))continue;
   const category=`${purpose}:${outcome(a)}`;
   if(!seen.has(category)){seen.add(category);add(a,category);}
  }
  const evidence=[...chosen].map(([id,reasons])=>{const a=amap.get(id)!;
   const relevant=new Set(tasks.filter(t=>t.problem_id===a.problem_id).flatMap(t=>t.repair_lineage?.sourceFindingIds||t.targeted_parts||t.grading_contract?.gradedParts.map(p=>p.id)||[]));
-  const priority=reasons.has('current_task_source')||reasons.has('latest_same_problem')||reasons.has('ability_training_result');
+  const priority=reasons.has('current_task_source')||reasons.has('latest_same_problem')||reasons.has('ability_training_result')||reasons.has('benchmark_candidate');
   const eligible=(a.graded_findings||[]).filter(f=>findingPlanningEligible(a,f)).sort((a,b)=>
    Number(relevant.has(b.graded_part_id))-Number(relevant.has(a.graded_part_id))||Number(!b.resolved)-Number(!a.resolved));
   // Keep all scoped priority evidence intact. Other examples are explicit excerpts.

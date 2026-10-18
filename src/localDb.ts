@@ -74,7 +74,7 @@ import {deriveDashboardKpis} from "./dashboardKpi.ts";
 import {deriveExamReadinessAssessment} from "./examCapability.ts";
 import {reviewDueState,reviewPlanningDecision} from "./todayLearningPolicy.ts";
 import {deriveCanonicalStudyPlan,deriveRankedStudyCandidates} from "./canonicalStudyPlan.ts";
-import {canonicalizePastExamSessions,currentPastExamSessionExplanation,derivePastExamWorkspace,derivePastExamSessionState,pastExamSessionKey,pastExamSessionPurpose,reconcilePastExamSessionEvidence,stablePastExamSessionKey,validatePastExamSessionIdentity,validatePastExamTaskIdentity,projectPastExamSessionAdmissions,derivePastExamProblemStart} from "./pastExamPlanning.ts";
+import {canonicalizePastExamSessions,currentPastExamSessionExplanation,derivePastExamWorkspace,derivePastExamSessionState,pastExamSessionKey,pastExamSessionPurpose,reconcilePastExamSessionEvidence,stablePastExamSessionKey,validatePastExamSessionIdentity,validatePastExamTaskIdentity,projectPastExamSessionAdmissions,derivePastExamProblemStart,canStartProtectedProblemIndividually} from "./pastExamPlanning.ts";
 
 const PLANNER_RUNTIME_MODE_META_KEY="planner-runtime-mode";
 const CURRENT_PLAN_PROJECTION_META_KEY="current-plan-projection-version";
@@ -1369,6 +1369,17 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
      ,exclude_from_metrics:false
    }));
   await db.attempts.update(id,{canonical_attempt_id:id});
+  if(started?.individualStartAcknowledgedAt&&!excludeWholeAttempt){
+    // Manual opening permanently loses unseen status; a later saved answer
+    // advances that exposure floor rather than leaving stale scan-only data.
+    const row=await db.meta.get(EXAM_REFERENCE_EXPOSURE_META_KEY),values=JSON.parse(row?.value||'{}');
+    const next:PastExamExposure=actualReferenceLevel>=4?'answer_exposed':sessionContract&&input.session_role==='selected_timed'?'simulated':
+      ['full','exam_90min','past_exam','timed_single'].includes(String(input.mode))?'fully_attempted':'partially_attempted';
+    const order=['unseen','unknown','prompt_scanned','partially_attempted','fully_attempted','answer_exposed','simulated'];
+    if(order.indexOf(next)>order.indexOf(values[problem.problem_id]||'unseen')){
+      values[problem.problem_id]=next;await db.meta.put({key:EXAM_REFERENCE_EXPOSURE_META_KEY,value:JSON.stringify(values)});
+    }
+  }
   if(intentionalTraining){
     // The initial full-answer contract still grades the whole answer. The
     // planned exposure is training, never an unprompted exam transfer.
@@ -3809,12 +3820,14 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     const problem=await db.problems.get(String(body.problemId||""));
     if(!problem||!["preparing","awaiting_grading"].includes(body.stage))throw new Error("問題と作業段階を確認してください");
     const current=await bootstrap();
-    const admission=derivePastExamProblemStart({problemId:problem.problem_id,catalog:current.adaptiveLearning.pastExamCatalog,attempts:current.attempts,tasks:current.today.tasks,pastSessions:current.pastSessions,today:current.dashboard.today,daysRemaining:current.dashboard.pace.daysRemaining});
-    if(admission.blocked)throw new Error(`この年度はblind本番測定の保護対象です。${admission.reasons.join(' ')} ${admission.year}年の過去問演習から開始してください。`);
-    const workReview=body.reviewId?await db.reviews.get(Number(body.reviewId)):undefined;
-    if(body.reviewId)assertReviewExecutionAdmission(workReview,todayString());
     const key=`learning-work:${problem.problem_id}`,oldRow=await db.meta.get(key);
     const old=oldRow?JSON.parse(oldRow.value) as import("./types.ts").LearningWork:undefined;
+    const admission=derivePastExamProblemStart({problemId:problem.problem_id,catalog:current.adaptiveLearning.pastExamCatalog,attempts:current.attempts,tasks:current.today.tasks,pastSessions:current.pastSessions,today:current.dashboard.today,daysRemaining:current.dashboard.pace.daysRemaining});
+    const individual=admission.blocked&&canStartProtectedProblemIndividually({year:admission.year,entryPoint:body.entryPoint,
+      acknowledged:!!old?.individualStartAcknowledgedAt||body.confirmIndividualStart===true&&body.stage==='preparing'});
+    if(admission.blocked&&!individual)throw new Error(`この年度はblind本番測定の保護対象です。問題一覧から個別開始を確認するか、${admission.year}年の過去問演習から開始してください。`);
+    const workReview=body.reviewId?await db.reviews.get(Number(body.reviewId)):undefined;
+    if(body.reviewId)assertReviewExecutionAdmission(workReview,todayString());
     const latestId=Math.max(0,...current.attempts.filter(a=>a.problem_id===problem.problem_id&&!a.exclude_from_metrics).map(a=>a.id));
     const pending=old&&latestId<=old.baselineAttemptId;
     const requestedTask=body.contractId?current.today.tasks.find(t=>!t.id&&!t.stable_session_key&&!t.transfer_training_key&&t.problem_id===problem.problem_id&&t.ranking?.eligible&&t.grading_contract?.contractId===body.contractId):undefined;
@@ -3831,8 +3844,19 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
       mode:String(body.mode||old?.mode||"full"),reviewId:Number(body.reviewId)||undefined,baselineAttemptId:pending?old.baselineAttemptId:latestId,
       stage:pending&&old.stage==="awaiting_grading"?old.stage:body.stage,
       referenceLevel,updatedAt:new Date().toISOString(),repairCheck,
-      task:requestedTask||(pending?old.task:undefined)};
-    await db.meta.put({key,value:JSON.stringify(work)});notifyStudyDataChanged({operation:"learning-work"});return {ok:true,work} as T;
+      task:requestedTask||(pending?old.task:undefined),individualStartAcknowledgedAt:individual?(old?.individualStartAcknowledgedAt||new Date().toISOString()):pending?old.individualStartAcknowledgedAt:undefined};
+    await db.transaction('rw',db.meta,async()=>{
+      if(individual){
+        const exposure=current.adaptiveLearning.pastExamCatalog.find(p=>p.canonicalProblemId===problem.problem_id)?.exposure;
+        // Only this explicitly viewed problem loses unseen status. Never release
+        // an entire year, downgrade prior exposure, or invent an Attempt/session.
+        if(!exposure||['unseen','unknown'].includes(exposure)){
+          const row=await db.meta.get(EXAM_REFERENCE_EXPOSURE_META_KEY),values=JSON.parse(row?.value||'{}');
+          values[problem.problem_id]='prompt_scanned';await db.meta.put({key:EXAM_REFERENCE_EXPOSURE_META_KEY,value:JSON.stringify(values)});
+        }
+      }
+      await db.meta.put({key,value:JSON.stringify(work)});
+    });notifyStudyDataChanged({operation:"learning-work"});return {ok:true,work} as T;
   }
   if(path==="/api/transfer-training"){
     const request=transferRequestQueue.catch(()=>{}).then(()=>transferTrainingRequest({db,body,current:bootstrap,

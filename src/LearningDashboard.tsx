@@ -6,7 +6,7 @@ type CoachPreviewResult=ReturnType<typeof coachPreview>;
 import {post} from './api';
 import {deriveLearningOverview,overviewNextTask,coachDashboardAdvice} from './learningOverview';
 import {isCoachImportError} from './coachDiagnosis';
-import {abilityStateLabels} from './abilityTraining';
+import {abilityStateLabels,deriveAbilityProfiles} from './abilityTraining';
 import {deriveTaskAnswerScope,taskAnswerScopeText} from './taskAnswerScope';
 const confidenceLabel=(value:string)=>value==='high'?'高':value==='medium'?'中':'低';
 
@@ -35,12 +35,14 @@ export function CoachReviewControls({data,run,busy}:{data:Bootstrap;run:(action:
  const copy=async()=>{try{await navigator.clipboard.writeText(data.coach.prompt);setMessage('コピーしました。ChatGPTへ貼り付け、評価JSONを戻してください。')}catch{setCopyFallback(data.coach.prompt);setMessage('下のプロンプトを選択してコピーしてください。')}};
  const parse=async()=>{setError('');setPreview(null);try{setPreview(await post<CoachPreviewResult>('/api/coach/preview',{text,require_current_evidence:true}))}catch(e){setError(isCoachImportError(e)?`${e.message} ${e.reason}`:e instanceof Error?e.message:String(e))}};
  const save=()=>run(async()=>{try{const result=await post<{duplicate:boolean}>('/api/coach/save',{text,require_current_evidence:true});setPreview(null);setMessage(result.duplicate?'同じ評価は保存済みです。重複追加していません。':'GPT総合診断を反映しました。実測得点・時間・答案は変更しません。');return result}catch(e){setError(e instanceof Error?e.message:String(e));throw e}},'GPT総合診断を確認しました');
+ const training=preview?deriveAbilityProfiles({...data,coach:{...data.coach,current:preview.next}}):[];
  return <section className="coach-manual" aria-label="ChatGPTで実力を再評価"><p>現在の答案・本番測定・補修の証拠をコピーします。APIは使いません。</p><button className="primary" onClick={copy}>評価プロンプトをコピー</button>
   {message&&<p role="status">{message}</p>}{copyFallback&&<textarea aria-label="コピー用の評価プロンプト" readOnly value={copyFallback} onFocus={e=>e.currentTarget.select()}/>}
-  <label>評価JSONを貼り付け<textarea rows={6} value={text} onChange={e=>{setText(e.target.value);setPreview(null);setError('')}} autoComplete="off"/></label>
+  <label>評価JSONを貼り付け<textarea aria-label="評価JSONを貼り付け" rows={6} value={text} onChange={e=>{setText(e.target.value);setPreview(null);setError('')}} autoComplete="off"/></label>
   <button className="ghost" disabled={!text.trim()||busy} onClick={parse}>評価をプレビュー</button>{error&&<p role="alert">{error}</p>}
   {preview&&<section className="coach-result-preview" aria-label="評価のプレビュー"><h3>GPT参考評価：Level {preview.next.level.value}</h3><p>{preview.next.level.label} ／ 信頼度：{confidenceLabel(preview.next.level.confidence)}</p>{preview.next.level.rationale&&<p>{preview.next.level.rationale}</p>}<p>最大課題：{preview.next.primaryBottleneck.title}</p><p>次の行動：{preview.next.nextActions[0]?.title||'提案なし'}</p>{preview.next.nextActions[0]?.successCondition&&<p>成功条件：{preview.next.nextActions[0].successCondition}</p>}{(preview.next.improvements.length>0||preview.next.unknowns.length>0)&&<details><summary>改善点・未測定の確認</summary>{preview.next.improvements.map((r,i)=><p key={`improvement:${i}`}>改善：{r.title}</p>)}{preview.next.unknowns.map((r,i)=><p key={`unknown:${i}`}>未確認：{r.title} ／ 必要な証拠：{r.evidenceNeeded}</p>)}</details>}<small>自動・暫定Level {data.dashboard.kpis?.assessment?.level??'未測定'}とは別の総合診断です。測定値・答案・転移実績は上書きしません。</small><button className="primary" disabled={busy} onClick={save}>確認して評価を反映</button></section>}
   {preview?.next.abilityProfiles&&<section aria-label="能力プロフィールのプレビュー"><h4>更新する能力プロフィール</h4>{preview.next.abilityProfiles.length?preview.next.abilityProfiles.map(p=><p key={p.id}><strong>{p.name}</strong>：{abilityStateLabels[p.state]}<br/>次の検証：{p.next}</p>):<p>能力はまだ特定できていません。</p>}</section>}
+  {preview&&<section aria-label="訓練準備の確認" role="status">{training.some(p=>p.trainable)?<p>根拠付きの訓練プロフィールを利用できます。総合評価と訓練実績は別に保持します。</p>:<><strong>総合評価は保存できますが、訓練準備は未完了です。</strong>{training.map(p=><p key={p.id}>{p.reason}</p>)}<p>この評価の文章を再表示するだけでは問題作成できません。以下から現在の答案を含むプロンプトをコピーし、能力別の根拠を含めてChatGPTへ依頼してください。</p><button className="ghost" onClick={copy}>根拠付きプロフィールを依頼するプロンプトをコピー</button></>}</section>}
   <details><summary>過去の評価・自動評価との違い</summary><p>現在の自動評価：Level {data.dashboard.kpis?.assessment?.level??'未測定'}。GPT評価は助言として別に保持します。新しい採点や測定変更があれば古い評価を現在評価として使いません。</p>{data.coach.history.map((r,i)=><p key={`${r.reviewedAt}:${i}`}>{r.reviewedAt.slice(0,10)}：GPT Level {r.level.value} ／ {r.primaryBottleneck.title}</p>)}</details>
  </section>;
 }

@@ -22,12 +22,20 @@ export function deriveAbilityProfiles(data:Input):AbilityProfileView[]{
   for(const id of d.primaryBottleneck.evidenceProblemIds){const a=attempts.filter(a=>a.problem_id===id&&a.id<=d.evidenceCutoffAttemptId).sort((a,b)=>b.id-a.id)[0];if(a)ids.add(a.id);}
   profiles=[{id:legacyAbilityId(d.primaryBottleneck.title),name:d.primaryBottleneck.title,state:'uncertain',
    goal:d.primaryBottleneck.title,next:'異なる設定の問題で、この能力を自力で使えるか確認する',
-   sources:[...ids].map(id=>byId.get(id)).filter((a):a is Attempt=>!!a).map(a=>({attemptId:a.id,partIds:sourceParts(a)}))}];
+   sources:[...ids].map(id=>({attemptId:id,partIds:byId.has(id)?sourceParts(byId.get(id)!):[]}))}];
  }
  return profiles.map(p=>{
-  const valid=p.sources.length>0&&p.sources.every(s=>{const a=byId.get(s.attemptId);return !!a&&a.id<=d.evidenceCutoffAttemptId&&data.problems.some(p=>p.problem_id===a.problem_id)&&s.partIds.every(id=>sourceParts(a).includes(id))});
-  return {...p,origin,reviewedAt:d.reviewedAt,revision:digest([d.reviewedAt,d.evidenceCutoffAttemptId,p]),trainable:valid,
-   reason:valid?'':'能力と結び付く答案・採点対象の根拠が不足しています。「プロフィールを更新」からGPT診断を取り込んでください。'};
+  const issues:string[]=[];
+  if(!p.sources.length)issues.push(origin==='legacy_diagnosis'?'能力別プロフィール（答案・採点対象の根拠）が未作成です。総合評価の文章や時間内完走率だけでは訓練対象を決めません。':'能力プロフィールの根拠答案が未登録です。');
+  for(const s of p.sources){const a=byId.get(s.attemptId);
+   if(!a){issues.push(`根拠答案 #${s.attemptId} が見つからないか、無効化・集計対象外です。`);continue;}
+   if(a.id>d.evidenceCutoffAttemptId)issues.push(`根拠答案 #${s.attemptId} は評価対象のcutoffより後の記録です。`);
+   if(!data.problems.some(q=>q.problem_id===a.problem_id))issues.push(`根拠答案 #${s.attemptId} の問題 ${a.problem_id} が問題台帳にありません。`);
+   const missing=s.partIds.filter(id=>!sourceParts(a).includes(id));if(missing.length)issues.push(`根拠答案 #${s.attemptId} に採点項目 ${missing.join(' / ')} がありません。`);
+   if(!s.partIds.length&&!a.error_point?.trim())issues.push(`根拠答案 #${s.attemptId} に採点対象・診断本文がありません。`);
+  }
+  return {...p,origin,reviewedAt:d.reviewedAt,revision:digest([d.reviewedAt,d.evidenceCutoffAttemptId,p]),trainable:issues.length===0,
+   reason:issues.length?`${issues.join(' ')}「訓練の準備をする」から根拠付きのGPTプロフィールを依頼してください。`:''};
  });
 }
 export function abilityTrainingOutcome(a:Attempt):'success'|'failure'|'uncertain'|'assisted'{
