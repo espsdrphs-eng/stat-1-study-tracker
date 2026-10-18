@@ -6,6 +6,7 @@ type View={status:string;statementOnly?:boolean;problem?:{problem_id:string;disp
   afterSubmission?:{rootSkillId:string;rootSkillName?:string;sourceProblemId:string;result:string;evidence:string;solution:string;rubric:string;strategy?:string;calculation?:string;
     feedback?:{score:number|null;scoreMax:number;errorPoint:string;nextAction:string;successCriterion:string}}};
 export function TransferTrainingPanel({trainingKey,onSaved,allowBundle=true}:{trainingKey:string;onSaved?:()=>void;onExisting?:(id:string)=>void;allowBundle?:boolean}){
+  const ability=trainingKey.startsWith('training:ability:');
   const [view,setView]=useState<View>(),[error,setError]=useState(""),[busy,setBusy]=useState(false),[payload,setPayload]=useState(""),
     [minutes,setMinutes]=useState(""),[referenceLevel,setReference]=useState(0),[message,setMessage]=useState(""),[copyFallback,setCopyFallback]=useState(""),
     [preparedPrompt,setPreparedPrompt]=useState(''),
@@ -31,7 +32,7 @@ export function TransferTrainingPanel({trainingKey,onSaved,allowBundle=true}:{tr
   const step=!content?(view?.status==='validation_pending'?2:1):view?.afterSubmission?4:3;
   const resultLabel=view?.afterSubmission?.result==='training transfer success'?'転移訓練：成功（自然な本番転移とは別記録）':view?.afterSubmission?.result==='training transfer failure'?'転移訓練：未達（対象技能を再補修）':view?.afterSubmission?.result;
   return <section className="card" aria-label="転移確認">
-    <h3>{!content?'転移問題を作成':view?.afterSubmission?'転移問題の採点・結果':'転移問題を解く'}</h3><p>ChatGPTとのコピー・貼り付けで進めます。生成意図を知る可能性がある転移訓練であり、自然な本番転移とは別記録です。</p>
+    <h3>{ability?(!content?'能力トレーニング問題を作成':view?.afterSubmission?'能力トレーニングの採点・結果':'能力トレーニング問題を解く'):!content?'転移問題を作成':view?.afterSubmission?'転移問題の採点・結果':'転移問題を解く'}</h3><p>ChatGPTとのコピー・貼り付けで進めます。{ability?'GPT診断の能力仮説を別問題で検証する訓練':'生成意図を知る可能性がある転移訓練'}であり、自然な本番転移とは別記録です。</p>
     <ol className="transfer-steps" aria-label="転移問題の手順">{['生成','品質確認・登録','紙で解答','採点・保存'].map((label,i)=><li key={label} aria-current={step===i+1?'step':undefined}>{i+1}. {label}{step===i+1?'（現在）':''}</li>)}</ol>
     {error&&<p role="alert">{error}</p>}{message&&<p role="status">{message}</p>}{!view&&<p>確認中…</p>}
     {preparedPrompt&&<button className="primary" disabled={busy} onClick={async()=>{try{await navigator.clipboard.writeText(preparedPrompt);setCopyFallback('');setMessage('用意したプロンプトをコピーしました。ChatGPTへ貼り付けてください。')}catch{setCopyFallback(preparedPrompt);setMessage('コピー用プロンプトを全選択してコピーしてください。')}}}>用意したプロンプトをコピー</button>}
@@ -50,7 +51,7 @@ export function TransferTrainingPanel({trainingKey,onSaved,allowBundle=true}:{tr
       {view.draftPreview&&<section className="transfer-draft-preview" aria-label="生成問題のプレビュー"><h4>問題文のプレビュー（まだ未登録）</h4><p style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{view.draftPreview.problem_text}</p><small>品質確認のJSONを取り込むと保存できます。正答・解説・採点基準はここには表示しません。</small></section>}
       {["requested","validation_pending"].includes(view.status)&&<div>
         {view.status==='requested'&&!view.statementOnly&&<p>生成JSONには模範解答も含まれます。中身を読み解かずに貼り付けてください。確認後の画面は問題文だけに切り替わります。</p>}
-        <label>{view.status==="requested"?"生成結果を貼り付け":"品質確認結果を貼り付け"}<textarea rows={4} autoComplete="off" value={payload} onChange={e=>setPayload(e.target.value)} style={{width:"100%"}}/></label>
+        <label>{view.status==="requested"?"生成結果を貼り付け":"品質確認結果を貼り付け"}<textarea aria-label={view.status==="requested"?"生成結果を貼り付け":"品質確認結果を貼り付け"} rows={4} autoComplete="off" value={payload} onChange={e=>setPayload(e.target.value)} style={{width:"100%"}}/></label>
         <button className="primary" disabled={busy||!payload} onClick={()=>act(view.status==="requested"?"draft":"validate",view.status==="requested")}>{view.status==="requested"?"生成JSONを検証・プレビュー":"品質確認して問題を登録"}</button>
       </div>}
       {view.status==="pending"&&<p>候補は保留です。{view.pendingReason}無理に生成せず本番演習へ戻ってください。</p>}
@@ -59,7 +60,7 @@ export function TransferTrainingPanel({trainingKey,onSaved,allowBundle=true}:{tr
       {view.status==='problem_pending'&&<p role="status">{view.pendingReason} 新しい会話で問題の条件を再確認してください。</p>}
       <h4>{content.display_label}</h4><p>{content.difficulty}・目安{content.estimated_minutes}分</p>
       {!view?.afterSubmission&&<section className="task-introduction" aria-label="課題の対象と回収目標">
-        <p>対象：{content.display_label}（{content.problem_id}）</p><p>今回の作業：別問題の転移訓練</p>
+        <p>対象：{content.display_label}（{content.problem_id}）</p><p>今回の作業：{ability?'新しい問題での能力トレーニング':'別問題の転移訓練'}</p>
         <p>前回のつまずき・対象技能：自力で道具を選ぶ確認のため、解答前は表示しません。</p>
         <p>回収目標：この問題を参照なしで解答し、採点後に対象部分の成功・失敗を確認します。本番転移とは別の訓練記録です。</p>
         <p>下の問題文を確認 → 紙／Goodnotesで解答 → 答案完成 → 採点プロンプトをコピー</p>
@@ -70,7 +71,7 @@ export function TransferTrainingPanel({trainingKey,onSaved,allowBundle=true}:{tr
         <label>参照<select value={referenceLevel} onChange={e=>setReference(Number(e.target.value))}><option value={0}>参照なし</option><option value={3}>ヒント・資料・解答を見た</option></select></label>
         <button disabled={busy} onClick={()=>act("submit")}>答案完成・採点へ進む</button>
       </>:<>
-        <p>確認した技能：{view.afterSubmission.rootSkillName||view.afterSubmission.rootSkillId}／元問題：{view.afterSubmission.sourceProblemId}／転移先：{content.problem_id}</p>
+        <p>{ability?'今回検証した能力':'確認した技能'}：{view.afterSubmission.rootSkillName||view.afterSubmission.rootSkillId}／{ability?'訓練問題':`元問題：${view.afterSubmission.sourceProblemId}／転移先`}：{content.problem_id}</p>
         <p>{resultLabel}</p><p>{view.afterSubmission.evidence}</p>
         {view.status==='graded'&&view.afterSubmission.strategy&&<p>方針選択：{view.afterSubmission.strategy} ／ 対象の主要計算：{view.afterSubmission.calculation}（答案全体の点数とは別判定）</p>}
         {view.afterSubmission.feedback&&<div>
@@ -81,7 +82,7 @@ export function TransferTrainingPanel({trainingKey,onSaved,allowBundle=true}:{tr
         </div>}
         {view.status!=="graded"&&<><p>新しいChatGPT会話で独立に解答・採点基準を確認し、今回の答案を採点してください。不整合や採点不能なら保存せず、再確認できます。</p><button disabled={busy} onClick={()=>act("grading-prompt",true)}>採点プロンプトをコピー</button>
           <label>正味解答時間（分・任意）<input type="number" min={0.1} step="any" value={minutes} placeholder="未入力は時間不明" onChange={e=>setMinutes(e.target.value)}/></label>
-          <label>採点結果を貼り付け（JSON / YAML）<textarea rows={5} value={payload} onChange={e=>setPayload(e.target.value)} style={{width:"100%"}}/></label>
+          <label>採点結果を貼り付け（JSON / YAML）<textarea aria-label="採点結果を貼り付け（JSON / YAML）" rows={5} value={payload} onChange={e=>setPayload(e.target.value)} style={{width:"100%"}}/></label>
           <button disabled={busy||!payload} onClick={()=>act("grade")}>結果を保存</button></>}
         {view.status==="graded"&&<><p>手動ChatGPT採点による訓練記録です。採点に疑問がある場合は提出後の解答・採点基準と実答案を照合してください。再確認しても保存済み履歴は上書きしません。</p><button disabled={busy} onClick={()=>act("grading-prompt",true)}>採点を再確認するプロンプトをコピー</button></>}
         <details><summary>提出後の解答・採点基準</summary><div style={{whiteSpace:"pre-wrap",overflowWrap:"anywhere"}}>{view.afterSubmission.solution}{"\n"}{view.afterSubmission.rubric}</div></details>

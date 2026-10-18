@@ -100,6 +100,8 @@ export function transferEvidenceStatus(attempt:Attempt,confirmedSuccess=false){
     partId:'転移対象技能',evidence:target?.evidence||''};
 }
 function calculateSuccessfulSkillIds(attempt:Attempt){
+  // A GPT capability profile is not a verified mapping to the skill taxonomy.
+  if(attempt.transfer_lineage?.abilityProfile)return [];
   if(!independentReferenceFree(attempt)||!confidentGrading(attempt))return [];
   if(attempt.source_type==="generated"||attempt.transfer_lineage){
     const target=attempt.target_skill_assessment;

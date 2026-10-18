@@ -4,8 +4,7 @@ import {TransferTrainingPanel} from "./TransferTrainingPanel";
 import {LearningDashboard,CoachReviewControls} from './LearningDashboard';
 import {WeaknessFocus} from './WeaknessFocus';
 import {weaknessSourceTransferAction} from './learningOverview';
-import {RepairCheckPanel} from './RepairCheckPanel';
-import {repairCheckForTask,repairCheckPrompt,repairStageLabel} from './repairCheck';
+import {repairCheckForTask,repairStageLabel} from './repairCheck';
 import {PastExamResults} from './PastExamResults';
 import {deriveWeaknessDisplayRows,deriveLearningUpdateSummary,deriveCurrentWeaknessRows,deriveCurrentLearningDiagnosis,deriveTaskIntroduction,deriveProblemReference,taskAssistanceText,preAnswerReason,completionCriterionText,deriveProblemLearningView,deriveProblemLearningViews,imageGradingPrompt,optionalNetMinutes,netMinutesText} from "./learningFeedback";
 import {appendTaskAnswerScope,type TaskAnswerScope} from './taskAnswerScope';
@@ -62,7 +61,7 @@ import type { AnswerIndexEntry, Attempt, Bootstrap, CoachDiagnosis, DashboardKpi
 type Page = "dashboard"|"today"|"problems"|"attempt"|"import"|"reviews"|"weak"|"past"|"settings";
 const pageTitles:Record<Page,string> = {
   dashboard:"ダッシュボード",today:"今日やること",problems:"問題一覧",attempt:"手入力（予備）",
-  import:"GPT回答取り込み",reviews:"復習予定",weak:"弱点傾向",past:"過去問演習",settings:"設定"
+  import:"GPT回答取り込み",reviews:"復習予定",weak:"弱点トレーニング",past:"過去問演習",settings:"設定"
 };
 const navGroups = [
   {label:"今日",items:[["dashboard",LayoutDashboard],["today",ListChecks],["reviews",CalendarCheck]]},
@@ -186,7 +185,7 @@ export default function App() {
         page==="attempt"?<AttemptView problems={data.problems} run={run} busy={writeBusy}/>:
         page==="import"?<><details className="panel"><summary>採点の反映・据置理由を確認</summary><LearningUpdateSummary data={data}/></details><AdvancedImportView problems={data.problems} answerIndex={data.answerIndex} problemAliases={data.problemAliases} attempts={data.attempts} reviews={data.reviews} run={run} busy={writeBusy}/></>:
         page==="reviews"?<ReviewsView data={data} run={run} busy={writeBusy} select={(p,task)=>{setStartingStudyTask(task);setSelected(p)}}/>:
-        page==="weak"?<WeakView data={data} run={run} busy={writeBusy} onToday={()=>go("today")} select={(p,task)=>{setStartingStudyTask(task);setSelected(p)}}/>:
+        page==="weak"?<WeakView data={data} run={run} busy={writeBusy} onToday={()=>go("today")} onReview={()=>go('reviews')} onProblems={()=>go('problems')}/>:
         page==="past"?<PastView data={data} go={go} run={run} busy={writeBusy} startingTask={startingPastTask} defaultYear={pastYear}/>:
         <SettingsView data={data} run={run} busy={busy}/>}
       </div>
@@ -621,10 +620,10 @@ function TodayView({data,busy,run,go,select}:{data:Bootstrap;busy:boolean;run:(a
 function copyText(text:string,label:string,setCopied:(value:string)=>void){
   return navigator.clipboard.writeText(text).then(()=>{setCopied(label);setTimeout(()=>setCopied(""),1800)});
 }
-function StudyPromptButtons({item,resolved,answerScope,repairCheck}:{item:Partial<Review&Task>;resolved?:ResolvedReviewCard;answerScope:TaskAnswerScope;repairCheck?:import('./types').RepairCheck}) {
+function StudyPromptButtons({item,resolved,answerScope}:{item:Partial<Review&Task>;resolved?:ResolvedReviewCard;answerScope:TaskAnswerScope}) {
   const [copied,setCopied]=useState("");
   const [fallback,setFallback]=useState("");
-  const withAnswer=(prompt:string)=>appendTaskAnswerScope(imageGradingPrompt(prompt+repairCheckPrompt(repairCheck),Math.max(Number(item.actual_reference_level||0),readReferenceState(item.id).actual_reference_level)),answerScope,resolved?.gradingContract||item.grading_contract);
+  const withAnswer=(prompt:string)=>appendTaskAnswerScope(imageGradingPrompt(prompt,Math.max(Number(item.actual_reference_level||0),readReferenceState(item.id).actual_reference_level)),answerScope,resolved?.gradingContract||item.grading_contract);
   const firstPrompt=buildFirstAttemptGradingPrompt({
     problemId:item.problem_id||"",displayLabel:item.title||item.problem_id,theme:item.theme,
     canonicalProblemType:item.canonical_problem_type,mode:item.mode,estimatedMinutes:item.minutes||item.estimated_minutes,
@@ -904,8 +903,6 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport,startingTask,onOpe
   const hintReview=currentReviewCards.find(c=>c.review.id===gradingTask?.id);
   const hintText=taskAssistanceText(data,gradingTask);
   const repairCheck=repairCheckForTask(learningView.work?.repairCheck,gradingTask);
-  const isRepair=(gradingTask?.grading_contract?.learningPurpose||gradingTask?.learning_purpose)==='error_repair';
-  const saveRepairCheck=async(input:Pick<import('./types').RepairCheck,'clue'|'knowledge'|'approach'|'reason'|'stage'>)=>run(()=>post('/api/learning-work',{problemId:canonicalId,mode:initialMode,reviewId:gradingTask?.id,contractId:gradingTask?.id?undefined:gradingTask?.grading_contract?.contractId,stage:learningView.work?.stage||'preparing',referenceLevel:Math.max(Number(learningView.work?.referenceLevel||0),Number(hintReview?.review.actual_reference_level||0),readReferenceState(gradingTask?.id).actual_reference_level),repairCheck:input}),'骨格チェックを保存しました（採点・習得の判定とは別）');
   const revealHint=async()=>{if(!hintText)return;setHintBusy(true);try{
     if(hintReview){
       await post(`/api/reviews/${hintReview.review.id}/reference`,{actual_reference_level:2});
@@ -937,7 +934,6 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport,startingTask,onOpe
       <p>問題文を確認 → 紙／Goodnotesで解答 → 答案完成 → 採点プロンプトをコピー → ChatGPTに画像答案を添付 → 採点JSONを取り込む</p>
     </section>
     <TaskScopeSelection scope={introduction.answerScope} problemId={canonicalId} run={run} busy={busy}/>
-    {isRepair&&gradingTask&&<RepairCheckPanel task={gradingTask} check={repairCheck} busy={busy} onSave={saveRepairCheck}/>}
     <p>今回の範囲：{modes[initialMode]||initialMode}・{startingTask?.minutes||gradingTask?.estimated_minutes||"―"}分目安</p>
     <p>{preAnswerReason(startingTask||gradingTask||{})}</p>
     <details className="problem-reference"><summary>問題を参照</summary>
@@ -971,8 +967,8 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport,startingTask,onOpe
     <p>採点プロンプトと答案画像をChatGPTへ送り、返された採点結果を取り込んでください。</p>
     <p className="answer-scope"><strong>今回解く箇所：{introduction.subparts}</strong></p>
     <TaskScopeSelection scope={introduction.answerScope} problemId={canonicalId} run={run} busy={busy}/>
-    {isRepair&&<p>詰まった段階（自己申告）：{repairStageLabel(repairCheck||savedResult?.repair_check)}。骨格・計算・転移の成功は採点の証拠で別々に確認します。</p>}
-    {gradingTask?<StudyPromptButtons item={gradingTask} resolved={hintReview?.card} answerScope={introduction.answerScope} repairCheck={repairCheck}/>:initialPrompt&&<button className="ghost" onClick={copyInitialPrompt}>{initialPromptCopied?"コピー済み":"採点プロンプトをコピー"}</button>}
+    {(repairCheck||savedResult?.repair_check)&&<details><summary>過去の自己申告メモ（任意の履歴）</summary><p>{repairStageLabel(repairCheck||savedResult?.repair_check)}</p><p>{(repairCheck||savedResult?.repair_check)?.clue}</p><p>{(repairCheck||savedResult?.repair_check)?.knowledge}</p><p>{(repairCheck||savedResult?.repair_check)?.approach}</p><p>{(repairCheck||savedResult?.repair_check)?.reason}</p></details>}
+    {gradingTask?<StudyPromptButtons item={gradingTask} resolved={hintReview?.card} answerScope={introduction.answerScope}/>:initialPrompt&&<button className="ghost" onClick={copyInitialPrompt}>{initialPromptCopied?"コピー済み":"採点プロンプトをコピー"}</button>}
     {initialPromptFallback&&<label>自動コピーが許可されていません。全選択してコピーしてください。<textarea aria-label="コピー用採点プロンプト" readOnly value={initialPromptFallback} onFocus={e=>e.currentTarget.select()}/></label>}
     <button className="primary" onClick={()=>setShowGradingImport(true)}>GPT採点結果を取り込む</button>
   </section>
@@ -1283,11 +1279,16 @@ function CurrentWeaknessPanel({data,onToday,onTransfer}:{data:Bootstrap;onToday:
     {!rows.length&&<p>確定した失敗targetの証拠がありません。未測定は習得済みとは扱いません。</p>}
   </section>;
 }
-function WeakView({data,run,busy,onToday,select}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean;onToday:()=>void;select:(p:Problem,t:Task)=>void}){
+function WeakView({data,run,busy,onToday,onReview,onProblems}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean;onToday:()=>void;onReview:()=>void;onProblems:()=>void}){
   const [history,setHistory]=useState(false);
   const [training,setTraining]=useState<string|null>(null);
+  const [diagnose,setDiagnose]=useState(false),[creating,setCreating]=useState(false),[error,setError]=useState('');
+  const create=async(profileId:string)=>{setCreating(true);setError('');try{const result=await post<{key:string}>('/api/transfer-training',{action:'begin-ability',profileId});setTraining(result.key)}catch(e){setError(e instanceof Error?e.message:String(e))}finally{setCreating(false)}};
   useEffect(()=>{if(training)document.querySelector('[aria-label="弱点からの転移訓練"]')?.scrollIntoView({block:'start',behavior:'smooth'})},[training]);
-  return <><WeaknessFocus data={data} onStart={select} onToday={onToday} onTransfer={setTraining}/>{training&&<div className="transfer-workspace" aria-label="弱点からの転移訓練"><button className="ghost" onClick={()=>setTraining(null)}>転移操作を閉じる</button><TransferTrainingPanel key={training} trainingKey={training} onSaved={()=>run(async()=>{},'転移データを反映しました')} allowBundle/></div>}<details className="panel" onToggle={e=>setHistory(e.currentTarget.open)}><summary>全技能・保持・転移の根拠と履歴</summary>{history&&<WeakEvidenceHistory data={data} run={run} busy={busy} onToday={onToday} onTransfer={setTraining}/>}</details></>;
+  return <><WeaknessFocus data={data} busy={busy||creating} onCreate={id=>void create(id)} onTransfer={setTraining} onReview={onReview} onProblems={onProblems} onDiagnose={()=>setDiagnose(true)}/>{error&&<p role="alert">{error}</p>}
+   {training&&<div className="transfer-workspace" aria-label="弱点からの転移訓練"><button className="ghost" onClick={()=>setTraining(null)}>訓練操作を閉じる</button><TransferTrainingPanel key={training} trainingKey={training} onSaved={()=>run(async()=>{},'訓練の結果を反映しました。能力プロフィールはGPT診断で更新します。')} allowBundle/></div>}
+   {diagnose&&<Modal title="能力プロフィールを更新" close={()=>setDiagnose(false)}><CoachReviewControls data={data} run={run} busy={busy}/></Modal>}
+   <details className="panel" onToggle={e=>setHistory(e.currentTarget.open)}><summary>個別問題・技能の旧根拠と履歴（任意）</summary>{history&&<WeakEvidenceHistory data={data} run={run} busy={busy} onToday={onToday} onTransfer={setTraining}/>}</details></>;
 }
 function WeakEvidenceHistory({data,run,busy,onToday,onTransfer}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean;onToday:()=>void;onTransfer:(key:string)=>void}) {
   const [editing,setEditing]=useState<Attempt|null>(null);

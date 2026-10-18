@@ -176,7 +176,7 @@ export type Attempt = {
   source_type?:Problem["source_type"];
   evidence_strength?:"training"|"strong";
   target_skill_prompted?:boolean;
-  target_skill_assessment?:{self_selected:boolean;major_calculation_success:boolean;no_major_error:boolean;evidence:string};
+  target_skill_assessment?:{self_selected:boolean;major_calculation_success:boolean;no_major_error:boolean;evidence:string;outcome?:"success"|"failure"|"uncertain"};
   transfer_lineage?:import("./generatedTransfer.ts").TransferTrainingLineage;
   id:number; problem_id:string; date:string; mode:string; time_minutes:number|null; mark:string;
   score_label:string; error_type:string; error_point:string; next_action:string; memo:string;
@@ -405,7 +405,11 @@ export type ConceptWeaknessInsight = {
   latestEvidenceDate:string|null;evidenceSummary:string[];
 };
 export type CoachConfidence="low"|"medium"|"high";
+/** GPT's cross-answer interpretation, not a canonical skill/mastery record. */
+export type AbilityProfile={id:string;name:string;state:"needs_practice"|"improving"|"confirmed"|"uncertain";
+  goal:string;next:string;sources:Array<{attemptId:number;partIds:string[]}>};
 export type CoachDiagnosis = {
+  abilityProfiles?:AbilityProfile[];
   textIntegrity?:"complete";
   sourceEvidenceVersion?:string;
   reviewContextVersion?:string;
@@ -421,7 +425,7 @@ export type CoachDiagnosis = {
   optionalPassProbability?:{range:string;confidence:CoachConfidence;rationale:string}|null;
 };
 export type CoachDiagnosisState = {
-  reviewContext?:{version:string;evidenceIds:string[];dataVersion?:string;referenceIds?:string[];taskIds?:string[]};
+  reviewContext?:{version:string;evidenceIds:string[];dataVersion?:string;referenceIds?:string[];taskIds?:string[];abilitySources?:Array<{attemptId:number;partIds:string[]}>;abilityOutcomes?:import('./abilityTraining.ts').AbilityOutcomeProof[]};
   assessment?:import("./examCapability.ts").ExamReadinessAssessment;
   needsTextRefresh?:boolean;
   current:CoachDiagnosis|null;display:CoachDiagnosis;history:CoachDiagnosis[];

@@ -1,26 +1,27 @@
-import {useMemo} from 'react';import type {Bootstrap,Problem,Task} from './types';
-import {priorityRepairTasks,weaknessTransferAction} from './learningOverview';import {deriveCurrentLearningDiagnosis,completionCriterionText,learningTargetLabel} from './learningFeedback';
-import {deriveTaskAnswerScope,taskAnswerScopeText} from './taskAnswerScope';import {currentTaskIdentity} from './examOptimizationPolicy';
-import {findingPlanningEligible} from './legacyKPolicy';
-import {repairCheckForTask,repairStageLabel} from './repairCheck';
-export function WeaknessFocus({data,onStart,onToday,onTransfer}:{data:Bootstrap;onStart:(problem:Problem,task:Task)=>void;onToday:()=>void;onTransfer:(key:string)=>void}){
- const tasks=useMemo(()=>priorityRepairTasks(data),[data]),diagnosis=useMemo(()=>deriveCurrentLearningDiagnosis(data),[data]);
- const transfers=data.today.tasks.filter(t=>t.ranking?.eligible&&!t.checked&&t.transfer_training_key);
- return <section className="weakness-focus" aria-label="今補修すべき優先3件"><h2>今、補修すべき優先3件</h2><p className="muted">Todayと同じ順位です。未解消の対象だけを確認します。</p>
-  {tasks.map(task=>{const p=data.problems.find(p=>p.problem_id===task.problem_id);if(!p)return null;
-   const d=diagnosis.deficits.find(d=>d.problemId===p.problem_id),source=data.attempts.find(a=>a.id===(d?.sourceAttemptId||task.source_attempt_id||task.grading_contract?.sourceAttemptId));
-   const parts=new Set(task.grading_contract?.gradedParts.map(p=>p.id)||[]),labels=[...new Set((source?.graded_findings||[]).filter(f=>!f.resolved&&f.error_type!=='none'&&findingPlanningEligible(source!,f)&&(!parts.size||parts.has(f.graded_part_id))).map(f=>learningTargetLabel(f.graded_part_id)))];
-   const line=labels.length?`${labels.slice(0,3).join('・')}に未解消の点があります`:'未解消の理由を採点の根拠から確認する必要があります';
-   const scope=taskAnswerScopeText(deriveTaskAnswerScope({problem:p,task,attempts:data.attempts,overrides:data.taskAnswerScopeOverrides}));
-   const transfer=weaknessTransferAction(task,transfers);
-   return <article className="priority-weakness-card" key={currentTaskIdentity(task)} data-problem-id={p.problem_id}><header><h3>{p.display_label||p.title||p.problem_id}</h3><span>補修が必要</span></header><strong>{scope}</strong><p className="weakness-one-line">{line}</p><p>次の課題：{task.kind==='局所再診断'?'解き直す前に、つまずいた対象を局所的に確認':'対象小問を紙・Goodnotesで再現'}</p>
-    <p>詰まった段階（自己申告）：{repairStageLabel(repairCheckForTask(data.learningWorkByProblem?.[p.problem_id]?.repairCheck,task)||source?.repair_check)}</p><p>完了条件：{completionCriterionText(task.grading_contract)}</p>
-    <div className="button-row"><button className="primary" onClick={()=>onStart(p,task)}>補修を始める</button><button className="ghost" disabled={!transfer.key} aria-describedby={transfer.reason?`transfer-wait-${p.problem_id}`:undefined} onClick={()=>transfer.key&&onTransfer(transfer.key)}>転移問題を作成</button></div>
-    {transfer.reason&&<small id={`transfer-wait-${p.problem_id}`}>{transfer.reason}</small>}
-    <details><summary>成功条件と根拠</summary><p>{d?.evidence||source?.error_point||'診断未登録'}</p><p>成功条件：{completionCriterionText(task.grading_contract)}</p><small>根拠答案 #{source?.id||'未特定'} ／ {source?.date||'日付未登録'}。技能対応が未確定の対象は、他問題と推測統合しません。</small></details>
+import {useMemo} from 'react';import type {Bootstrap} from './types';
+import {deriveAbilityProfiles,abilityStateLabels,abilityTrainingHistory} from './abilityTraining';
+export function WeaknessFocus({data,onCreate,onTransfer,onReview,onProblems,onDiagnose,busy}:{data:Bootstrap;
+ onCreate:(id:string)=>void;onTransfer:(key:string)=>void;onReview:()=>void;onProblems:()=>void;onDiagnose:()=>void;busy:boolean}){
+ const profiles=useMemo(()=>deriveAbilityProfiles(data),[data]);
+ const labels={success:'自力で成功（訓練）',failure:'未達',uncertain:'判定保留',assisted:'援助あり'};
+ return <section className="weakness-focus ability-training" aria-label="能力プロフィールと弱点トレーニング">
+  <header><h2>弱点トレーニング</h2><p>個別問題の復習とは別に、異なる設定で能力を検証します。採点・履歴は共通です。</p></header>
+  <div className="button-row"><button className="primary" onClick={onDiagnose}>プロフィールを更新</button><button className="ghost" onClick={onReview}>個別問題の復習予定</button><button className="ghost" onClick={onProblems}>問題一覧</button></div>
+  {data.coach.current&&<p className="muted">GPT診断 {data.coach.current.reviewedAt.slice(0,10)}{data.coach.stale?' ／ 新しい採点あり・再診断待ち（直近の訓練結果は下に表示）':''}</p>}
+  {profiles.map((p,i)=>{const history=abilityTrainingHistory(data,p.id),active=data.problems.find(q=>q.generated_transfer?.lineage.abilityProfile?.id===p.id&&q.generated_transfer.lifecycle_status!=='graded');
+   return <article className="ability-profile-card" key={p.id} data-ability-id={p.id}>
+    <header><span>{i===0?'現在の最大ボトルネック':'重点課題'}</span><span className="ability-state">{p.origin==='legacy_diagnosis'?'改善状態：未判定':`GPT評価：${abilityStateLabels[p.state]}`}</span></header>
+    <h3>{p.name}</h3>{p.goal!==p.name&&<p><strong>確認すること：</strong>{p.goal}</p>}<p><strong>次の検証：</strong>{p.next}</p>
+    {p.origin==='legacy_diagnosis'&&<small>既存の総合診断を参照しています。能力別の改善状態はまだ未判定です。</small>}
+    <div className="button-row"><button className="primary" disabled={busy||!p.trainable} onClick={()=>onCreate(p.id)}>{active?'訓練を再開':'訓練問題を作成'}</button></div>
+    {!p.trainable&&<p role="status">{p.reason}</p>}
+    <p className="muted">生成問題は能力トレーニングです。過去問の正式得点・自然な本番転移とは別に記録します。</p>
+    <h4>直近の訓練結果</h4>{history.length?<ul className="ability-results">{history.slice(0,5).map(h=><li key={h.attemptId}><strong>{labels[h.outcome]}</strong><span>{h.date}・{h.problemId}</span><p>{h.evidence}</p><button className="text-btn" onClick={()=>onTransfer(data.attempts.find(a=>a.id===h.attemptId)!.transfer_lineage!.key)}>結果を確認</button></li>)}</ul>:<p>まだ訓練していません。問題の作成・コピーだけでは成功になりません。</p>}
+    <details><summary>プロフィールの根拠・過去の変化</summary><p>技能体系への対応は未確定の場合があります。以下はGPT診断に結び付いた答案で、全てを同じ失敗と自動認定していません。</p>
+     {p.sources.map(s=>{const a=data.attempts.find(a=>a.id===s.attemptId);return <div key={s.attemptId}><strong>{a?.problem_id||'根拠答案が見つかりません'}・答案 #{s.attemptId}・{a?.date}</strong><p>{s.partIds.length?s.partIds.join(' / '):'採点箇所未登録'}</p><p>{s.partIds.length?a?.graded_findings?.filter(f=>s.partIds.includes(f.graded_part_id)).map(f=>`${f.resolved?'成功記録':'未解消記録'}：${f.evidence}`).join(' ／ '):a?.error_point}</p></div>})}
+     {data.coach.history.filter(d=>d.abilityProfiles?.some(a=>a.id===p.id)).slice(-5).reverse().map(d=><p key={d.reviewedAt}>{d.reviewedAt.slice(0,10)}：{abilityStateLabels[d.abilityProfiles!.find(a=>a.id===p.id)!.state]}（GPT診断）</p>)}
+    </details>
    </article>})}
-  {!tasks.length&&<p>現在、実行可能な補修課題はありません。保持・転移とTodayの待機条件を確認してください。</p>}
-  <details className="transfer-ready-list" open><summary>保持後の転移訓練{transfers.length?`（実行可能${transfers.length}件）`:''}</summary>{transfers.length?transfers.map(t=><div key={t.transfer_training_key}><p>{data.problems.find(p=>p.problem_id===t.problem_id)?.display_label||t.problem_id}由来の別問題訓練</p><button className="primary" onClick={()=>onTransfer(t.transfer_training_key!)}>転移問題を作成</button></div>):<p>技能対応・補修・遅延保持の条件が揃った課題から進めます。白本候補は必須ではありません。</p>}</details>
-  <button className="text-btn" onClick={onToday}>Todayの全候補・待機条件を見る</button>
+  {!profiles.length&&<p>能力プロフィールは未登録です。「プロフィールを更新」で現在の答案証拠をChatGPTへ渡し、診断結果を取り込んでください。旧weakNotesの未解消件数から能力を推測しません。</p>}
  </section>;
 }

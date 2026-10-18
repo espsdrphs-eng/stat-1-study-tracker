@@ -2,6 +2,7 @@ import type { AdditionalStudyCandidate, AdaptivePlanSummary, Attempt, ConceptWea
 import { resolveCanonicalProblemId } from "./examReadiness.ts";
 import { addCalendarDays, resolveReviewSchedule } from "./reviewSchedulePolicy.ts";
 import { validateGradingContract } from "./gradingContract.ts";
+import {validAbilityLineage} from './abilityTraining.ts';
 import { analyzeReviewReconciliation, type ReconciliationAudit } from "./reviewReconciliation.ts";
 import {buildStableTargetIndex,isValidStableTargetKey} from "./stableTargetIdentity.ts";
 import {currentTargetDisplay,currentTargetLabels} from "./currentTargetPayload.ts";
@@ -263,7 +264,7 @@ function calculateIntegrityAudit(args: {
   for(const p of problems.filter(p=>p.source_type==="generated")){
     const c=p.generated_transfer;
     if(!c||c.evidence_strength!=="training"||c.exam_score_eligible!==false||!c.content_hash||
-      c.validation?.draft_hash!==c.content_hash||!c.lineage?.repairAttemptId||!c.lineage?.retrievalAttemptId||
+      c.validation?.draft_hash!==c.content_hash||!(c.lineage?.abilityProfile?validAbilityLineage(c.lineage)&&c.lineage.abilityProfile.sources.every(s=>attempts.some(a=>a.id===s.attemptId&&a.problem_id===s.problemId&&!a.exclude_from_metrics&&!a.duplicate_of_attempt_id&&s.partIds.every(id=>a.graded_findings?.some(f=>f.graded_part_id===id)))):c.lineage?.repairAttemptId&&c.lineage?.retrievalAttemptId)||
       c.lineage?.rootSkillId!==c.root_skill_id||Object.keys(c.validation?.checks||{}).length!==9||
       Object.values(c.validation?.checks||{}).some(check=>!check.pass||!check.evidence))
       issues.push({category:"generated_transfer_invalid",severity:"active",detail:`${p.problem_id}: invalid validation/lineage`,repairable:false});

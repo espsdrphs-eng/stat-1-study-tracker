@@ -282,7 +282,7 @@ export function calculateExamReadinessMetrics(args: {
   evidence.transfer!.eligibleEvidenceIds=[...new Set([...evidence.transfer!.eligibleEvidenceIds,...attemptIds(measured)])];
   const transferDate=[...transferRows.map(r=>r.date),...measured.map(a=>a.date)].sort().at(-1)||null;
   evidence.transfer!.lastUpdated=evidence.transfer!.lastUpdatedAt=transferDate;
-  const trainingOpportunities=new Set([...transferOpportunities,...attempts.filter(a=>!!a.transfer_lineage)
+  const trainingOpportunities=new Set([...transferOpportunities,...attempts.filter(a=>!!a.transfer_lineage&&!a.transfer_lineage.abilityProfile)
     .map(a=>`${a.transfer_lineage!.sourceProblemId}|${a.transfer_lineage!.rootSkillId}`),...trainingRows.map(r=>`${r.sourceProblemId}|${r.skillId}`)]);
   evidence.trainingTransfer={...metric(new Set(trainingRows.map(r=>`${r.sourceProblemId}|${r.skillId}`)).size,
     trainingOpportunities.size,new Set(trainingRows.map(r=>r.successAttemptId)).size,"意図的な別問題training。本番対応力Levelには使用しない",["training"],

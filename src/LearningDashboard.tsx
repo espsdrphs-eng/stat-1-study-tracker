@@ -6,6 +6,7 @@ type CoachPreviewResult=ReturnType<typeof coachPreview>;
 import {post} from './api';
 import {deriveLearningOverview,overviewNextTask,coachDashboardAdvice} from './learningOverview';
 import {isCoachImportError} from './coachDiagnosis';
+import {abilityStateLabels} from './abilityTraining';
 import {deriveTaskAnswerScope,taskAnswerScopeText} from './taskAnswerScope';
 const confidenceLabel=(value:string)=>value==='high'?'高':value==='medium'?'中':'低';
 
@@ -39,6 +40,7 @@ export function CoachReviewControls({data,run,busy}:{data:Bootstrap;run:(action:
   <label>評価JSONを貼り付け<textarea rows={6} value={text} onChange={e=>{setText(e.target.value);setPreview(null);setError('')}} autoComplete="off"/></label>
   <button className="ghost" disabled={!text.trim()||busy} onClick={parse}>評価をプレビュー</button>{error&&<p role="alert">{error}</p>}
   {preview&&<section className="coach-result-preview" aria-label="評価のプレビュー"><h3>GPT参考評価：Level {preview.next.level.value}</h3><p>{preview.next.level.label} ／ 信頼度：{confidenceLabel(preview.next.level.confidence)}</p>{preview.next.level.rationale&&<p>{preview.next.level.rationale}</p>}<p>最大課題：{preview.next.primaryBottleneck.title}</p><p>次の行動：{preview.next.nextActions[0]?.title||'提案なし'}</p>{preview.next.nextActions[0]?.successCondition&&<p>成功条件：{preview.next.nextActions[0].successCondition}</p>}{(preview.next.improvements.length>0||preview.next.unknowns.length>0)&&<details><summary>改善点・未測定の確認</summary>{preview.next.improvements.map((r,i)=><p key={`improvement:${i}`}>改善：{r.title}</p>)}{preview.next.unknowns.map((r,i)=><p key={`unknown:${i}`}>未確認：{r.title} ／ 必要な証拠：{r.evidenceNeeded}</p>)}</details>}<small>自動・暫定Level {data.dashboard.kpis?.assessment?.level??'未測定'}とは別の総合診断です。測定値・答案・転移実績は上書きしません。</small><button className="primary" disabled={busy} onClick={save}>確認して評価を反映</button></section>}
+  {preview?.next.abilityProfiles&&<section aria-label="能力プロフィールのプレビュー"><h4>更新する能力プロフィール</h4>{preview.next.abilityProfiles.length?preview.next.abilityProfiles.map(p=><p key={p.id}><strong>{p.name}</strong>：{abilityStateLabels[p.state]}<br/>次の検証：{p.next}</p>):<p>能力はまだ特定できていません。</p>}</section>}
   <details><summary>過去の評価・自動評価との違い</summary><p>現在の自動評価：Level {data.dashboard.kpis?.assessment?.level??'未測定'}。GPT評価は助言として別に保持します。新しい採点や測定変更があれば古い評価を現在評価として使いません。</p>{data.coach.history.map((r,i)=><p key={`${r.reviewedAt}:${i}`}>{r.reviewedAt.slice(0,10)}：GPT Level {r.level.value} ／ {r.primaryBottleneck.title}</p>)}</details>
  </section>;
 }

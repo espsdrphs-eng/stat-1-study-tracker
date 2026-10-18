@@ -1,6 +1,6 @@
 import type {db as database} from "./localDb";
 import yaml from "js-yaml";
-import {repairStageLabel} from './repairCheck.ts';
+import {deriveAbilityProfiles,buildAbilityLineage,validAbilityLineage,abilityTrainingOutcome} from './abilityTraining.ts';
 import type {Bootstrap,Problem,StudyUpdate,Attempt} from "./types.ts";
 import {deriveTransferTrainingCandidates,generationMetaKey,generationPrompt,validationPrompt,
   acceptGenerationDraft,acceptGenerationValidation,registerGeneratedProblem,blindGeneratedView,
@@ -18,6 +18,7 @@ export function transferGradingContext(lineage:TransferTrainingLineage,destinati
     source_attempt_id:lineage.sourceAttemptId,source_finding_ids:[...lineage.sourceFindingIds],root_weakness_id:lineage.rootWeaknessId,
     root_skill_id:lineage.rootSkillId,repair_attempt_id:lineage.repairAttemptId,retrieval_attempt_id:lineage.retrievalAttemptId,
     destination_problem_id:destinationProblemId,destination_scope:'whole_problem',
+    ...(lineage.abilityProfile?{ability_profile_id:lineage.abilityProfile.id,ability_profile_revision:lineage.abilityProfile.revision,ability_sources:lineage.abilityProfile.sources.map(s=>({attempt_id:s.attemptId,problem_id:s.problemId,part_ids:s.partIds}))}:{}),
     ...(scope?{source_answer_scope:{status:scope.status,primary_target_parts:scope.primaryTargetParts,secondary_target_parts:scope.secondaryTargetParts,reference_only_parts:scope.referenceOnlyParts}}:{})};
 }
 function transferContextPrompt(context:ReturnType<typeof transferGradingContext>){
@@ -58,7 +59,7 @@ function savedTrainingFeedback(a:Attempt|undefined,success:boolean,criterion:str
     successCriterion:`${criterion}。参照なしで操作を選び、対象の主要計算を完遂し、対象major errorがないこと。`};
 }
 function targetResults(a:Attempt|undefined){
-  const label=(ok:boolean|undefined)=>!a?'未測定':!confidentGrading(a)||ok===undefined?'判定不能':a.hint_used||Number(a.actual_reference_level??a.reference_level??0)>0?'援助あり':ok?'成功':'未達';
+  const label=(ok:boolean|undefined)=>!a?'未測定':!confidentGrading(a)||a.target_skill_assessment?.outcome==='uncertain'||ok===undefined?'判定不能':a.hint_used||Number(a.actual_reference_level??a.reference_level??0)>0?'援助あり':ok?'成功':'未達';
   return {strategy:label(a?.target_skill_assessment?.self_selected),calculation:label(a?.target_skill_assessment?.major_calculation_success)};
 }
 
@@ -66,16 +67,32 @@ function targetResults(a:Attempt|undefined){
 export async function transferTrainingRequest(args:{db:typeof database;body:any;
   current:()=>Promise<Bootstrap>;save:(input:StudyUpdate&Record<string,unknown>)=>Promise<number>}){
   const {db,body}=args,key=String(body.key||""),forceGenerated=body.action==='start-generated',action=forceGenerated?'start':String(body.action||"view");
+  if(action==='begin-ability'){
+    const current=await args.current(),profile=deriveAbilityProfiles(current).find(p=>p.id===body.profileId);
+    if(!profile?.trainable)throw new Error(profile?.reason||'能力プロフィールがありません。先にGPT診断を取り込んでください。');
+    const records=(await db.meta.where('key').startsWith('transfer-generation:training:ability:').toArray()).map(r=>JSON.parse(r.value) as TransferGenerationRecord);
+    const same=records.filter(r=>r.lineage.abilityProfile?.id===profile.id);
+    const active=same.find(r=>r.status!=='pending'&&!current.attempts.some(a=>a.transfer_lineage?.key===r.key&&!a.exclude_from_metrics&&!a.duplicate_of_attempt_id));
+    // One pending opportunity per capability, even after a new diagnosis.
+    if(active)return {key:active.key,status:active.status};
+    const lineage=buildAbilityLineage(profile,current,same.length+1),record:TransferGenerationRecord={key:lineage.key,lineage,createdAt:new Date().toISOString(),status:'requested',rounds:[]};
+    await db.meta.add({key:generationMetaKey(lineage.key),value:JSON.stringify(record)});
+    return {key:lineage.key,status:record.status};
+  }
   if(!key.startsWith("training:"))throw new Error("転移確認の計画キーが必要です");
   const [problems,attempts,pastSessions,answers,meta,exposure]=await Promise.all([db.problems.toArray(),db.attempts.toArray(),
     db.pastSessions.toArray(),db.answerIndex.toArray(),db.meta.get(EXAM_REFERENCE_PACK_META_KEY),db.meta.get(EXAM_REFERENCE_EXPOSURE_META_KEY)]);
-  if(!meta)throw new Error("canonical taxonomy未確認のため保留です");
-  const candidates=deriveTransferTrainingCandidates({record:JSON.parse(meta.value) as StoredExamReferencePack,
-    problems,attempts,pastSessions,answers,planningMode:"ranked",exposureOverrides:JSON.parse(exposure?.value||"{}")});
+  if(!meta&&!key.startsWith('training:ability:'))throw new Error("canonical taxonomy未確認のため保留です");
+  const candidates=meta?deriveTransferTrainingCandidates({record:JSON.parse(meta.value) as StoredExamReferencePack,
+    problems,attempts,pastSessions,answers,planningMode:"ranked",exposureOverrides:JSON.parse(exposure?.value||"{}")}):[];
   const candidate=candidates.find(c=>c.key===key);
   const savedAttempt=attempts.find(a=>a.transfer_lineage?.key===key&&!a.exclude_from_metrics&&!a.duplicate_of_attempt_id);
   let record:TransferGenerationRecord|undefined;
   const stored=await db.meta.get(generationMetaKey(key));if(stored)record=JSON.parse(stored.value);
+  const ability=!!record?.lineage.abilityProfile;
+  if(key.startsWith('training:ability:')&&(!record||!validAbilityLineage(record.lineage)||record.lineage.abilityProfile!.sources.some(s=>{
+    const a=attempts.find(a=>a.id===s.attemptId);return !a||a.problem_id!==s.problemId||a.exclude_from_metrics||a.duplicate_of_attempt_id||s.partIds.some(id=>!(a.graded_findings||[]).some(f=>f.graded_part_id===id));
+  })))throw new Error('能力トレーニングの根拠答案・採点対象を確認できません。プロフィールの根拠を確認してください。');
   if(forceGenerated&&candidate?.existingProblemId&&await db.meta.get(`transfer-training-context:${candidate.existingProblemId}`))throw new Error('既存の転移問題を割り当て済みです。その問題の結果を確認してから次の課題へ進んでください。');
   const existingId=!forceGenerated&&!record?(candidate?.existingProblemId||(!problems.find(p=>p.problem_id===savedAttempt?.problem_id)?.generated_transfer?savedAttempt?.problem_id:undefined)):undefined;
   const contextRow=existingId?await db.meta.get(`transfer-training-context:${existingId}`):undefined;
@@ -84,8 +101,8 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
   let problem=problems.find(p=>p.generated_transfer?.lineage.key===key);
   const source=problems.find(p=>p.problem_id===(candidate?.lineage.sourceProblemId||record?.lineage.sourceProblemId));
   const sourceFeatures=[source?.canonical_problem_type||"",source?.theme||"",...(source?.canonical_keywords||[])].filter(Boolean);
-  const storedPack=JSON.parse(meta.value) as StoredExamReferencePack;
-  const skillName=(id:string)=>storedPack.data.concepts.find(c=>c.concept_id===id)?.display_name||'技能名未登録';
+  const storedPack=meta?JSON.parse(meta.value) as StoredExamReferencePack:undefined;
+  const skillName=(id:string)=>record?.lineage.abilityProfile?.name||storedPack?.data.concepts.find(c=>c.concept_id===id)?.display_name||'技能名未登録';
   const sourceScope=(lineage:TransferTrainingLineage)=>{
     const p=problems.find(p=>p.problem_id===lineage.sourceProblemId);
     return p?deriveTaskAnswerScope({problem:p,task:{problem_id:p.problem_id,source_attempt_id:lineage.sourceAttemptId,
@@ -103,7 +120,7 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
       evidenceKind:'意図的な転移訓練。本番の独立転移とは別集計'}};
   }
   const saveRecord=async()=>{if(record)await db.meta.put({key:generationMetaKey(key),value:JSON.stringify(record)});};
-  if(action!=="view"&&!problem&&!savedAttempt){
+  if(!ability&&action!=="view"&&!problem&&!savedAttempt){
     if(!candidate)throw new Error("補修・遅延確認・taxonomy条件が未達、または確認済みです");
     const current=await args.current();
     if(candidate.kind==="pending"||!current.today.tasks.some(t=>t.transfer_training_key===key&&
@@ -115,7 +132,7 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
       if(!context)throw new Error("先に転移確認を開始してください");
     }
   }
-  if(problem?.generated_transfer&&!problem.generated_transfer.answer_submission&&["start","submit"].includes(action)){
+  if(!ability&&problem?.generated_transfer&&!problem.generated_transfer.answer_submission&&["start","submit"].includes(action)){
     const current=await args.current();
     if(!candidate||candidate.kind==="pending"||!current.today.tasks.some(t=>t.transfer_training_key===key&&t.ranking?.eligible&&!t.checked))
       throw new Error("現在は転移の開始資格がありません。補修・遅延保持を再確認してください");
@@ -158,7 +175,7 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
     // Upgrade only an explicitly requested, still empty legacy configuration.
     // Never change a draft's immutable format or any registered/grading history.
     if(forceGenerated&&record?.input_format==='statement_only_v1'&&record.status==='requested'&&!record.rounds.length){record={...record,input_format:undefined};await saveRecord();}
-    if(record?.status==="requested"){const scope=sourceScope(record.lineage),repair=attempts.find(a=>a.id===record!.lineage.repairAttemptId);return {status:record.status,prompt:generationPrompt(record,sourceFeatures,{displayLabel:source?.display_label||source?.title,answerScopeText:scope?taskAnswerScopeText(scope):undefined,stuckStage:repairStageLabel(repair?.repair_check)})};}
+    if(record?.status==="requested"){const scope=sourceScope(record.lineage);return {status:record.status,prompt:generationPrompt(record,sourceFeatures,{displayLabel:source?.display_label||source?.title,answerScopeText:scope?taskAnswerScopeText(scope):undefined})};}
   }else if(action==="draft"){
     if(!record||problem)throw new Error("生成依頼がない、または登録済みです");
     const next=await acceptGenerationDraft(record,String(body.text||""));
@@ -193,7 +210,8 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
         `\n不確実ならpass=falseとし、成功の採点を捏造しない。解答は今の提出後に初めて取り込む。`:"")+
       imageGradingPrompt(`\n返答はstudy_updateを1件、標準JSONまたはYAMLのコードブロックにする。actual_reference_level=${submission.referenceLevel}。`,submission.referenceLevel,submission.minutes)+
       `\nstudy_update内にtarget_skill_assessment: {self_selected:boolean,major_calculation_success:boolean,no_major_error:boolean,evidence:string}を必ず含める。`+
-      `対象=${content.root_skill_id}。総合点とは独立に、初手と主要計算の実答案から判定。target外minorでは対象失敗にしない。模範解答の内容を本人の答案と混同しない。`+
+      `対象=${content.lineage.abilityProfile?JSON.stringify(content.lineage.abilityProfile):content.root_skill_id}。総合点とは独立に、初手と主要計算の実答案から判定。target外minorでは対象失敗にしない。模範解答の内容を本人の答案と混同しない。`+
+      (ability?'\nこれはGPT能力プロフィールに対する訓練。canonical技能や自然な本番転移の確定ではない。target_skill_assessment.outcomeをsuccess / failure / uncertainで返す。判定不能ならuncertainとし、3つのbooleanはfalse、evidenceに理由を書く。高い総合点だけで能力成功にしない。':'')+
       `\n解答前の方針・理由が答案に記載されているか確認する。対象操作を選んだ根拠を判定できなければ成功を推測せず、確信度を下げ、target_skill_assessment.evidenceに判定不能の理由を書く。`+
       `\n問題自体の条件矛盾・解答不能を発見した場合は能力を採点せず、study_updateを返す代わりに {"problem_issue":{"problem_id":"${problem!.problem_id}","reason":"具体的な問題不備の根拠"}} を返す。`+
       (record?.problemIssue&&!record.problemIssue.resolvedAt?`\n品質の再確認が必要です。正常に採点できると確認した場合のみmathematical_reviewを返す：${JSON.stringify({problem_id:problem!.problem_id,content_hash:content.content_hash,reference_solution:'独立に導いた完全な解答',grading_rubric:'対象操作の採点基準',checks:Object.fromEntries(['well_defined','solution_correct','rubric_aligned'].map(k=>[k,{pass:false,evidence:'具体的な検算根拠'}]))})}`:'')+
@@ -229,8 +247,8 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
     const facts=await db.attempts.toArray();
     const attempt=facts.find(a=>a.problem_id===problem!.problem_id&&!a.exclude_from_metrics);
     result.afterSubmission={...targetResults(attempt),rootSkillId:content.root_skill_id,rootSkillName:skillName(content.root_skill_id),sourceProblemId:content.lineage.sourceProblemId,
-      result:attempt?(deriveTransferEvidence(facts).some(r=>r.successAttemptId===attempt.id)?"training transfer success":transferTrainingOutcome(attempt)):"採点待ち",
-      evidence:attempt?.target_skill_assessment?.evidence||"",feedback:savedTrainingFeedback(attempt,!!attempt&&deriveTransferEvidence(facts).some(r=>r.successAttemptId===attempt.id),content.lineage.successCriteria),solution:content.grading_reference?.reference_solution||content.reference_solution,rubric:content.grading_reference?.grading_rubric||content.grading_rubric};
+      result:attempt?(ability?({success:'training transfer success',failure:'training transfer failure',uncertain:'能力の判定保留',assisted:'援助ありの能力訓練（独立成功ではない）'}[abilityTrainingOutcome(attempt)]):deriveTransferEvidence(facts).some(r=>r.successAttemptId===attempt.id)?"training transfer success":transferTrainingOutcome(attempt)):"採点待ち",
+      evidence:attempt?.target_skill_assessment?.evidence||"",feedback:ability&&attempt?{score:attempt.score_numeric??null,scoreMax:attempt.score_max||100,errorPoint:attempt.target_skill_assessment?.evidence||'判定根拠未登録',nextAction:'プロフィールを更新し、直近の結果を次の異なる設定の訓練へ反映する',successCriterion:content.lineage.successCriteria}:savedTrainingFeedback(attempt,!!attempt&&deriveTransferEvidence(facts).some(r=>r.successAttemptId===attempt.id),content.lineage.successCriteria),solution:content.grading_reference?.reference_solution||content.reference_solution,rubric:content.grading_reference?.grading_rubric||content.grading_rubric};
   }
   return result;
 }
@@ -265,6 +283,8 @@ export function validateTransferGrade(raw:any,problemId:string,context?:ReturnTy
     if(u[key]!=null&&(typeof u[key]!=="number"||!Number.isInteger(u[key])||u[key]<0||u[key]>5))throw new Error("参照段階は0〜5の整数で必要です。");
   }
   const t=u.target_skill_assessment;
+  if(context?.ability_profile_id&&(!u.transfer_task_context||!['success','failure','uncertain'].includes(t?.outcome)))throw new Error('能力プロフィールとの対応情報と対象能力のsuccess / failure / uncertain判定が必要です。現在の採点プロンプトを使ってください。');
+  if(t?.outcome==='success'&&(!t.self_selected||!t.major_calculation_success||!t.no_major_error)||t?.outcome==='failure'&&t.self_selected&&t.major_calculation_success&&t.no_major_error)throw new Error('能力の総合判定と個別判定が矛盾しています。ChatGPTで再確認してください。');
   if(!t||[t.self_selected,t.major_calculation_success,t.no_major_error].some(v=>typeof v!=="boolean")||typeof t.evidence!=="string"||!t.evidence.trim())
     throw new Error("対象能力の採点と具体的根拠が不足しています。");
 }
