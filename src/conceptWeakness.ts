@@ -285,7 +285,9 @@ export function buildPastExamRepairCandidates(args:{
           sourceFindingId:root.sourceFindingIds[0],sourceFindingIds:root.sourceFindingIds,
           rootWeaknessId:root.rootWeaknessId,conceptId,conceptLabel:root.title,observedFailure:root.description,
           materiality:root.materiality,recurrence:root.recurrence,examImpact:root.examImpact,required:interventionRequired,
-          whitebookProblemIds:repairKind==="whitebook"?linkedWhitebook:[],transferProblemIds:transfer,
+          // These are executable destinations, not future possibilities. Keep
+          // the delayed-retention gate intact while the root is transfer_wait.
+          whitebookProblemIds:repairKind==="whitebook"?linkedWhitebook:[],transferProblemIds:repairKind==="transfer"?transfer:[],
           weaknessSkillIds:skills,matchedSkillIds:unique(matches.slice(0,2).flatMap(liveSkills).filter(id=>skills.includes(id))),
           matchScore:linkedWhitebook.length?100:0,matchConfidence,repairKind,sameRootFailureCount,interventionChanged,
           matchReason:repairKind==="transfer_wait"?delayed.retrieval?

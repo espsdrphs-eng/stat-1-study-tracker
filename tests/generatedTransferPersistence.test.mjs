@@ -111,6 +111,13 @@ test('sandbox: canonical Planner selection → two-pass generation → blind Att
   assert.equal((await call('view')).status,'graded');
   assert.equal((await db.problems.toArray()).filter(p=>p.source_type==='generated').length,1);
   const natural={...fact(a.id+1,today(),'exam_performance',true),problem_id:'PY-2018-Q2',mode:'full',source_type:'past_exam'};
+  // A real 9/29 backlog also has a critical-condition failure on the source.
+  // A full natural answer must actually demonstrate that operation as well;
+  // the old major-calculation-only fixture was not whole-scope evidence.
+  natural.grading_contract={gradedParts:[...natural.grading_contract.gradedParts,
+    {id:'critical_condition',label:'依存条件の確認',rootSkillIds:[skill],masteryLevel:1}]};
+  natural.graded_findings.push({graded_part_id:'critical_condition',error_type:'none',resolved:true,
+    evidence:'固定個数の割付は独立ではないことを自力で確認し、異なる指示変数の二次積へ正しく反映した。'});
   await db.attempts.put(natural);evidence=deriveTransferEvidence(await db.attempts.toArray());
   assert.ok(evidence.some(e=>e.successAttemptId===a.id&&e.evidenceStrength==='training'));
   assert.ok(evidence.some(e=>e.successAttemptId===natural.id&&e.evidenceStrength==='strong'));

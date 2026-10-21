@@ -1,3 +1,26 @@
+/** Normalize string-token delimiters only, never quotes inside an ASCII string.
+ * Preserve content and require a full strict JSON parse afterwards. */
+export function normalizeCompatibleJsonQuotes(source:string){
+ let output='',inAsciiString=false,inCompatibleString=false,escaped=false,nestedCurlyQuotes=0,compatibleOpener='',changed=false;
+ const previous=(i:number)=>{for(let j=i-1;j>=0;j--)if(!/\s/.test(source[j]))return source[j];return ''};
+ const next=(i:number)=>{for(let j=i+1;j<source.length;j++)if(!/\s/.test(source[j]))return source[j];return ''};
+ for(let i=0;i<source.length;i++){
+  const c=source[i];
+  if(inAsciiString){output+=c;if(escaped)escaped=false;else if(c==='\\')escaped=true;else if(c==='"')inAsciiString=false;continue;}
+  if(inCompatibleString){
+   if(escaped){output+=c;escaped=false;continue;}if(c==='\\'){output+=c;escaped=true;continue;}
+   if(c==='\u201c'){nestedCurlyQuotes++;output+=c;continue;}
+   if(c==='\u201d'&&nestedCurlyQuotes>0){nestedCurlyQuotes--;output+=c;continue;}
+   if((c===compatibleOpener||compatibleOpener==='\u201c'&&c==='\u201d')&&nestedCurlyQuotes===0&&[':',',','}',']'].includes(next(i))){output+='"';inCompatibleString=false;compatibleOpener='';changed=true;continue;}
+   output+=c;continue;
+  }
+  if(c==='"'){output+=c;inAsciiString=true;continue;}
+  if(['\u201c','\u201d','\uff02'].includes(c)&&['{','[',',',':'].includes(previous(i))){output+='"';inCompatibleString=true;compatibleOpener=c;nestedCurlyQuotes=0;changed=true;continue;}
+  output+=c;
+ }
+ return {json:output,normalized:changed};
+}
+
 /** Locate strict JSON syntax errors only; never repair or produce data.
  * Browser engines differ in whether JSON.parse reports a numeric position. */
 export function jsonSyntaxLocation(source:string){

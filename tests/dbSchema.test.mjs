@@ -51,5 +51,10 @@ test("安全バックアップはtoday_plan_snapshotを含むmetaも保持する
   const backup=source.slice(source.indexOf("export async function exportBackup"),source.indexOf("export async function csvFor"));
   assert.match(backup,/meta:await db\.meta\.toArray\(\)/);
   assert.match(backup,/db\.meta\.bulkPut\(data\.meta\)/);
-  assert.doesNotMatch(backup,/db\.meta\.clear\(\)/);
+  // Export must remain read-only. The explicitly confirmed original-restore
+  // branch now replaces meta exactly instead of silently merging another DB.
+  const exported=backup.slice(0,backup.indexOf('export async function previewBackupRestore'));
+  assert.doesNotMatch(exported,/db\.meta\.clear\(\)/);
+  assert.match(backup,/if\(original\)await db\.meta\.clear\(\)/);
+  assert.match(backup,/options\.sourceHash!==verified\.manifest\.data_hash/);
 });

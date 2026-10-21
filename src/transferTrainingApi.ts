@@ -2,7 +2,7 @@ import type {db as database} from "./localDb";
 import yaml from "js-yaml";
 import {deriveTrainingProfiles,buildAbilityLineage,validAbilityLineage,abilityTrainingOutcome,abilityTrainingPlan} from './abilityTraining.ts';
 import type {Bootstrap,Problem,StudyUpdate,Attempt} from "./types.ts";
-import {deriveTransferTrainingCandidates,generationMetaKey,generationPrompt,validationPrompt,
+import {deriveTransferTrainingCandidates,generationMetaKey,generationPrompt,validationPrompt,generationQualityIssues,
   acceptGenerationDraft,acceptGenerationValidation,registerGeneratedProblem,blindGeneratedView,
   validateManualGradingReference,generationDraftPreview,type TransferGenerationRecord,type TransferTrainingLineage} from "./generatedTransfer.ts";
 import {EXAM_REFERENCE_PACK_META_KEY,EXAM_REFERENCE_EXPOSURE_META_KEY,type StoredExamReferencePack} from "./examReferencePack.ts";
@@ -252,6 +252,7 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
     draftPreview:!problem?generationDraftPreview(record):undefined,
     problem:problem?blindGeneratedView(problem):undefined,existingProblemId:!record&&!problem?candidate?.existingProblemId:undefined,
     rounds:record?.rounds.length||0,pendingReason:record?.pendingReason||candidate?.reason};
+  result.qualityIssues=generationQualityIssues(record);
   if(content?.answer_submission){
     const facts=await db.attempts.toArray();
     const attempt=facts.find(a=>a.problem_id===problem!.problem_id&&!a.exclude_from_metrics);

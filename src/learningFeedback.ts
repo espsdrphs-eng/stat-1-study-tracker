@@ -1,6 +1,6 @@
 import type {Bootstrap,Task,Review,Attempt,Problem,GradingContractSnapshot,StudyUpdate,ExamReferenceCatalogItem} from "./types.ts";
 import {selectCurrentReviewsForProblem} from "./integrityEngine.ts";
-import {deriveTransferEvidence,currentTransferEvidence,transferTrainingOutcome,transferEvidenceStatus,rootProgress,rootTargetKeys,verifiedTransferRediagnosis,findingEvidenceStatus,successfulSkillIds,findingSkillIds} from "./skillEvidence.ts";
+import {deriveTransferEvidence,currentTransferEvidence,transferTrainingOutcome,transferEvidenceStatus,rootProgress,rootTargetKeys,verifiedTransferRediagnosis,findingEvidenceStatus,successfulSkillIds,findingSkillIds,transferCoversFindings} from "./skillEvidence.ts";
 import {delayedTrainingPrerequisites} from './generatedTransfer.ts';
 import {buildStableTargetIndex} from './stableTargetIdentity.ts';
 import {attemptPlanningEligible} from "./legacyKPolicy.ts";
@@ -272,7 +272,7 @@ export function deriveCurrentWeaknessRows(data:Bootstrap,sourceProblemIds?:Reado
     const progress=rootProgress(source,root,facts,index),delayed=delayedTrainingPrerequisites(source,root,facts);
     const repair=progress.transferFailure?undefined:delayed.repair||(!source.grading_contract?.gradedParts.length?progress.repairSuccess:undefined);
     const retrieval=progress.transferFailure?undefined:delayed.retrieval;
-    const transfer=evidence.filter(e=>e.sourceProblemId===source.problem_id&&root.skillIds.includes(e.skillId)&&
+    const transfer=evidence.filter(e=>e.sourceProblemId===source.problem_id&&root.skillIds.includes(e.skillId)&&transferCoversFindings(e,source,root.sourceFindingIds)&&
       e.successAttemptId>(progress.transferFailure?.id||progress.latestFailure.id)).at(-1);
     const task=data.today.tasks.find(t=>!t.checked&&(t.repair_lineage?.rootWeaknessId===root.rootWeaknessId||
       t.problem_id===source.problem_id&&(t.transfer_training_key||t.source_attempt_id===progress.latestFailure.id)));

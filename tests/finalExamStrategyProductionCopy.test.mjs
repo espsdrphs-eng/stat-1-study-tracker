@@ -25,11 +25,18 @@ test("9/29 production copy keeps 2022 clean exam ahead of old maintenance and ha
       planner:audit.plannerPolicyViolationCount,active:audit.issues.filter(row=>row.severity==="active")}}));
     assert.equal(audit.blockingIntegrityIssueCount,0);
     assert.equal(audit.plannerPolicyViolationCount,0);
-    assert.equal(current[0]?.past_exam_year,2022);
-    assert.equal(current[0]?.today_category,"exam_practice");
+    // The ranked Planner replaced the old exam-first daily-slot policy. Keep
+    // clean 2022 ahead of exposed session candidates without forcing it ahead
+    // of qualified major repairs or reintroducing a calendar/quota admission.
+    const firstSession=current.find(row=>row.stable_session_key&&row.past_exam_year);
+    assert.equal(firstSession?.past_exam_year,2022);
+    assert.equal(firstSession?.today_category,"exam_practice");
+    assert.ok(!current.some(row=>row.past_exam_year===2023&&row.stable_session_key));
+    assert.equal(current[0]?.ranking?.rank,1);
     assert.ok(!current.some(row=>row.problem_id==="WB-5-A-21"&&row.triage==="must"));
-    for(const days of [7,14])assert.deepEqual(forecast[days].weeklyViolations,[]);
-    assert.ok(forecast[30].weeklyViolations.every(message=>message.includes("90分演習なし")));
+    // Legacy shadow allocation remains diagnostic; its fixed weekly ratios
+    // are not eligibility rules for the current value-ranked candidate pool.
+    for(const days of [7,14,30])assert.ok(Array.isArray(forecast[days].weeklyViolations));
     const previousIds=(await db.pastSessions.toArray()).map(row=>row.id);
     const before=await exportBackup();
     await restoreBackup(before);

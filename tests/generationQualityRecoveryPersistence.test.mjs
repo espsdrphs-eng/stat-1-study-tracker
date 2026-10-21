@@ -1,0 +1,33 @@
+import test from 'node:test';import assert from 'node:assert/strict';import 'fake-indexeddb/auto';import yaml from 'js-yaml';
+import {db,localGet,localPost,exportBackup,restoreBackup} from '../src/localDb.ts';
+import {deriveTrainingProfiles} from '../src/abilityTraining.ts';
+import {generationDraftContract,generationMetaKey,GENERATION_CHECKS,validateGeneratedContent} from '../src/generatedTransfer.ts';
+const curly=raw=>raw.replace(/"((?:\\.|[^"\\])*)"/g,'“$1”');
+test('quality failure → rubric-only repair → fresh validation → paper grading survives restore without changing old records',async()=>{
+ await localGet('/api/bootstrap');await db.meta.delete('coach-diagnosis-history-v1');
+ await db.attempts.add({id:99000,problem_id:'PY-2018-Q5',date:new Date().toISOString().slice(0,10),mode:'full',mark:'△',score_numeric:40,error_type:'W',error_types:['W'],grading_confidence:99,actual_reference_level:0,error_point:'FIXTURE: Var(Z)の最終値に未到達。原因は未確定。',graded_findings:[{graded_part_id:'major_calculation',error_type:'W',resolved:false,materiality:'major',evidence:'FIXTURE: 分散の最終値まで完成していない。'}]});
+ // Normalize the injected fixture through the existing restore contract first:
+ // completion_status is a derived projection, unlike immutable grading history.
+ await restoreBackup(await exportBackup());
+ const b=await localGet('/api/bootstrap'),before=await exportBackup(),profile=deriveTrainingProfiles(b)[0],key=(await localPost('/api/transfer-training',{action:'begin-ability',profileId:profile.id})).key;
+ const call=(action,extra={})=>localPost('/api/transfer-training',{key,action,...extra}),rec=async()=>JSON.parse((await db.meta.get(generationMetaKey(key))).value);
+ const r=await rec(),draft={...generationDraftContract(r),problem_text:'通常状態の確率は3/5、繁忙状態は2/5である。3台の装置A,B,Cは状態内で独立に、通常時1/4、繁忙時1/2の確率で故障する。故障時の損失は1,2,3万円である。損失合計Lの期待値と分散を求めよ。',reference_solution:'状態内の平均6p、分散14p(1-p)。期待値は21/10、全分散は703/200。周辺分布を列挙しても同じ値を得る。',grading_rubric:'FIXTURE 修正前：状態内と状態間の変動の中間量を必須として分散完遂を採点する。',surface_features:['共有する負荷状態','装置の損失の加重和'],generator_pass_id:'fixture-first-generator'};
+ draft.self_check=Object.fromEntries(['well_defined','solution_correct','rubric_aligned'].map(k=>[k,{pass:true,evidence:'FIXTURE: 生成者の自己検算であり、独立確認や数学的品質の実証ではない。'}]));
+ await call('draft',{text:JSON.stringify(draft)});let current=await rec();
+ const quality={draft_hash:current.rounds[0].hash,validator_pass_id:'fixture-independent-failed',checks:Object.fromEntries(GENERATION_CHECKS.map(k=>[k,{pass:!['rubric_aligned','no_shortcut'].includes(k),evidence:'FIXTURE: 分布の直接列挙は正当な別解だが、採点基準が特定の中間量を必須としている。'}]))};
+ await call('validate',{text:curly(JSON.stringify(quality))});const failed=await rec(),view=await call('view');assert.equal(view.status,'requested');assert.deepEqual(view.qualityIssues.map(i=>i.key),['rubric_aligned','no_shortcut']);assert.ok(!JSON.stringify(view).includes(draft.reference_solution));
+ assert.equal((await exportBackup()).attempts.length,before.attempts.length);assert.equal((await exportBackup()).problems.length,before.problems.length);
+ const checkpoint=await exportBackup();await restoreBackup(checkpoint);assert.deepEqual(await rec(),failed);const prompt=(await call('start-generated')).prompt;assert.ok(prompt.includes(draft.grading_rubric));assert.ok(prompt.includes(quality.draft_hash));assert.match(prompt,/正当な別解/);
+ const fixed={...draft,generator_pass_id:'fixture-revised-generator',grading_rubric:'FIXTURE 修正後：分散を最終値まで求める能力を評価する。直接列挙、共分散、条件付き分散のいずれの正当な別解も認め、特定の途中式を必須としない。'};
+ await call('draft',{text:JSON.stringify(fixed)});current=await rec();assert.deepEqual(current.rounds[0],failed.rounds[0]);assert.notEqual(current.rounds[1].hash,quality.draft_hash);
+ await assert.rejects(()=>call('validate',{text:curly(JSON.stringify(quality))}),/draft_hash/);assert.deepEqual(await rec(),current);
+ const good={...quality,draft_hash:current.rounds[1].hash,validator_pass_id:'fixture-new-independent-pass',checks:Object.fromEntries(GENERATION_CHECKS.map(k=>[k,{pass:true,evidence:'FIXTURE: 修正後の別解・採点基準を独立確認したと仮定する入出力。数学的品質の保証ではない。'}]))};
+ const fail=(_key,p)=>{if(p.source_type==='generated')throw new Error('FIXTURE storage failure')};db.problems.hook('creating',fail);try{await assert.rejects(()=>call('validate',{text:JSON.stringify(good)}),/storage failure/)}finally{db.problems.hook('creating').unsubscribe(fail)}assert.deepEqual(await rec(),current);
+ await call('validate',{text:curly(JSON.stringify(good))});await assert.rejects(()=>call('validate',{text:JSON.stringify(good)}),/登録済み/);const registered=await call('view'),problem=await db.problems.get(registered.problem.problem_id);assert.equal(problem.problem_id,draft.generation_context.problem_id);await validateGeneratedContent(problem);assert.equal(problem.generated_transfer.problem_text,draft.problem_text);assert.equal(problem.generated_transfer.grading_rubric,fixed.grading_rubric);
+ await call('submit',{answer_medium:'paper_image',answer_completed:true,referenceLevel:0,minutes:''});const gp=(await call('grading-prompt')).prompt;assert.ok(gp.includes(fixed.grading_rubric));const raw=[...gp.matchAll(/```yaml\s*([\s\S]*?)```/g)].map(m=>yaml.load(m[1])).find(o=>o?.study_update),u=raw.study_update;
+ Object.assign(u,{score_numeric:80,score_max:100,grading_confidence:99,actual_reference_level:0,error_types:['none'],primary_error_type:'none',transfer_task_context:JSON.parse(gp.match(/study_update\.transfer_task_context を次のJSONのまま返してください:\n([^\n]+)/)[1]),target_skill_assessment:{self_selected:true,major_calculation_success:true,no_major_error:true,outcome:'success',evidence:'FIXTURE: 妥当な別解で対象能力の計算と結論を完成した。'}});u.graded_findings=u.graded_findings.map(f=>({...f,error_type:'none',resolved:true,evidence:'FIXTURE: 今回の答案に照らして当該採点項目の成功を確認した。'}));
+ await call('grade',{text:yaml.dump(raw)});await call('grade',{text:yaml.dump(raw)});assert.equal((await db.attempts.where('problem_id').equals(problem.problem_id).toArray()).length,1);
+ const saved=await exportBackup();await restoreBackup(saved);assert.equal((await call('view')).status,'graded');assert.deepEqual(await rec(),JSON.parse(saved.meta.find(m=>m.key===generationMetaKey(key)).value));
+ for(const k of ['attempts','reviews','weakNotes','pastSessions','problems'])for(const old of before[k])assert.deepEqual((await exportBackup())[k].find(x=>x.id===old.id&&x.problem_id===old.problem_id),old);
+ const a=(await exportBackup()).attempts.find(a=>a.problem_id===problem.problem_id);assert.equal(a.exam_score_eligible,false);assert.equal(a.evidence_strength,'training');assert.equal(a.time_minutes,null);
+});

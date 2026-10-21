@@ -6,7 +6,7 @@ import {reviewExecutionState} from "./reviewCurrentState.ts";
 import {attemptPlanningEligible} from "./legacyKPolicy.ts";
 import {resolvePersistedAttemptLifecycle} from "./reviewTransition.ts";
 import {deriveFailureEpisode} from "./failureEpisode.ts";
-import {buildPastExamYearCandidates,derivePastExamRoleRelease,derivePastExamSessionAdmission,derivePastExamSessionState,derivePastExamShortCorrection,pastExamSessionKey,pastExamSessionPurpose,stablePastExamSessionKey,selectedProblemIds,validatePastExamTaskIdentity} from "./pastExamPlanning.ts";
+import {buildPastExamYearCandidates,derivePastExamRoleRelease,derivePastExamSessionAdmission,derivePastExamSessionState,derivePastExamShortCorrection,pastExamSessionKey,pastExamSessionPurpose,stablePastExamSessionKey,selectedProblemIds,validatePastExamTaskIdentity,preferredPastExamMeasurementYear} from "./pastExamPlanning.ts";
 
 const stableHash=(value:string)=>[...value].reduce((hash,char)=>Math.imul(hash^char.charCodeAt(0),16777619)>>>0,2166136261).toString(16);
 
@@ -58,6 +58,7 @@ export function deriveRankedStudyCandidates(args:{today:string;daysRemaining:num
   const selectedIds=new Set(args.pastSessions.filter(s=>s.session_kind==="selected_three_timed").flatMap(selectedProblemIds));
   const catalogById=new Map(args.catalog.map(p=>[p.canonicalProblemId,p]));
   const yearCandidates=buildPastExamYearCandidates({...args,weaknesses:args.weaknesses});
+  const preferredMeasurementYear=preferredPastExamMeasurementYear(args);
   const allowedYears=new Set(yearCandidates.map(y=>y.year));
   const release=derivePastExamRoleRelease(args);
   const dayDiff=(from:string)=>Math.max(0,Math.floor((Date.parse(args.today)-Date.parse(from))/86400000)||0);
@@ -188,12 +189,12 @@ export function deriveRankedStudyCandidates(args:{today:string;daysRemaining:num
   }
   const active=args.pastSessions.find(s=>s.session_kind==="selected_three_timed"&&
     !["completed","cancelled","invalidated","deferred"].includes(derivePastExamSessionState(s))&&!s.superseded_by_session_id&&
-    derivePastExamSessionAdmission({...args,year:s.year,session:s}).required);
+    derivePastExamSessionAdmission({...args,year:s.year,session:s,preferredMeasurementYear}).required);
   const reserved=new Set<number>();
   for(const row of yearCandidates){
     const own=args.pastSessions.find(s=>s.year===row.year&&s.session_kind==="selected_three_timed"&&!s.superseded_by_session_id&&
       !["completed","cancelled","invalidated","deferred"].includes(derivePastExamSessionState(s)));
-    const admission=derivePastExamSessionAdmission({...args,year:row.year,session:own,clean:row.cleanScanEligible});
+    const admission=derivePastExamSessionAdmission({...args,year:row.year,session:own,clean:row.cleanScanEligible,preferredMeasurementYear});
     const session=base(row.eligibleRows[0].canonicalProblemId,"本番測定","exam_90min",90);
     session.title=`${row.year}年 本番型session`;session.past_exam_year=row.year;session.past_exam_year_role=row.yearRole;
     session.past_exam_task_type=own&&pastExamSessionPurpose(own)==="simulation"?"simulation":"timed_three_question_session";session.session_problem_ids=row.rows.map(p=>p.canonicalProblemId);
@@ -234,7 +235,13 @@ export function deriveRankedStudyCandidates(args:{today:string;daysRemaining:num
     task.session_problem_ids=args.catalog.filter(p=>p.year===correction.year).map(p=>p.canonicalProblemId);
     task.stable_session_key=correction.stableSessionKey;task.clean_selection_evidence=false;task.action_class="exam_practice";
     task.selected_year_reason=correction.reason;task.session_workflow="5問scan・得点予測・scan込み90分の答案配分を補正";
-    if(validatePastExamTaskIdentity(task).valid)add(task,4,"時間較正",correction.reason);}
+    const own=args.pastSessions.find(s=>pastExamSessionKey(s)===correction.stableSessionKey);
+    const admission=derivePastExamSessionAdmission({...args,year:correction.year,
+      session:own||{session_kind:"scan_only"},clean:false,preferredMeasurementYear});
+    if(validatePastExamTaskIdentity(task).valid){
+      if(admission.required)add(task,4,"時間較正",correction.reason);
+      else waiting.push({task,reason:admission.reason,reevaluateWhen:"優先するclean本番測定の実施後に再評価"});
+    }}
   const seen=new Set<string>();
   const recentInterventions=(task:Task)=>new Set(valid.filter(a=>a.problem_id===task.problem_id&&
     ["error_repair","retrieval_check"].includes(String(a.learning_purpose))&&dayDiff(a.date)<=7).map(a=>a.date)).size;

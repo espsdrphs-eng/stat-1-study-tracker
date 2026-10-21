@@ -3,7 +3,7 @@ import {schemaErrorMessage} from './dbSchema';
 import type {GradingSaveReceipt} from './gradingSubmission';
 import { AlertTriangle, BookOpen, CalendarCheck, Check, ClipboardPaste, Copy, Database, NotebookPen, Pencil, RefreshCw, X } from "lucide-react";
 import { post } from "./api";
-import { applyProblemMaster, parseStudyText, problemDisplayLabel, todayString } from "./importParser";
+import { applyProblemMaster, parseStructuredStudyText, problemDisplayLabel, todayString } from "./importParser";
 import { createAttemptReviewPlan } from "./reviewRules";
 import { buildGradingPrompt, buildStoredReviewGradingPrompt, GRADING_RUBRIC_VERSION, REVIEW_RUBRIC_VERSION } from "./gradingPrompt";
 import {buildProblemContextPack} from "./gradingContract.ts";
@@ -15,6 +15,7 @@ import {resolveSemanticReviewGeneration} from "./reviewGeneration.ts";
 import {attachSubmittedAnswer,imageGradingPrompt,type SubmittedAnswer} from "./learningFeedback.ts";
 import type { AnswerIndexEntry, Attempt, Problem, ProblemAlias, Review, StudyUpdate } from "./types";
 import { wholeAnswerScanSummary } from "./wholeAnswerDiagnostic.ts";
+import {RawGPTArchive} from './RawGPTArchive';
 
 const modes:Record<string,string>={check:"チェック",skeleton:"骨格",main_calc:"主要計算",full:"フル答案",scan:"スキャン",exam_90min:"90分演習"};
 const priority=["K","N","W","C"];
@@ -95,6 +96,7 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
   const [text,setText]=useState(initialDraft?.text||"");
   const [updates,setUpdates]=useState<StudyUpdate[]>(initialDraft?.updates||[]);
   const [structured,setStructured]=useState(false);
+  const [verifiedPreview,setVerifiedPreview]=useState(false);
   const [editing,setEditing]=useState(false);
   const [error,setError]=useState("");
   const [gradingCopied,setGradingCopied]=useState(false);
@@ -123,9 +125,11 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
 
   const parse=()=>{
     setError("");
+    setUpdates([]);
+    setVerifiedPreview(false);
     setSaved(null);
     try{
-      const result=parseStudyText(text,problems,answerIndex,problemAliases);
+      const result=parseStructuredStudyText(text,problems,answerIndex,problemAliases);
       const historyIds=new Set(attempts.map(attempt=>attempt.problem_id));
       const normalized=result.updates.map(update=>prepareImportedStudyUpdate({
         ...update,
@@ -134,6 +138,7 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
       } as StudyUpdate,{attempts,today:todayString()}));
       setStructured(result.structured);
       setUpdates(normalized);
+      setVerifiedPreview(normalized.length>0);
       setEditing(false);
       if(!normalized.length) setError("問題を特定できませんでした。問題ID、章、A/S、問番号を確認してください。");
     }catch(reason){
@@ -189,7 +194,7 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
     });
     return result;
   })();
-  const canSave=projectedUpdates.length>0&&allMissing.length===0&&!projectedUpdates.some(row=>row.requires_problem_confirmation)&&invalidSourceUpdates.length===0;
+  const canSave=verifiedPreview&&projectedUpdates.length>0&&allMissing.length===0&&!projectedUpdates.some(row=>row.requires_problem_confirmation)&&invalidSourceUpdates.length===0;
 
   const scrollToMissing=(index:number,field:string)=>{
     setEditing(true);
@@ -209,7 +214,7 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
     try{
     const snapshot=projectedUpdates.map(update=>attachSubmittedAnswer(sanitizeStudyUpdateTiming(update),submittedAnswer));
     try{sessionStorage.setItem(draftKey,JSON.stringify({text,updates:snapshot,savedAt:new Date().toISOString()}));}catch{/* Keep the visible input and allow the actual durable save. */}
-    const ok=await run(async()=>{try{receipt=await post<GradingSaveReceipt>('/api/import',{updates:snapshot});if(!receipt?.savedAttemptIds?.length)throw new Error('永続保存を確認できませんでした。');return receipt;}catch(e){reason=e;throw e;}},`${snapshot.length}件を保存しました`);
+    const ok=await run(async()=>{try{receipt=await post<GradingSaveReceipt>('/api/import',{updates:snapshot,rawText:text});if(!receipt?.savedAttemptIds?.length)throw new Error('永続保存を確認できませんでした。');return receipt;}catch(e){reason=e;throw e;}},`${snapshot.length}件を保存しました`);
     if(!ok){setSaveFailed(true);setSaveFailureReason(schemaErrorMessage(reason||'保存先を確認できません。入力をコピーし、端末の空き容量・他のアプリタブを確認して同じ保存を再試行してください。'));return}
     setSaveFailed(false);
     sessionStorage.removeItem(draftKey);
@@ -233,10 +238,11 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
     <section className="panel">
       <div className="panel-title"><div><span className="eyebrow">PASTE FROM GPT</span><h3>GPT回答取り込み</h3></div><Pill>API不使用</Pill></div>
       <p className="muted">採点JSON / YAMLを解析します。旧キーは保存前に新キーへ自動補正します。</p>
-      <textarea className="paste-area" value={text} onChange={event=>{setText(event.target.value);setSaved(null)}} placeholder={"ChatGPTの採点結果を貼り付けてください。\n\nstudy_update / study_updates のJSON・YAMLに対応します。"} />
+      <textarea className="paste-area" value={text} onChange={event=>{setText(event.target.value);setUpdates([]);setVerifiedPreview(false);setSaved(null);setError('')}} placeholder={"ChatGPTの採点結果を貼り付けてください。\n\nstudy_update / study_updates のJSON・YAMLに対応します。"} />
       <button className="primary wide-btn" onClick={parse}><ClipboardPaste size={17}/>内容を解析する</button>
       {error&&<p className="field-error">{error}</p>}
-      <div className="parser-note"><strong>旧キーの自動変換</strong><span>time_minutes → actual_minutes / score_label → score_text / reference_closed_reproduction → after_reference_reproduced</span></div>
+      <details className="raw-fallback"><summary>読めない返答・文章を原文のまま保管する</summary><p>不足項目は確認メモへ。原文の保管だけでは採点・習得・予定を更新しません。採点の識別不足は対象課題から再依頼してください。</p><RawGPTArchive compact problems={problems} run={run} busy={busy} text={text}/></details>
+      <details className="parser-note"><summary>互換形式の確認</summary><span>time_minutes → actual_minutes / score_label → score_text / reference_closed_reproduction → after_reference_reproduced。元の回答は採点と同時に保管します。</span></details>
       <details className="grading-prompt-box"><summary>安定した採点用プロンプト</summary>
         <p>採点基準・根拠・確信度を固定する {GRADING_RUBRIC_VERSION} です。</p>
         <textarea readOnly value={gradingPrompt}/>
@@ -258,6 +264,7 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
         <small>{saved.at}・入力欄と確認内容をクリアしました。</small>
         <button className="ghost" onClick={()=>setSaved(null)}><ClipboardPaste size={15}/>次の取り込みを始める</button>
       </div>:<div className="empty"><ClipboardPaste size={30}/><p>解析結果がここに表示されます</p></div>):<>
+        {!verifiedPreview&&<p role="status">一時保存した原文を保持しています。保存前に「内容を解析する」で今回の対象を確認してください。</p>}
         <div className="confirm-toolbar"><p>保存するまで端末内データは更新されません。</p>
           <button className="ghost small" onClick={()=>firstMissing?.missing?scrollToMissing(firstMissing.index,firstMissing.missing.field):setEditing(value=>!value)}>
             <Pencil size={14}/>{editing?"確認表示に戻る":"修正"}
@@ -290,13 +297,14 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
             {update.rubric_version&&update.rubric_version!==expectedRubric&&<div className="match-warning"><AlertTriangle size={17}/><div><strong>採点基準を確認してください</strong><span>{expectedRubric} の {isReviewImport?"復習":"初回"} 採点プロンプトによる結果を推奨します。</span></div></div>}
             {update.grading_confidence!=null&&update.grading_confidence<.7&&<div className="match-warning"><AlertTriangle size={17}/><div><strong>採点確信度が低い結果です</strong><span>{update.uncertain_points?.join(" / ")||"根拠を確認してから保存してください。"}</span></div></div>}
 
-            <div className="import-fields expanded">
+            <div className="import-result-summary"><strong>今回の採点：{update.score_numeric==null?'未確定':`${update.score_numeric}点`}</strong><p>未解消：{update.error_point||'記録なし'}</p><p>次の行動：{update.next_action||'未登録'}</p></div>
+            <Field label="正味解答時間（分・任意）" fieldId={`import-${index}-actual_minutes`} highlighted={highlightedField===`import-${index}-actual_minutes`} help="中断時間を除く分数です。空欄は時間不明となり、時間内完答の証拠には使いません。"><input min="0.1" step="any" placeholder="空欄：時間不明" type="number" value={update.actual_minutes??update.time_minutes??""} onChange={event=>{const value=event.target.value===""?null:Number(event.target.value);change(index,"actual_minutes",value);change(index,"time_minutes",value)}}/></Field>
+            <details className="import-evidence-details" open={editing||missing.length>0}><summary>採点の詳細・根拠を確認</summary><div className="import-fields expanded">
               <Field label="問題マスター" fieldId={`import-${index}-problem_id`} highlighted={highlightedField===`import-${index}-problem_id`}><select disabled={!editing&&!!update.master_matched} value={update.master_matched?update.problem_id:""} onChange={event=>selectProblem(index,event.target.value)}>
                 <option value="">問題を選択</option>{problems.map(problem=><option value={problem.problem_id} key={problem.problem_id}>{problemDisplayLabel(problem)}・{problem.problem_id}</option>)}
               </select></Field>
               <Field label="今回の答案形式" fieldId={`import-${index}-mode`} highlighted={highlightedField===`import-${index}-mode`}><select disabled={!editing} value={update.mode} onChange={event=>change(index,"mode",event.target.value)}>{Object.entries(modes).map(([key,label])=><option value={key} key={key}>{label}</option>)}</select></Field>
               <Field label="学習日" fieldId={`import-${index}-date`} highlighted={highlightedField===`import-${index}-date`}><input readOnly={!editing} type="date" value={update.date} onChange={event=>change(index,"date",event.target.value)}/></Field>
-              <Field label="正味解答時間（分・任意）" fieldId={`import-${index}-actual_minutes`} highlighted={highlightedField===`import-${index}-actual_minutes`} help="中断時間を除く分数です。空欄は時間不明となり、時間内完答の証拠には使いません。"><input min="0.1" step="any" placeholder="空欄：時間不明" type="number" value={update.actual_minutes??update.time_minutes??""} onChange={event=>{const value=event.target.value===""?null:Number(event.target.value);change(index,"actual_minutes",value);change(index,"time_minutes",value)}}/></Field>
               <Field label="段階評価"><input readOnly={!editing} placeholder="例：A / B+" value={update.score_text||(update.score_numeric!=null?update.score_label:"")} onChange={event=>change(index,"score_text",event.target.value)}/></Field>
               <Field label="点数" fieldId={`import-${index}-score_numeric`} highlighted={highlightedField===`import-${index}-score_numeric`}><input readOnly={!editing} placeholder="例：78" type="number" value={update.score_numeric??""} onChange={event=>change(index,"score_numeric",event.target.value===""?null:Number(event.target.value))}/></Field>
               <Field label="mark" fieldId={`import-${index}-mark`} highlighted={highlightedField===`import-${index}-mark`}><select disabled={!editing} value={update.mark} onChange={event=>change(index,"mark",event.target.value)}>{["◎","○","△","×"].map(mark=><option key={mark}>{mark}</option>)}</select></Field>
@@ -360,6 +368,7 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
               <span><NotebookPen/>弱点分析 <strong>{update.weak_notes?.length||update.weak_note? "自動蓄積":"追加なし"}</strong></span>
               {update.math_localized&&<span><Pencil size={14}/>数式表記 <strong>日本語化済み</strong></span>}
             </div>
+            </details>
           </article>;
         })}</div>
         <button disabled={busy||!canSave} className="primary wide-btn" onClick={saveUpdates}>

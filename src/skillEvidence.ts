@@ -79,6 +79,52 @@ export function successfulSkillIds(attempt:Attempt){
   const cached=activeMemo?.successes.get(attempt);if(cached)return cached;
   const result=calculateSuccessfulSkillIds(attempt);activeMemo?.successes.set(attempt,result);return result;
 }
+function inScopeFindings(attempt:Attempt){
+  const excluded=new Set(attempt.grading_contract?.explicitlyOutOfScopePartIds||[]);
+  return (attempt.graded_findings||[]).filter(f=>!excluded.has(f.graded_part_id)&&findingPlanningEligible(attempt,f));
+}
+/** Unmapped major failures are uncertainty, not proof of another skill or a
+ * reason to promote a first-step success to whole-operation success. */
+function unclassifiedMajorFindings(attempt:Attempt){
+  const inScope=new Set(inScopeFindings(attempt).map(f=>f.graded_part_id));
+  return unique(deriveFailureEpisode(attempt).rootWeaknesses.filter(root=>root.requiredRepair&&!root.skillIds.length)
+    .flatMap(root=>root.sourceFindingIds).filter(id=>inScope.has(id)));
+}
+const partIdentity=(attempt:Attempt,id:string)=>{
+  const part=attempt.grading_contract?.gradedParts.find(p=>p.id===id);
+  return part?.stableTargetKey||part?.stable_target_key||id;
+};
+/** A named operation and the assessed target must both match. Opaque part IDs,
+ * a common chapter, a total score or a higher mastery number are not a match. */
+function transferTargetProof(source:Attempt,destination:Attempt,skillId:string,requiredIds:string[]){
+  if(!requiredIds.length||source.problem_id===destination.problem_id||!successfulSkillIds(destination).includes(skillId))return null;
+  const lineage=destination.transfer_lineage;
+  if(lineage&&lineage.matchConfidence==='high'&&lineage.sourceProblemId===source.problem_id&&
+    (!lineage.sourceAttemptId||lineage.sourceAttemptId===source.id)&&lineage.rootSkillId===skillId&&
+    requiredIds.every(id=>lineage.sourceFindingIds?.includes(id)))
+    return {sourceFindingIds:requiredIds,successFindingIds:['transfer_target_assessment']};
+  const successful=inScopeFindings(destination).filter(f=>f.resolved&&f.error_type==='none'&&findingSkillIds(destination,f).includes(skillId));
+  const matched=requiredIds.map(id=>successful.find(f=>f.graded_part_id===id));
+  if(matched.some(f=>!f))return null;
+  return {sourceFindingIds:requiredIds,successFindingIds:unique(matched.map(f=>f!.graded_part_id))};
+}
+/** Projection-only lineage check. Never rewrites the source Attempt/contract. */
+export function transferCoversFindings(evidence:TransferEvidence,source:Attempt,findingIds:string[]){
+  if(evidence.sourceProblemId!==source.problem_id||!findingIds.length)return false;
+  return findingIds.every(id=>evidence.sourceFindingIds?.includes(id)||
+    evidence.sourceTargetKeys?.includes(partIdentity(source,id)));
+}
+export type TransferAssessmentWarning={sourceAttemptId:number;destinationAttemptId:number;sourceProblemId:string;
+  destinationProblemId:string;skillId:string;requiredFindingIds:string[];unclassifiedFindingIds:string[];reason:string};
+export function transferAssessmentWarning(source:Attempt,destination:Attempt,skillId:string):TransferAssessmentWarning{
+  const required=inScopeFindings(source).filter(f=>!f.resolved&&f.error_type!=='none'&&findingSkillIds(source,f).includes(skillId));
+  const unclassified=unclassifiedMajorFindings(destination);
+  return {sourceAttemptId:source.id,destinationAttemptId:destination.id,sourceProblemId:source.problem_id,
+    destinationProblemId:destination.problem_id,skillId,requiredFindingIds:required.map(f=>f.graded_part_id),unclassifiedFindingIds:unclassified,
+    reason:unclassified.length?'初手などの成功はありますが、能力対応が未確定の重大な未解消箇所もあります。対象全体の転移成功は確認できません。':
+      !independentReferenceFree(destination)||!confidentGrading(destination)?'参照状況または採点根拠が不足し、独立した転移か判断できません。':
+      '元の失敗対象まで成功した証拠が揃っていません。初手だけの成功を主要計算・結論の成功には広げません。'};
+}
 /** Do not label an ungraded/uncertain answer as a transfer failure. */
 export function transferTrainingOutcome(attempt:Attempt,confirmedSuccess=false){
   if(Number(attempt.actual_reference_level??attempt.reference_level)>0||attempt.hint_used)
@@ -111,9 +157,10 @@ function calculateSuccessfulSkillIds(attempt:Attempt){
     if(lineage?.matchConfidence==="high"&&lineage.sourceProblemId!==attempt.problem_id&&lineage.sourceFindingIds?.length)
       return [lineage.rootSkillId];
   }
-  const findings=(attempt.graded_findings||[]).filter(f=>findingPlanningEligible(attempt,f));
+  const findings=inScopeFindings(attempt);
   const failed=new Set(findings.filter(f=>!f.resolved&&f.error_type!=="none")
     .flatMap(f=>findingSkillIds(attempt,f)));
+  if(unclassifiedMajorFindings(attempt).length)return [];
   return unique(findings.filter(f=>f.resolved&&f.error_type==="none").flatMap(f=>
     findingSkillIds(attempt,f))).filter(id=>!failed.has(id));
 }
@@ -142,17 +189,18 @@ export function rootProgress(source:Attempt,root:RootWeakness,attempts:Attempt[]
   let latestFailure=source;
   for(const a of later.filter(a=>a.problem_id===source.problem_id)){
     const parts=a.grading_contract?.gradedParts||[];
-    const relevant=(a.graded_findings||[]).filter(f=>findingPlanningEligible(a,f)&&parts.some(p=>p.id===f.graded_part_id&&
-      (keys.has(identity(a,p))||findingSkillIds(a,f).some(id=>root.skillIds.includes(id)))));
+    const relevant=inScopeFindings(a).filter(f=>parts.some(p=>p.id===f.graded_part_id&&keys.has(identity(a,p))));
+    const covered=new Set(relevant.map(f=>identity(a,parts.find(p=>p.id===f.graded_part_id)!)));
+    const completeCoverage=keys.size>0&&[...keys].every(key=>covered.has(key));
     if(relevant.some(f=>!f.resolved&&f.error_type!=="none")){latestFailure=a;repairSuccess=undefined;}
-    else if(a.learning_purpose!=="retrieval_check"&&relevant.length&&
+    else if(a.learning_purpose!=="retrieval_check"&&completeCoverage&&relevant.length&&
       relevant.every(f=>f.resolved&&f.error_type==="none")&&(independentReferenceFree(a)||gradedRepairEvidence(a))&&confidentGrading(a))repairSuccess=a;
   }
   // A scaffold on another problem is still repair, not the independent test
   // after repair. Require explicit source lineage before it can unlock transfer.
   for(const a of later.filter(a=>a.id>latestFailure.id&&a.problem_id!==source.problem_id&&
     a.source_problem_id===source.problem_id&&a.learning_purpose==="error_repair")){
-    if(root.skillIds.length&&root.skillIds.every(id=>successfulSkillIds(a).includes(id))&&
+    if(root.skillIds.length&&root.skillIds.every(id=>!!transferTargetProof(source,a,id,root.sourceFindingIds))&&
       (!repairSuccess||a.id>repairSuccess.id))repairSuccess=a;
   }
   const transferFailure=later.filter(a=>a.id>(repairSuccess?.id||latestFailure.id)&&a.problem_id!==source.problem_id&&
@@ -160,14 +208,17 @@ export function rootProgress(source:Attempt,root:RootWeakness,attempts:Attempt[]
     independentReferenceFree(a)&&confidentGrading(a)&&a.target_skill_assessment&&
     (!a.target_skill_assessment.self_selected||!a.target_skill_assessment.major_calculation_success||!a.target_skill_assessment.no_major_error)).at(-1);
   if(transferFailure)repairSuccess=undefined;
-  const transfer=later.find(a=>a.id>(transferFailure?.id||latestFailure.id)&&a.problem_id!==source.problem_id&&root.skillIds.length>0&&
-    a.learning_purpose!=="error_repair"&&
-    root.skillIds.every(id=>successfulSkillIds(a).includes(id)));
+  const transferCandidates=root.skillIds.length?later.filter(a=>a.id>(transferFailure?.id||latestFailure.id)&&
+    a.problem_id!==source.problem_id&&a.learning_purpose!=='error_repair'&&root.skillIds.every(id=>successfulSkillIds(a).includes(id))):[];
+  const transferRows=transferCandidates.length?deriveTransferEvidence(attempts):[];
+  const transfer=transferCandidates.find(a=>
+    root.skillIds.every(id=>transferRows.some(e=>e.successAttemptId===a.id&&e.skillId===id&&transferCoversFindings(e,source,root.sourceFindingIds))));
   return {repairSuccess,transfer,latestFailure,transferFailure};
 }
 
 export type TransferEvidence={id:string;sourceAttemptId:number;sourceProblemId:string;successAttemptId:number;
   successProblemId:string;skillId:string;date:string;evidenceStrength:"training"|"strong";
+  sourceFindingIds?:string[];sourceTargetKeys?:string[];successFindingIds?:string[];
   lineage?:Attempt["transfer_lineage"]};
 /** Same raw-evidence check for the audit and all current-state displays. */
 export function verifiedTransferRediagnosis(task:Task,attempts:Attempt[]){
@@ -191,26 +242,45 @@ export function transferEvidenceStrength(a:Attempt):"training"|"strong"{
     ["full","timed","timed_single","exam_90min","past_exam"].includes(a.mode)&&a.evidence_strength!=="training"?"strong":"training";
 }
 export function deriveTransferEvidence(attempts:Attempt[]):TransferEvidence[]{
-  const cached=activeMemo?.transfers.get(attempts);if(cached)return cached;
-  const result=calculateTransferEvidence(attempts);activeMemo?.transfers.set(attempts,result);return result;
+  return withSkillEvidenceMemo(()=>{
+    const cached=activeMemo!.transfers.get(attempts);if(cached)return cached;
+    const result=calculateTransferEvidence(attempts);activeMemo!.transfers.set(attempts,result);return result;
+  });
 }
 function calculateTransferEvidence(attempts:Attempt[]):TransferEvidence[]{
   // A skill can be unresolved on several independent source problems. Keeping
   // only one global failure loses the other roots when a later problem fails.
-  const rows:TransferEvidence[]=[],latestFailures=new Map<string,Map<string,Attempt>>();
+  const rows:TransferEvidence[]=[],latestFailures=new Map<string,Map<string,Map<string,{source:Attempt;findingId:string}>>>();
   for(const a of [...attempts].sort((a,b)=>a.id-b.id)){
     if(a.exclude_from_metrics||a.duplicate_of_attempt_id)continue;
     for(const skillId of a.learning_purpose==="error_repair"?[]:successfulSkillIds(a)){
-      for(const failure of latestFailures.get(skillId)?.values()||[])
-        if(failure.problem_id!==a.problem_id&&(!a.transfer_lineage||
-          (a.transfer_lineage.rootSkillId===skillId&&a.transfer_lineage.sourceProblemId===failure.problem_id&&(!a.transfer_lineage.sourceAttemptId||a.transfer_lineage.sourceAttemptId===failure.id))))rows.push({id:`transfer:${failure.id}:${a.id}:${skillId}`,
-          sourceAttemptId:failure.id,sourceProblemId:failure.problem_id,successAttemptId:a.id,successProblemId:a.problem_id,skillId,date:a.date,
-          evidenceStrength:transferEvidenceStrength(a),lineage:a.transfer_lineage});
+      for(const [sourceProblemId,targets] of latestFailures.get(skillId)||[]){
+        if(sourceProblemId===a.problem_id)continue;
+        const lineage=a.transfer_lineage;
+        // A pre-issued training contract evaluates its explicit source scope,
+        // not every older sibling on that problem. Keep implicit/natural
+        // evidence conservative; a scoped result never clears other findings.
+        const scoped=lineage?.matchConfidence==='high'&&lineage.sourceProblemId===sourceProblemId&&lineage.rootSkillId===skillId;
+        const requirements=[...targets.values()].filter(r=>!scoped||
+          (!lineage.sourceAttemptId||lineage.sourceAttemptId===r.source.id)&&lineage.sourceFindingIds?.includes(r.findingId));
+        if(!requirements.length)continue;
+        const proofs=requirements.map(r=>transferTargetProof(r.source,a,skillId,[r.findingId]));
+        if(proofs.some(p=>!p))continue;
+        const bySource=new Map<number,{source:Attempt;sourceFindingIds:string[];successFindingIds:string[]}>();
+        requirements.forEach((r,i)=>{const row=bySource.get(r.source.id)||{source:r.source,sourceFindingIds:[],successFindingIds:[]};
+          row.sourceFindingIds.push(r.findingId);row.successFindingIds.push(...proofs[i]!.successFindingIds);bySource.set(r.source.id,row);});
+        for(const {source,sourceFindingIds,successFindingIds} of bySource.values())rows.push({id:`transfer:${source.id}:${a.id}:${skillId}`,
+          sourceAttemptId:source.id,sourceProblemId,successAttemptId:a.id,successProblemId:a.problem_id,skillId,date:a.date,
+          sourceFindingIds:unique(sourceFindingIds),sourceTargetKeys:unique(sourceFindingIds.map(id=>partIdentity(source,id))),
+          successFindingIds:unique(successFindingIds),evidenceStrength:transferEvidenceStrength(a),lineage:a.transfer_lineage});
+      }
     }
-    for(const f of (a.source_type==="generated"?[]:a.graded_findings||[]).filter(f=>findingPlanningEligible(a,f)&&!f.resolved&&f.error_type!=="none"))
+    for(const f of (a.source_type==="generated"?[]:inScopeFindings(a)).filter(f=>!f.resolved&&f.error_type!=="none"))
       for(const id of findingSkillIds(a,f)){
-        const sources=latestFailures.get(id)||new Map<string,Attempt>();
-        sources.set(a.problem_id,a);latestFailures.set(id,sources);
+        const sources=latestFailures.get(id)||new Map<string,Map<string,{source:Attempt;findingId:string}>>();
+        const targets=sources.get(a.problem_id)||new Map<string,{source:Attempt;findingId:string}>();
+        targets.set(partIdentity(a,f.graded_part_id),{source:a,findingId:f.graded_part_id});
+        sources.set(a.problem_id,targets);latestFailures.set(id,sources);
       }
   }
   return rows;
@@ -222,7 +292,8 @@ export function currentTransferEvidence(attempts:Attempt[]){
   const current=deriveTransferEvidence(attempts).filter(row=>!attempts.some(a=>a.id>row.successAttemptId&&
     !a.exclude_from_metrics&&!a.duplicate_of_attempt_id&&(
       a.problem_id===row.sourceProblemId&&(a.graded_findings||[]).some(f=>findingPlanningEligible(a,f)&&
-        !f.resolved&&f.error_type!=='none'&&findingSkillIds(a,f).includes(row.skillId))||
+        !f.resolved&&f.error_type!=='none'&&(findingSkillIds(a,f).includes(row.skillId)||
+          row.sourceFindingIds?.includes(f.graded_part_id)||row.sourceTargetKeys?.includes(partIdentity(a,f.graded_part_id))))||
       a.transfer_lineage?.sourceProblemId===row.sourceProblemId&&a.transfer_lineage.rootSkillId===row.skillId&&
         independentReferenceFree(a)&&confidentGrading(a)&&!!a.target_skill_assessment&&
         (!a.target_skill_assessment.self_selected||!a.target_skill_assessment.major_calculation_success||!a.target_skill_assessment.no_major_error)

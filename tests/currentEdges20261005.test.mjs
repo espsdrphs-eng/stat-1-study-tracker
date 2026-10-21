@@ -259,5 +259,16 @@ test('Q2 excerpt sandbox: graduated retention → Planner JIT → blind grading 
     grading_contract:{gradedParts:[{id:'major_calculation',rootSkillIds:[skill]}]},
     graded_findings:[{graded_part_id:'major_calculation',error_type:'none',resolved:true,evidence:'係数を保持し参照なし自然成功'}]});
   evidence=deriveTransferEvidence(await db.attempts.toArray());
+  // This synthetic destination originally assessed only calculation, while the
+  // real source also failed its conclusion. The old assertion promoted a
+  // partial target to whole-skill transfer. Keep that partial case pending,
+  // then supply an explicitly assessed conclusion for the positive scenario.
+  assert.equal(evidence.filter(e=>e.evidenceStrength==='strong').length,0);
+  const natural=await db.attempts.get(last+1);
+  await db.attempts.update(last+1,{grading_contract:{gradedParts:[
+    ...natural.grading_contract.gradedParts,{id:'answer_conclusion',rootSkillIds:[skill]}]},
+    graded_findings:[...natural.graded_findings,{graded_part_id:'answer_conclusion',error_type:'none',resolved:true,
+      evidence:'FIXTURE: 係数を保持した計算結果から最終結論も参照なしで正しく導いた。'}]});
+  evidence=deriveTransferEvidence(await db.attempts.toArray());
   assert.equal(evidence.filter(e=>e.evidenceStrength==='strong').length,1);
 });

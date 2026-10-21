@@ -19,7 +19,12 @@ test('paper work is persisted separately, reloadable and closed only by a new gr
  const {deriveProblemLearningView}=await import('../src/learningFeedback.ts');
  const current=await localGet('/api/bootstrap');assert.equal(deriveProblemLearningView(current,p).workStatus,'graded');
  const after=await exportBackup();await restoreBackup(after);assert.equal((await db.attempts.get(result.id)).time_minutes,null);
- const empty={...backup,meta:backup.meta.filter(m=>!m.key.startsWith('learning-work:'))};await restoreBackup(empty);
+ const empty={...backup,meta:backup.meta.filter(m=>!m.key.startsWith('learning-work:'))};
+ // A verified snapshot edited after export must now fail before writes. Keep
+ // the original compatibility case explicitly as a legacy, unmanifested file.
+ const currentCount=await db.attempts.count();await assert.rejects(()=>restoreBackup(empty),/meta.*一致/);
+ assert.equal(await db.attempts.count(),currentCount);
+ await restoreBackup({...empty,source_manifest:undefined});
  assert.equal((await localGet('/api/bootstrap')).learningWorkByProblem[id],undefined);
 });
 test('unspecified answer time saves null instead of a zero-minute completion',async()=>{

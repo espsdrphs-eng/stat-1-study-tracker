@@ -1,5 +1,7 @@
 import Dexie, { type EntityTable } from "dexie";
+import {prepareGPTExchange,GPT_EXCHANGE_PREFIX,type GPTExchange} from './gptExchange.ts';
 import {buildRepairCheck,repairCheckForTask,repairTaskKey} from './repairCheck.ts';
+import {createSourceManifest,verifySourceBackup,compareSourceBackups,sourceRecordsEqual,SOURCE_TABLE_KEYS} from './sourceBackup.ts';
 import {gradingSubmissionKey,type GradingSaveReceipt} from './gradingSubmission.ts';
 import {normalizeGradingContextInput} from './gradingTaskContext.ts';
 import {deriveTaskAnswerScope,validateTaskAnswerScopeOverride,taskAnswerScopeKey} from './taskAnswerScope.ts';
@@ -1021,7 +1023,7 @@ async function reconcileProblemLearningState(problemId?:string,preview=false):Pr
 }
 
 type PendingCorrectionLog=Omit<CorrectionLog,"id">;
-async function saveGptUpdates(updates:(StudyUpdate&Record<string,unknown>)[]):Promise<GradingSaveReceipt>{
+async function saveGptUpdates(updates:(StudyUpdate&Record<string,unknown>)[],rawText?:string):Promise<GradingSaveReceipt>{
   updates=updates.map(row=>normalizeGradingContextInput(row) as StudyUpdate&Record<string,unknown>);
   if(!updates.length)throw new Error('保存する採点結果がありません。');
   updates=await Promise.all(updates.map(async update=>{
@@ -1040,6 +1042,7 @@ async function saveGptUpdates(updates:(StudyUpdate&Record<string,unknown>)[]):Pr
   // Hash outside IndexedDB: awaiting a crypto operation inside a Safari
   // transaction can close it before the actual writes.
   const keys=await Promise.all(updates.map(gradingSubmissionKey));
+  const raw=rawText?await prepareGPTExchange({rawText,kind:'grading',problemId:updates.length===1?updates[0].problem_id:null,confirmedByUser:true}):undefined;
   try{await assertDatabaseSchema('saveGptEvaluation', [...GPT_SAVE_REQUIRED_STORES,STORES.correctionLogs]);}
   catch(error){if(!(error instanceof IndexedDbSchemaError))throw error;await repairDatabaseSchema();await assertDatabaseSchema('saveGptEvaluation',[...GPT_SAVE_REQUIRED_STORES,STORES.correctionLogs]);}
   const logs:PendingCorrectionLog[]=[],ids:number[]=[];let replayed=true;
@@ -1070,6 +1073,12 @@ async function saveGptUpdates(updates:(StudyUpdate&Record<string,unknown>)[]):Pr
       await db.meta.put({key:keys[i].key,value:JSON.stringify({payload:keys[i].payload,attemptId:id})});
     }
     if(logs.length)await db.correctionLogs.bulkAdd(logs as CorrectionLog[]);
+    if(raw){
+      const key=GPT_EXCHANGE_PREFIX+raw.id;
+      if(!await db.meta.get(key))await db.meta.add({key,value:JSON.stringify(raw)});
+      await db.meta.put({key:`gpt-grading-link:${raw.id}`,value:JSON.stringify({exchangeId:raw.id,attemptIds:ids})});
+      if(!(await db.meta.get(key)))throw new Error('回答原文の保存を確認できませんでした。入力を保ったまま再試行してください。');
+    }
   });
   if((await db.attempts.bulkGet(ids)).some(row=>!row))throw new Error('保存先の記録を確認できませんでした。入力を保持して再試行してください。');
   let projectionWarning:string|undefined;
@@ -3369,6 +3378,12 @@ async function bootstrap(readOnly=false):Promise<Bootstrap>{
 
 export async function localGet<T>(path:string):Promise<T>{
   if(path==="/api/bootstrap") return await bootstrap() as T;
+  if(path==='/api/gpt-exchanges'){
+    await initialize();
+    const rows=await db.meta.where('key').startsWith(GPT_EXCHANGE_PREFIX).toArray();
+    return rows.flatMap(row=>{try{return [JSON.parse(row.value) as GPTExchange]}catch{return []}})
+      .sort((a,b)=>b.createdAt.localeCompare(a.createdAt)||a.id.localeCompare(b.id)) as T;
+  }
   if(path.startsWith("/api/repair-suggestions")){
     const theme=new URL(path,location.origin).searchParams.get("theme")||"";
     return suggest(theme) as T;
@@ -3801,6 +3816,19 @@ async function saveWholeAnswerRediagnosis(attemptId:number,text:string){
 let transferRequestQueue:Promise<unknown>=Promise.resolve();
 export async function localPost<T>(path:string,body:any):Promise<T>{
   await initialize();
+  if(path==='/api/gpt-exchanges'){
+    const record=await prepareGPTExchange(body);
+    if(record.problemId&&!await db.problems.get(record.problemId))throw new Error('対象の問題が見つかりません。問題を選び直してください。');
+    const result=await db.transaction('rw',db.meta,async()=>{
+      const key=GPT_EXCHANGE_PREFIX+record.id,old=await db.meta.get(key);
+      if(old)return {record:JSON.parse(old.value) as GPTExchange,duplicate:true};
+      await db.meta.add({key,value:JSON.stringify(record)});
+      const stored=await db.meta.get(key);
+      if(stored?.value!==JSON.stringify(record))throw new Error('原文の永続保存を確認できませんでした。入力を保ったまま再試行してください。');
+      return {record,duplicate:false};
+    });
+    notifyStudyDataChanged({operation:'gpt-exchange'});return result as T;
+  }
   if(path==='/api/task-answer-scope'){
     const problem=await db.problems.get(String(body.problemId||''));
     if(!problem)throw new Error('問題が見つかりません。');
@@ -3903,7 +3931,11 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     const content=(item:CoachDiagnosis)=>{const {reviewedAt,sourceEvidenceVersion,...rest}=item;return JSON.stringify(rest)};
     const duplicate=history.some(item=>content(item)===content(diagnosis));
     if(!duplicate&&history.some(item=>item.reviewedAt===diagnosis.reviewedAt&&item.evidenceCutoffAttemptId===diagnosis.evidenceCutoffAttemptId))throw new Error('同じ評価日時・対象で内容が異なります。新しい評価日時で再確認してください。');
-    if(!duplicate)await db.meta.put({key:COACH_HISTORY_META_KEY,value:JSON.stringify([...history,{...diagnosis,sourceEvidenceVersion:coachEvidenceVersion(attempts.filter(attemptPlanningEligible))}])});
+    const raw=await prepareGPTExchange({rawText:String(body.text||body.yaml||''),kind:'assessment',confirmedByUser:true});
+    await db.transaction('rw',db.meta,async()=>{
+      if(!duplicate)await db.meta.put({key:COACH_HISTORY_META_KEY,value:JSON.stringify([...history,{...diagnosis,sourceEvidenceVersion:coachEvidenceVersion(attempts.filter(attemptPlanningEligible))}])});
+      if(!await db.meta.get(GPT_EXCHANGE_PREFIX+raw.id))await db.meta.add({key:GPT_EXCHANGE_PREFIX+raw.id,value:JSON.stringify(raw)});
+    });
     notifyStudyDataChanged({operation:"save-coach-diagnosis"});
     return {ok:true,diagnosis,duplicate} as T;
   } else if(path==="/api/exam-reference-pack/import"){
@@ -4006,7 +4038,7 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
   } else if(path==="/api/attempts") {
     return await saveGptUpdates([body]) as T;
   } else if(path==="/api/import") {
-    return await saveGptUpdates(body.updates) as T;
+    return await saveGptUpdates(body.updates,typeof body.rawText==='string'?body.rawText:undefined) as T;
   } else if(/^\/api\/attempts\/\d+\/replace$/.test(path)) {
     const id=Number(path.split("/")[3]),logs:PendingCorrectionLog[]=[];
     const result=await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.answerIndex,db.problemAliases,db.correctionLogs],async()=>{
@@ -4184,21 +4216,43 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
 }
 
 export async function exportBackup(){
-  await initialize();
-  for(const p of (await db.problems.toArray()).filter(p=>p.source_type==="generated"))await validateGeneratedContent(p);
-  // Recompute against facts at export time, not the last repair's cached audit.
-  const currentAudit=await integrityAudit();
-  await db.meta.put({key:"integrity_audit_summary",value:JSON.stringify(currentAudit)});
-  return {
+  // An original backup must remain possible even when a learning projection or
+  // generated problem needs repair. Do not initialize, reconcile or refresh an
+  // audit while exporting. Take all source tables in one read-only transaction.
+  const source=await db.transaction('r',[db.problems,db.attempts,db.reviews,db.roadmap,db.weakNotes,db.pastSessions,
+    db.sMemory,db.answerIndex,db.correctionLogs,db.problemAliases,db.importLogs,db.meta],async()=>({
     version:3,exported_at:new Date().toISOString(),
     problems:await db.problems.toArray(),attempts:await db.attempts.toArray(),reviews:await db.reviews.toArray(),
     roadmap:await db.roadmap.toArray(),weakNotes:await db.weakNotes.toArray(),pastSessions:await db.pastSessions.toArray(),
     sMemory:await db.sMemory.toArray(),answerIndex:await db.answerIndex.toArray(),correctionLogs:await db.correctionLogs.toArray(),
     problemAliases:await db.problemAliases.toArray(),importLogs:await db.importLogs.toArray(),meta:await db.meta.toArray()
-  };
+  }));
+  // SHA-256 runs outside IndexedDB transactions (including on Safari).
+  return {...source,source_manifest:await createSourceManifest(source)};
 }
 
-export async function restoreBackup(data:any){
+/** Migration preflight only: no initialize, restore, reconciliation or writes. */
+export async function previewBackupRestore(data:unknown){
+  const validation=await verifySourceBackup(data),source=data as Parameters<typeof restoreBackup>[0];
+  const current=await exportBackup(),differences=await compareSourceBackups(current,source);
+  const reconciliation=analyzeReviewReconciliation({attempts:source.attempts,reviews:source.reviews,
+    aliases:source.problemAliases||[],today:todayString()});
+  const metaPolicy={originalAvailable:Object.keys(SOURCE_TABLE_KEYS).every(table=>Array.isArray(source[table])),
+    destinationOnlyKeys:differences.meta.removed,changedKeys:differences.meta.changed,
+    incomingCacheKeys:(source.meta||[]).filter((row:{key:string})=>row.key.startsWith('today-plan-snapshot:')).map((row:{key:string})=>row.key)};
+  return {...validation,differences,metaPolicy,reconciliation:{
+    replacements:reconciliation.problems.filter(p=>p.replacementRequired||p.retentionCheckRequired).map(p=>({
+      problemId:p.problemId,reviewIds:p.reviewsToSupersede.map(r=>r.reviewId),before:p.activeReviewTargetCount,
+      after:p.desiredRepairParts.length,reason:p.ambiguousReasons.join(' / ')||'現在の採点対象から予定を再導出'})),
+    ambiguousProblems:reconciliation.ambiguousProblems}};
+}
+
+export async function restoreBackup(data:any,options?:{mode:'original';sourceHash:string}){
+  // Verify source identity before the existing destructive restore transaction.
+  // Old version-3 files remain valid; a supplied manifest must match exactly.
+  const verified=await verifySourceBackup(data),original=options?.mode==='original';
+  if(original&&(!Object.keys(SOURCE_TABLE_KEYS).every(table=>Array.isArray(data[table]))||options.sourceHash!==verified.manifest.data_hash))
+    throw new Error('復元前に確認した原本・全12表の照合情報が一致しません。ファイルを選び直して差分を確認してください。');
   const required=["problems","attempts","reviews","roadmap","weakNotes","pastSessions","sMemory"];
   if(!data||!required.every(k=>Array.isArray(data[k]))) throw new Error("バックアップ形式が正しくありません");
   for(const p of data.problems.filter((p:Problem)=>p.source_type==="generated"||p.generated_transfer))await validateGeneratedContent(p);
@@ -4211,23 +4265,31 @@ export async function restoreBackup(data:any){
     if(Array.isArray(data.correctionLogs)) await db.correctionLogs.bulkAdd(data.correctionLogs);
     if(Array.isArray(data.problemAliases)) await db.problemAliases.bulkAdd(data.problemAliases);
     if(Array.isArray(data.importLogs)) await db.importLogs.bulkAdd(data.importLogs);
+    if(original)await db.meta.clear();
+    else{
     for(const row of await db.meta.where("key").startsWith("transfer-generation:").toArray())await db.meta.delete(row.key);
     for(const row of await db.meta.where("key").startsWith("transfer-training-context:").toArray())await db.meta.delete(row.key);
     for(const row of await db.meta.where("key").startsWith("learning-work:").toArray())await db.meta.delete(row.key);
     for(const row of await db.meta.where('key').startsWith('task-answer-scope:').toArray())await db.meta.delete(row.key);
     for(const row of await db.meta.where('key').startsWith('grading-submission:').toArray())await db.meta.delete(row.key);
+    }
     if(Array.isArray(data.meta)) await db.meta.bulkPut(data.meta);
     // A restore changes the current source state. Keep historical day plans, but
     // never let a pre-restore/stale plan for today override the reconciled
     // PastExamSession and Review projections on the next bootstrap.
-    await db.meta.delete(`today-plan-snapshot:${todayString()}`);
-    await db.meta.put({key:"seeded",value:"1"});
+    if(!original){await db.meta.delete(`today-plan-snapshot:${todayString()}`);await db.meta.put({key:"seeded",value:"1"});}
+    if(original){
+      const restored=Object.fromEntries(await Promise.all(Object.keys(SOURCE_TABLE_KEYS).map(async table=>[table,await db.table(table).toArray()])));
+      if(!sourceRecordsEqual(data,restored))throw new Error('原本の全フィールドを復元できませんでした。更新を取り消しました。元のデータは保持しています。');
+    }
   });
   // Restore only writes source records. Rebuild the current projection through
   // the same reconciler used by every normal Attempt path; history is retained.
-  await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.problemAliases,db.meta],
-    ()=>reconcileProblemLearningState());
-  await reconcilePastExamSessionGenerations(false);
+  if(!original){
+    await db.transaction("rw",[db.problems,db.attempts,db.reviews,db.problemAliases,db.meta],
+      ()=>reconcileProblemLearningState());
+    await reconcilePastExamSessionGenerations(false);
+  }
   notifyStudyDataChanged({operation:"restore-backup"});
 }
 

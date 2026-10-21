@@ -15,10 +15,12 @@ export function deriveLearningOverview(data:Bootstrap){
  const d=data.dashboard,e=d.readiness.evidence,k=d.kpis!;
  const measurement=(m?:{evidenceCount:number;value:number|null})=>m&&m.evidenceCount>0&&m.value!=null?Number(m.value):null;
  const transfer=e?.transfer,counts=transfer?.statusCounts;
+ const transferNeedsReview=!!transfer?.assessmentWarnings?.length;
  const metrics=[
   {key:'score',label:'本番得点力',value:measurement(e?.selectedThree),date:e?.selectedThree?.lastUpdated||null,detail:e?.selectedThree?.evidenceCount?'本番形式の選択3問':'未測定'},
   {key:'timed',label:'時間内完走',value:measurement(e?.timed),date:e?.timed?.lastUpdated||null,detail:e?.timed?.evidenceCount?'scanを含む90分・3問完遂':'未測定'},
-  {key:'transfer',label:'自然な別問題への転移',value:counts?.attempted?100*counts.successful/counts.attempted:null,date:transfer?.lastUpdated||null,
+  {key:'transfer',label:'自然な別問題への転移',value:!transferNeedsReview&&counts?.attempted?100*counts.successful/counts.attempted:null,date:transfer?.lastUpdated||null,
+   statusLabel:transferNeedsReview?'要照合':undefined,
    detail:counts?`成功${counts.successful}・失敗${counts.failed}・保留${counts.uncertain} ／ 未測定${counts.unattempted}`:'未測定'}
  ];
  const measured=metrics.some(m=>m.value!==null);

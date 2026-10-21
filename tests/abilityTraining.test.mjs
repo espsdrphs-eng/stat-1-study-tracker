@@ -37,8 +37,9 @@ test('profile is an optional backward-compatible coach field with exact source-p
  assert.throws(()=>validateCoachReviewContext({...d,abilityProfiles:[{...profile,state:'confirmed'}]},ctx,true),/異なる.*証拠/,'GPT prose cannot mark a capability confirmed with only an old failed answer');
  delete u.ability_profiles;assert.doesNotThrow(()=>parseCoachUpdate(JSON.stringify({coach_update:u})));
 });
-test('normal problem flow no longer mounts skeleton inputs; ability page is separate from problem repair ranking',async()=>{
- const app=await readFile('src/App.tsx','utf8'),focus=await readFile('src/WeaknessFocus.tsx','utf8');assert.doesNotMatch(app,/<RepairCheckPanel/);assert.match(app,/weak:"弱点トレーニング"/);assert.doesNotMatch(focus,/priorityRepairTasks\(/);assert.match(focus,/訓練問題を作成/);
+test('five-screen current issues keeps capability training distinct from individual repair and never restores skeleton inputs',async()=>{
+ // Approved five-screen design renames the entrance, not the evidence model.
+ const app=await readFile('src/App.tsx','utf8'),focus=await readFile('src/WeaknessFocus.tsx','utf8');assert.doesNotMatch(app,/<RepairCheckPanel/);assert.match(app,/weak:"現在の課題"/);assert.match(app,/<CurrentIssueCards/);assert.match(focus,/<h2>能力トレーニング/);assert.doesNotMatch(focus,/priorityRepairTasks\(/);assert.match(focus,/訓練問題を作成/);
 });
 test('confirmed training needs different unaided successes; a new failure or an assisted repeat cannot certify ability',()=>{
  const p={...profile,state:'confirmed',sources:[...profile.sources,{attemptId:11,partIds:['major_calculation']}]},d={abilityProfiles:[p]};

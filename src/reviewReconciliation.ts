@@ -7,7 +7,7 @@ import {currentTargetPayloadMatches,withCurrentFindingPayload} from "./currentTa
 import {resolvePersistedAttemptLifecycle} from "./reviewTransition.ts";
 import {correctiveFeedbackAvailable,isSuccessfulTransferForProblem} from "./examOptimizationPolicy.ts";
 import {attemptPlanningEligible,findingPlanningEligible,planningErrorsForSource} from "./legacyKPolicy.ts";
-import {deriveTransferEvidence,partSkillIds,findingSkillIds,withSkillEvidenceMemo} from "./skillEvidence.ts";
+import {deriveTransferEvidence,partSkillIds,findingSkillIds,withSkillEvidenceMemo,transferCoversFindings} from "./skillEvidence.ts";
 import {deriveFailureEpisode} from "./failureEpisode.ts";
 
 const ACTIVE_STATUSES=new Set(["pending","overdue"]);
@@ -272,7 +272,8 @@ function calculateReviewReconciliation(args:{
       const source=attemptMap.get(event.attemptId);
       const finding=source?.graded_findings?.find(f=>f.graded_part_id===event.part.id);
       const skills=source&&finding?findingSkillIds(source,finding):partSkillIds(event.part);
-      if(skills.length&&skills.every(id=>skillTransfers.some(t=>t.successAttemptId>event.attemptId&&t.skillId===id)))desired.delete(key);
+      if(source&&skills.length&&skills.every(id=>skillTransfers.some(t=>t.successAttemptId>event.attemptId&&t.skillId===id&&
+        transferCoversFindings(t,source,[event.part.id]))))desired.delete(key);
     }
     const desiredRows=[...desired.values()].sort((a,b)=>a.stableIdentityKey.localeCompare(b.stableIdentityKey));
     const desiredIds=desiredRows.map(row=>row.stableIdentityKey);

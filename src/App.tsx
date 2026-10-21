@@ -2,6 +2,10 @@ import { useEffect, useState, useRef, useMemo } from "react";
 import {createStateReloadCoordinator} from "./stateReload.ts";
 import {TransferTrainingPanel} from "./TransferTrainingPanel";
 import {LearningDashboard,CoachReviewControls} from './LearningDashboard';
+import {GPTWorkspace} from './GPTWorkspace';
+import {AnswerHistory,ReviewWorkspace,CurrentIssueCards} from './StudyScreens';
+import {studyScreens} from './studyWorkspace';
+import './studyWorkspace.css';
 import {WeaknessFocus} from './WeaknessFocus';
 import {weaknessSourceTransferAction} from './learningOverview';
 import {repairCheckForTask,repairStageLabel} from './repairCheck';
@@ -16,7 +20,8 @@ import {
 } from "lucide-react";
 import yaml from "js-yaml";
 import { api, post } from "./api";
-import { closeLocalDatabase, csvFor, exportBackup, problemMasterExport, restoreBackup } from "./localDb";
+import { closeLocalDatabase, csvFor, exportBackup, previewBackupRestore, problemMasterExport, restoreBackup } from "./localDb";
+import {readSourceBackupFile} from './sourceBackup';
 import { createDiagnosticPack } from "./diagnosticPack";
 import AdvancedImportView from "./AdvancedImportView";
 import { problemDisplayLabel } from "./importParser";
@@ -60,13 +65,11 @@ import type { AnswerIndexEntry, Attempt, Bootstrap, CoachDiagnosis, DashboardKpi
 
 type Page = "dashboard"|"today"|"problems"|"attempt"|"import"|"reviews"|"weak"|"past"|"settings";
 const pageTitles:Record<Page,string> = {
-  dashboard:"ダッシュボード",today:"今日やること",problems:"問題一覧",attempt:"手入力（予備）",
-  import:"GPT回答取り込み",reviews:"復習予定",weak:"弱点トレーニング",past:"過去問演習",settings:"設定"
+  dashboard:"ダッシュボード",today:"今日やること",problems:"問題・答案履歴",attempt:"手入力（予備）",
+  import:"GPT連携",reviews:"復習・転移",weak:"現在の課題",past:"過去問演習",settings:"設定"
 };
 const navGroups = [
-  {label:"今日",items:[["dashboard",LayoutDashboard],["today",ListChecks],["reviews",CalendarCheck]]},
-  {label:"学習",items:[["problems",BookOpen],["past",Target],["weak",AlertTriangle]]},
-  {label:"管理",items:[["import",ClipboardPaste],["attempt",NotebookPen],["settings",Settings]]}
+  {label:"学習",items:[["dashboard",LayoutDashboard],["problems",BookOpen],["reviews",CalendarCheck],["weak",Target],["import",ClipboardPaste]]}
 ] as const satisfies readonly {label:string;items:readonly (readonly [Page,typeof LayoutDashboard])[]}[];
 const modes:Record<string,string>={check:"チェック",skeleton:"骨格",main_calc:"主要計算",full:"フル答案",scan:"スキャン",exam_90min:"90分演習"};
 const reviewNames:Record<string,string>={skeleton_retry:"骨格再現",main_calc_retry:"主要計算",full_retry:"フル再演習",careless_check:"チェックリスト確認",light_check:"短時間チェック",s_check:"S確認",past_exam_link:"過去問連動",past_exam_selection:"選題確認",past_exam_retry:"過去問補修"};
@@ -115,6 +118,11 @@ export default function App() {
   const {needRefresh:[needRefresh,setNeedRefresh],updateServiceWorker}=useRegisterSW();
   const [data,setData]=useState<Bootstrap|null>(null);
   const [page,setPage]=useState<Page>("dashboard");
+  const [historyTab,setHistoryTab]=useState<'problems'|'answers'>('problems');
+  const [gptSection,setGptSection]=useState<'consultation'|'grading'|'assessment'>('consultation');
+  const [gptTask,setGptTask]=useState<Task|null>(null);
+  const [reviewHistory,setReviewHistory]=useState(false);
+  const [activeTransfer,setActiveTransfer]=useState<string|null>(null);
   const [menu,setMenu]=useState(false);
   const [selected,setSelected]=useState<Problem|null>(null);
   const [startingStudyTask,setStartingStudyTask]=useState<Task|null>(null);
@@ -124,6 +132,7 @@ export default function App() {
   const [refreshing,setRefreshing]=useState(false);
   const [message,setMessage]=useState("");
   const [error,setError]=useState("");
+  useEffect(()=>{if(!message)return;const timer=window.setTimeout(()=>setMessage(''),6500);return()=>window.clearTimeout(timer)},[message]);
   const [schemaIssue,setSchemaIssue]=useState<IndexedDbSchemaDiagnostic|null>(null);
   const [databaseNotice,setDatabaseNotice]=useState<{title:string;message:string;reload?:boolean}|null>(null);
   const handleFailure=(reason:unknown)=>{
@@ -159,33 +168,38 @@ export default function App() {
     closeLocalDatabase();
     await updateServiceWorker(true);
   };
-  const go=(next:Page,task?:Task)=>{setPage(next);setMenu(false);setSelected(null);setStartingStudyTask(null);setStartingPastTask(next==="past"?task||null:null)};
+  const go=(next:Page,task?:Task)=>{setPage(next);setMenu(false);setSelected(null);setActiveTransfer(null);setGptTask(null);setStartingStudyTask(null);setStartingPastTask(next==="past"?task||null:null);window.scrollTo({top:0})};
   if(!data) return <div className="boot"><div className="spinner"/><strong>学習データを準備しています</strong>{error&&<p>{error}</p>}{schemaIssue&&<div className="boot-repair"><span>不足している保存先：{schemaIssue.missingStores.join("、")||"確認中"}</span><button className="primary" disabled={busy} onClick={repairDatabase}>データベースを安全に更新</button><button className="ghost" onClick={()=>navigator.clipboard.writeText(JSON.stringify(schemaIssue,null,2))}>診断情報をコピー</button></div>}</div>;
   const writeBusy=busy||!data.databaseStatus.valid;
-  return <div className="app-shell">
+  const primaryPage=page==='today'?'dashboard':page==='past'?'problems':page==='attempt'?'import':page;
+  const openProblem=(p:Problem,task?:Task)=>{setStartingStudyTask(task||deriveProblemLearningView(data,p).nextTask||null);setSelected(p);window.scrollTo({top:0})};
+  return <div className="app-shell five-screen-shell">
     <aside className={`sidebar ${menu?"open":""}`}>
       <div className="brand"><div className="brand-mark">1</div><div><strong>統計一級</strong><span>STUDY TRACKER</span></div><button className="mobile-close" onClick={()=>setMenu(false)}><X/></button></div>
       <div className="today-mini"><span>学習価値順の候補</span><strong>{data.today.tasks.filter(t=>!t.checked).length}件から選べます</strong><small>取り組む量は自分で決められます</small></div>
-      <nav>{navGroups.map(group=><div className="nav-group" key={group.label}><span className="nav-section-label">{group.label}</span>{group.items.map(([key,Icon])=><button key={key} className={page===key?"active":""} onClick={()=>go(key)}><Icon size={19}/><span>{pageTitles[key]}</span>{key==="reviews"&&data.dashboard.pending>0&&<b>{data.dashboard.pending}</b>}</button>)}</div>)}</nav>
+      <nav aria-label="5つの学習画面">{navGroups.map(group=><div className="nav-group" key={group.label}><span className="nav-section-label">{group.label}</span>{group.items.map(([key,Icon])=><button key={key} aria-current={primaryPage===key?'page':undefined} className={primaryPage===key?"active":""} onClick={()=>go(key)}><Icon size={19}/><span>{pageTitles[key]}</span></button>)}</div>)}</nav>
+      <button className="sidebar-settings" onClick={()=>go('settings')}><Settings size={18}/>設定・バックアップ</button>
       <div className="sidebar-foot"><BookOpen size={17}/><span>紙・Goodnotesで解答</span><small className="app-version">v{__APP_VERSION__} · {__APP_COMMIT__.slice(0,7)}</small></div>
     </aside>
     {menu&&<div className="scrim" onClick={()=>setMenu(false)}/>}
     <main>
       <header><button className="menu-btn" onClick={()=>setMenu(true)}><Menu/></button><div><span className="eyebrow">{data.dashboard.today.replaceAll("-",".")}</span><h1>{selected?selected.problem_id:pageTitles[page]}</h1></div><button className={`icon-btn ${refreshing?"spinning":""}`} onClick={refresh} title="更新" disabled={refreshing}><RefreshCw size={19}/></button></header>
-      {(message||error)&&<div className={`toast ${error?"danger":""}`} onClick={()=>{setMessage("");setError("")}}>{error||message}<X size={16}/></div>}
+      {(message||error)&&<div className={`toast ${error?"danger":""}`} role={error?'alert':'status'}>{error||message}<button className="toast-close" aria-label="通知を閉じる" onClick={()=>{setMessage("");setError("")}}><X size={16}/></button></div>}
       {schemaIssue&&<div className="modal-backdrop" role="presentation"><section className="modal database-schema-dialog" role="dialog" aria-modal="true" aria-label="データベース更新"><div className="modal-head"><div><span className="eyebrow">SAFE DATABASE UPDATE</span><h2>保存先データベースの更新が必要です</h2></div><button onClick={()=>setSchemaIssue(null)} aria-label="閉じる"><X/></button></div><p>既存の学習履歴は削除せず、不足している保存先だけを作成・検証します。</p><dl><dt>不足している保存先</dt><dd>{schemaIssue.missingStores.join("、")||"確認中"}</dd><dt>現在のDBバージョン</dt><dd>{schemaIssue.databaseVersion}</dd><dt>必要なDBバージョン</dt><dd>{schemaIssue.requiredDatabaseVersion}</dd><dt>保存処理</dt><dd>{schemaIssue.operation}</dd></dl><div className="button-row"><button className="primary" disabled={busy} onClick={repairDatabase}>データベースを安全に更新</button><button className="ghost" onClick={()=>navigator.clipboard.writeText(JSON.stringify(schemaIssue,null,2))}><Copy size={15}/>診断情報をコピー</button><button className="ghost" onClick={()=>setSchemaIssue(null)}>キャンセル</button></div></section></div>}
       {databaseNotice&&<div className="update-banner" role="alert"><div><strong>{databaseNotice.title}</strong><span>{databaseNotice.message}</span></div>{databaseNotice.reload?<button className="primary small" onClick={()=>location.reload()}>安全に再読み込み</button>:<button className="ghost small" onClick={()=>setDatabaseNotice(null)}>閉じる</button>}</div>}
       {needRefresh&&<div className="update-banner" role="alert"><div><strong>新しいバージョンがあります</strong><span>未保存内容を確認してから、安全に更新できます。</span></div><button className="primary small" onClick={safelyUpdateApp}>安全に更新</button><button className="ghost small" onClick={()=>setNeedRefresh(false)}>後で</button></div>}
       {!data.databaseStatus.valid&&<div className="update-banner database-required" role="alert"><div><strong>アプリのデータベース更新が必要です</strong><span>既存履歴は閲覧できますが、安全のため書き込み操作を一時停止しています。不足：{data.databaseStatus.missingStores.join("、")}</span></div><button className="primary small" disabled={busy} onClick={repairDatabase}>安全に更新</button></div>}
+      <nav className="workspace-mobile-nav" aria-label="学習画面を切り替え">{studyScreens.map(s=><button key={s.key} aria-current={primaryPage===s.key?'page':undefined} onClick={()=>go(s.key)}>{s.label}</button>)}</nav>
       <div className="content">
-        {selected?.generated_transfer?<><button onClick={()=>setSelected(null)}>戻る</button><TransferTrainingPanel trainingKey={selected.generated_transfer.lineage.key}/></>:selected?<ProblemDetail problem={selected} entryPoint={page==='problems'?'problem_list':undefined} startingTask={startingStudyTask?.problem_id===selected.problem_id?startingStudyTask:undefined} data={data} run={run} busy={busy} onBack={()=>{setSelected(null);setStartingStudyTask(null)}} onImport={()=>{setSelected(null);setPage("import")}} onOpenPastExam={year=>{go('past');setPastYear(year)}}/>:
-        page==="dashboard"?<DashboardView data={data} go={go} run={run} busy={writeBusy} select={(p,task)=>{setStartingStudyTask(task||deriveProblemLearningView(data,p).nextTask||null);setSelected(p)}}/>:
+        {!selected&&(page==='problems'||page==='past')&&<div className="screen-tabs" aria-label="問題・答案履歴の表示"><button className={page==='problems'&&historyTab==='problems'?'active':''} onClick={()=>{go('problems');setHistoryTab('problems')}}>問題一覧</button><button className={page==='problems'&&historyTab==='answers'?'active':''} onClick={()=>{go('problems');setHistoryTab('answers')}}>答案・採点履歴</button><button className={page==='past'?'active':''} onClick={()=>go('past')}>過去問・年度別成績</button></div>}
+        {activeTransfer?<><button className="ghost" onClick={()=>setActiveTransfer(null)}>復習・転移へ戻る</button><TransferTrainingPanel trainingKey={activeTransfer}/></>:selected?.generated_transfer?<><button onClick={()=>setSelected(null)}>戻る</button><TransferTrainingPanel trainingKey={selected.generated_transfer.lineage.key}/></>:selected?<ProblemDetail problem={selected} entryPoint={page==='problems'?'problem_list':undefined} startingTask={startingStudyTask?.problem_id===selected.problem_id?startingStudyTask:undefined} data={data} run={run} busy={busy} onBack={()=>{setSelected(null);setStartingStudyTask(null)}} onImport={()=>{setSelected(null);setGptSection('grading');setPage("import")}} onOpenPastExam={year=>{go('past');setPastYear(year)}}/>:
+        page==="dashboard"?<DashboardView data={data} go={go} run={run} busy={writeBusy} select={openProblem} onAssess={()=>{setGptSection('assessment');go('import')}}/>:
         page==="today"?<TodayView data={data} busy={writeBusy} run={run} go={go} select={(p,task)=>{setStartingStudyTask(task||null);setSelected(p)}}/>:
-        page==="problems"?<ProblemsView data={data} select={p=>{setStartingStudyTask(deriveProblemLearningView(data,p).nextTask||null);setSelected(p)}} run={run} busy={writeBusy}/>:
+        page==="problems"?(historyTab==='answers'?<AnswerHistory data={data} onOpen={p=>openProblem(p)}/>:<ProblemsView data={data} select={p=>openProblem(p)} run={run} busy={writeBusy}/>):
         page==="attempt"?<AttemptView problems={data.problems} run={run} busy={writeBusy}/>:
-        page==="import"?<><details className="panel"><summary>採点の反映・据置理由を確認</summary><LearningUpdateSummary data={data}/></details><AdvancedImportView problems={data.problems} answerIndex={data.answerIndex} problemAliases={data.problemAliases} attempts={data.attempts} reviews={data.reviews} run={run} busy={writeBusy}/></>:
-        page==="reviews"?<ReviewsView data={data} run={run} busy={writeBusy} select={(p,task)=>{setStartingStudyTask(task);setSelected(p)}}/>:
-        page==="weak"?<WeakView data={data} run={run} busy={writeBusy} onToday={()=>go("today")} onReview={()=>go('reviews')} onProblems={()=>go('problems')}/>:
+        page==="import"?<><GPTWorkspace key={`${gptSection}:${gptTask?.grading_contract?.contractId||gptTask?.id||''}`} data={data} run={run} busy={writeBusy} initialSection={gptSection} contextTask={gptTask} onIssues={()=>go('weak')}/><details className="panel"><summary>採点による変化・据置理由</summary><LearningUpdateSummary data={data}/></details><details className="panel"><summary>従来の手入力（互換・任意）</summary><button className="ghost" onClick={()=>go('attempt')}>手入力の予備画面を開く</button></details></>:
+        page==="reviews"?(reviewHistory?<><button className="ghost" onClick={()=>setReviewHistory(false)}>復習・転移の予定へ戻る</button><ReviewsView data={data} run={run} busy={writeBusy} select={openProblem}/></>:<ReviewWorkspace data={data} onOpen={openProblem} onTransfer={setActiveTransfer} onHistory={()=>setReviewHistory(true)}/>):
+        page==="weak"?<><CurrentIssueCards data={data} onOpen={openProblem} onGPT={task=>{setGptSection('consultation');go('import');setGptTask(task)}}/><WeakView data={data} run={run} busy={writeBusy} onToday={()=>go("today")} onReview={()=>go('reviews')} onProblems={()=>go('problems')}/></>:
         page==="past"?<PastView data={data} go={go} run={run} busy={writeBusy} startingTask={startingPastTask} defaultYear={pastYear}/>:
         <SettingsView data={data} run={run} busy={busy}/>}
       </div>
@@ -244,10 +258,10 @@ function LearningUpdateSummary({data}:{data:Bootstrap}){
     {summary.change&&<details><summary>採点に記録された改善・残る課題</summary><p>{summary.change}</p></details>}
   </section>;
 }
-function DashboardView({data,go,select,run,busy}:{data:Bootstrap;go:(p:Page)=>void;select:(p:Problem,task?:Task)=>void;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean}) {
+function DashboardView({data,go,select,run,busy,onAssess}:{data:Bootstrap;go:(p:Page)=>void;select:(p:Problem,task?:Task)=>void;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean;onAssess:()=>void}) {
   const [panel,setPanel]=useState<'review'|'evidence'|null>(null);
   const start=(task?:Task)=>{if(!task||task.transfer_training_key||task.stable_session_key){go("today");return;}const p=data.problems.find(p=>p.problem_id===task.problem_id);if(p)select(p,task);};
-  return <><LearningDashboard data={data} onStart={start} onReview={()=>setPanel('review')} onEvidence={()=>setPanel('evidence')}/>
+  return <><LearningDashboard data={data} onStart={start} onReview={onAssess} onEvidence={()=>setPanel('evidence')} onSchedule={()=>go('reviews')} onIssues={()=>go('weak')} onAllTasks={()=>go('today')}/>
     {panel==='review'&&<Modal title="ChatGPTで実力を再評価" close={()=>setPanel(null)}><CoachReviewControls data={data} run={run} busy={busy}/></Modal>}
     {panel==='evidence'&&<Modal title="本番測定の根拠と更新条件" close={()=>setPanel(null)}><p>補修・保持・生成訓練は、本番形式の得点や自然な転移成功に加算しません。改善後の本番形式を再測定するまで、測定値は据え置きます。</p>
       <ExamEvidenceSummary assessment={data.dashboard.kpis!.assessment}/>
@@ -1564,7 +1578,7 @@ function PastView({data,go,run,busy,startingTask,defaultYear}:{data:Bootstrap;go
 }
 
 
-function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean}) {
+function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>Promise<boolean>;busy:boolean}) {
   const [examDate,setExamDate]=useState(data.settings.exam_date);
   const [dailyMinutes,setDailyMinutes]=useState(String(data.settings.daily_study_minutes||150));
   const [problemPreview,setProblemPreview]=useState<{raw:unknown;version:string;added:number;changed:number;unchanged:number;total:number}|null>(null);
@@ -1574,6 +1588,10 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
     data:ExamReferencePackData;validation:ReferencePackValidation;reconciliation:ReferencePackReconciliation
   }|null>(null);
   const [backupMasterWarning,setBackupMasterWarning]=useState<unknown|null>(null);
+  const [backupPreview,setBackupPreview]=useState<{fileName:string;source:unknown;result:Awaited<ReturnType<typeof previewBackupRestore>>}|null>(null);
+  const [backupChecking,setBackupChecking]=useState(false),[backupError,setBackupError]=useState('');
+  const [backupExporting,setBackupExporting]=useState(false);
+  const [backupAcknowledged,setBackupAcknowledged]=useState(false);
   const [showDiagnostics,setShowDiagnostics]=useState(false);
   const [masterError,setMasterError]=useState("");
   const [diagnosticExporting,setDiagnosticExporting]=useState(false);
@@ -1605,14 +1623,29 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
     const url=URL.createObjectURL(payload);const a=document.createElement("a");
     a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
   };
-  const downloadJson=async()=>saveBlob(JSON.stringify(await exportBackup(),null,2),`stat-study-${todayString()}.json`,"application/json");
+  const downloadJson=async()=>{
+    if(backupExporting)return;setBackupExporting(true);setBackupError('');
+    try{saveBlob(JSON.stringify(await exportBackup(),null,2),`stat-study-${todayString()}.json`,"application/json")}
+    catch(error){setBackupError(error instanceof Error?error.message:String(error))}
+    finally{setBackupExporting(false)}
+  };
   const downloadCsv=async(table:"attempts"|"problems")=>saveBlob(await csvFor(table),`${table}-${todayString()}.csv`,"text/csv;charset=utf-8");
   const restore=async(file:File)=>{
+    setBackupChecking(true);setBackupPreview(null);setBackupError('');setBackupAcknowledged(false);
     try{
-      const parsed=JSON.parse(await file.text());
+      const parsed=await readSourceBackupFile(file);
       if(isProblemPack(parsed)){setBackupMasterWarning(parsed);return}
-      await run(async()=>restoreBackup(parsed),"バックアップを復元しました");
-    }catch(error){setMasterError((error as Error).message)}
+      const result=await previewBackupRestore(parsed);
+      setBackupPreview({fileName:file.name,source:parsed,result});
+    }catch(error){setBackupError(error instanceof Error?error.message:String(error))}
+    finally{setBackupChecking(false)}
+  };
+  const confirmRestore=async()=>{
+    if(!backupPreview||!backupAcknowledged||busy||backupChecking)return;
+    const source=backupPreview.source;
+    const result=backupPreview.result;
+    const ok=await run(async()=>{try{await restoreBackup(source,result.metaPolicy.originalAvailable?{mode:'original',sourceHash:result.manifest.data_hash}:undefined)}catch(error){setBackupError(error instanceof Error?error.message:String(error));throw error}},'バックアップを復元しました');
+    if(ok){setBackupPreview(null);setBackupAcknowledged(false)}
   };
   const compareRows=<T extends Record<string,unknown>>(current:T[],incoming:T[],key:keyof T)=>{
       const map=new Map(current.map(row=>[String(row[key]),row]));
@@ -1720,9 +1753,22 @@ function SettingsView({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown
       <button className="primary" disabled={busy} onClick={()=>run(()=>post("/api/settings",{exam_date:examDate,daily_study_minutes:Number(dailyMinutes||150)}),"学習設定を保存しました")}>保存する</button>
     </section>
     <section className="panel settings-primary-section"><span className="eyebrow">PROTECTION</span><h3>データ保護</h3>
-      <div className="button-row"><button className="primary" onClick={downloadJson}><Download size={16}/>全データJSON</button>
-        <label className={`master-file-button ghost ${busy?"disabled":""}`}><Database size={16}/>JSON復元<input disabled={busy} type="file" accept="application/json,.json" onChange={event=>{const file=event.target.files?.[0];if(file)void restore(file);event.target.value=""}}/></label>
+      <div className="button-row"><button className="primary" disabled={busy||backupChecking||backupExporting} onClick={downloadJson}><Download size={16}/>全データJSON</button>
+        <label className={`master-file-button ghost ${busy||backupChecking||backupExporting?"disabled":""}`}><Database size={16}/>JSON復元<input disabled={busy||backupChecking||backupExporting} type="file" accept="application/json,.json,.gz,application/gzip" onChange={event=>{const file=event.target.files?.[0];if(file)void restore(file);event.target.value=""}}/></label>
         <button className="ghost" disabled={busy||diagnosticExporting} onClick={()=>void downloadDiagnosticPack()}><Archive size={16}/>診断パック</button></div>
+      <small>全データJSONは元の記録を変更せず出力し、ID・件数・内容の照合情報を含めます。PDF本体・紙の答案画像は別に保管してください。</small>
+      {backupChecking&&<p role="status">原本と差分を確認中です。まだ復元・移行していません。</p>}
+      {backupError&&<p role="alert">{backupError}</p>}
+      {backupPreview&&<section aria-label="復元前の原本確認" className="source-backup-preview"><h4>復元前の原本確認</h4><p>{backupPreview.fileName}</p>
+        {backupPreview.result.verification==='verified'&&<p>保存時のID・件数・ハッシュと一致しています。</p>}
+        <p>問題 {backupPreview.result.manifest.tables.problems.count}件 ／ 試行 {backupPreview.result.manifest.tables.attempts.count}件 ／ Review {backupPreview.result.manifest.tables.reviews.count}件 ／ 本番等のセッション {backupPreview.result.manifest.tables.pastSessions.count}件</p>
+        {backupPreview.result.warnings.map(w=><p key={w}>{w}</p>)}
+        <details><summary>ID・件数・内容の差分</summary><div className="source-backup-table-wrap"><table><thead><tr><th>記録</th><th>現在→原本</th><th>追加</th><th>原本にない</th><th>内容違い</th></tr></thead><tbody>{Object.entries(backupPreview.result.differences).map(([name,d])=><tr key={name}><th>{name}</th><td>{d.before}→{d.after}</td><td>{d.added.length}</td><td>{d.removed.length}</td><td>{d.changed.length}</td></tr>)}</tbody></table></div></details>
+        <details><summary>現在の予定の再計算候補（原本は変更しない）</summary><p>現在の証拠から導出する候補 {backupPreview.result.reconciliation.replacements.length}件、根拠の照合が必要な問題 {backupPreview.result.reconciliation.ambiguousProblems}件。原本復元では保存済みReviewを自動で置換しません。</p>{backupPreview.result.reconciliation.replacements.map(r=><p key={r.problemId}>{r.problemId}：Review {r.reviewIds.join('・')||'新規候補'}、採点対象 {r.before}→{r.after}。</p>)}</details>
+        {backupPreview.result.metaPolicy.originalAvailable?<><p>全12表を原本どおり復元します。原本にない復元先の設定・履歴metaは混ぜず、現在のバックアップ側に残してください。復元前に「全データJSON」を保存し、上の差分を確認してください。</p><details><summary>原本にないmeta {backupPreview.result.metaPolicy.destinationOnlyKeys.length}件・内容違い {backupPreview.result.metaPolicy.changedKeys.length}件</summary><p>{backupPreview.result.metaPolicy.destinationOnlyKeys.join(' ／ ')||'原本にないmetaはありません。'}</p><p>本日の候補キャッシュも原本のフィールドとして保全します。学習記録・採点受領・生成途中の記録とは区別し、現在の順位は最新証拠から導出します。</p></details></>:<p>一部の表がない旧バックアップです。互換復元では予定の再構成やmetaの引継ぎが生じます。原本の完全複製ではありません。現在の全データを別に保存してから復元してください。</p>}
+        <label className="source-backup-ack"><input type="checkbox" checked={backupAcknowledged} onChange={e=>setBackupAcknowledged(e.target.checked)}/>現在の全データJSONを手元に保存済み</label>
+        <div className="button-row"><button className="primary" disabled={busy||backupChecking||!backupAcknowledged} onClick={()=>void confirmRestore()}>確認したバックアップを復元する</button><button className="ghost" disabled={busy} onClick={()=>{setBackupPreview(null);setBackupAcknowledged(false)}}>変更せず閉じる</button></div>
+      </section>}
     </section>
     <section className="panel integrity-health-card"><div className="panel-title"><div><span className="eyebrow">SYSTEM</span><h3>システム状態</h3></div>
       <Badge tone={health?.activeIssueCount?"orange":"green"}>{health?.activeIssueCount?"要対応":"正常"}</Badge></div>

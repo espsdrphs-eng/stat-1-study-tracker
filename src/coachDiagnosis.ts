@@ -3,7 +3,8 @@ import {deriveExamReadinessAssessment,type ExamReadinessAssessment} from "./exam
 import {buildCoachReviewFacts,coachFactReferences,coachFactsVersion,type CoachReviewInput} from './coachReviewFacts.ts';
 import {validateAbilitySources,abilityTrainingOutcome,type AbilityOutcomeProof} from './abilityTraining.ts';
 import {coachSchemaForPrompt,validateCoachWire} from './coachWireSchema.ts';
-import {jsonSyntaxLocation} from './jsonSyntax.ts';
+import {jsonSyntaxLocation,normalizeCompatibleJsonQuotes} from './jsonSyntax.ts';
+export {normalizeCompatibleJsonQuotes} from './jsonSyntax.ts';
 export {coachCompactJsonSchema} from './coachWireSchema.ts';
 export {buildCoachReviewFacts,coachFactsVersion} from './coachReviewFacts.ts';
 import type {
@@ -35,9 +36,6 @@ export function validateCoachCompactWire(value:unknown){validateCoachWire(value,
 
 const COACH_REQUIRED_OBJECTS=["level","primary_bottleneck"] as const;
 const COACH_REQUIRED_ARRAYS=["next_actions","strengths","improvements","unknowns"] as const;
-const TYPOGRAPHIC_JSON_QUOTES=new Set(["\u201c","\u201d","\uff02"]);
-const JSON_STRING_PREFIXES=new Set(["{","[",",",":"]);
-const JSON_STRING_SUFFIXES=new Set([":",",","}","]"]);
 
 const text=(value:unknown,max=500)=>String(value??"").trim().slice(0,max);
 const completeText=(value:unknown)=>{
@@ -166,48 +164,6 @@ function normalizeCompactCoachUpdate(source:Record<string,unknown>):CoachDiagnos
   level:{value:n as number,label:readiness,passOutlook:readiness,confidence:level.confidence as CoachConfidence,rationale:'',evidenceIds:levelRefs},
   primaryBottleneck:{title:bottleneck,explanation:'',effectOnExam:'',evidenceProblemIds:[],evidenceIds:bRefs},
   nextActions:actions,strengths:[],improvements,unknowns,optionalPassProbability:null};
-}
-
-/**
- * Normalizes only typographic quotes that occupy a JSON string-token boundary.
- * Quotes inside string content remain untouched; malformed structure is never repaired.
- */
-export function normalizeCompatibleJsonQuotes(source:string){
-  let output="",inAsciiString=false,inCompatibleString=false,escaped=false,nestedCurlyQuotes=0;
-  let compatibleOpener="",changed=false;
-  const previousSignificant=(index:number)=>{
-    for(let cursor=index-1;cursor>=0;cursor--)if(!/\s/.test(source[cursor]))return source[cursor];
-    return "";
-  };
-  const nextSignificant=(index:number)=>{
-    for(let cursor=index+1;cursor<source.length;cursor++)if(!/\s/.test(source[cursor]))return source[cursor];
-    return "";
-  };
-  for(let index=0;index<source.length;index++){
-    const char=source[index];
-    if(inAsciiString){
-      output+=char;
-      if(escaped)escaped=false;else if(char==="\\")escaped=true;else if(char==='"')inAsciiString=false;
-      continue;
-    }
-    if(inCompatibleString){
-      if(escaped){output+=char;escaped=false;continue;}
-      if(char==="\\"){output+=char;escaped=true;continue;}
-      if(char==="\u201c"){nestedCurlyQuotes++;output+=char;continue;}
-      if(char==="\u201d"&&nestedCurlyQuotes>0){nestedCurlyQuotes--;output+=char;continue;}
-      const isCompatibleCloser=char===compatibleOpener||compatibleOpener==="\u201c"&&char==="\u201d";
-      if(isCompatibleCloser&&nestedCurlyQuotes===0&&JSON_STRING_SUFFIXES.has(nextSignificant(index))){
-        output+='"';inCompatibleString=false;compatibleOpener="";changed=true;continue;
-      }
-      output+=char;continue;
-    }
-    if(char==='"'){output+=char;inAsciiString=true;continue;}
-    if(TYPOGRAPHIC_JSON_QUOTES.has(char)&&JSON_STRING_PREFIXES.has(previousSignificant(index))){
-      output+='"';inCompatibleString=true;compatibleOpener=char;nestedCurlyQuotes=0;changed=true;continue;
-    }
-    output+=char;
-  }
-  return {json:output,normalized:changed};
 }
 
 export function parseCoachUpdate(input:string){

@@ -1,0 +1,49 @@
+import {useMemo,useState} from 'react';
+import type {Attempt,Bootstrap,Problem,Task} from './types';
+import {currentIssueTaskRows,deriveWorkspaceEvidence,reviewTask,scheduleRows,studyEvidenceKind} from './studyWorkspace';
+import {deriveTaskIntroduction,completionCriterionText} from './learningFeedback';
+import {taskAnswerScopeText} from './taskAnswerScope';
+import {problemDisplayLabel} from './importParser';
+const stageNames={repair:'補修改善',retention:'遅延・自力確認',training:'生成・別問題の訓練',natural:'自然な別問題で確認'};
+export function EvidenceTimeline({data,evidence:provided}:{data:Bootstrap;evidence?:ReturnType<typeof deriveWorkspaceEvidence>}){
+ const evidence=useMemo(()=>provided||deriveWorkspaceEvidence(data),[data,provided]);
+ const max=Math.max(1,...evidence.timeline.map(t=>t.repair+t.retention+t.training+t.natural));
+ return <section className="panel proof-timeline" aria-label="自力確認の変化"><h3>自力で確認できたこと</h3><p className="muted">現在有効な対象操作の証拠を、確認日ごとに表示。習得率ではありません。</p>
+  <div className="proof-legend">{Object.entries(stageNames).map(([key,label])=><span key={key} className={key}>{label}</span>)}</div>
+  {evidence.timeline.length?<div className="proof-date-chart">{evidence.timeline.map(t=><div key={t.date}><time>{t.date.slice(5)}</time><div className="proof-stack" role="img" aria-label={`${t.date}：${Object.entries(stageNames).map(([key,label])=>`${label}${t[key as keyof typeof stageNames]}件`).join('、')}`}>{(Object.keys(stageNames) as (keyof typeof stageNames)[]).map(key=>t[key]>0&&<span className={key} key={key} style={{width:`${100*t[key]/max}%`}}>{t[key]}</span>)}</div></div>)}</div>:<p>自力確認の証拠はまだ不足しています。未確認は0%と扱いません。</p>}
+  <details><summary>対象・確認日・根拠を確認</summary>{evidence.recent.map(e=><p key={e.key}>{stageNames[e.stage]}：{e.sourceProblemId} ／ {e.date} ／ 答案 #{e.attemptId}{e.problemId!==e.sourceProblemId?`（${e.problemId}）`:''}</p>)}<small>同じ答案で確認した複数の操作を含みます。独立した答案数・本番得点とは異なります。後の失敗があれば、現在有効な証拠から外れます。</small></details>
+ </section>;
+}
+export function AnswerHistory({data,onOpen}:{data:Bootstrap;onOpen:(p:Problem)=>void}){
+ const [query,setQuery]=useState(''),[kind,setKind]=useState('all'),[limit,setLimit]=useState(25),[expanded,setExpanded]=useState<number|null>(null);
+ const kinds=[...new Set(data.attempts.map(studyEvidenceKind))];
+ const rows=[...data.attempts].filter(a=>(kind==='all'||studyEvidenceKind(a)===kind)&&`${a.problem_id} ${data.problems.find(p=>p.problem_id===a.problem_id)?.title||''} ${a.date} ${a.result_summary||''}`.toLowerCase().includes(query.toLowerCase())).sort((a,b)=>b.date.localeCompare(a.date)||b.id-a.id);
+ const score=(a:Attempt)=>a.score_numeric==null?'未採点':`${a.score_numeric}${a.score_max&&a.score_max!==100?` / ${a.score_max}`:'点'}`;
+ return <section className="panel answer-history"><h2>答案・採点の履歴</h2><div className="workspace-filters"><label>検索<input aria-label="答案履歴を検索" value={query} placeholder="年度・問題・日付" onChange={e=>{setQuery(e.target.value);setLimit(25)}}/></label><label>証拠の区分<select aria-label="答案の区分" value={kind} onChange={e=>{setKind(e.target.value);setLimit(25)}}><option value="all">すべて</option>{kinds.map(k=><option key={k}>{k}</option>)}</select></label></div><p>{rows.length}件。元の採点は保持し、異なる演習条件は混ぜません。</p>
+  <div className="answer-records">{rows.slice(0,limit).map(a=>{const p=data.problems.find(p=>p.problem_id===a.problem_id);return <article key={a.id}><div><time>{a.date}</time><span className="evidence-chip">{studyEvidenceKind(a)}</span>{a.hint_used&&<span className="evidence-chip">援助あり</span>}{a.invalidated_at||a.superseded_by_attempt_id?<span className="evidence-chip">過去の版</span>:null}</div><div className="record-title"><h3>{p?problemDisplayLabel(p):a.problem_id}</h3><strong>{score(a)}</strong></div><span>{a.time_minutes==null?'正味時間不明':`正味 ${a.time_minutes}分`} ／ 答案 #{a.id}</span><div className="button-row"><button className="ghost" onClick={()=>setExpanded(expanded===a.id?null:a.id)} aria-expanded={expanded===a.id}>採点の詳細</button>{p&&<button className="text-btn" onClick={()=>onOpen(p)}>同じ問題を開く</button>}</div>
+   {expanded===a.id&&<div className="record-details"><p>{a.result_summary||'採点要約なし'}</p><p>未解消：{a.error_point||'記録なし'}</p><p>次の行動：{a.next_action||'未登録'}</p>{a.graded_findings?.map((f,i)=><p key={i}>{f.resolved?'対象内の成功':'未解消・要確認'}：{f.evidence}</p>)}<small>この履歴の成功は、そのまま保持・転移成功を意味しません。</small></div>}
+  </article>})}</div>{!rows.length&&<p>該当する履歴はありません。</p>}{rows.length>limit&&<button className="ghost" onClick={()=>setLimit(v=>v+25)}>履歴をさらに表示</button>}
+ </section>;
+}
+export function ReviewWorkspace({data,onOpen,onTransfer,onHistory}:{data:Bootstrap;onOpen:(p:Problem,t:Task)=>void;onTransfer:(key:string)=>void;onHistory:()=>void}){
+ const [bucket,setBucket]=useState('due'),[query,setQuery]=useState(''),[limit,setLimit]=useState(15);
+ const rows=useMemo(()=>scheduleRows(data),[data]);
+ const selected=rows.filter(r=>r.bucket===bucket&&`${r.review.problem_id} ${r.problem?.title||''}`.toLowerCase().includes(query.toLowerCase()));
+ const transfers=data.today.tasks.filter(t=>!t.checked&&t.ranking?.eligible&&t.transfer_training_key);
+ return <div className="review-workspace"><section className="panel"><h2>いつ、何を確認するか</h2><p>期限順に表示します。今取り組む優先順位はダッシュボードで確認できます。</p><div className="screen-tabs" aria-label="復習の予定区分">{[['due','期限到来'],['next','次回の確認'],['check','要確認']].map(([key,label])=><button key={key} className={bucket===key?'active':''} aria-pressed={bucket===key} onClick={()=>{setBucket(key);setLimit(15)}}>{label} <b>{rows.filter(r=>r.bucket===key).length}</b></button>)}</div><input aria-label="復習予定を検索" placeholder="問題・年度で検索" value={query} onChange={e=>{setQuery(e.target.value);setLimit(15)}}/></section>
+  <div className="schedule-list">{selected.slice(0,limit).map(r=>{const t=reviewTask(r.review,data),intro=r.problem?deriveTaskIntroduction(data,r.problem,t):null;
+   return <article className="panel schedule-card" key={r.review.id} data-review-id={r.review.id}><div className="schedule-date"><time>{r.review.due_date||'日付未設定'}</time><strong>{r.bucket==='check'?'⚠ 要確認':r.waiting?'○ 待機':r.review.due_date<data.dashboard.today?'! 期限超過':'● 実施可能'}</strong></div><div><span className="evidence-chip">{r.phase==='retrieval_check'?'保持・遅延確認':r.phase==='transfer_check'?'別問題の確認':'個別補修'}</span><h3>{r.problem?problemDisplayLabel(r.problem):r.review.problem_id}</h3><strong className="scope-line">{r.scope?taskAnswerScopeText(r.scope):'対象小問未特定・確認が必要'}</strong>{r.bucket==='check'?<p>対象範囲・根拠の確認が必要です。自動で補完していません。</p>:<p>{intro?.blind?'別問題で自力の再現性を確認します。':intro?.recoveryGoal||'到達条件未登録'}</p>}{r.waiting&&<p>開始可能日：{r.earliest}。今は待機中です。</p>}<details><summary>予定の根拠</summary><p>Review #{r.review.id} ／ 元答案 #{r.review.source_attempt_id||r.review.generated_from_attempt_id}</p><p>{r.review.review_reason||'理由の記録なし'}</p></details></div><div>{r.problem&&<button className="primary" onClick={()=>onOpen(r.problem!,t)}>{r.bucket==='check'?'範囲を確認':r.waiting?'待機条件を見る':'課題を開く'}</button>}</div></article>})}</div>
+  {!selected.length&&<section className="panel">該当する予定はありません。</section>}{selected.length>limit&&<button className="ghost" onClick={()=>setLimit(n=>n+15)}>予定をさらに表示</button>}
+  {transfers.length>0&&<section className="panel"><h3>別問題の確認</h3>{transfers.map(t=><div className="schedule-transfer" key={t.transfer_training_key}><p>{t.problem_id}からの確認・別問題1問</p><button className="primary" onClick={()=>onTransfer(t.transfer_training_key!)}>別問題の課題を開く</button></div>)}</section>}
+  <button className="text-btn" onClick={onHistory}>完了履歴・延期・従来の管理を開く</button>
+ </div>;
+}
+export function CurrentIssueCards({data,onOpen,onGPT}:{data:Bootstrap;onOpen:(p:Problem,t:Task)=>void;onGPT:(task:Task)=>void}){
+ const rows=useMemo(()=>currentIssueTaskRows(data),[data]);
+ const phase=(values:boolean[])=>values.length&&values.every(Boolean)?'✓':values.some(Boolean)?'△ 一部':'○';
+ return <section className="current-issue-cards" aria-label="優先する現在の課題">{data.coach.current&&<section className="panel major-issue"><span className="section-kicker">最大の課題・GPTの見立て</span><h3>{data.coach.current.primaryBottleneck.title.match(/^.*?[。！？]|^.+$/)?.[0]}</h3><small>{data.coach.current.reviewedAt.slice(0,10)}{data.coach.stale?' ／ 新しい証拠あり・再評価待ち':''}。能力の確定判定とは区別します。</small></section>}<div className="section-heading"><h2>優先する個別課題</h2><span>Todayと同じ証拠・順位</span></div>
+  {rows.map(({task:t,sources})=>{const p=data.problems.find(p=>p.problem_id===t.problem_id),intro=p?deriveTaskIntroduction(data,p,t):null;
+   return <article className="panel current-issue-card" key={t.grading_contract?.contractId||`${t.problem_id}:${t.id}`}><div className="section-heading"><span>優先 {t.ranking?.rank}</span><span className="evidence-chip">補修が必要</span></div><h3>{p?problemDisplayLabel(p):t.problem_id} <span>{intro?.subparts}</span></h3><p className="issue-one-line">{intro?.blind?'自力で別問題に取り組む':intro?.previousDifficulty||'診断未登録'}</p><div className="stage-chips" aria-label="確認の段階"><span>{phase(sources.map(s=>!!s.repairAttemptId&&!s.repairAssisted))} 自力補修</span><span>{phase(sources.map(s=>!!s.retrievalAttemptId))} 遅延・自力確認</span><span>{phase(sources.map(s=>s.status==='本番転移確認済み'))} 自然な別問題</span></div><p className="issue-next">次：{intro?.blind?'解法情報を見ずに別問題で確認':intro?.recoveryGoal||'回収条件未設定'}</p><div className="button-row">{p&&<button className="primary" onClick={()=>onOpen(p,t)}>同じ課題を開く</button>}<button className="ghost" onClick={()=>onGPT(t)}>GPTと補修を相談</button></div><details><summary>根拠と未確認の対応</summary>{sources.map(s=><div key={s.rootId}><p>{s.description}</p><p>{s.status} ／ 最終確認 {s.lastCheckedDate} ／ 答案 #{s.lastCheckedAttemptId}</p>{s.identityPending&&<p>能力の同定は未確定です。同じ課題に含まれる別の失点原因と自動統合していません。</p>}</div>)}{!sources.length&&<p>対応する技能の証拠は未確定です。</p>}<p>成功条件：{completionCriterionText(t.grading_contract)}</p></details></article>;
+  })}{!rows.length&&<section className="panel">現在の適格な個別課題はありません。未確認の能力を習得済みとは扱いません。</section>}
+ </section>;
+}

@@ -1,7 +1,8 @@
 import type {Attempt,GradedPartContract,MasteryLevelState,ProblemMasteryState,Review} from "./types.ts";
 import {resolvePersistedAttemptLifecycle} from "./reviewTransition.ts";
-import {attemptPlanningEligible} from "./legacyKPolicy.ts";
-import {currentTransferEvidence} from './skillEvidence.ts';
+import {attemptPlanningEligible,findingPlanningEligible} from "./legacyKPolicy.ts";
+import {currentTransferEvidence,independentReferenceFree,gradedRepairEvidence} from './skillEvidence.ts';
+import {buildStableTargetIndex} from './stableTargetIdentity.ts';
 
 const LEVEL_TITLES={1:"骨格保持",2:"主要計算完遂",3:"転移"} as const;
 const STATUS_LABELS={
@@ -27,8 +28,6 @@ function state(level:1|2|3,status:MasteryLevelState["status"],activeTargetCount=
 
 export function deriveProblemMasteryState(args:{problemId:string;attempts:Attempt[];reviews:Review[];transferEvidence?:ReturnType<typeof currentTransferEvidence>}):ProblemMasteryState{
   const attempts=args.attempts.filter(row=>row.problem_id===args.problemId&&attemptPlanningEligible(row));
-  const transferAttempts=args.attempts.filter(row=>row.source_problem_id===args.problemId&&row.transfer_evidence&&
-    attemptPlanningEligible(row));
   const reviews=args.reviews.filter(row=>row.problem_id===args.problemId);
   const current=reviews.filter(active).filter(row=>["error_repair","retrieval_check"].includes(String(row.grading_contract?.learningPurpose||row.learning_purpose||"")));
   const level1Collapse=current.some(review=>(review.grading_contract?.gradedParts||[]).some(part=>
@@ -41,23 +40,41 @@ export function deriveProblemMasteryState(args:{problemId:string;attempts:Attemp
       (purpose==="retrieval_check"?waiting:repairing)[level]++;
     }
   }
-  for(const attempt of attempts){
+  const targets=buildStableTargetIndex({attempts,reviews});
+  const activeKeys=new Set(current.flatMap(review=>(review.grading_contract?.gradedParts||[]).map(part=>
+    targets.reviewPart(review.id,part.id)?.identityKey||`review:${review.id}:${part.id}`)));
+  const unresolved=new Map<string,1|2|3>(),awaitingRetention=new Map<string,1|2|3>();
+  const retainedKeys=new Map<string,1|2|3>();
+  for(const attempt of [...attempts].sort((a,b)=>a.date.localeCompare(b.date)||a.id-b.id)){
     if(attempt.mode==="scan5"||attempt.exam_score_eligible===false&&attempt.mode==="scan5")continue;
     const lifecycle=resolvePersistedAttemptLifecycle(attempt);
-    const targetRetention=lifecycle.graduated||(attempt.learning_purpose==="retrieval_check"&&attempt.assessment_timing==="delayed_retrieval"&&
-      Number(attempt.actual_reference_level||0)===0&&!attempt.hint_used);
-    if(targetRetention){
-      const parts=attempt.grading_contract?.gradedParts||[];
-      for(const finding of attempt.graded_findings||[]){
-        if(!finding.resolved||finding.error_type!=="none")continue;
-        const part=parts.find(row=>row.id===finding.graded_part_id);
-        if(part)retained[masteryLevelForPart(part)]++;
+    const reference=attempt.actual_reference_level??attempt.reference_level;
+    const referenceFree=Number.isInteger(reference)&&reference===0&&!attempt.hint_used;
+    const targetRetention=referenceFree&&((attempt.learning_purpose==="retrieval_check"&&attempt.assessment_timing==="delayed_retrieval")||
+      (!attempt.learning_purpose&&!attempt.assessment_timing&&lifecycle.graduated));
+    const parts=attempt.grading_contract?.gradedParts||[];
+    for(const finding of attempt.graded_findings||[]){
+      if(!findingPlanningEligible(attempt,finding)||attempt.grading_contract?.explicitlyOutOfScopePartIds?.includes(finding.graded_part_id))continue;
+      const part=parts.find(row=>row.id===finding.graded_part_id);if(!part)continue;
+      const target=targets.attemptPart(attempt.id,part.id);
+      const key=target?.identityKey||`attempt:${attempt.id}:${part.id}`,level=masteryLevelForPart(part);
+      if(!finding.resolved&&finding.error_type!=="none"){
+        unresolved.set(key,level);awaitingRetention.delete(key);retainedKeys.delete(key);
+      }else if(finding.resolved&&finding.error_type==="none"){
+        if(targetRetention&&target?.identityKey){retainedKeys.set(key,level);unresolved.delete(key);awaitingRetention.delete(key);}
+        else if((independentReferenceFree(attempt)||gradedRepairEvidence(attempt))&&unresolved.has(key)){
+          unresolved.delete(key);awaitingRetention.set(key,level);
+        }
       }
     }
   }
+  for(const level of retainedKeys.values())retained[level]++;
+  // Review materialization is not itself evidence of success. Missing legacy
+  // follow-up Reviews must not hide a failed sibling or a later retention failure.
+  for(const [key,level]of unresolved)if(!activeKeys.has(key))repairing[level]++;
+  for(const [key,level]of awaitingRetention)if(!activeKeys.has(key))waiting[level]++;
   const verified=new Set((args.transferEvidence||currentTransferEvidence(args.attempts.filter(attemptPlanningEligible)))
     .filter(e=>e.sourceProblemId===args.problemId).map(e=>e.successAttemptId));
-  for(const attempt of transferAttempts)if(!attempt.transfer_lineage&&resolvePersistedAttemptLifecycle(attempt).reviewOutcome==="success")verified.add(attempt.id);
   retained[3]=verified.size;
   const levels=[1,2,3].map(value=>{
     const level=value as 1|2|3;
@@ -74,8 +91,8 @@ export function deriveProblemMasteryState(args:{problemId:string;attempts:Attemp
   const evidenced=levels.filter(row=>row.status!=="unconfirmed"&&row.status!=="needs_recheck");
   const currentLevel=(activeLevel?.level||evidenced.at(-1)?.level||1) as 1|2|3;
   return {problemId:args.problemId,currentLevel,currentTitle:LEVEL_TITLES[currentLevel],levels,
-    activeTargetCount:current.reduce((sum,row)=>sum+(row.grading_contract?.gradedParts.length||0),0),
-    normalReviewComplete:current.length===0};
+    activeTargetCount:repairing.slice(1).reduce((sum,count)=>sum+count,0)+waiting.slice(1).reduce((sum,count)=>sum+count,0),
+    normalReviewComplete:current.length===0&&unresolved.size===0&&awaitingRetention.size===0};
 }
 
 export function deriveMasteryByProblem(args:{problemIds:string[];attempts:Attempt[];reviews:Review[]}){

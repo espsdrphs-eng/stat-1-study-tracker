@@ -420,6 +420,13 @@ export function parseStudyText(text:string,problems:Problem[],answers:AnswerInde
   return {structured:false,updates:[normalizeUpdate({},text,problems,answers,aliases,true)]};
 }
 
+/** Daily handoff: prose is an archive, never an inferred grading record.
+ * Keep the legacy free-text reader available for explicit maintenance tools. */
+export function parseStructuredStudyText(text:string,problems:Problem[],answers:AnswerIndexEntry[]=[],aliases:ProblemAlias[]=[]){
+  const result=parseStudyText(text,problems,answers,aliases);
+  if(!result.structured)throw new Error('構造化された採点JSON / YAMLを確認できません。原文として保管し、対象課題の採点プロンプトで返答を再確認してください。文章から得点や弱点を推測して保存しません。');
+  return result;
+}
 export function applyProblemMaster(update:StudyUpdate,problem:Problem):StudyUpdate{
   return {
     ...update,problem_id:problem.problem_id,display_label:problemDisplayLabel(problem),source_type:problem.source_type,

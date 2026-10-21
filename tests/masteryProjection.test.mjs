@@ -43,7 +43,7 @@ test("partial delayed retention keeps three successful targets and repairs only 
   assert.equal(result.levels[1].activeTargetCount,1);
 });
 
-test("Level 1 and 2 retained ends same-problem review while transfer remains independent",()=>{
+test("Level 1 and 2 retention does not turn an unproven old transfer flag into distinct-problem confirmation",()=>{
   const l1=part("problem_type",1),l2=part("main_calculation",2);
   const l1Attempt=attempt(1,[l1],[{graded_part_id:l1.id,error_type:"none",evidence:"ok",resolved:true}]);
   const l2Attempt=attempt(2,[l2],[{graded_part_id:l2.id,error_type:"none",evidence:"ok",resolved:true}]);
@@ -54,7 +54,9 @@ test("Level 1 and 2 retained ends same-problem review while transfer remains ind
     learning_purpose:"transfer_check",assessment_timing:"independent_performance",review_outcome:"success",
     target_issue_resolved:true,minimum_pass_condition_met:true});
   const after=deriveProblemMasteryState({problemId,attempts:[l1Attempt,l2Attempt,transfer],reviews:[]});
-  assert.equal(after.levels[2].status,"retained");
+  // Superseded legacy expectation: a bare boolean carried no skill/target
+  // evidence. Genuine compatible scoped proof is covered separately.
+  assert.equal(after.levels[2].status,"unconfirmed");
   assert.equal(after.normalReviewComplete,true);
 });
 
