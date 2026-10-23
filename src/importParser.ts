@@ -1,4 +1,5 @@
 import yaml from "js-yaml";
+import {jsonSyntaxLocation,normalizeCompatibleJson} from './jsonSyntax.ts';
 import {normalizeGradingContextInput} from './gradingTaskContext.ts';
 import type { AnswerIndexEntry, GradedFinding, GradingErrorType, ObservedOutOfScopeFinding, Problem, ProblemAlias, StudyUpdate } from "./types";
 import { japaneseizeMathText } from "./mathJapanese.ts";
@@ -383,9 +384,14 @@ function extractStructured(text:string){
   const json=text.trim().replace(/^```json\s*\n/i,"").replace(/\n```\s*$/,"").trim();
   if(json.startsWith("{")){
     try{
-      const value=JSON.parse(json);
+      const value=JSON.parse(normalizeCompatibleJson(json).json);
+      if(value?.coach_update)throw new Error('これは総合評価です。「GPT連携 → 総合評価」へ貼り付けてください。問題の採点としては保存しません。');
       if(value&&typeof value==="object"&&(value.study_update||value.study_updates))return value;
-    }catch{throw new Error("採点JSONの形式が不正です。ChatGPTの出力全体をコピーし直してください。");}
+    }catch(error){
+      if(!(error instanceof SyntaxError))throw error;
+      const compatible=normalizeCompatibleJson(json).json,location=jsonSyntaxLocation(compatible),prefix=compatible.slice(0,location.position);
+      throw new Error(`採点JSONの形式が不正です。${location.path}：${prefix.split('\n').length}行${location.position-prefix.lastIndexOf('\n')}列付近。${location.expected}。入力は保持しています。対象課題の採点プロンプトで、値を推測せず標準JSON / YAMLを再出力してください。`);
+    }
   }
   const marker=text.search(/(?:^|\n)study_updates?:\s*(?:\n|$)/m);
   if(marker<0) return null;

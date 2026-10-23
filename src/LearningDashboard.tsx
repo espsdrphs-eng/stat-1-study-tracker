@@ -1,11 +1,12 @@
-import {useMemo,useState} from 'react';
+import {useEffect,useMemo,useRef,useState} from 'react';
 import './learningOverview.css';
 import type {Bootstrap,Task} from './types';
 import type {coachPreview} from './coachDiagnosis';
 type CoachPreviewResult=ReturnType<typeof coachPreview>;
 import {post} from './api';
 import {deriveLearningOverview,overviewNextTask,coachDashboardAdvice} from './learningOverview';
-import {coachImportErrorText} from './coachDiagnosis';
+import {buildCoachRecoveryPrompt,coachImportErrorText} from './coachDiagnosis';
+import {RawGPTArchive} from './RawGPTArchive';
 import {abilityStateLabels,deriveTrainingProfiles} from './abilityTraining';
 import {deriveTaskAnswerScope,taskAnswerScopeText} from './taskAnswerScope';
 import {deriveTaskIntroduction} from './learningFeedback';
@@ -40,16 +41,30 @@ export function LearningDashboard({data,onStart,onReview,onEvidence,onSchedule,o
 }
 
 /** Same existing Coach endpoints/history. A preview is never a save. */
-export function CoachReviewControls({data,run,busy}:{data:Bootstrap;run:(action:()=>Promise<unknown>,message:string)=>void;busy:boolean}){
- const [text,setText]=useState(''),[preview,setPreview]=useState<CoachPreviewResult|null>(null),[error,setError]=useState(''),[message,setMessage]=useState(''),[copyFallback,setCopyFallback]=useState('');
- const copy=async()=>{try{await navigator.clipboard.writeText(data.coach.prompt);setMessage('コピーしました。ChatGPTへ貼り付け、評価JSONを戻してください。')}catch{setCopyFallback(data.coach.prompt);setMessage('下のプロンプトを選択してコピーしてください。')}};
- const parse=async()=>{setError('');setPreview(null);try{setPreview(await post<CoachPreviewResult>('/api/coach/preview',{text,require_current_evidence:true}))}catch(e){setError(coachImportErrorText(e))}};
- const save=()=>run(async()=>{try{const result=await post<{duplicate:boolean}>('/api/coach/save',{text,require_current_evidence:true});setPreview(null);setMessage(result.duplicate?'同じ評価は保存済みです。重複追加していません。':'GPT総合診断を反映しました。実測得点・時間・答案は変更しません。');return result}catch(e){setError(e instanceof Error?e.message:String(e));throw e}},'GPT総合診断を確認しました');
+export function CoachReviewControls({data,run,busy}:{data:Bootstrap;run:(action:()=>Promise<unknown>,message:string)=>Promise<boolean>;busy:boolean}){
+ const draftKey='stat1:coach-import-draft:v1';
+ const [text,setText]=useState(()=>{try{return sessionStorage.getItem(draftKey)||''}catch{return ''}}),[preview,setPreview]=useState<CoachPreviewResult|null>(null),[error,setError]=useState(''),[message,setMessage]=useState(''),[copyFallback,setCopyFallback]=useState(''),[draftWarning,setDraftWarning]=useState(''),[processing,setProcessing]=useState(false);
+ const active=useRef(false),requestVersion=useRef(0);
+ const [saveFailed,setSaveFailed]=useState(false);
+ useEffect(()=>{try{if(text)sessionStorage.setItem(draftKey,text);else sessionStorage.removeItem(draftKey);setDraftWarning('')}catch{setDraftWarning('一時保存できません。入力は画面に保持しています。閉じる前に原文をコピーするか、原文だけを保管してください。')}},[text]);
+ useEffect(()=>{requestVersion.current++;setPreview(null);return()=>{requestVersion.current++}},[data.coach.reviewContext?.version,data.coach.reviewContext?.dataVersion]);
+ const copy=async(value=data.coach.prompt,recovery=false)=>{try{await navigator.clipboard.writeText(value);setMessage(recovery?'修正依頼をコピーしました。同じChatGPT会話へ貼り付け、返答全体をコピーして入力欄を置き換えてください。':'コピーしました。ChatGPTへ貼り付け、評価JSONを戻してください。');setCopyFallback('')}catch{setCopyFallback(value);setMessage('下のプロンプトを選択してコピーしてください。')}};
+ const parse=async()=>{
+  if(active.current)return;active.current=true;setProcessing(true);setError('');setSaveFailed(false);setPreview(null);setMessage('');const version=++requestVersion.current;
+  try{const result=await post<CoachPreviewResult>('/api/coach/preview',{text,require_current_evidence:true});if(requestVersion.current===version)setPreview(result)}catch(e){if(requestVersion.current===version)setError(coachImportErrorText(e))}finally{active.current=false;setProcessing(false)}
+ };
+ const save=async()=>{
+  if(active.current||!preview)return;active.current=true;setProcessing(true);setError('');setSaveFailed(false);setMessage('');
+  try{await run(async()=>{try{const result=await post<{duplicate:boolean}>('/api/coach/save',{text,require_current_evidence:true});setPreview(null);setMessage(result.duplicate?'同じ評価は保存済みです。重複追加していません。':'GPT総合診断を反映しました。実測得点・時間・答案は変更しません。');return result}catch(e){setSaveFailed(true);setError(coachImportErrorText(e));throw e}},'GPT総合診断を確認しました')}finally{active.current=false;setProcessing(false)}
+ };
  const training=preview?deriveTrainingProfiles({...data,coach:{...data.coach,current:preview.next}}):[];
- return <section className="coach-manual" aria-label="ChatGPTで実力を再評価"><p>現在の答案・本番測定・補修の証拠をコピーします。APIは使いません。</p><button className="primary" onClick={copy}>評価プロンプトをコピー</button>
+ return <section className="coach-manual" aria-label="ChatGPTで実力を再評価"><p>① 依頼をコピー → ② ChatGPTの返答全体を貼り付け → ③ 確認して反映。問題の採点は「採点結果」で行います。</p><button className="primary" onClick={()=>void copy()}>評価プロンプトをコピー</button>
   {message&&<p role="status">{message}</p>}{copyFallback&&<textarea aria-label="コピー用の評価プロンプト" readOnly value={copyFallback} onFocus={e=>e.currentTarget.select()}/>}
-  <label>評価JSONを貼り付け<textarea aria-label="評価JSONを貼り付け" rows={6} value={text} onChange={e=>{setText(e.target.value);setPreview(null);setError('')}} autoComplete="off"/></label>
-  <button className="ghost" disabled={!text.trim()||busy} onClick={parse}>評価をプレビュー</button>{error&&<p role="alert">{error}</p>}
+  <label>評価JSONを貼り付け<textarea aria-label="評価JSONを貼り付け" rows={6} value={text} disabled={processing||busy} onChange={e=>{requestVersion.current++;setText(e.target.value);setPreview(null);setError('');setSaveFailed(false);setMessage('');setCopyFallback('')}} autoComplete="off"/></label>
+  {text&&!preview&&!error&&<small>入力原文を一時保持しています。まだ評価には反映していません。</small>}{draftWarning&&<p role="alert">{draftWarning}</p>}
+  <button className="ghost" disabled={!text.trim()||busy||processing} onClick={()=>void parse()}>{processing?'確認中…':'評価をプレビュー'}</button>
+  {error&&<section className="coach-import-recovery" aria-label={saveFailed?'保存エラーの復旧':'読み込みの修正'}><p role="alert">{error}</p>{saveFailed?<p>保存できませんでした。入力と確認内容は残しています。原因を確認して「確認して評価を反映」で再試行してください。データ更新が理由の場合は、現在のプロンプトで再評価してください。</p>:<><p>まだ反映していません。入力原文は残しています。括弧や空の判断内容を推測で補完せず、ChatGPTに確認し直せます。</p><button className="primary" disabled={busy||processing} onClick={()=>void copy(buildCoachRecoveryPrompt({rawText:text,error,reviewPrompt:data.coach.prompt}),true)}>修正依頼をコピー</button><small>同じ会話へ貼り付け → 新しい返答全体で置き換え → もう一度プレビュー。</small></>}</section>}
+  {!!text.trim()&&<details className="raw-fallback"><summary>評価に反映せず、原文だけを保管</summary><p>壊れたJSONや文章もそのまま保管できます。Level・得点・弱点・予定は変更しません。</p><RawGPTArchive compact defaultKind="assessment" problems={data.problems} run={run} busy={busy||processing} text={text}/></details>}
   {preview&&<section className="coach-result-preview" aria-label="評価のプレビュー"><h3>GPT参考評価：Level {preview.next.level.value}</h3><p>{preview.next.level.label} ／ 信頼度：{confidenceLabel(preview.next.level.confidence)}</p>{preview.next.level.rationale&&<p>{preview.next.level.rationale}</p>}<p>最大課題：{preview.next.primaryBottleneck.title}</p><p>次の行動：{preview.next.nextActions[0]?.title||'提案なし'}</p>{preview.next.nextActions[0]?.successCondition&&<p>成功条件：{preview.next.nextActions[0].successCondition}</p>}{(preview.next.improvements.length>0||preview.next.unknowns.length>0)&&<details><summary>改善点・未測定の確認</summary>{preview.next.improvements.map((r,i)=><p key={`improvement:${i}`}>改善：{r.title}</p>)}{preview.next.unknowns.map((r,i)=><p key={`unknown:${i}`}>未確認：{r.title} ／ 必要な証拠：{r.evidenceNeeded}</p>)}</details>}<small>自動・暫定Level {data.dashboard.kpis?.assessment?.level??'未測定'}とは別の総合診断です。測定値・答案・転移実績は上書きしません。</small><button className="primary" disabled={busy} onClick={save}>確認して評価を反映</button></section>}
   {preview?.next.abilityProfiles&&<section aria-label="能力プロフィールのプレビュー"><h4>更新する能力プロフィール</h4>{preview.next.abilityProfiles.length?preview.next.abilityProfiles.map(p=><p key={p.id}><strong>{p.name}</strong>：{abilityStateLabels[p.state]}<br/>次の検証：{p.next}</p>):<p>能力はまだ特定できていません。</p>}</section>}
   {preview&&<section aria-label="訓練準備の確認" role="status">{training.some(p=>p.trainable)?<p>訓練問題を作成できます。{training.some(p=>p.origin==='grading_evidence')?'採点根拠からの暫定訓練です。能力の同定・習得は未確定です。':'根拠付きの能力仮説を使用します。'}総合評価と訓練実績は別に保持します。</p>:<><strong>総合評価は保存できます。訓練には採点根拠が必要です。</strong>{training.map(p=><p key={p.id}>{p.reason}</p>)}</>}</section>}

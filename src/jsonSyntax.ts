@@ -3,7 +3,7 @@
 export function normalizeCompatibleJsonQuotes(source:string){
  let output='',inAsciiString=false,inCompatibleString=false,escaped=false,nestedCurlyQuotes=0,compatibleOpener='',changed=false;
  const previous=(i:number)=>{for(let j=i-1;j>=0;j--)if(!/\s/.test(source[j]))return source[j];return ''};
- const next=(i:number)=>{for(let j=i+1;j<source.length;j++)if(!/\s/.test(source[j]))return source[j];return ''};
+ const next=(i:number)=>{for(let j=i+1;j<source.length;j++)if(!/\s/.test(source[j]))return source[j]==='\\'&&['[',']'].includes(source[j+1])?source[j+1]:source[j];return ''};
  for(let i=0;i<source.length;i++){
   const c=source[i];
   if(inAsciiString){output+=c;if(escaped)escaped=false;else if(c==='\\')escaped=true;else if(c==='"')inAsciiString=false;continue;}
@@ -19,6 +19,22 @@ export function normalizeCompatibleJsonQuotes(source:string){
   output+=c;
  }
  return {json:output,normalized:changed};
+}
+
+/** Copy/paste typography only. Never invent a value, an array, or a field.
+ * Escaped Markdown brackets outside JSON strings have no data semantics;
+ * inside strings (including LaTeX) every byte must remain unchanged. A caller
+ * must still run strict JSON.parse and the full domain/identity validation. */
+export function normalizeCompatibleJson(source:string){
+ const quotes=normalizeCompatibleJsonQuotes(source);
+ let json='',inString=false,escaped=false,normalized=quotes.normalized;
+ for(let i=0;i<quotes.json.length;i++){
+  const c=quotes.json[i];
+  if(inString){json+=c;if(escaped)escaped=false;else if(c==='\\')escaped=true;else if(c==='"')inString=false;continue;}
+  if(c==='"')inString=true;
+  if(c==='\\'&&['[',']'].includes(quotes.json[i+1])){json+=quotes.json[++i];normalized=true;}else json+=c;
+ }
+ return {json,normalized};
 }
 
 /** Locate strict JSON syntax errors only; never repair or produce data.
@@ -38,7 +54,8 @@ export function jsonSyntaxLocation(source:string){
   if(c==='"'){string(path);return;}
   if(c==='{'){
    i++;space();if(source[i]==='}'){i++;return;}
-   while(i<source.length){if(source[i]!=='"')fail(path,'objectのキーは半角引用符で囲む');const key=string(path),child=`${path}.${key}`;space();if(source[i++]!==':'){i--;fail(child,'キーの後に :');}value(child,depth+1);space();if(source[i]==='}'){i++;return;}if(source[i++]!==','){i--;fail(child,'値の後に , または }');}space();}
+   let previousChild='';
+   while(i<source.length){if(source[i]!=='"')fail(path,'objectのキーは半角引用符で囲む');const key=string(path),child=`${path}.${key}`;space();if(source[i++]!==':'){i--;if(/\.(refs|part_ids)$/.test(previousChild)&&[',','}',']'].includes(source[i]))fail(previousChild,'複数の値は配列 ["値1","値2"] で囲む。1件でも ["値1"]。括弧は推測補完しない');fail(child,'キーの後に :');}value(child,depth+1);previousChild=child;space();if(source[i]==='}'){i++;return;}if(source[i++]!==','){i--;fail(child,'値の後に , または }');}space();}
    fail(path,'objectを閉じる }');
   }
   if(c==='['){i++;space();if(source[i]===']'){i++;return;}let n=0;while(i<source.length){value(`${path}.${n++}`,depth+1);space();if(source[i]===']'){i++;return;}if(source[i++]!==','){i--;fail(path,'配列要素の後に , または ]');}space();}fail(path,'配列を閉じる ]');}

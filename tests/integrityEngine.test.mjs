@@ -387,6 +387,19 @@ test("completed sessionをstale Today/Dashboardが再投入するとblocking iss
   assert.equal(audit.counts.dashboard_session_projection_mismatch,1);
 });
 
+test('completed scan is not a completed timed exam: another-purpose Today task must not produce a false revival warning',()=>{
+  const session={id:7,year:2025,date:'2026-07-22',session_type:'scan5',session_kind:'scan_only',
+    session_purpose:'practice_scan5',session_instance_id:'session-2025-1',session_state:'completed',
+    stable_session_key:'past_exam_session:2025:scan5:session-2025-1',scan_minutes:10,prompt_scanned_at:'2026-07-22T09:00:00+09:00',
+    questions:[1,2,3,4,5].map(q=>({problemId:`PY-2025-Q${q}`,questionLabel:`問${q}`,selected:false,completed:false}))};
+  const timed={problem_id:'PY-2025-Q1',title:'2025年 本番形式',kind:'得点形成',reason:'別目的の本番測定',mode:'exam_90min',minutes:90,load:1,checked:false,
+    past_exam_task_type:'timed_three_question_session',past_exam_year:2025,stable_session_key:'past_exam_session:2025:timed_three_question_session:session-2025-1'};
+  const audit=runIntegrityAudit({attempts:[],reviews:[],today:'2026-10-22',pastSessions:[session],currentTodayTasks:[timed],currentNextTask:timed});
+  assert.equal(audit.counts.completed_session_rescheduled_as_active,0);
+  assert.equal(audit.counts.stale_today_snapshot_overrode_canonical_state,0);
+  assert.equal(audit.counts.dashboard_session_projection_mismatch,0);
+});
+
 test("year混在sessionと保存上activeのterminal scan_onlyをcurrent auditで検出する",()=>{
   const mixed={id:51,year:2019,date:"2026-09-06",session_type:"scan5",session_kind:"selected_three_timed",
     session_purpose:"timed_three_question_session",session_instance_id:"session-2025-1",

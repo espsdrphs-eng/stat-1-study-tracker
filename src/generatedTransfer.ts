@@ -6,7 +6,7 @@ import {findingSkillIds,successfulSkillIds,independentReferenceFree,gradedRepair
 import {groundedWhitebookSkills,matchesFailureOperation} from "./groundedSkills.ts";
 import {findingPlanningEligible} from "./legacyKPolicy.ts";
 import {validAbilityLineage} from './abilityTraining.ts';
-import {normalizeCompatibleJsonQuotes,jsonSyntaxLocation} from './jsonSyntax.ts';
+import {normalizeCompatibleJson,jsonSyntaxLocation} from './jsonSyntax.ts';
 
 export type TransferTrainingLineage={
   key:string;rootWeaknessId:string;rootSkillId:string;sourceProblemId:string;sourceAttemptId:number;
@@ -153,7 +153,7 @@ export function transferJson(input:string){
   let raw;const source=input.trim().replace(/^```(?:json)?\s*/i,"").replace(/\s*```$/,"");
   try{raw=JSON.parse(source);}
   catch{
-    const normalized=normalizeCompatibleJsonQuotes(source).json;
+    const normalized=normalizeCompatibleJson(source).json;
     try{raw=JSON.parse(normalized);}catch{
       const fault=jsonSyntaxLocation(normalized),before=normalized.slice(0,fault.position),line=before.split('\n').length,column=before.length-(before.lastIndexOf('\n')+1)+1;
       throw new Error(`JSON形式が不正です：${fault.path}（${line}行 ${column}列）。${fault.expected}。内容は保持しています。JSON部分だけをコピーし直してください。`);

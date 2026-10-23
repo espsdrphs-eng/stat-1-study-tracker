@@ -258,7 +258,7 @@ function LearningUpdateSummary({data}:{data:Bootstrap}){
     {summary.change&&<details><summary>採点に記録された改善・残る課題</summary><p>{summary.change}</p></details>}
   </section>;
 }
-function DashboardView({data,go,select,run,busy,onAssess}:{data:Bootstrap;go:(p:Page)=>void;select:(p:Problem,task?:Task)=>void;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean;onAssess:()=>void}) {
+function DashboardView({data,go,select,run,busy,onAssess}:{data:Bootstrap;go:(p:Page)=>void;select:(p:Problem,task?:Task)=>void;run:(a:()=>Promise<unknown>,s:string)=>Promise<boolean>;busy:boolean;onAssess:()=>void}) {
   const [panel,setPanel]=useState<'review'|'evidence'|null>(null);
   const start=(task?:Task)=>{if(!task||task.transfer_training_key||task.stable_session_key){go("today");return;}const p=data.problems.find(p=>p.problem_id===task.problem_id);if(p)select(p,task);};
   return <><LearningDashboard data={data} onStart={start} onReview={onAssess} onEvidence={()=>setPanel('evidence')} onSchedule={()=>go('reviews')} onIssues={()=>go('weak')} onAllTasks={()=>go('today')}/>
@@ -1216,7 +1216,7 @@ type CoachPreviewResult={next:CoachDiagnosis;diff:{level:string;unchanged:boolea
   passOutlook:{before:string;after:string};confidence:{before:string;after:string};
   bottleneck:{before:string;after:string};nextActions:CoachListDiff;strengths:CoachListDiff;
   improvements:CoachListDiff;unknowns:CoachListDiff}};
-function CoachPanel({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean}){
+function CoachPanel({data,run,busy}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>Promise<boolean>;busy:boolean}){
   return <CoachReviewControls data={data} run={run} busy={busy}/>;
 }
 function CoachDiffList({title,diff}:{title:string;diff:CoachListDiff}){
@@ -1296,7 +1296,7 @@ function CurrentWeaknessPanel({data,onToday,onTransfer}:{data:Bootstrap;onToday:
     {!rows.length&&<p>確定した失敗targetの証拠がありません。未測定は習得済みとは扱いません。</p>}
   </section>;
 }
-function WeakView({data,run,busy,onToday,onReview,onProblems}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean;onToday:()=>void;onReview:()=>void;onProblems:()=>void}){
+function WeakView({data,run,busy,onToday,onReview,onProblems}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>Promise<boolean>;busy:boolean;onToday:()=>void;onReview:()=>void;onProblems:()=>void}){
   const [history,setHistory]=useState(false);
   const [training,setTraining]=useState<string|null>(null);
   const [diagnose,setDiagnose]=useState(false),[creating,setCreating]=useState(false),[error,setError]=useState('');
@@ -1307,7 +1307,7 @@ function WeakView({data,run,busy,onToday,onReview,onProblems}:{data:Bootstrap;ru
    {diagnose&&<Modal title="能力プロフィールを更新" close={()=>setDiagnose(false)}><CoachReviewControls data={data} run={run} busy={busy}/></Modal>}
    <details className="panel" onToggle={e=>setHistory(e.currentTarget.open)}><summary>個別問題・技能の旧根拠と履歴（任意）</summary>{history&&<WeakEvidenceHistory data={data} run={run} busy={busy} onToday={onToday} onTransfer={setTraining}/>}</details></>;
 }
-function WeakEvidenceHistory({data,run,busy,onToday,onTransfer}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>void;busy:boolean;onToday:()=>void;onTransfer:(key:string)=>void}) {
+function WeakEvidenceHistory({data,run,busy,onToday,onTransfer}:{data:Bootstrap;run:(a:()=>Promise<unknown>,s:string)=>Promise<boolean>;busy:boolean;onToday:()=>void;onTransfer:(key:string)=>void}) {
   const [editing,setEditing]=useState<Attempt|null>(null);
   const [form,setForm]=useState<Record<string,string>>({});
   const trend=analyzeWeakTrends(data.problems,data.attempts,data.weakNotes,"",data.problemAliases);

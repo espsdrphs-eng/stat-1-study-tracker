@@ -3920,21 +3920,28 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
   } else if(path==="/api/coach/save"){
     const diagnosis=parseCoachUpdate(String(body.text||body.yaml||""));
     if(diagnosis.reviewContextVersion||body.require_current_evidence)validateCoachReviewContext(diagnosis,(await bootstrap(true)).coach.reviewContext!,!!body.require_current_evidence);
-    const [attempts,problems,row]=await Promise.all([db.attempts.toArray(),db.problems.toArray(),db.meta.get(COACH_HISTORY_META_KEY)]);
+    const [attempts,problems]=await Promise.all([db.attempts.toArray(),db.problems.toArray()]);
     const cutoff=Math.max(0,...attempts.filter(item=>attemptPlanningEligible(item)).map(item=>item.id));
     if(diagnosis.evidenceCutoffAttemptId!==cutoff)
       throw new Error(`診断対象の採点が更新されています（GPT ${diagnosis.evidenceCutoffAttemptId}／現在 ${cutoff}）。保存せず再レビューしてください。`);
     const known=new Set(problems.map(item=>item.problem_id));
     const unknown=diagnosis.primaryBottleneck.evidenceProblemIds.filter(id=>!known.has(id));
     if(unknown.length)throw new Error(`根拠problem_idが問題マスターにありません: ${unknown.join("、")}`);
-    let history:CoachDiagnosis[]=[];try{history=JSON.parse(row?.value||"[]")}catch{history=[]}
     const content=(item:CoachDiagnosis)=>{const {reviewedAt,sourceEvidenceVersion,...rest}=item;return JSON.stringify(rest)};
-    const duplicate=history.some(item=>content(item)===content(diagnosis));
-    if(!duplicate&&history.some(item=>item.reviewedAt===diagnosis.reviewedAt&&item.evidenceCutoffAttemptId===diagnosis.evidenceCutoffAttemptId))throw new Error('同じ評価日時・対象で内容が異なります。新しい評価日時で再確認してください。');
     const raw=await prepareGPTExchange({rawText:String(body.text||body.yaml||''),kind:'assessment',confirmedByUser:true});
-    await db.transaction('rw',db.meta,async()=>{
-      if(!duplicate)await db.meta.put({key:COACH_HISTORY_META_KEY,value:JSON.stringify([...history,{...diagnosis,sourceEvidenceVersion:coachEvidenceVersion(attempts.filter(attemptPlanningEligible))}])});
+    const evidenceVersion=coachEvidenceVersion(attempts.filter(attemptPlanningEligible));
+    const duplicate=await db.transaction('rw',[db.meta,db.attempts],async()=>{
+      // Read/compare/write one history under the same lock. Reading before the
+      // transaction loses a concurrent accepted diagnosis (including two tabs).
+      if(coachEvidenceVersion((await db.attempts.toArray()).filter(attemptPlanningEligible))!==evidenceVersion)throw new Error('保存中に採点が更新されました。入力は保持しています。現在のプロンプトで再評価してください。');
+      const row=await db.meta.get(COACH_HISTORY_META_KEY);
+      let history:CoachDiagnosis[];
+      try{history=JSON.parse(row?.value||'[]');if(!Array.isArray(history))throw new Error('not an array')}catch{throw new Error('既存の総合評価履歴を読み取れません。上書きせず停止しました。全データJSONをバックアップして確認してください。')}
+      const duplicate=history.some(item=>content(item)===content(diagnosis));
+      if(!duplicate&&history.some(item=>item.reviewedAt===diagnosis.reviewedAt&&item.evidenceCutoffAttemptId===diagnosis.evidenceCutoffAttemptId))throw new Error('同じ評価日時・対象で内容が異なります。新しい評価日時で再確認してください。');
+      if(!duplicate)await db.meta.put({key:COACH_HISTORY_META_KEY,value:JSON.stringify([...history,{...diagnosis,sourceEvidenceVersion:evidenceVersion}])});
       if(!await db.meta.get(GPT_EXCHANGE_PREFIX+raw.id))await db.meta.add({key:GPT_EXCHANGE_PREFIX+raw.id,value:JSON.stringify(raw)});
+      return duplicate;
     });
     notifyStudyDataChanged({operation:"save-coach-diagnosis"});
     return {ok:true,diagnosis,duplicate} as T;

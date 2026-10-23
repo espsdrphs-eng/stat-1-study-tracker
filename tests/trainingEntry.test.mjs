@@ -18,7 +18,9 @@ test('failed quality validation is not reported as a saved problem and its input
 });
 test('malformed syntax reports location and field without filling absent values; schema errors report exact expected type',()=>{
  const raw=JSON.stringify(response(),null,2),bad=raw.replace('"improvements": []','"improvements": ');assert.throws(()=>coach.parseCoachUpdate(bad),e=>e.stage==='parse'&&/improvements/.test(e.path)&&/行|列/.test(e.reason));
- const escaped=raw.replace('"refs": [','"refs": \\[');assert.throws(()=>coach.parseCoachUpdate(escaped),e=>e.stage==='parse'&&/refs/.test(e.path));
+ // Copy/paste bracket escapes outside strings now normalize losslessly. A
+ // missing array/value still must not be guessed (the assertions above/below).
+ const escaped=raw.replace('"refs": [','"refs": \\[');assert.deepEqual(coach.parseCoachUpdate(escaped),coach.parseCoachUpdate(raw));
  const r=response();r.coach_update.improvements='';assert.throws(()=>coach.parseCoachUpdate(JSON.stringify(r)),e=>e.stage==='schema'&&e.path==='coach_update.improvements'&&/array|配列/.test(e.reason));
  assert.equal(coach.parseCoachUpdate('説明\n```json\n'+raw+'\n```\n以上').level.value,2.5);
 });

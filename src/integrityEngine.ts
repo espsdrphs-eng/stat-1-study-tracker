@@ -395,6 +395,10 @@ function calculateIntegrityAudit(args: {
     detail:`${unfinishedTimed.length} unfinished timed PastExamSessions coexist`,repairable:true});
   for(const session of canonicalPastSessions){
     if(derivePastExamSessionState(session)!=="completed")continue;
+    // A completed scan/individual exercise does not complete a timed exam of
+    // the same year. Only compare the same measurement class here; otherwise
+    // a legitimate new benchmark is falsely reported as a revived old task.
+    if(!["timed_three_question_session","simulation"].includes(pastExamSessionPurpose(session)))continue;
     const hasActiveSamePurpose=canonicalPastSessions.some(row=>row.id!==session.id&&row.year===session.year&&
       pastExamSessionPurpose(row)===pastExamSessionPurpose(session)&&
       !["completed","deferred","cancelled","invalidated"].includes(derivePastExamSessionState(row)));
