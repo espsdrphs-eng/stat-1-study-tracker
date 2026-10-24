@@ -1,5 +1,6 @@
 import Dexie, { type EntityTable } from "dexie";
 import {prepareGPTExchange,GPT_EXCHANGE_PREFIX,type GPTExchange} from './gptExchange.ts';
+import {resolveCoachImport} from './coachFormatRepair.ts';
 import {buildRepairCheck,repairCheckForTask,repairTaskKey} from './repairCheck.ts';
 import {createSourceManifest,verifySourceBackup,compareSourceBackups,sourceRecordsEqual,SOURCE_TABLE_KEYS} from './sourceBackup.ts';
 import {gradingSubmissionKey,type GradingSaveReceipt} from './gradingSubmission.ts';
@@ -3905,7 +3906,7 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
   } else if(path==="/api/integrity/repair"){
     return await repairIntegrity(false) as T;
   } else if(path==="/api/coach/preview"){
-    const diagnosis=parseCoachUpdate(String(body.text||body.yaml||""));
+    const input=resolveCoachImport(body),diagnosis=parseCoachUpdate(input.text);
     if(diagnosis.reviewContextVersion||body.require_current_evidence)validateCoachReviewContext(diagnosis,(await bootstrap(true)).coach.reviewContext!,!!body.require_current_evidence);
     const [attempts,problems,row]=await Promise.all([db.attempts.toArray(),db.problems.toArray(),db.meta.get(COACH_HISTORY_META_KEY)]);
     const cutoff=Math.max(0,...attempts.filter(item=>attemptPlanningEligible(item)).map(item=>item.id));
@@ -3918,7 +3919,7 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     return coachPreview(history.sort((a,b)=>b.reviewedAt.localeCompare(a.reviewedAt)||
       b.evidenceCutoffAttemptId-a.evidenceCutoffAttemptId)[0]||null,diagnosis) as T;
   } else if(path==="/api/coach/save"){
-    const diagnosis=parseCoachUpdate(String(body.text||body.yaml||""));
+    const input=resolveCoachImport(body),diagnosis=parseCoachUpdate(input.text);
     if(diagnosis.reviewContextVersion||body.require_current_evidence)validateCoachReviewContext(diagnosis,(await bootstrap(true)).coach.reviewContext!,!!body.require_current_evidence);
     const [attempts,problems]=await Promise.all([db.attempts.toArray(),db.problems.toArray()]);
     const cutoff=Math.max(0,...attempts.filter(item=>attemptPlanningEligible(item)).map(item=>item.id));
@@ -3928,7 +3929,8 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     const unknown=diagnosis.primaryBottleneck.evidenceProblemIds.filter(id=>!known.has(id));
     if(unknown.length)throw new Error(`根拠problem_idが問題マスターにありません: ${unknown.join("、")}`);
     const content=(item:CoachDiagnosis)=>{const {reviewedAt,sourceEvidenceVersion,...rest}=item;return JSON.stringify(rest)};
-    const raw=await prepareGPTExchange({rawText:String(body.text||body.yaml||''),kind:'assessment',confirmedByUser:true});
+    const raw=await prepareGPTExchange({rawText:input.originalText,kind:'assessment',confirmedByUser:true});
+    const repaired=input.note?await prepareGPTExchange({rawText:input.text,kind:'assessment',note:input.note,confirmedByUser:true}):undefined;
     const evidenceVersion=coachEvidenceVersion(attempts.filter(attemptPlanningEligible));
     const duplicate=await db.transaction('rw',[db.meta,db.attempts],async()=>{
       // Read/compare/write one history under the same lock. Reading before the
@@ -3941,6 +3943,7 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
       if(!duplicate&&history.some(item=>item.reviewedAt===diagnosis.reviewedAt&&item.evidenceCutoffAttemptId===diagnosis.evidenceCutoffAttemptId))throw new Error('同じ評価日時・対象で内容が異なります。新しい評価日時で再確認してください。');
       if(!duplicate)await db.meta.put({key:COACH_HISTORY_META_KEY,value:JSON.stringify([...history,{...diagnosis,sourceEvidenceVersion:evidenceVersion}])});
       if(!await db.meta.get(GPT_EXCHANGE_PREFIX+raw.id))await db.meta.add({key:GPT_EXCHANGE_PREFIX+raw.id,value:JSON.stringify(raw)});
+      if(repaired&&!await db.meta.get(GPT_EXCHANGE_PREFIX+repaired.id))await db.meta.add({key:GPT_EXCHANGE_PREFIX+repaired.id,value:JSON.stringify(repaired)});
       return duplicate;
     });
     notifyStudyDataChanged({operation:"save-coach-diagnosis"});

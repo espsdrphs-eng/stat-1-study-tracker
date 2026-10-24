@@ -58,3 +58,34 @@ test('two saves of the same assessment create one history row; an existing broke
  const original=await db.meta.get(COACH_HISTORY_META_KEY);await db.meta.put({key:COACH_HISTORY_META_KEY,value:'{broken historical record'});
  try{await assert.rejects(()=>localPost('/api/coach/save',{text:raw}),/上書きせず停止/);assert.equal((await db.meta.get(COACH_HISTORY_META_KEY)).value,'{broken historical record')}finally{await db.meta.put(original)}
 });
+
+test('confirmed format repair saves original and reviewed candidate atomically, without changing measured evidence',async()=>{
+ const json=JSON.stringify(await wire('2026-10-24T05:45:00+09:00','形式修正テスト: 本番再測定待ち'));
+ const raw=json.replace('["metric:selectedThree","metric:timed"]','"metric:selectedThree","metric:timed"').replace('"improvements":[]','"improvements":');
+ const body={text:raw,require_current_evidence:true,format_recovery:{confirmed:true,empty_improvements:true}},before=await learning(),h=await history();
+ await assert.rejects(()=>localPost('/api/coach/preview',{...body,format_recovery:{confirmed:true}}),/改善点.*確認/);
+ await assert.rejects(()=>localPost('/api/coach/save',{text:raw,require_current_evidence:true}));
+ const original=(await localGet('/api/gpt-exchanges')).length;
+ await localPost('/api/coach/preview',body);assert.deepEqual(await history(),h);assert.deepEqual(await learning(),before);
+ const fail=(key,row)=>{if(row.key.startsWith('gpt-exchange:v1:')&&JSON.parse(row.value).note)throw new Error('FIXTURE: 修正内容の保存に失敗')};
+ db.meta.hook('creating',fail);
+ try{await assert.rejects(()=>localPost('/api/coach/save',body),/保存に失敗/)}finally{db.meta.hook('creating').unsubscribe(fail)}
+ assert.deepEqual(await history(),h);assert.equal((await localGet('/api/gpt-exchanges')).length,original);
+ assert.equal((await localPost('/api/coach/save',body)).duplicate,false);
+ assert.equal((await localPost('/api/coach/save',body)).duplicate,true);
+ assert.equal((await history()).length,h.length+1);assert.deepEqual(await learning(),before);
+ const records=await localGet('/api/gpt-exchanges');assert.equal(records.length,original+2);assert.ok(records.some(r=>r.rawText===raw));assert.ok(records.some(r=>r.note.includes('本人確認')&&r.rawText===JSON.stringify(JSON.parse(json),null,2)));
+ const backup=await exportBackup(),preview=await previewBackupRestore(backup),saved=await history();
+ await restoreBackup(backup,{mode:'original',sourceHash:preview.manifest.data_hash});db.close();await db.open();
+ assert.deepEqual(await history(),saved);assert.deepEqual(await learning(),before);assert.deepEqual(await localGet('/api/gpt-exchanges'),records);
+});
+test('format recovery cannot bypass context, unknown refs, unknown grading parts or a missing value',async()=>{
+ const r=await wire('2026-10-24T06:00:00+09:00'),before=await learning(),h=await history(),records=await localGet('/api/gpt-exchanges');
+ for(const mutate of [u=>u.review_context_version='old-context',u=>u.data_version='wrong-data',u=>u.level.refs=['attempt:999999'],u=>u.ability_profiles=[{id:'unknown-evidence',name:'未知の根拠',state:'needs_practice',goal:'未確認',next:'要確認',sources:[{attempt_id:999999,part_ids:['major_calculation']}]}]]){
+  const bad=structuredClone(r);mutate(bad.coach_update);const text=JSON.stringify(bad).replace('"improvements":[]','"improvements":');
+  await assert.rejects(()=>localPost('/api/coach/save',{text,require_current_evidence:true,format_recovery:{confirmed:true,empty_improvements:true}}));
+ }
+ const missing=JSON.stringify(r).replace('"value":2.5','"value":').replace('"improvements":[]','"improvements":');
+ await assert.rejects(()=>localPost('/api/coach/preview',{text:missing,format_recovery:{confirmed:true,empty_improvements:true}}));
+ assert.deepEqual(await history(),h);assert.deepEqual(await learning(),before);assert.deepEqual(await localGet('/api/gpt-exchanges'),records);
+});
