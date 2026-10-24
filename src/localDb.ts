@@ -3820,7 +3820,13 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
   if(path==='/api/gpt-exchanges'){
     const record=await prepareGPTExchange(body);
     if(record.problemId&&!await db.problems.get(record.problemId))throw new Error('対象の問題が見つかりません。問題を選び直してください。');
-    const result=await db.transaction('rw',db.meta,async()=>{
+    const result=await db.transaction('rw',[db.meta,db.attempts],async()=>{
+      if(record.sourceAttemptId!==undefined){
+        const source=await db.attempts.get(record.sourceAttemptId);
+        if(!source)throw new Error('元の答案が見つかりません。答案履歴から選び直してください。');
+        if(source.problem_id!==record.problemId)throw new Error('元答案と関連問題が一致しません。答案履歴から補修を開き直してください。');
+        if(source.invalidated_at||source.superseded_by_attempt_id)throw new Error('元答案は無効化・差し替え済みの過去記録です。現在の答案から補修してください。');
+      }
       const key=GPT_EXCHANGE_PREFIX+record.id,old=await db.meta.get(key);
       if(old)return {record:JSON.parse(old.value) as GPTExchange,duplicate:true};
       await db.meta.add({key,value:JSON.stringify(record)});
@@ -3892,7 +3898,7 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
       save:input=>db.transaction("rw",[db.problems,db.attempts,db.reviews,db.weakNotes,db.sMemory,db.meta,db.answerIndex,db.problemAliases,db.correctionLogs],()=>saveAttempt(input))}));
     transferRequestQueue=request;
     const result=await request;
-    if(!["view","lineage","grading-prompt","validation-prompt"].includes(String(body.action)))notifyStudyDataChanged({operation:"transfer-training"});
+    if(!["view","lineage","list","preview-validation","grading-prompt","validation-prompt"].includes(String(body.action)))notifyStudyDataChanged({operation:"transfer-training"});
     return result as T;
   }
   if(path==="/api/database/repair"){

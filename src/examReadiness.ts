@@ -53,16 +53,27 @@ const metric=(numerator:number,denominator:number,count:number,rule:string,modes
   eligibleEvidenceRule:rule,modeScope:modes,lastUpdated:date,lastUpdatedAt:date,eligibleEvidenceIds:[],
   missingEvidenceReason:denominator?null:`未計測：${rule}`,confidence:count>=6?"high":count>=3?"medium":"low"});
 
+// Only the pure spelling conversion is reused. Never cache canonical alias
+// resolution or learning evidence: both may change after an import/restore.
+const normalizedProblemIds = new Map<string, string>();
+const NORMALIZED_PROBLEM_ID_LIMIT = 1024;
 export function normalizeProblemId(value: string) {
-  const raw = String(value || "").toUpperCase().replace(/[‐‑‒–—―ー－]/g, "-").trim();
+  const key = String(value || "");
+  const cached = normalizedProblemIds.get(key);
+  if (cached !== undefined) return cached;
+  const raw = key.toUpperCase().replace(/[‐‑‒–—―ー－]/g, "-").trim();
   const white = raw.match(/^WB-(\d+)-([AS])-(\d+)$/);
-  if (white) return `WB-${Number(white[1])}-${white[2]}-${String(Number(white[3])).padStart(2, "0")}`;
   const past = raw.match(/^PY-(\d{4})-Q(\d+)$/);
-  return past ? `PY-${past[1]}-Q${Number(past[2])}` : raw;
+  const normalized = white ? `WB-${Number(white[1])}-${white[2]}-${String(Number(white[3])).padStart(2, "0")}`
+    : past ? `PY-${past[1]}-Q${Number(past[2])}` : raw;
+  if (normalizedProblemIds.size >= NORMALIZED_PROBLEM_ID_LIMIT) normalizedProblemIds.clear();
+  normalizedProblemIds.set(key, normalized);
+  return normalized;
 }
 
 export function resolveCanonicalProblemId(problemId: string, aliases: ProblemAlias[]) {
   let current = normalizeProblemId(problemId);
+  if (!aliases.length) return current;
   const visited = new Set<string>();
   while (current && !visited.has(current)) {
     visited.add(current);

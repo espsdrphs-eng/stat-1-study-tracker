@@ -87,8 +87,8 @@ function Pill({children,tone=""}:{children:React.ReactNode;tone?:string}){
   return <span className={`badge ${tone}`}>{children}</span>;
 }
 
-export default function AdvancedImportView({problems,answerIndex,problemAliases,attempts,reviews,run,busy,submittedAnswer}:{
-  problems:Problem[];answerIndex:AnswerIndexEntry[];problemAliases:ProblemAlias[];attempts:Attempt[];reviews:Review[];run:(action:()=>Promise<unknown>,success:string)=>Promise<boolean>;busy:boolean;submittedAnswer?:SubmittedAnswer;
+export default function AdvancedImportView({problems,answerIndex,problemAliases,attempts,reviews,run,busy,submittedAnswer,onExplain}:{
+  problems:Problem[];answerIndex:AnswerIndexEntry[];problemAliases:ProblemAlias[];attempts:Attempt[];reviews:Review[];run:(action:()=>Promise<unknown>,success:string)=>Promise<boolean>;busy:boolean;submittedAnswer?:SubmittedAnswer;onExplain?:(attemptId:number)=>void;
 }){
   const draftKey="stat1:gpt-import-draft:v1";
   const readDraft=()=>{try{return JSON.parse(sessionStorage.getItem(draftKey)||"null") as {text?:string;updates?:StudyUpdate[]}|null}catch{return null}};
@@ -100,7 +100,7 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
   const [editing,setEditing]=useState(false);
   const [error,setError]=useState("");
   const [gradingCopied,setGradingCopied]=useState(false);
-  const [saved,setSaved]=useState<{count:number;ids:string[];at:string}|null>(null);
+  const [saved,setSaved]=useState<{count:number;ids:string[];attemptIds:number[];at:string}|null>(null);
   const [highlightedField,setHighlightedField]=useState("");
   const [saveFailed,setSaveFailed]=useState(false);
   const [saveFailureReason,setSaveFailureReason]=useState('');
@@ -223,7 +223,7 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
     setStructured(false);
     setEditing(false);
     setError(receipt?.projectionWarning||'');
-    setSaved({count:snapshot.length,ids:[...new Set(snapshot.map(row=>row.problem_id))],at:new Intl.DateTimeFormat("ja-JP",{hour:"2-digit",minute:"2-digit"}).format(new Date())});
+    setSaved({count:snapshot.length,ids:[...new Set(snapshot.map(row=>row.problem_id))],attemptIds:receipt!.savedAttemptIds,at:new Intl.DateTimeFormat("ja-JP",{hour:"2-digit",minute:"2-digit"}).format(new Date())});
     }finally{saving.current=false;}
   };
   const currentReviewPrompt=(review:Review)=>{
@@ -261,6 +261,8 @@ export default function AdvancedImportView({problems,answerIndex,problemAliases,
         <span>保存完了</span>
         <h3>{saved.count}件の採点結果を登録しました</h3>
         <p>{saved.ids.join(" / ")}</p>
+        {saved.attemptIds.map(id=>{const a=attempts.find(a=>a.id===id);return <section className="saved-grade" key={id} aria-label={`保存した答案 ${id}`}><h4>答案 #{id} {a?.task_origin==='first_attempt'?'初回採点':a?.learning_purpose==='error_repair'?'補修の採点':'保存した採点'}</h4>{a?<><strong>{a.score_numeric==null?'得点未記録':`${a.score_numeric}${a.score_max?` / ${a.score_max}`:'点'}`} ・ {a.mark}</strong><p>{a.result_summary||'採点要約未登録'}</p><p>未解消・要確認：{a.error_point||'記録なし'}</p></>:<p>保存済み答案を読み込み中です。答案履歴からも確認できます。</p>}{onExplain&&<button className="primary" disabled={!a||busy||!!a.invalidated_at||!!a.superseded_by_attempt_id} onClick={()=>onExplain(id)}>この答案をGPTで補修</button>}</section>})}
+        <small>元の採点は保存済みです。解説・補修は別の記録として進め、元得点を上書きしません。</small>
         <small>{saved.at}・入力欄と確認内容をクリアしました。</small>
         <button className="ghost" onClick={()=>setSaved(null)}><ClipboardPaste size={15}/>次の取り込みを始める</button>
       </div>:<div className="empty"><ClipboardPaste size={30}/><p>解析結果がここに表示されます</p></div>):<>

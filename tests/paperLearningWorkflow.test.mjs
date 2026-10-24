@@ -47,9 +47,9 @@ test('pending work survives reload but a newer grade closes it, not prompt copyi
  assert.equal(feedback.deriveProblemLearningView(data,problem).workStatus,'awaiting_grading');
  assert.equal(feedback.deriveProblemLearningView({...data,attempts:[{...old,id:269},old]},problem).workStatus,'graded');
 });
-test('graduation suppresses old failure display but is not strong transfer',()=>{
+test('a legacy graduation record suppresses obsolete failure display, but does not document delayed reproduction or strong transfer',()=>{
  const data=minimal({attempts:[{id:307,problem_id:problem.problem_id,date:'2026-10-05',mark:'◎',score_numeric:100}],masteryByProblem:{[problem.problem_id]:{normalReviewComplete:true,levels:[{status:'retained'}]}}});
- const v=feedback.deriveProblemLearningView(data,problem);assert.equal(v.needsRepair,false);assert.equal(v.retentionLabel,'保持確認済み');assert.equal(v.transferLabel,'本番転移未測定');
+ const v=feedback.deriveProblemLearningView(data,problem);assert.equal(v.needsRepair,false);assert.equal(v.retentionLabel,'再現記録あり・遅延未確認');assert.equal(v.transferLabel,'本番転移未測定');assert.equal(data.attempts[0].mark,'◎');assert.equal(data.attempts[0].score_numeric,100);
 });
 test('graded generated problem is visible as training, never exam transfer',()=>{
  const p={problem_id:'GEN-test',source_type:'generated',generated_transfer:{lifecycle_status:'graded',lineage:{key:'training:test',sourceProblemId:problem.problem_id}}};

@@ -12,6 +12,7 @@ import {parseStudyText} from "./importParser.ts";
 import {deriveTransferEvidence,transferTrainingOutcome,confidentGrading} from "./skillEvidence.ts";
 import {optionalNetMinutes,imageGradingPrompt} from "./learningFeedback.ts";
 import {deriveTaskAnswerScope,taskAnswerScopeText,type TaskAnswerScope} from './taskAnswerScope.ts';
+import {transferWorkspaceItems,type TransferAssignment} from './transferWorkspaceIndex.ts';
 
 export function transferGradingContext(lineage:TransferTrainingLineage,destinationProblemId:string,scope?:TaskAnswerScope){
   return {context_version:'STAT1-TRANSFER-CONTEXT-v1',transfer_key:lineage.key,source_problem_id:lineage.sourceProblemId,
@@ -67,6 +68,14 @@ function targetResults(a:Attempt|undefined){
 export async function transferTrainingRequest(args:{db:typeof database;body:any;
   current:()=>Promise<Bootstrap>;save:(input:StudyUpdate&Record<string,unknown>)=>Promise<number>}){
   const {db,body}=args,key=String(body.key||""),forceGenerated=body.action==='start-generated',action=forceGenerated?'start':String(body.action||"view");
+  if(action==='list'){
+    const [rows,contexts,problems,attempts]=await Promise.all([db.meta.where('key').startsWith('transfer-generation:').toArray(),db.meta.where('key').startsWith('transfer-training-context:').toArray(),db.problems.toArray(),db.attempts.toArray()]);
+    const records:TransferGenerationRecord[]=[],warnings:string[]=[];
+    for(const row of rows){try{const r=JSON.parse(row.value);if(typeof r.lineage?.sourceProblemId!=='string'||!Number.isSafeInteger(r.lineage.sourceAttemptId)||typeof r.createdAt!=='string'||!Array.isArray(r.rounds)||r.key!==row.key.slice('transfer-generation:'.length))throw new Error('invalid record');records.push(r)}catch{warnings.push(`${row.key}：読み取れない旧記録です。削除せず保持しています。`)}}
+    const assignments:TransferAssignment[]=[];
+    for(const row of contexts){try{const lineage=JSON.parse(row.value);if(typeof lineage.key!=='string'||!lineage.key.startsWith('training:')||typeof lineage.sourceProblemId!=='string'||!Number.isSafeInteger(lineage.sourceAttemptId))throw Error('invalid assignment');assignments.push({problemId:row.key.slice('transfer-training-context:'.length),lineage,answerSubmitted:!!lineage.answer_submission})}catch{warnings.push(`${row.key}：元問題との対応を確認できない旧記録です。削除せず保持しています。`)}}
+    return {items:transferWorkspaceItems(records,problems,attempts,assignments),warnings};
+  }
   if(action==='begin-ability'){
     const current=await args.current(),profile=deriveTrainingProfiles(current).find(p=>p.id===body.profileId);
     if(!profile?.trainable)throw new Error(profile?.reason||'この訓練対象の採点根拠を確認できません。現在の弱点トレーニングから開き直してください。プロフィール更新は任意です。');
@@ -101,13 +110,20 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
     const a=attempts.find(a=>a.id===s.attemptId);return !a||a.problem_id!==s.problemId||a.exclude_from_metrics||a.duplicate_of_attempt_id||s.partIds.some(id=>!(a.graded_findings||[]).some(f=>f.graded_part_id===id));
   })))throw new Error('能力トレーニングの根拠答案・採点対象を確認できません。プロフィールの根拠を確認してください。');
   if(forceGenerated&&candidate?.existingProblemId&&await db.meta.get(`transfer-training-context:${candidate.existingProblemId}`))throw new Error('既存の転移問題を割り当て済みです。その問題の結果を確認してから次の課題へ進んでください。');
-  const existingId=!forceGenerated&&!record?(candidate?.existingProblemId||(!problems.find(p=>p.problem_id===savedAttempt?.problem_id)?.generated_transfer?savedAttempt?.problem_id:undefined)):undefined;
+  const assignedRow=!record?(await db.meta.where('key').startsWith('transfer-training-context:').toArray()).find(row=>{try{return JSON.parse(row.value).key===key}catch{return false}}):undefined;
+  const existingId=!forceGenerated&&!record?(assignedRow?.key.slice('transfer-training-context:'.length)||candidate?.existingProblemId||(!problems.find(p=>p.problem_id===savedAttempt?.problem_id)?.generated_transfer?savedAttempt?.problem_id:undefined)):undefined;
   const contextRow=existingId?await db.meta.get(`transfer-training-context:${existingId}`):undefined;
   let context=contextRow?JSON.parse(contextRow.value) as import("./generatedTransfer.ts").TransferTrainingLineage&{answer_submission?:import("./generatedTransfer.ts").GeneratedTransferContent["answer_submission"]}:undefined;
   if(context&&context.key!==key)throw new Error('この転移先は別の転移課題に割り当て済みです。元問題・技能を取り違えないよう、その課題を確認してから再計画してください。');
   let problem=problems.find(p=>p.generated_transfer?.lineage.key===key);
-  const source=problems.find(p=>p.problem_id===(candidate?.lineage.sourceProblemId||record?.lineage.sourceProblemId));
+  // Persisted opportunities own their origin, even when the current planner has
+  // moved to another failure of the same skill. Inspection must not relink it.
+  const sourceLineage=record?.lineage||context||savedAttempt?.transfer_lineage||candidate?.lineage;
+  const source=problems.find(p=>p.problem_id===sourceLineage?.sourceProblemId);
   const sourceFeatures=[source?.canonical_problem_type||"",source?.theme||"",...(source?.canonical_keywords||[])].filter(Boolean);
+  const latestSource=attempts.filter(a=>a.problem_id===source?.problem_id&&!a.exclude_from_metrics&&!a.exclude_from_planning&&!a.duplicate_of_attempt_id&&!a.invalidated_at&&!a.superseded_by_attempt_id).sort((a,b)=>b.id-a.id)[0];
+  const sourceChanged=!!record&&!!latestSource&&latestSource.id!==record.lineage.sourceAttemptId;
+  const qualityPrompt=(r:TransferGenerationRecord)=>validationPrompt(r,sourceFeatures)+(sourceChanged?`\n【下書き作成後の元問題の採点（由来は変更しない）】\n${JSON.stringify({original_source_attempt_id:r.lineage.sourceAttemptId,latest_attempt_id:latestSource!.id,date:latestSource!.date,learning_purpose:latestSource!.learning_purpose,findings:latestSource!.graded_findings,result_summary:latestSource!.result_summary})}\n以前の失敗を現在も同じ原因だと断定しない。今回の下書きが実際に必要な操作を測るか再確認する。元問題本文が未登録なら、数学的対応の確定に不足する資料を明記し、対応を確認できないチェックはpass=falseにする。`: '');
   const storedPack=meta?JSON.parse(meta.value) as StoredExamReferencePack:undefined;
   const skillName=(id:string)=>record?.lineage.abilityProfile?.name||storedPack?.data.concepts.find(c=>c.concept_id===id)?.display_name||'技能名未登録';
   const sourceScope=(lineage:TransferTrainingLineage)=>{
@@ -188,10 +204,14 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
     const next=await acceptGenerationDraft(record,String(body.text||""));
     if(problems.some(p=>p.generated_transfer?.problem_text.trim()===next.rounds.at(-1)!.draft.problem_text.trim()))throw new Error("同じ問題文が登録済みです。新しい別問題を依頼してください。");
     record=next;await saveRecord();
-    return {status:record.status,prompt:validationPrompt(record,sourceFeatures)};
+    return {status:record.status,prompt:qualityPrompt(record)};
   }else if(action==="validation-prompt"){
     if(!record||problem)throw new Error("検証待ちdraftがありません");
-    return {status:record.status,prompt:validationPrompt(record,sourceFeatures)};
+    return {status:record.status,prompt:qualityPrompt(record)};
+  }else if(action==='preview-validation'){
+    if(!record||problem)throw new Error('未登録の問題の品質結果だけを確認できます。');
+    const next=acceptGenerationValidation(record,String(body.text||'')),validation=next.rounds.at(-1)?.validation;
+    return {status:'quality_preview',ready:next.status==='validation_pending',checks:validation?.checks,issues:generationQualityIssues(next),pendingReason:next.pendingReason};
   }else if(action==="validate"){
     if(!record||problem)throw new Error("登録済み内容は変更できません");
     record=acceptGenerationValidation(record,String(body.text||""));
@@ -248,6 +268,7 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
   const content=problem?.generated_transfer;
   const result:Record<string,unknown>={status:record?.problemIssue&&!record.problemIssue.resolvedAt?'problem_pending':content?.lifecycle_status||record?.status||candidate?.kind||"pending",
     sourceStatementAvailable:!!source?.generated_transfer?.problem_text,
+    ...(sourceChanged?{sourceChange:{sourceAttemptId:record!.lineage.sourceAttemptId,latestAttemptId:latestSource!.id}}:{}),
     statementOnly:(content?.input_format||record?.input_format)==='statement_only_v1',
     draftPreview:!problem?generationDraftPreview(record):undefined,
     problem:problem?blindGeneratedView(problem):undefined,existingProblemId:!record&&!problem?candidate?.existingProblemId:undefined,
@@ -257,6 +278,7 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
     const facts=await db.attempts.toArray();
     const attempt=facts.find(a=>a.problem_id===problem!.problem_id&&!a.exclude_from_metrics);
     result.afterSubmission={...targetResults(attempt),rootSkillId:content.root_skill_id,rootSkillName:skillName(content.root_skill_id),sourceProblemId:content.lineage.sourceProblemId,
+      qualityChecks:content.validation?.checks,
       result:attempt?(ability?({success:'training transfer success',failure:'training transfer failure',uncertain:'能力の判定保留',assisted:'援助ありの能力訓練（独立成功ではない）'}[abilityTrainingOutcome(attempt)]):deriveTransferEvidence(facts).some(r=>r.successAttemptId===attempt.id)?"training transfer success":transferTrainingOutcome(attempt)):"採点待ち",
       evidence:attempt?.target_skill_assessment?.evidence||"",feedback:ability&&attempt?{score:attempt.score_numeric??null,scoreMax:attempt.score_max||100,errorPoint:attempt.target_skill_assessment?.evidence||'判定根拠未登録',nextAction:abilityTrainingPlan({attempts:facts,problems},{...content.lineage.abilityProfile!,origin:'training_history',state:'uncertain',trainable:true,reason:''}).next,successCriterion:content.lineage.successCriteria}:savedTrainingFeedback(attempt,!!attempt&&deriveTransferEvidence(facts).some(r=>r.successAttemptId===attempt.id),content.lineage.successCriteria),solution:content.grading_reference?.reference_solution||content.reference_solution,rubric:content.grading_reference?.grading_rubric||content.grading_rubric};
   }

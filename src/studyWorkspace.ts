@@ -1,5 +1,6 @@
 import type {Attempt,Bootstrap,Review,Task} from './types.ts';
-import {deriveCurrentWeaknessRows} from './learningFeedback.ts';
+import {deriveCurrentWeaknessRows,deriveProblemLearningViews} from './learningFeedback.ts';
+import {resolveCanonicalProblemId} from './examReadiness.ts';
 import {independentReferenceFree} from './skillEvidence.ts';
 import {attemptPlanningEligible} from './legacyKPolicy.ts';
 import {reviewExecutionState} from './integrityEngine.ts';
@@ -8,16 +9,16 @@ import {priorityRepairTasks} from './learningOverview.ts';
 import {currentTaskIdentity} from './examOptimizationPolicy.ts';
 
 export const studyScreens=[
- {key:'dashboard',label:'ダッシュボード'},
- {key:'problems',label:'問題・答案履歴'},
- {key:'reviews',label:'復習・転移'},
- {key:'weak',label:'現在の課題'},
- {key:'import',label:'GPT連携'},
+ {key:'dashboard',label:'ホーム'},
+ {key:'problems',label:'問題'},
+ {key:'weak',label:'弱点'},
+ {key:'transfer',label:'転移'},
 ] as const;
 
 /** Presentation only. The planner, evidence gates and source records are unchanged. */
 export function studyEvidenceKind(a:Attempt){
- if(a.transfer_lineage||a.source_type==='generated'||/^GEN-/.test(a.problem_id))return '生成訓練';
+  if(a.source_type==='generated'||/^GEN-/.test(a.problem_id))return '生成訓練';
+  if(a.transfer_lineage)return '既存問題の転移訓練';
  if(a.session_role==='counterfactual_calibration')return '後日・選択検証';
  if(a.learning_purpose==='error_repair')return '補修';
  if(a.learning_purpose==='retrieval_check')return '保持確認';
@@ -77,4 +78,38 @@ export function deriveWorkspaceEvidence(data:Bootstrap){
   overdue:schedule.filter(s=>s.bucket==='due'&&s.review.due_date<data.dashboard.today).length,
   nextRetention:schedule.find(s=>s.bucket==='next'&&s.phase==='retrieval_check'),
   recent:unique.sort((a,b)=>b.date.localeCompare(a.date)||b.attemptId-a.attemptId).slice(0,3)};
+}
+
+export const homeStateLabels={retained:'遅延再現確認済み',recheck:'改善・再確認待ち',repair:'要補修',unknown:'未評価・根拠不足'} as const;
+export type HomeProblemState=keyof typeof homeStateLabels;
+/** A read-only, problem-unit chart. The stricter shared list/detail projection
+ * controls confirmation. A successful part, old transfer flag or raw GPT prose
+ * must not certify a whole problem; generated exercises stay in another lane. */
+export function deriveHomeEvidence(data:Bootstrap,provided?:ReturnType<typeof deriveWorkspaceEvidence>){
+ const proof=provided||deriveWorkspaceEvidence(data),facts=data.attempts.filter(attemptPlanningEligible).filter(a=>!a.exclude_from_metrics&&!a.exclude_from_planning&&!a.duplicate_of_attempt_id);
+ const views=deriveProblemLearningViews({...data,attempts:facts}),seen=new Set<string>();
+ const problems=data.problems.filter(p=>!p.generated_transfer&&p.source_type!=='generated'&&!p.problem_id.startsWith('GEN-')).filter(p=>{
+  const id=resolveCanonicalProblemId(p.problem_id,data.problemAliases||[]);if(seen.has(id))return false;seen.add(id);return true;
+ }).map(problem=>{
+  const id=resolveCanonicalProblemId(problem.problem_id,data.problemAliases||[]),v=views[problem.problem_id];
+  const sources=proof.sources.filter(s=>resolveCanonicalProblemId(s.problemId,data.problemAliases||[])===id);
+  const state:HomeProblemState=v.needsRepair?'repair':v.retentionConfirmed?'retained':v.waitingRetention||sources.some(s=>s.repairAttemptId||s.retrievalAttemptId)?'recheck':'unknown';
+  const attempts=facts.filter(a=>resolveCanonicalProblemId(a.problem_id,data.problemAliases||[])===id);
+  return {problem,view:v,state,learned:attempts.length>0,latestDate:attempts.map(a=>a.date).sort().at(-1)||null};
+ });
+ const counts={retained:0,recheck:0,repair:0,unknown:0};for(const p of problems)counts[p.state]++;
+ const fields=[...new Set(problems.map(p=>p.problem.theme?.trim()||'分野未登録'))].map(name=>{
+  const rows=problems.filter(p=>(p.problem.theme?.trim()||'分野未登録')===name),counts={retained:0,recheck:0,repair:0,unknown:0};for(const r of rows)counts[r.state]++;
+  return {name,total:rows.length,counts,problemIds:rows.map(r=>r.problem.problem_id)};
+ }).sort((a,b)=>b.total-a.total||a.name.localeCompare(b.name));
+ const all=proof.sources,identified=all.filter(s=>!s.identityPending);
+ const operations=proof.groups.filter(g=>!g.identityPending&&g.sources.some(s=>s.status==='補修が必要')).map(g=>{
+  const sources=g.sources.filter(s=>s.status==='補修が必要'),skills=[...new Set(sources.flatMap(s=>s.skillIds))];
+  return {id:g.id,skills,problemIds:[...new Set(sources.map(s=>s.problemId))],attemptIds:[...new Set(sources.map(s=>s.latestFailureAttemptId))]};
+ }).sort((a,b)=>b.problemIds.length-a.problemIds.length||a.id.localeCompare(b.id));
+ const notes=data.weakNotes||[],dates=notes.map(n=>n.date).filter(Boolean).sort();
+ return {problems,views,counts,fields,operations,learned:problems.filter(p=>p.learned).length,
+  // A global ability denominator is not defined for the unclassified roots.
+  abilities:{confirmed:null,repair:null,identifiedSources:identified.length,unidentifiedSources:all.length-identified.length},
+  legacyNotes:{total:notes.length,from:dates[0]||null,to:dates.at(-1)||null,counts:Object.fromEntries(['K','W','N','C','none'].map(k=>[k,notes.filter(n=>n.error_type===k).length]))}};
 }

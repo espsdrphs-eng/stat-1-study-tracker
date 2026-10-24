@@ -25,7 +25,7 @@ export type GeneratedDraft={input_format?:"statement_only_v1";generation_context
   difficulty:"統計検定1級";estimated_minutes:number;surface_features:string[];generator_pass_id:string};
 export const GENERATION_CHECKS=["well_defined","solution_correct","rubric_aligned","skill_necessary",
   "no_shortcut","surface_distinct","skill_hidden","exam_appropriate","bounded_work"] as const;
-const QUALITY_LABELS:Record<typeof GENERATION_CHECKS[number],string>={well_defined:'問題の条件・解答可能性',solution_correct:'模範解答の正確さ',rubric_aligned:'正しい別解を含む採点基準',skill_necessary:'対象能力を測れるか',no_shortcut:'対象能力を使わず正解できないか',surface_distinct:'元問題と異なる設定',skill_hidden:'問題文のヒント漏れ',exam_appropriate:'試験水準との適合',bounded_work:'問題量・所要時間'};
+export const QUALITY_LABELS:Record<typeof GENERATION_CHECKS[number],string>={well_defined:'問題の条件・解答可能性',solution_correct:'模範解答の正確さ',rubric_aligned:'正しい別解を含む採点基準',skill_necessary:'対象能力を測れるか',no_shortcut:'対象能力を使わず正解できないか',surface_distinct:'元問題と異なる設定',skill_hidden:'問題文のヒント漏れ',exam_appropriate:'試験水準との適合',bounded_work:'問題量・所要時間'};
 export type GenerationValidation={draft_hash:string;validator_pass_id:string;
   checks:Record<typeof GENERATION_CHECKS[number],{pass:boolean;evidence:string}>};
 export type GeneratedTransferContent=GeneratedDraft&{

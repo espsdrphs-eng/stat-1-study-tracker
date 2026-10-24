@@ -4,11 +4,11 @@ import {readFile} from 'node:fs/promises';
 import {currentIssueTaskRows,studyEvidenceKind,scheduleRows,deriveWorkspaceEvidence} from '../src/studyWorkspace.ts';
 import * as importParser from '../src/importParser.ts';
 
-test('the daily navigation has five entries, with legacy pages available as secondary routes',async()=>{
+test('four daily areas retain the former five-screen tools as secondary routes',async()=>{
  const app=await readFile('src/App.tsx','utf8');
- for(const title of ['問題・答案履歴','復習・転移','現在の課題','GPT連携'])assert.ok(app.includes(title),title);
+ for(const title of ['問題・答案履歴','復習・転移','GPT連携','TransferWorkspace'])assert.ok(app.includes(title),title);
  const navigation=await import('../src/studyWorkspace.ts').catch(()=>({}));
- assert.deepEqual(navigation.studyScreens?.map(x=>x.key),['dashboard','problems','reviews','weak','import']);
+ assert.deepEqual(navigation.studyScreens?.map(x=>x.key),['dashboard','problems','weak','transfer']);
  assert.ok(app.includes('SettingsView')&&app.includes('PastView')&&app.includes('TodayView'));
 });
 test('evidence types do not combine generated training, post-session work, repair, retention and formal scores',()=>{
@@ -18,6 +18,10 @@ test('evidence types do not combine generated training, post-session work, repai
  assert.equal(studyEvidenceKind({...a,learning_purpose:'retrieval_check'}),'保持確認');
  assert.equal(studyEvidenceKind({...a,session_role:'counterfactual_calibration'}),'後日・選択検証');
  assert.equal(studyEvidenceKind({...a,problem_id:'GEN-fixture',source_type:'generated'}),'生成訓練');
+ const lineage={key:'training:existing',sourceProblemId:'PY-fixture-Q2',sourceAttemptId:10};
+ assert.equal(studyEvidenceKind({...a,transfer_lineage:lineage,learning_purpose:'transfer_check',exam_score_eligible:false}),'既存問題の転移訓練');
+ assert.equal(studyEvidenceKind({...a,problem_id:'GEN-fixture',source_type:'generated',transfer_lineage:lineage}),'生成訓練');
+ assert.equal(studyEvidenceKind({...a,learning_purpose:'transfer_check',exam_score_eligible:false}),'別問題の確認');
 });
 test('historical completed unknown scopes are not counted as current issues, and waiting Reviews keep the earliest date',()=>{
  const d={problems:[{problem_id:'PY-2022-Q4',category:'past_exam'}],attempts:[],reviews:[
