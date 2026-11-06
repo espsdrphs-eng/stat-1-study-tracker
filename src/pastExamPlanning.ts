@@ -507,6 +507,17 @@ export function buildPastExamYearCandidates(args:{
   }).filter((row):row is NonNullable<typeof row>=>!!row);
 }
 
+/** User-selected historical practice is separate from automatic sequencing.
+ * Work on catalog copies only; never release the Planner or claim unseen evidence. */
+export function manuallySelectedPastExamYear(args:Parameters<typeof buildPastExamYearCandidates>[0]&{year:number;confirmed:boolean}){
+ if(args.year!==2025||args.confirmed!==true)return undefined;
+ const rows=args.catalog.filter(row=>row.year===args.year&&row.availability==='verified_problem'&&row.schedulable&&row.gradable);
+ if(rows.length!==5||new Set(rows.map(r=>r.questionNumber)).size!==5||
+   rows.some(r=>!Number.isInteger(r.questionNumber)||r.questionNumber<1||r.questionNumber>5||r.canonicalProblemId!==`PY-${args.year}-Q${r.questionNumber}`))return undefined;
+ return buildPastExamYearCandidates({...args,catalog:args.catalog.map(row=>row.year===args.year?{...row,simulationProtected:false}:row)})
+  .find(candidate=>candidate.year===args.year);
+}
+
 /** Same individual-start rule for the problem screen and the write endpoint. */
 export function canStartProtectedProblemIndividually(args:{year?:number;entryPoint?:string;acknowledged:boolean}){
  return args.entryPoint==='problem_list'&&args.acknowledged===true&&[2024,2025].includes(Number(args.year));

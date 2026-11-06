@@ -78,6 +78,7 @@ import {deriveExamReadinessAssessment} from "./examCapability.ts";
 import {reviewDueState,reviewPlanningDecision} from "./todayLearningPolicy.ts";
 import {deriveCanonicalStudyPlan,deriveRankedStudyCandidates} from "./canonicalStudyPlan.ts";
 import {canonicalizePastExamSessions,currentPastExamSessionExplanation,derivePastExamWorkspace,derivePastExamSessionState,pastExamSessionKey,pastExamSessionPurpose,reconcilePastExamSessionEvidence,stablePastExamSessionKey,validatePastExamSessionIdentity,validatePastExamTaskIdentity,projectPastExamSessionAdmissions,derivePastExamProblemStart,canStartProtectedProblemIndividually} from "./pastExamPlanning.ts";
+import {manuallySelectedPastExamYear} from './pastExamPlanning.ts';
 
 const PLANNER_RUNTIME_MODE_META_KEY="planner-runtime-mode";
 const CURRENT_PLAN_PROJECTION_META_KEY="current-plan-projection-version";
@@ -4145,7 +4146,8 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     await db.weakNotes.update(id,applyWeakNoteQuizResult(note,body.result==="remembered"?"remembered":"retry"));
   } else if(path==='/api/past-sessions/start'){
     const current=await bootstrap(),year=Number(body.year),workspace=derivePastExamWorkspace({catalog:current.adaptiveLearning.pastExamCatalog,attempts:current.attempts,pastSessions:current.pastSessions,today:current.dashboard.today,daysRemaining:current.dashboard.pace.daysRemaining});
-    const c=workspace.candidates.find(c=>c.year===year);
+    const automatic=workspace.candidates.find(c=>c.year===year);
+    const c=automatic||manuallySelectedPastExamYear({year,confirmed:body.confirmHistoricalRetest===true,catalog:current.adaptiveLearning.pastExamCatalog,attempts:current.attempts,pastSessions:current.pastSessions,today:current.dashboard.today,daysRemaining:current.dashboard.pace.daysRemaining});
     if(!c||c.eligibleRows.length<5)throw new Error('この年度は現在の保護・前提条件を満たしていません。Todayの待機条件を確認してください。');
     const numbers=[...new Set<number>((Array.isArray(body.selectedQuestionNumbers)?body.selectedQuestionNumbers:[]).map(Number))];
     if(numbers.length!==3||numbers.some(n=>!Number.isInteger(n)||n<1||n>5))throw new Error('問1〜問5から3問を選択してください。');
@@ -4156,7 +4158,7 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     const ids=selection as string[];
     return await savePastExamSession({year,date:current.dashboard.today,session_kind:'selected_three_timed',scan_set_source:'past_exam_year',scan_minutes:10,initial_selected_problem_ids:ids,
       questions:c.eligibleRows.map(p=>({problemId:p.canonicalProblemId,questionLabel:`問${p.questionNumber}`,selected:ids.includes(p.canonicalProblemId),completed:false,actualScore:null,actualMinutes:null})),
-      past_exam_year_role:c.yearRole,scan_evidence_kind:c.cleanScanEligible?'clean':'practice',selected_year_reason:workspace.recommended?.year===year?workspace.recommended.selectedYearReason:`現在の保護条件を満たす${year}年を利用者が選択`,
+      past_exam_year_role:c.yearRole,scan_evidence_kind:c.cleanScanEligible?'clean':'practice',selected_year_reason:!automatic?`${year}年を利用者が明示選択。自動推薦とは別の再演習であり、未見測定には含めません。`:workspace.recommended?.year===year?workspace.recommended.selectedYearReason:`現在の保護条件を満たす${year}年を利用者が選択`,
       exposure_snapshot_at_start:{classification:c.cleanScanEligible?'clean':'practice',exposed_problem_ids:c.eligibleRows.filter(p=>!['unseen','unknown'].includes(p.exposure)).map(p=>p.canonicalProblemId),total_problem_count:5,captured_at:new Date().toISOString()}},active?.id) as T;
   } else if(/^\/api\/past-sessions\/\d+\/grading$/.test(path)){
     const id=Number(path.split('/')[3]);

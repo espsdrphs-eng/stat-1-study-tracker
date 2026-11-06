@@ -2,12 +2,14 @@ import {useEffect,useState} from 'react';
 import type {Bootstrap,PastSession} from './types';
 import {pastExamIndividualResults,pastSessionResult,sessionSelectedIds,pastSessionSelectionComparison} from './pastExamGrading';
 import {post} from './api';
-import {derivePastExamProblemStart} from './pastExamPlanning';
+import {derivePastExamProblemStart,manuallySelectedPastExamYear} from './pastExamPlanning';
 type Props={data:Bootstrap;eligibleYears:number[];defaultYear?:number;focusSession?:{id:number};onImport:()=>void;onRepair:(problemId:string)=>void;onSaved:()=>void};
 export function PastExamResults({data,eligibleYears,defaultYear,focusSession,onImport,onRepair,onSaved}:Props){
  const years=[...new Set(data.adaptiveLearning.pastExamCatalog.map(p=>p.year))].sort((a,b)=>b-a);
  const [year,setYear]=useState(defaultYear||eligibleYears[0]||years[0]),[chosen,setChosen]=useState([1,2,3]),[active,setActive]=useState<number|null>(null),[prompt,setPrompt]=useState(''),[message,setMessage]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false),[total,setTotal]=useState('');
  const [comparisonOpen,setComparisonOpen]=useState(false),[postProblem,setPostProblem]=useState('');
+ const [confirmHistoricalRetest,setConfirmHistoricalRetest]=useState(false);
+ useEffect(()=>setConfirmHistoricalRetest(false),[year]);
  const sessions=data.pastSessions.filter(s=>s.year===year&&!s.superseded_by_session_id&&s.session_kind==='selected_three_timed').sort((a,b)=>b.id-a.id);
  useEffect(()=>{const s=data.pastSessions.find(s=>s.id===focusSession?.id);if(s){setYear(s.year);setActive(s.id);setPrompt('');document.querySelector('.past-year-workspace')?.scrollIntoView({behavior:'smooth'})}},[focusSession]);
  const s=sessions.find(s=>s.id===active)||sessions[0],result=s?pastSessionResult(s,data.attempts):null;
@@ -16,6 +18,8 @@ export function PastExamResults({data,eligibleYears,defaultYear,focusSession,onI
  const individual=pastExamIndividualResults(year,data.attempts);
  const unseen=data.adaptiveLearning.pastExamCatalog.find(p=>p.year===year&&p.simulationProtected&&!data.attempts.some(a=>a.problem_id===p.canonicalProblemId&&a.score_numeric!=null&&!a.exclude_from_metrics));
  const protection=unseen?derivePastExamProblemStart({problemId:unseen.canonicalProblemId,catalog:data.adaptiveLearning.pastExamCatalog,attempts:data.attempts,tasks:data.today.tasks,pastSessions:data.pastSessions,today:data.dashboard.today,daysRemaining:data.dashboard.pace.daysRemaining}):undefined;
+ const manualRetest=!eligibleYears.includes(year)&&manuallySelectedPastExamYear({year,confirmed:true,catalog:data.adaptiveLearning.pastExamCatalog,attempts:data.attempts,pastSessions:data.pastSessions,today:data.dashboard.today,daysRemaining:data.dashboard.pace.daysRemaining});
+ const canStart=eligibleYears.includes(year)||!!manualRetest&&confirmHistoricalRetest;
  const canFinish=!!s&&(eligibleYears.includes(s.year)||!!s.prompt_scanned_at||!!s.attempt_started_at||!!s.attempt_completed_at);
  const action=async(fn:()=>Promise<unknown>)=>{setBusy(true);setError('');setMessage('');try{await fn();onSaved()}catch(e){setError(e instanceof Error?e.message:String(e))}finally{setBusy(false)}};
  const copy=async(s:PastSession,pid:string,kind='prompt')=>action(async()=>{const r=await post<{prompt:string}>(`/api/past-sessions/${s.id}/grading`,{action:kind,problemId:pid});setPrompt(r.prompt);setPostProblem('');try{await navigator.clipboard.writeText(r.prompt);setMessage('コピーしました。ChatGPTへ問題資料と答案画像を直接添付してください。')}catch{setMessage('プロンプト内容を開き、全選択してコピーしてください。')}});
@@ -58,9 +62,9 @@ export function PastExamResults({data,eligibleYears,defaultYear,focusSession,onI
   <details className="panel past-new-session" open={!s}><summary>{s?'新しい演習・再挑戦を開始':'演習を開始'}</summary>
    <p>本番形式90分（scanを含む）。手元の原問題を開き、5問から3問を選びます。</p>
    <div className="past-answered">{[1,2,3,4,5].map(q=><label key={q}><input type="checkbox" checked={chosen.includes(q)} onChange={e=>setChosen(e.target.checked?[...chosen,q]:chosen.filter(v=>v!==q))}/>問{q}</label>)}</div>
-   {!eligibleYears.includes(year)&&<p>この年度は現在の保護・前提条件により新規開始できません。Todayの待機条件を確認してください。保存済み演習の採点は再開できます。</p>}
-   {!eligibleYears.includes(year)&&protection?.reasons.length? <ul>{protection.reasons.map(reason=><li key={reason}>{reason}</li>)}</ul>:null}
-   <button className="primary" disabled={busy||chosen.length!==3||!eligibleYears.includes(year)} onClick={()=>action(async()=>{const r=await post<{sessionId:number}>('/api/past-sessions/start',{year,selectedQuestionNumbers:chosen});setActive(r.sessionId);setPrompt('');setTotal('')})}>3問を選んで演習開始</button>
+   {manualRetest?<section aria-label="2025年の手動再演習"><p>自動推薦では待機中ですが、2025年は自分で選んで再演習できます。未見の本番測定とは分けて記録し、過去の得点は変更しません。</p><label><input type="checkbox" checked={confirmHistoricalRetest} onChange={e=>setConfirmHistoricalRetest(e.target.checked)}/>2025年を再演習として開始（問題文を確認する）</label></section>:!eligibleYears.includes(year)&&<p>この年度は現在の保護・前提条件により新規開始できません。保存済み演習の採点は再開できます。</p>}
+   {!eligibleYears.includes(year)&&protection?.reasons.length?<details><summary>自動推薦の待機理由</summary><ul>{protection.reasons.map(reason=><li key={reason}>{reason}</li>)}</ul></details>:null}
+   <button className="primary" disabled={busy||chosen.length!==3||!canStart} onClick={()=>action(async()=>{const r=await post<{sessionId:number}>('/api/past-sessions/start',{year,selectedQuestionNumbers:chosen,...(manualRetest?{confirmHistoricalRetest}:{} )});setActive(r.sessionId);setPrompt('');setTotal('');setConfirmHistoricalRetest(false)})}>3問を選んで演習開始</button>
   </details>
  </section>;
 }
