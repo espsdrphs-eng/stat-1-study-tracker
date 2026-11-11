@@ -6,6 +6,8 @@ import {attemptPlanningEligible,findingPlanningEligible} from './legacyKPolicy.t
 import {GENERATION_CHECKS,validateGeneratedContent} from './generatedTransfer.ts';
 
 export const CAPABILITY_RECORD_PREFIX='capability-evaluation:v1:';
+const INITIAL_ALL_CONTEXT_PREFIX='capability-context:iall:';
+export const isInitialAllCapabilityContext=(version:string)=>/^capability-context:iall:[0-9a-f]{64}$/.test(version);
 export type CapabilityEvidence={attempt_id:number;part_ids:string[];kind:CapabilityKind;outcome:'success'|'failure'|'partial'|'uncertain';baseline_attempt_id:number|null;observation:string;transfer_conditions?:{different_structure:boolean;method_not_cued:boolean}};
 export type CapabilityEvaluation={ability_id:string;state:CapabilityState;certainty:'confirmed'|'provisional'|'conflicting';judgement:string;first_error:string|null;cause_hypothesis?:string|null;evidence:CapabilityEvidence[];next_check:{kind:CapabilityKind;due_date:string|null;task:string;success_condition:string}|null};
 export type CapabilityWire={schema_version:'stat1-capability-v1';catalog_version:string;context_version:string;evaluated_at:string;evaluations:CapabilityEvaluation[]};
@@ -54,7 +56,8 @@ export function parseCapabilityUpdate(raw:string):CapabilityWire{
  if(typeof v.evaluated_at!=='string'||!/^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:\d{2})$/.test(v.evaluated_at)||!Number.isFinite(Date.parse(v.evaluated_at)))fail('evaluated_at','時差付きの評価日時が必要です。');
  day(v.evaluated_at.slice(0,10),'evaluated_at');
  if(Date.parse(v.evaluated_at)>Date.now()+300000)fail('evaluated_at','評価日時が未来です。端末日時とGPTの評価日時を確認してください。');
- const seen=new Set<string>(),evaluations=array(v.evaluations,'evaluations',12).map((r,i)=>{
+ const maxEvaluations=isInitialAllCapabilityContext(v.context_version)?capabilityCatalog.length:12;
+ const seen=new Set<string>(),evaluations=array(v.evaluations,'evaluations',maxEvaluations).map((r,i)=>{
   const p=`evaluations[${i}]`,e=obj(r,p),ability_id=text(e.ability_id,`${p}.ability_id`,100);
   if(!capabilityById.has(ability_id))fail(`${p}.ability_id`,'能力マップに存在しません。推測で新規登録しません。');
   if(seen.has(ability_id))fail(`${p}.ability_id`,'同じ評価内で能力が重複しています。');seen.add(ability_id);
@@ -150,12 +153,13 @@ function representativeAttempts(f:CapabilityFacts,focusId?:string){
 export async function buildCapabilityContext(f:CapabilityFacts,focusId?:string,selection:CapabilityContextScope={}){
  if(focusId&&!capabilityById.has(focusId))fail('ability_id','能力マップにありません。');
  const initial=selection.initial===true,domainIndex=capabilityDomains.findIndex(d=>d.id===selection.domainId),batch=selection.batch??0;
- if(initial&&(domainIndex<0||!Number.isInteger(batch)||batch<0))fail('分野','初回評価の分野と区分を選んでください。');
- const domainRows=initial?capabilityCatalog.filter(c=>c.domainId===selection.domainId):capabilityCatalog;
- const operations=initial?domainRows.slice(batch*12,(batch+1)*12):capabilityCatalog;
+ const all=initial&&selection.domainId==='all';
+ if(initial&&(all?batch!==0:domainIndex<0||!Number.isInteger(batch)||batch<0))fail('分野','初回評価の分野と区分を選んでください。');
+ const domainRows=initial&&!all?capabilityCatalog.filter(c=>c.domainId===selection.domainId):capabilityCatalog;
+ const operations=initial&&!all?domainRows.slice(batch*12,(batch+1)*12):capabilityCatalog;
  if(!operations.length)fail('分野','この評価区分は存在しません。');
- const scope={initial,domainId:initial?selection.domainId:null,batch,abilityIds:operations.map(c=>c.id),batchCount:Math.ceil(domainRows.length/12)};
- const version='capability-context:'+(initial?`i${domainIndex.toString(36)}p${batch}:`:'')+await hash(capabilityFactsSignature(f));
+ const scope={initial,domainId:initial?selection.domainId:null,batch,abilityIds:operations.map(c=>c.id),batchCount:all?1:Math.ceil(domainRows.length/12)};
+ const version=(all?INITIAL_ALL_CONTEXT_PREFIX:'capability-context:'+(initial?`i${domainIndex.toString(36)}p${batch}:`:''))+await hash(capabilityFactsSignature(f));
  const representatives=initial?[...f.attempts].filter(usable).sort((a,b)=>a.date.localeCompare(b.date)||a.id-b.id):representativeAttempts(f,focusId);
  const noteGroups=new Map<string,{attempt_id:number;problem_id:string;note_ids:number[];observation:string;correction_rule:string}>();
  if(initial)for(const n of f.weakNotes||[]){if(!representatives.some(a=>a.id===n.generated_from_attempt_id&&a.problem_id===n.problem_id))continue;
@@ -198,19 +202,19 @@ export async function buildCapabilityContext(f:CapabilityFacts,focusId?:string,s
   payload.history_attachment={name:historyAttachment.name,sha256:digest,answers:all.length,required_for_initial_review:true};
   payload.answer_index=all.map(a=>({id:a.id,problem_id:a.problem_id,date:a.date,success_parts:a.assessed_parts.filter(p=>p.resolved&&p.error_type==='none').map(p=>p.id),unresolved_parts:a.assessed_parts.filter(p=>!p.resolved).map(p=>p.id)}));
  }
- const prompt=(initial?`【初回・分野別評価】今回は${capabilityDomains[domainIndex].name}の区分${batch+1}/${scope.batchCount}、operation_catalogの能力だけを評価する。過去の有効答案を最小射影で全期間含める。最初の誤りは記録上未確定なら推測しない。成功所見と失敗所見の両方、補修・後続答案を対話で照合する。同じ答案から派生したnote_idsの多さを失敗回数としない。Reviewのdoneだけで成功や定着を認定しない。分野名や問題テーマから能力を一括分類しない。必要な原答案は利用者に依頼し、不明はunconfirmedのままにする。\n`:'')+'統計検定1級・統計数理の学習を、ChatGPT「勉強する」で指導してください。以下はアプリに保存された証拠です。学習方針・出題・採点・原因仮説・習得評価はあなたが担当し、アプリは記録とID照合のみを担当します。\n'+
+ const prompt=(initial?(all?`【初回・全分野評価】全${capabilityDomains.length}分野の${operations.length}操作を一度に確認し、分野ごとに分割せず、取り込み用JSONを1個だけ返す。根拠のある能力だけを記録する。証拠不足の能力は無理に配列を埋めず、既存評価も新しい根拠がなければ変更しない。各能力の根拠は直接関係する1〜2件を目安にし、次回提案は優先3件まで（他はnull）。\n`:`【初回・分野別評価】今回は${capabilityDomains[domainIndex].name}の区分${batch+1}/${scope.batchCount}、operation_catalogの能力だけを評価する。`)+`過去の有効答案を最小射影で全期間含める。最初の誤りは記録上未確定なら推測しない。成功所見と失敗所見の両方、補修・後続答案を対話で照合する。同じ答案から派生したnote_idsの多さを失敗回数としない。Reviewのdoneだけで成功や定着を認定しない。分野名や問題テーマから能力を一括分類しない。必要な原答案は利用者に依頼し、不明はunconfirmedのままにする。\n`:'')+'統計検定1級・統計数理の学習を、ChatGPT「勉強する」で指導してください。以下はアプリに保存された証拠です。学習方針・出題・採点・原因仮説・習得評価はあなたが担当し、アプリは記録とID照合のみを担当します。\n'+
   (initial?'初回履歴JSON（history_attachmentの名前・hash）を同じ会話の添付として確認する。代表答案だけで全期間の評価を済ませず、answer_indexから古い成功・失敗の該当記録もファイルで照合する。ファイルがない・読めない場合は添付を依頼し、未確認を埋めない。最新の能力評価は今回の依頼を優先し、以前の添付内の情報から現在状態を勝手に戻さない。\n':'')+
   '2026-11-11版「学習停滞の診断と改善指導ルール」に従う。問題消化を目標にしない。最初の不正確な式・条件・記号1件を特定し、連鎖的失点と独立した誤りを区別する。原因は仮説と確信度を示し、局所計算ミスを概念不足と断定しない。未着手を未修復にしない。\n'+
   '初回採点は元得点として固定する。同じ学習で高影響の操作1個だけを必要な1〜3行から丁寧に補修し、解説を閉じて短い自力再現を確認する。説明を読んだだけでは成功としない。次回は原則24〜72時間後を目安に、構造・要求を変えた非誘導の未見問題で確認する。日時は提案であり、アプリが勝手に予定や既存Reviewを書き換えることはない。\n'+
   '診断・転移の出題時は弱点名・分野・定理・解法・正答を先に見せない。数値だけを変えた類題、同じ問題の再挑戦、援助ありを遅延転移成功としない。生成問題は下書き→別passの独立品質確認→自力答案固定→既存採点の順とする。不備は能力失敗でなく保留。\n'+
   '分野全体を一度で習得認定せず、下のoperation_catalogの操作IDと実際の採点範囲を対応させる。不確かな対応はcertainty=provisional、矛盾はconflicting。根拠がない能力はunconfirmedのままにする。過去プロフィールの名前一致だけで対応を確定しない。改善済みの操作を無条件で最優先へ戻さない。優先順位と確認時期は根拠を述べて提案し、同じ成功類題を漫然と追加しない。\n'+
   '状態は unconfirmed / unrepaired / immediate_confirmed / delayed_transfer_confirmed / exam_confirmed。直後成功から後続段階を推測しない。各証拠kindは diagnostic / local_repair / immediate_reproduction / delayed_transfer / exam、outcomeは success / failure / partial / uncertain。遅延転移の証拠には transfer_conditions:{"different_structure":true|false,"method_not_cued":true|false} を付ける。基準答案はbaseline_attempt_idで指定する。日付しかない翌日の記録は24時間経過を立証できない。\n'+
-  'まず通常の文章で対話・解説してよい。保存時だけ下記スキーマの標準JSONを1個返す。Markdownフェンス・JSON外の文章は付けず、配列は[]、不明値は明示的null、空の値は禁止。評価は今回確認した最大12能力、各説明1〜2文、次回行動は能力ごとに1件まで。evaluations配列はあなたが提案する重要度の順で、今回の重点を先頭に置く。代表答案または保存済み能力評価に明示されたIDだけを参照し、必要な古い原資料は利用者へ依頼する。得点の再出力・書換えは不要。\n'+JSON.stringify(schema)+'\n保存済み証拠：\n'+JSON.stringify(facts);
+  `まず通常の文章で対話・解説してよい。保存時だけ下記スキーマの標準JSONを1個返す。Markdownフェンス・JSON外の文章は付けず、配列は[]、不明値は明示的null、空の値は禁止。評価は今回確認した最大${all?operations.length:12}能力、各説明1〜2文、次回行動は能力ごとに1件まで。evaluations配列はあなたが提案する重要度の順で、今回の重点を先頭に置く。${initial?'添付履歴のanswers（採点項目はassessed_parts）または保存済み能力評価':'代表答案または保存済み能力評価'}に明示されたIDだけを参照し、必要な古い原資料は利用者へ依頼する。得点の再出力・書換えは不要。\n`+JSON.stringify(schema)+'\n保存済み証拠：\n'+JSON.stringify(facts);
  const eligibleAttemptIds=[...new Set([...representatives.map(a=>a.id),...latestCapabilityItems(f).flatMap(({item})=>item.evidence.flatMap(s=>[s.attempt_id,...(s.baseline_attempt_id?[s.baseline_attempt_id]:[])]))])];
  return {version,catalogVersion:CAPABILITY_CATALOG_VERSION,prompt,eligibleAttemptIds,scope,historyAttachment,sourcePeriod:{first:[...f.attempts].map(a=>a.date).sort()[0]??null,last:[...f.attempts].map(a=>a.date).sort().at(-1)??null},answerCount:f.attempts.length};
 }
 export async function prepareCapabilityUpdate(raw:string,f:CapabilityFacts):Promise<CapabilityRecord>{
- const wire=parseCapabilityUpdate(raw),match=wire.context_version.match(/^capability-context:i([0-9a-z]+)p(\d+):/),context=await buildCapabilityContext(f,undefined,match?{initial:true,domainId:capabilityDomains[parseInt(match[1],36)]?.id,batch:Number(match[2])}:{});
+ const wire=parseCapabilityUpdate(raw),match=wire.context_version.match(/^capability-context:i([0-9a-z]+)p(\d+):/),context=await buildCapabilityContext(f,undefined,isInitialAllCapabilityContext(wire.context_version)?{initial:true,domainId:'all'}:match?{initial:true,domainId:capabilityDomains[parseInt(match[1],36)]?.id,batch:Number(match[2])}:{});
  if(wire.context_version!==context.version)fail('context_version','評価対象が更新されています。現在の依頼をコピーして再評価してください。原文は保管できます。');
  const byId=new Map(f.attempts.map(a=>[a.id,a])),allowed=new Set(context.eligibleAttemptIds),sourceSignatures:Record<string,string>={};
  for(const e of wire.evaluations){if(context.scope.initial&&!context.scope.abilityIds.includes(e.ability_id))fail('対象能力','今回の分野・区分に含まれません。分野別の依頼を確認してください。');for(const s of e.evidence){

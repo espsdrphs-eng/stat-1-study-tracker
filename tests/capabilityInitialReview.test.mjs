@@ -46,3 +46,26 @@ test('a later contradictory scoped answer holds an older success, while unrelate
  c=await buildCapabilityContext(f);r=await prepareCapabilityUpdate(JSON.stringify(capabilityWire(c)),f);
  assert.equal(r.items[0].effectiveState,'immediate_confirmed');
 });
+
+test('one initial request covers all 75 operations without splitting the history or certifying missing evidence',async()=>{
+ const f=capabilityFacts(),c=await buildCapabilityContext(f,undefined,{initial:true,domainId:'all'});
+ assert.equal(c.scope.batchCount,1);assert.equal(c.scope.abilityIds.length,75);
+ const facts=JSON.parse(c.prompt.split('保存済み証拠：\n')[1]);
+ assert.equal(new Set(facts.operation_catalog.map(a=>a.domain)).size,12);
+ assert.equal(facts.history_attachment.sha256,c.historyAttachment.sha256);
+ const w=capabilityWire(c);w.evaluations=c.scope.abilityIds.map(ability_id=>({...w.evaluations[0],ability_id,state:'unconfirmed',certainty:'provisional',evidence:[],next_check:null}));
+ const result=await prepareCapabilityUpdate(JSON.stringify(w),f);assert.equal(result.items.length,75);assert.ok(result.items.every(e=>e.effectiveState==='unconfirmed'));
+ assert.match(c.prompt,/最大75能力/);assert.doesNotMatch(c.prompt,/最大12能力/);
+});
+
+test('all-domain size is scoped to the current initial request and never bypasses evidence or duplicate-ID checks',async()=>{
+ const f=capabilityFacts(),all=await buildCapabilityContext(f,undefined,{initial:true,domainId:'all'}),daily=await buildCapabilityContext(f);
+ const w=capabilityWire(all);w.evaluations=all.scope.abilityIds.slice(0,13).map(ability_id=>({...w.evaluations[0],ability_id,state:'unconfirmed',certainty:'provisional',evidence:[],next_check:null}));
+ const scoped=await buildCapabilityContext(f,undefined,{initial:true,domainId:'estimation',batch:0});
+ for(const c of [daily,scoped])await assert.rejects(()=>prepareCapabilityUpdate(JSON.stringify({...w,context_version:c.version}),f),/12件/);
+ await assert.rejects(()=>prepareCapabilityUpdate(JSON.stringify({...w,evaluations:[...w.evaluations,w.evaluations[0]]}),f),/重複/);
+ w.evaluations[12].evidence=[{attempt_id:999999,part_ids:[],kind:'diagnostic',outcome:'uncertain',baseline_attempt_id:null,observation:'存在しない答案'}];
+ await assert.rejects(()=>prepareCapabilityUpdate(JSON.stringify(w),f),/根拠答案/);
+ w.evaluations[12].evidence=[];f.attempts[0].score_numeric=46;
+ await assert.rejects(()=>prepareCapabilityUpdate(JSON.stringify(w),f),/更新/);
+});
