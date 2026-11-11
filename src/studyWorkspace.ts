@@ -11,8 +11,8 @@ import {currentTaskIdentity} from './examOptimizationPolicy.ts';
 export const studyScreens=[
  {key:'dashboard',label:'ホーム'},
  {key:'problems',label:'問題'},
- {key:'weak',label:'弱点'},
- {key:'transfer',label:'転移'},
+ {key:'weak',label:'能力マップ'},
+ {key:'transfer',label:'確認・転移'},
 ] as const;
 
 /** Presentation only. The planner, evidence gates and source records are unchanged. */

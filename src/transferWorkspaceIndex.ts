@@ -6,6 +6,7 @@ import {transferTrainingOutcome} from './skillEvidence.ts';
 
 export type TransferAssignment={problemId:string;lineage:TransferTrainingLineage;answerSubmitted:boolean};
 export type TransferWorkspaceItem={key:string;title:string;createdAt:string;kind:'generated'|'existing';phase:'generation'|'quality'|'answer'|'grading'|'result'|'pending';
+ noncued?:boolean;sourceHidden?:boolean;
  sourceProblemId:string;sourceAttemptId:number;latestSourceAttemptId?:number;sourceChanged:boolean;sourceMissing:boolean;registered:boolean;
  problemId?:string;attemptId?:number;outcome?:string;reason?:string};
 /** Index existing records only. Never change a historical lineage to match a new
@@ -21,7 +22,8 @@ export function transferWorkspaceItems(records:TransferGenerationRecord[],proble
   const source=facts.find(a=>a.id===l.sourceAttemptId&&a.problem_id===l.sourceProblemId),latest=facts.filter(a=>a.problem_id===l.sourceProblemId).sort((a,b)=>b.id-a.id)[0];
   const phase:TransferWorkspaceItem['phase']=a?'result':r.status==='pending'||r.problemIssue&&!r.problemIssue.resolvedAt?'pending':p?.generated_transfer?.answer_submission||assignments.some(c=>c.lineage.key===r.key&&c.answerSubmitted)?'grading':p?'answer':r.status==='validation_pending'?'quality':'generation';
   const kind:TransferWorkspaceItem['kind']=p&&!p.generated_transfer?'existing':'generated';
-  return {key:r.key,title:l.abilityProfile?.name||l.successCriteria||'対象操作の転移訓練',createdAt:a?.date||r.createdAt,kind,phase,
+  const noncued=!!r.noncued||!!l.noncuedRequestId,sourceHidden=noncued&&!p?.generated_transfer?.answer_submission;
+  return {key:r.key,title:sourceHidden?'非誘導型の確認（対象は答案後）':l.abilityProfile?.name||l.successCriteria||'対象操作の転移訓練',createdAt:a?.date||r.createdAt,kind,phase,noncued,sourceHidden,
    sourceProblemId:l.sourceProblemId,sourceAttemptId:l.sourceAttemptId,latestSourceAttemptId:latest?.id,sourceChanged:!!latest&&latest.id!==l.sourceAttemptId,sourceMissing:!source,registered:!!p,
    ...(p?{problemId:p.problem_id}:{}),...(a?{attemptId:a.id,outcome:l.abilityProfile?abilityTrainingOutcome(a):transferTrainingOutcome(a)}:{}),...(r.pendingReason?{reason:r.pendingReason}:{})};
  }).sort((a,b)=>Number(a.phase==='result')-Number(b.phase==='result')||b.createdAt.localeCompare(a.createdAt)||a.key.localeCompare(b.key));

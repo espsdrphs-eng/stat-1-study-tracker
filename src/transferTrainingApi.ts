@@ -1,6 +1,6 @@
 import type {db as database} from "./localDb";
 import yaml from "js-yaml";
-import {deriveTrainingProfiles,buildAbilityLineage,validAbilityLineage,abilityTrainingOutcome,abilityTrainingPlan} from './abilityTraining.ts';
+import {deriveTrainingProfiles,buildAbilityLineage,validAbilityLineage,abilityTrainingOutcome,abilityTrainingPlan,capabilityTrainingProfile} from './abilityTraining.ts';
 import type {Bootstrap,Problem,StudyUpdate,Attempt} from "./types.ts";
 import {deriveTransferTrainingCandidates,generationMetaKey,generationPrompt,validationPrompt,generationQualityIssues,
   acceptGenerationDraft,acceptGenerationValidation,registerGeneratedProblem,blindGeneratedView,
@@ -13,6 +13,7 @@ import {deriveTransferEvidence,transferTrainingOutcome,confidentGrading} from ".
 import {optionalNetMinutes,imageGradingPrompt} from "./learningFeedback.ts";
 import {deriveTaskAnswerScope,taskAnswerScopeText,type TaskAnswerScope} from './taskAnswerScope.ts';
 import {transferWorkspaceItems,type TransferAssignment} from './transferWorkspaceIndex.ts';
+import {createNoncuedRequest,isNoncuedRequest,noncuedGenerationPrompt,resolveNoncuedRequest,noncuedInstructions,noncuedAnswerConditions,noncuedIndependent,type NoncuedRequest} from './noncuedTransfer.ts';
 
 export function transferGradingContext(lineage:TransferTrainingLineage,destinationProblemId:string,scope?:TaskAnswerScope){
   return {context_version:'STAT1-TRANSFER-CONTEXT-v1',transfer_key:lineage.key,source_problem_id:lineage.sourceProblemId,
@@ -68,16 +69,24 @@ function targetResults(a:Attempt|undefined){
 export async function transferTrainingRequest(args:{db:typeof database;body:any;
   current:()=>Promise<Bootstrap>;save:(input:StudyUpdate&Record<string,unknown>)=>Promise<number>}){
   const {db,body}=args,key=String(body.key||""),forceGenerated=body.action==='start-generated',action=forceGenerated?'start':String(body.action||"view");
+  if(action==='begin-blind'){
+    const request=await createNoncuedRequest(await args.current());
+    // Reopening reuses the unfinished request, including its exposure log.
+    for(const row of await db.meta.where('key').startsWith('transfer-generation:training:blind:').toArray()){
+      const r=JSON.parse(row.value);if(isNoncuedRequest(r)&&r.contextVersion===request.contextVersion)return {key:r.key,status:r.status};
+    }
+    await db.meta.add({key:generationMetaKey(request.key),value:JSON.stringify(request)});return {key:request.key,status:request.status};
+  }
   if(action==='list'){
     const [rows,contexts,problems,attempts]=await Promise.all([db.meta.where('key').startsWith('transfer-generation:').toArray(),db.meta.where('key').startsWith('transfer-training-context:').toArray(),db.problems.toArray(),db.attempts.toArray()]);
-    const records:TransferGenerationRecord[]=[],warnings:string[]=[];
-    for(const row of rows){try{const r=JSON.parse(row.value);if(typeof r.lineage?.sourceProblemId!=='string'||!Number.isSafeInteger(r.lineage.sourceAttemptId)||typeof r.createdAt!=='string'||!Array.isArray(r.rounds)||r.key!==row.key.slice('transfer-generation:'.length))throw new Error('invalid record');records.push(r)}catch{warnings.push(`${row.key}：読み取れない旧記録です。削除せず保持しています。`)}}
+    const records:TransferGenerationRecord[]=[],requests:NoncuedRequest[]=[],warnings:string[]=[];
+    for(const row of rows){try{const r=JSON.parse(row.value);if(isNoncuedRequest(r)&&r.key===row.key.slice('transfer-generation:'.length)){requests.push(r);continue;}if(typeof r.lineage?.sourceProblemId!=='string'||!Number.isSafeInteger(r.lineage.sourceAttemptId)||typeof r.createdAt!=='string'||!Array.isArray(r.rounds)||r.key!==row.key.slice('transfer-generation:'.length))throw new Error('invalid record');records.push(r)}catch{warnings.push(`${row.key}：読み取れない旧記録です。削除せず保持しています。`)}}
     const assignments:TransferAssignment[]=[];
     for(const row of contexts){try{const lineage=JSON.parse(row.value);if(typeof lineage.key!=='string'||!lineage.key.startsWith('training:')||typeof lineage.sourceProblemId!=='string'||!Number.isSafeInteger(lineage.sourceAttemptId))throw Error('invalid assignment');assignments.push({problemId:row.key.slice('transfer-training-context:'.length),lineage,answerSubmitted:!!lineage.answer_submission})}catch{warnings.push(`${row.key}：元問題との対応を確認できない旧記録です。削除せず保持しています。`)}}
-    return {items:transferWorkspaceItems(records,problems,attempts,assignments),warnings};
+    return {items:[...requests.map(r=>({key:r.key,title:'非誘導型の確認（対象は答案後）',createdAt:r.createdAt,kind:'generated',phase:'generation',sourceProblemId:'',sourceAttemptId:0,sourceChanged:false,sourceMissing:false,registered:false,noncued:true,sourceHidden:true})),...transferWorkspaceItems(records,problems,attempts,assignments)],warnings};
   }
   if(action==='begin-ability'){
-    const current=await args.current(),profile=deriveTrainingProfiles(current).find(p=>p.id===body.profileId);
+    const current=await args.current(),profile=body.capabilityId?capabilityTrainingProfile(current,body.capabilityId):deriveTrainingProfiles(current).find(p=>p.id===body.profileId);
     if(!profile?.trainable)throw new Error(profile?.reason||'この訓練対象の採点根拠を確認できません。現在の弱点トレーニングから開き直してください。プロフィール更新は任意です。');
     const records=(await db.meta.where('key').startsWith('transfer-generation:training:ability:').toArray()).map(r=>JSON.parse(r.value) as TransferGenerationRecord);
     const same=records.filter(r=>r.lineage.abilityProfile?.id===profile.id);
@@ -96,9 +105,25 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
     return {key:lineage.key,status:record.status};
   }
   if(!key.startsWith("training:"))throw new Error("転移確認の計画キーが必要です");
+  const noncuedRow=key.startsWith('training:blind:')?await db.meta.get(generationMetaKey(key)):undefined;
+  const unselected=noncuedRow?JSON.parse(noncuedRow.value):undefined;
+  if(isNoncuedRequest(unselected)){
+    if(action==='reveal'){
+      if(!['request_details','source','quality_details','payload'].includes(body.kind))throw new Error('閲覧する情報の種類を確認してください。');
+      unselected.noncued.exposures.push({kind:body.kind,at:new Date().toISOString()});await db.meta.put({key:generationMetaKey(key),value:JSON.stringify(unselected)});
+      return {status:'requested',noncued:true,exposed:true};
+    }
+    if(action==='view')return {status:'requested',noncued:true,exposed:unselected.noncued.exposures.length>0};
+    if(action==='start')return {status:'requested',noncued:true,prompt:await noncuedGenerationPrompt(unselected,await args.current())};
+    if(action!=='draft')throw new Error('先に非誘導型の生成結果を取り込んでください。対象はGPTが選択します。');
+    const next=await resolveNoncuedRequest(unselected,await args.current(),String(body.text||'')),accepted=await acceptGenerationDraft(next,String(body.text||''));
+    if((await db.problems.toArray()).some(p=>p.generated_transfer?.problem_text.trim()===accepted.rounds.at(-1)!.draft.problem_text.trim()))throw new Error('同じ問題文が登録済みです。別の未見問題を依頼してください。');
+    await db.meta.put({key:generationMetaKey(key),value:JSON.stringify(accepted)});
+    return {status:accepted.status,noncued:true,prompt:noncuedInstructions+validationPrompt(accepted,[])};
+  }
   const [problems,attempts,pastSessions,answers,meta,exposure]=await Promise.all([db.problems.toArray(),db.attempts.toArray(),
     db.pastSessions.toArray(),db.answerIndex.toArray(),db.meta.get(EXAM_REFERENCE_PACK_META_KEY),db.meta.get(EXAM_REFERENCE_EXPOSURE_META_KEY)]);
-  if(!meta&&!key.startsWith('training:ability:'))throw new Error("canonical taxonomy未確認のため保留です");
+  if(!meta&&!key.startsWith('training:ability:')&&!key.startsWith('training:blind:'))throw new Error("canonical taxonomy未確認のため保留です");
   const candidates=meta?deriveTransferTrainingCandidates({record:JSON.parse(meta.value) as StoredExamReferencePack,
     problems,attempts,pastSessions,answers,planningMode:"ranked",exposureOverrides:JSON.parse(exposure?.value||"{}")}):[];
   const candidate=candidates.find(c=>c.key===key);
@@ -106,7 +131,7 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
   let record:TransferGenerationRecord|undefined;
   const stored=await db.meta.get(generationMetaKey(key));if(stored)record=JSON.parse(stored.value);
   const ability=!!record?.lineage.abilityProfile;
-  if(key.startsWith('training:ability:')&&(!record||!validAbilityLineage(record.lineage)||record.lineage.abilityProfile!.sources.some(s=>{
+  if((key.startsWith('training:ability:')||key.startsWith('training:blind:'))&&(!record||!validAbilityLineage(record.lineage)||record.lineage.abilityProfile!.sources.some(s=>{
     const a=attempts.find(a=>a.id===s.attemptId);return !a||a.problem_id!==s.problemId||a.exclude_from_metrics||a.duplicate_of_attempt_id||s.partIds.some(id=>!(a.graded_findings||[]).some(f=>f.graded_part_id===id));
   })))throw new Error('能力トレーニングの根拠答案・採点対象を確認できません。プロフィールの根拠を確認してください。');
   if(forceGenerated&&candidate?.existingProblemId&&await db.meta.get(`transfer-training-context:${candidate.existingProblemId}`))throw new Error('既存の転移問題を割り当て済みです。その問題の結果を確認してから次の課題へ進んでください。');
@@ -123,7 +148,7 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
   const sourceFeatures=[source?.canonical_problem_type||"",source?.theme||"",...(source?.canonical_keywords||[])].filter(Boolean);
   const latestSource=attempts.filter(a=>a.problem_id===source?.problem_id&&!a.exclude_from_metrics&&!a.exclude_from_planning&&!a.duplicate_of_attempt_id&&!a.invalidated_at&&!a.superseded_by_attempt_id).sort((a,b)=>b.id-a.id)[0];
   const sourceChanged=!!record&&!!latestSource&&latestSource.id!==record.lineage.sourceAttemptId;
-  const qualityPrompt=(r:TransferGenerationRecord)=>validationPrompt(r,sourceFeatures)+(sourceChanged?`\n【下書き作成後の元問題の採点（由来は変更しない）】\n${JSON.stringify({original_source_attempt_id:r.lineage.sourceAttemptId,latest_attempt_id:latestSource!.id,date:latestSource!.date,learning_purpose:latestSource!.learning_purpose,findings:latestSource!.graded_findings,result_summary:latestSource!.result_summary})}\n以前の失敗を現在も同じ原因だと断定しない。今回の下書きが実際に必要な操作を測るか再確認する。元問題本文が未登録なら、数学的対応の確定に不足する資料を明記し、対応を確認できないチェックはpass=falseにする。`: '');
+  const qualityPrompt=(r:TransferGenerationRecord)=>(r.noncued?noncuedInstructions:'')+validationPrompt(r,sourceFeatures)+(sourceChanged?`\n【下書き作成後の元問題の採点（由来は変更しない）】\n${JSON.stringify({original_source_attempt_id:r.lineage.sourceAttemptId,latest_attempt_id:latestSource!.id,date:latestSource!.date,learning_purpose:latestSource!.learning_purpose,findings:latestSource!.graded_findings,result_summary:latestSource!.result_summary})}\n以前の失敗を現在も同じ原因だと断定しない。今回の下書きが実際に必要な操作を測るか再確認する。元問題本文が未登録なら、数学的対応の確定に不足する資料を明記し、対応を確認できないチェックはpass=falseにする。`: '');
   const storedPack=meta?JSON.parse(meta.value) as StoredExamReferencePack:undefined;
   const skillName=(id:string)=>record?.lineage.abilityProfile?.name||storedPack?.data.concepts.find(c=>c.concept_id===id)?.display_name||'技能名未登録';
   const sourceScope=(lineage:TransferTrainingLineage)=>{
@@ -131,7 +156,15 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
     return p?deriveTaskAnswerScope({problem:p,task:{problem_id:p.problem_id,source_attempt_id:lineage.sourceAttemptId,
       learning_purpose:'error_repair',targeted_parts:lineage.sourceFindingIds},attempts}):undefined;
   };
+  const noteExposure=async(kind:'request_details'|'source'|'quality_details'|'payload')=>{
+    if(record?.noncued&&!problem?.generated_transfer?.answer_submission){record={...record,noncued:{...record.noncued,exposures:[...record.noncued.exposures,{kind,at:new Date().toISOString()}]}};await db.meta.put({key:generationMetaKey(key),value:JSON.stringify(record)});}
+  };
+  if(action==='reveal'){
+    if(!['request_details','source','quality_details','payload'].includes(body.kind))throw new Error('閲覧する情報の種類を確認してください。');
+    await noteExposure(body.kind);return {status:record?.status,noncued:!!record?.noncued,exposed:!!record?.noncued?.exposures.length};
+  }
   if(action==='lineage'){
+    await noteExposure('source');
     // Explicit training-purpose inspection only. Never add this information to
     // the blind view or perform generation/start as a side effect of inspection.
     const lineage=(record?.lineage||problem?.generated_transfer?.lineage||context||candidate?.lineage||savedAttempt?.transfer_lineage) as TransferTrainingLineage|undefined;
@@ -198,7 +231,7 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
     // Upgrade only an explicitly requested, still empty legacy configuration.
     // Never change a draft's immutable format or any registered/grading history.
     if(forceGenerated&&record?.input_format==='statement_only_v1'&&record.status==='requested'&&!record.rounds.length){record={...record,input_format:undefined};await saveRecord();}
-    if(record?.status==="requested"){const scope=sourceScope(record.lineage);return {status:record.status,prompt:generationPrompt(record,sourceFeatures,{displayLabel:source?.display_label||source?.title,answerScopeText:scope?taskAnswerScopeText(scope):undefined})};}
+    if(record?.status==="requested"){const scope=sourceScope(record.lineage);return {status:record.status,prompt:(record.noncued?noncuedInstructions:'')+generationPrompt(record,sourceFeatures,{displayLabel:source?.display_label||source?.title,answerScopeText:scope?taskAnswerScopeText(scope):undefined})};}
   }else if(action==="draft"){
     if(!record||problem)throw new Error("生成依頼がない、または登録済みです");
     const next=await acceptGenerationDraft(record,String(body.text||""));
@@ -211,7 +244,7 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
   }else if(action==='preview-validation'){
     if(!record||problem)throw new Error('未登録の問題の品質結果だけを確認できます。');
     const next=acceptGenerationValidation(record,String(body.text||'')),validation=next.rounds.at(-1)?.validation;
-    return {status:'quality_preview',ready:next.status==='validation_pending',checks:validation?.checks,issues:generationQualityIssues(next),pendingReason:next.pendingReason};
+    return {status:'quality_preview',ready:next.status==='validation_pending',...(record.noncued?{}:{checks:validation?.checks,issues:generationQualityIssues(next)}),pendingReason:record.noncued&&next.status!=='validation_pending'?'独立品質確認に未達項目があります。解答を見ずに、修正依頼をコピーしてください。':next.pendingReason};
   }else if(action==="validate"){
     if(!record||problem)throw new Error("登録済み内容は変更できません");
     record=acceptGenerationValidation(record,String(body.text||""));
@@ -224,7 +257,7 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
   }else if(action==="submit"){
     const content=problem?.generated_transfer;
     if(!content||content.answer_submission)throw new Error("問題未登録、または答案提出済みです");
-    problem={...problem!,generated_transfer:{...content,lifecycle_status:"submitted",answer_submission:transferAnswerSubmission(body)}};
+    problem={...problem!,generated_transfer:{...content,lifecycle_status:"submitted",answer_submission:{...transferAnswerSubmission(body),...(record?.noncued?{noncued:noncuedAnswerConditions(record.noncued,body.externalReview)}:{})}}};
     await db.problems.put(problem);
   }else if(action==="grading-prompt"){
     const content=problem?.generated_transfer,submission=content?.answer_submission;
@@ -267,13 +300,14 @@ export async function transferTrainingRequest(args:{db:typeof database;body:any;
   }else if(action!=="view"&&action!=="start")throw new Error("不明な転移確認操作です");
   const content=problem?.generated_transfer;
   const result:Record<string,unknown>={status:record?.problemIssue&&!record.problemIssue.resolvedAt?'problem_pending':content?.lifecycle_status||record?.status||candidate?.kind||"pending",
+    noncued:!!record?.noncued,exposed:!!record?.noncued?.exposures.length,
     sourceStatementAvailable:!!source?.generated_transfer?.problem_text,
-    ...(sourceChanged?{sourceChange:{sourceAttemptId:record!.lineage.sourceAttemptId,latestAttemptId:latestSource!.id}}:{}),
+    ...(sourceChanged&&!record?.noncued?{sourceChange:{sourceAttemptId:record!.lineage.sourceAttemptId,latestAttemptId:latestSource!.id}}:{}),
     statementOnly:(content?.input_format||record?.input_format)==='statement_only_v1',
-    draftPreview:!problem?generationDraftPreview(record):undefined,
+    draftPreview:!problem&&!record?.noncued?generationDraftPreview(record):undefined,
     problem:problem?blindGeneratedView(problem):undefined,existingProblemId:!record&&!problem?candidate?.existingProblemId:undefined,
-    rounds:record?.rounds.length||0,pendingReason:record?.pendingReason||candidate?.reason};
-  result.qualityIssues=generationQualityIssues(record);
+    rounds:record?.rounds.length||0,pendingReason:record?.noncued&&record.pendingReason?'品質確認の未達項目があります。修正依頼をコピーしてください。':record?.pendingReason||candidate?.reason};
+  result.qualityIssues=record?.noncued&&!content?.answer_submission?generationQualityIssues(record).map(i=>({key:i.key,label:'独立品質確認の未達項目'})):generationQualityIssues(record);
   if(content?.answer_submission){
     const facts=await db.attempts.toArray();
     const attempt=facts.find(a=>a.problem_id===problem!.problem_id&&!a.exclude_from_metrics);
@@ -292,8 +326,8 @@ export function generatedAttemptFields(problem:Problem,input:Record<string,unkno
   const target=input.target_skill_assessment as Attempt["target_skill_assessment"];
   if(!target||[target.self_selected,target.major_calculation_success,target.no_major_error].some(v=>typeof v!=="boolean")||!target.evidence?.trim())
     throw new Error("target skillの独立採点が必要です");
-  return {source_type:"generated" as const,evidence_strength:"training" as const,target_skill_prompted:true,
-    source_problem_id:c.lineage.sourceProblemId,memo:[input.memo,`今回の確定答案:\n${s.text}`,"手動生成プロンプトの閲覧は未検証。本番の独立転移とは区別。"].filter(Boolean).join("\n\n"),
+  return {source_type:"generated" as const,evidence_strength:"training" as const,target_skill_prompted:c.lineage.noncuedRequestId?!(s.noncued?.requestId===c.lineage.key&&noncuedIndependent(s.noncued)):true,
+    source_problem_id:c.lineage.sourceProblemId,memo:[input.memo,`今回の確定答案:\n${s.text}`,c.lineage.noncuedRequestId?`非誘導型の閲覧申告：${s.noncued?.externalReview||'unknown'}。外部の非閲覧は自己申告であり、アプリだけでの証明ではない。`:'対象を指定した生成訓練。非誘導の遅延転移とは区別。'].filter(Boolean).join("\n\n"),
     target_skill_assessment:target,transfer_lineage:c.lineage,exam_score_eligible:false,
     learning_purpose:"transfer_check" as const,learning_stage:"transfer" as const,
     actual_reference_level:Math.max(s.referenceLevel,input.hint_used?3:0,Number(input.actual_reference_level??input.reference_level??0)),time_minutes:input.actual_minutes===null?null:input.actual_minutes!=null?Number(input.actual_minutes):s.minutes,exam_score:null};

@@ -4,10 +4,11 @@ import {confidentGrading,independentReferenceFree} from './skillEvidence.ts';
 import {findingEvidenceStatus} from './skillEvidence.ts';
 import {attemptPlanningEligible,findingPlanningEligible,planningErrorsForSource} from './legacyKPolicy.ts';
 import {resolvePersistedAttemptLifecycle} from './reviewTransition.ts';
+import {projectCapabilityMap} from './capabilityEvidence.ts';
 
 export const abilityStateLabels={needs_practice:'要補強',improving:'改善中',confirmed:'訓練内で確認済み',uncertain:'証拠不足'};
 type Input=Pick<Bootstrap,'coach'|'attempts'|'problems'>&Partial<Pick<Bootstrap,'today'|'masteryByProblem'>>;
-export type AbilityProfileView=AbilityProfile&{origin:'structured_diagnosis'|'legacy_diagnosis'|'grading_evidence'|'training_history';reviewedAt:string;revision:string;trainable:boolean;reason:string};
+export type AbilityProfileView=AbilityProfile&{origin:'structured_diagnosis'|'legacy_diagnosis'|'grading_evidence'|'training_history'|'capability_evaluation';reviewedAt:string;revision:string;trainable:boolean;reason:string};
 const usable=(a:Attempt)=>!a.exclude_from_metrics&&!a.duplicate_of_attempt_id&&a.exclude_from_planning!==true;
 const digest=(x:unknown)=>{let h=2166136261;for(const c of JSON.stringify(x))h=Math.imul(h^c.charCodeAt(0),16777619);return(h>>>0).toString(36)};
 export const legacyAbilityId=(title:string)=>`legacy-${digest(title)}`;
@@ -119,20 +120,33 @@ export function buildAbilityLineage(p:AbilityProfileView,data:Input,round:number
  if(!p.trainable)throw new Error(p.reason);
  const sources=p.sources.map(s=>{const a=data.attempts.find(a=>a.id===s.attemptId)!,problemText=data.problems.find(q=>q.problem_id===a.problem_id)?.generated_transfer?.problem_text;return {...s,problemId:a.problem_id,date:a.date,...(problemText?{problemText}:{}),
   evidence:s.partIds.length?(a.graded_findings||[]).filter(f=>s.partIds.includes(f.graded_part_id)).map(f=>({partId:f.graded_part_id,resolved:f.resolved,errorType:f.error_type,text:f.evidence})):a.error_point};});
- const first=sources[0],plan=abilityTrainingPlan(data,p);
+ const first=sources[0],plan=p.origin==='capability_evaluation'?{next:p.next}:abilityTrainingPlan(data,p);
+ const savedCapability=p.origin==='capability_evaluation'?(data as Bootstrap).capabilityRecords?.find(r=>r.id===p.revision)?.items.find(e=>e.ability_id===p.id):undefined;
  return {key:`training:ability:${p.id}:${p.revision}:${round}`,rootWeaknessId:`ability:${p.id}`,rootSkillId:`ability:${p.id}`,
   sourceProblemId:first.problemId,sourceAttemptId:first.attemptId,sourceFindingIds:first.partIds,repairAttemptId:0,retrievalAttemptId:0,
-  matchConfidence:'profile',observedFailure:p.name,successCriteria:p.goal,examImpact:'medium',
+  matchConfidence:'profile',observedFailure:savedCapability?.first_error||p.name,successCriteria:p.goal,examImpact:'medium',
+  ...(p.origin==='capability_evaluation'?{capabilityEvaluation:{abilityId:p.id,evaluationId:p.revision}}:{}),
   abilityProfile:{id:p.id,name:p.name,goal:p.goal,next:plan.next,reviewedAt:p.reviewedAt,revision:p.revision,sources,
    previousResults:abilityTrainingHistory(data,p.id).slice(0,3).map(r=>{const q=data.problems.find(q=>q.problem_id===r.problemId)?.generated_transfer;
     const a=data.attempts.find(a=>a.id===r.attemptId);return {...r,...(q?{problemText:q.problem_text,surfaceFeatures:q.surface_features}:{}),findings:a?.graded_findings,nextAction:a?.next_action}})}};
 }
 export function validAbilityLineage(l:TransferTrainingLineage|undefined){
  const p=l?.abilityProfile;
- return !!l&&!!p&&l.matchConfidence==='profile'&&l.key.startsWith(`training:ability:${p.id}:`)&&l.rootSkillId===`ability:${p.id}`&&
+ return !!l&&!!p&&l.matchConfidence==='profile'&&(l.key.startsWith(`training:ability:${p.id}:`)||l.key.startsWith('training:blind:')&&l.noncuedRequestId===l.key)&&l.rootSkillId===`ability:${p.id}`&&
   !!p.name?.trim()&&!!p.goal?.trim()&&!!p.revision&&!!p.reviewedAt&&Array.isArray(p.sources)&&p.sources.length>0&&
   p.sources.every(s=>Number.isSafeInteger(s.attemptId)&&s.attemptId>0&&!!s.problemId&&Array.isArray(s.partIds))&&
   p.sources[0].attemptId===l.sourceAttemptId&&p.sources[0].problemId===l.sourceProblemId&&JSON.stringify(p.sources[0].partIds)===JSON.stringify(l.sourceFindingIds);
+}
+
+/** Adapter to the existing generation/quality/grading workflow, not another
+ * generator or a mastery inference. Only an explicitly saved GPT mapping is used. */
+export function capabilityTrainingProfile(data:Bootstrap,id:string):AbilityProfileView|undefined{
+ const ability=projectCapabilityMap(data,data.capabilityRecords||[]).abilities.find(a=>a.id===id),current=ability?.current;
+ if(!ability||!current)return undefined;
+ const sources=[...new Set(current.item.evidence.map(s=>s.attempt_id))].map(attemptId=>({attemptId,partIds:[...new Set(current.item.evidence.filter(e=>e.attempt_id===attemptId).flatMap(e=>e.part_ids))]}));
+ const trainable=!ability.warnings.length&&sources.length>0&&current.item.next_check?.kind==='delayed_transfer';
+ return {id:ability.id,name:ability.name,state:ability.state==='unrepaired'?'needs_practice':'uncertain',goal:current.item.next_check?.success_condition||ability.criterion,next:current.item.next_check?.task||'次回の確認をGPTへ相談する',sources,origin:'capability_evaluation',reviewedAt:current.record.wire.evaluated_at,revision:current.record.id,trainable,
+  reason:trainable?'保存済みGPT評価の対象操作と根拠を引き継ぎます。生成・品質確認・実施だけでは能力マップの状態を変更しません。':'根拠付きの能力評価と、GPTによる遅延転移の提案が必要です。未確定事項を確認してから能力評価を保存してください。'};
 }
 export type AbilityOutcomeProof={attemptId:number;problemId:string;abilityId:string;outcome:ReturnType<typeof abilityTrainingOutcome>};
 export function validateAbilitySources(d:CoachDiagnosis,sources:Array<{attemptId:number;partIds:string[]}>,proofs:AbilityOutcomeProof[]=[]){

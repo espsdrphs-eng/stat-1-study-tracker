@@ -38,8 +38,9 @@ test('profile is an optional backward-compatible coach field with exact source-p
  delete u.ability_profiles;assert.doesNotThrow(()=>parseCoachUpdate(JSON.stringify({coach_update:u})));
 });
 test('four-area weakness entrance keeps capability training distinct from individual repair and never restores skeleton inputs',async()=>{
- // The approved four-area navigation changes the label, not the evidence model.
- const app=await readFile('src/App.tsx','utf8'),focus=await readFile('src/WeaknessFocus.tsx','utf8');assert.doesNotMatch(app,/<RepairCheckPanel/);assert.match(app,/weak:"弱点"/);assert.match(app,/<CurrentIssueCards/);assert.match(focus,/<h2>能力トレーニング/);assert.doesNotMatch(focus,/priorityRepairTasks\(/);assert.match(focus,/訓練問題を作成/);
+ // The 11/11 capability map changes the primary label, not the legacy evidence
+ // and generation flow. The old tools remain reachable in a collapsed section.
+ const app=await readFile('src/App.tsx','utf8'),focus=await readFile('src/WeaknessFocus.tsx','utf8');assert.doesNotMatch(app,/<RepairCheckPanel/);assert.match(app,/weak:"能力マップ"/);assert.match(app,/<CapabilityExplorer/);assert.match(app,/<CurrentIssueCards/);assert.match(app,/旧プロフィール・個別問題の補修・転移作成/);assert.match(focus,/<h2>能力トレーニング/);assert.doesNotMatch(focus,/priorityRepairTasks\(/);assert.match(focus,/訓練問題を作成/);
 });
 test('confirmed training needs different unaided successes; a new failure or an assisted repeat cannot certify ability',()=>{
  const p={...profile,state:'confirmed',sources:[...profile.sources,{attemptId:11,partIds:['major_calculation']}]},d={abilityProfiles:[p]};

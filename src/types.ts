@@ -602,6 +602,8 @@ export type Dashboard = {
 export type RepairCheck={taskIdentity:string;problemId:string;clue:string;knowledge:string;approach:string;reason:string;stage:"structure"|"recall"|"selection"|"calculation"|"unknown";recordedAt:string;beforeAssistance:boolean;selfReported:true};
 export type LearningWork={id:string;problemId:string;mode:string;reviewId?:number;baselineAttemptId:number;stage:"preparing"|"awaiting_grading";referenceLevel:number;updatedAt:string;task?:Task;repairCheck?:RepairCheck;individualStartAcknowledgedAt?:string};
 export type Bootstrap = {
+  capabilityRecords?:import('./capabilityEvidence.ts').CapabilityRecord[];
+  capabilityRecordIssues?:string[];
   learningWorkByProblem?:Record<string,LearningWork>;
   taskAnswerScopeOverrides?:Record<string,import('./taskAnswerScope.ts').TaskAnswerScopeOverride>;
   problems:Problem[]; attempts:Attempt[]; reviews:Review[]; roadmap:Roadmap[];

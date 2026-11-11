@@ -9,6 +9,8 @@ import {validAbilityLineage} from './abilityTraining.ts';
 import {normalizeCompatibleJson,jsonSyntaxLocation} from './jsonSyntax.ts';
 
 export type TransferTrainingLineage={
+  noncuedRequestId?:string;
+  capabilityEvaluation?:{abilityId:string;evaluationId:string};
   key:string;rootWeaknessId:string;rootSkillId:string;sourceProblemId:string;sourceAttemptId:number;
   sourceFindingIds:string[];repairAttemptId:number;retrievalAttemptId:number;
   matchConfidence:"high"|"profile";observedFailure:string;successCriteria:string;examImpact:"low"|"medium"|"high";
@@ -33,11 +35,12 @@ export type GeneratedTransferContent=GeneratedDraft&{
   root_skill_id:string;lineage:TransferTrainingLineage;difficulty:string;estimated_minutes:number;
   exam_score_eligible:false;transfer_eligible:true;evidence_strength:"training";
   validation:GenerationValidation;content_hash:string;created_at:string;
-  lifecycle_status:"ready"|"submitted"|"graded";answer_submission?:{text:string;minutes:number|null;referenceLevel:number;submittedAt:string;medium?:"paper_image"};
+  lifecycle_status:"ready"|"submitted"|"graded";answer_submission?:{text:string;minutes:number|null;referenceLevel:number;submittedAt:string;medium?:"paper_image";noncued?:{requestId:string;externalReview:'not_viewed'|'viewed'|'unknown';exposures:Array<{kind:string;at:string}>;frozenAt:string}};
   grading_reference?:{problem_id:string;content_hash:string;reference_solution:string;grading_rubric:string;
     checks:Record<"well_defined"|"solution_correct"|"rubric_aligned",{pass:boolean;evidence:string}>;method:"manual_chatgpt"};
 };
 export type TransferGenerationRecord={key:string;lineage:TransferTrainingLineage;createdAt:string;
+  noncued?:import('./noncuedTransfer.ts').NoncuedProtection;
   generation_context?:GenerationContext;
   problemIssue?:{problemId:string;reason:string;reportedAt:string;resolvedAt?:string};
   input_format?:"statement_only_v1";

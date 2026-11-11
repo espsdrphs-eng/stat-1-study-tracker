@@ -9,6 +9,7 @@ import {studyScreens,deriveHomeEvidence} from './studyWorkspace';
 import './studyWorkspace.css';
 import './integratedWorkspace.css';
 import {WeaknessFocus} from './WeaknessFocus';
+import {CapabilityDashboard,CapabilityExplorer,CapabilityChecks,CapabilityAssociations,type CapabilityFocus} from './CapabilityWorkspace';
 import {weaknessSourceTransferAction} from './learningOverview';
 import {repairCheckForTask,repairStageLabel} from './repairCheck';
 import {PastExamResults} from './PastExamResults';
@@ -68,7 +69,7 @@ import type { AnswerIndexEntry, Attempt, Bootstrap, CoachDiagnosis, DashboardKpi
 type Page = "dashboard"|"today"|"problems"|"attempt"|"import"|"reviews"|"weak"|"transfer"|"past"|"settings";
 const pageTitles:Record<Page,string> = {
   dashboard:"ホーム",today:"学習候補",problems:"問題",attempt:"手入力（予備）",
-  import:"GPT連携",reviews:"復習・転移の予定",weak:"弱点",transfer:"転移",past:"過去問演習",settings:"設定"
+  import:"GPT連携",reviews:"復習・転移の予定",weak:"能力マップ",transfer:"確認・転移",past:"過去問演習",settings:"設定"
 };
 const navGroups = [
   {label:"学習",items:[["dashboard",LayoutDashboard],["problems",BookOpen],["weak",Target],["transfer",Sparkles]]}
@@ -122,9 +123,13 @@ export default function App() {
   const [page,setPage]=useState<Page>("dashboard");
   const [historyTab,setHistoryTab]=useState<'problems'|'answers'>('problems');
   const [problemFocus,setProblemFocus]=useState<{filter:string;field:string}>({filter:'all',field:'all'});
-  const [gptSection,setGptSection]=useState<'consultation'|'grading'|'assessment'>('consultation');
+  const [gptSection,setGptSection]=useState<'consultation'|'grading'|'assessment'|'capability'>('capability');
   const [gptTask,setGptTask]=useState<Task|null>(null);
   const [gptAttemptId,setGptAttemptId]=useState<number|null>(null);
+  const [capabilityFocus,setCapabilityFocus]=useState<CapabilityFocus>({});
+  const [capabilityGptFocus,setCapabilityGptFocus]=useState<string|undefined>();
+  const [answerFocus,setAnswerFocus]=useState<number|undefined>();
+  const [legacyWeakOpen,setLegacyWeakOpen]=useState(false);
   const [reviewHistory,setReviewHistory]=useState(false);
   const [activeTransfer,setActiveTransfer]=useState<string|null>(null);
   const [menu,setMenu]=useState(false);
@@ -174,24 +179,32 @@ export default function App() {
   };
   const go=(next:Page,task?:Task)=>{setPage(next);setMenu(false);setSelected(null);setActiveTransfer(null);setGptTask(null);setGptAttemptId(null);setStartingStudyTask(null);setStartingPastTask(next==="past"?task||null:null);window.scrollTo({top:0})};
   const explainAttempt=(id:number)=>{go('import');setGptSection('consultation');setGptAttemptId(id)};
+  const openCapability=(focus:CapabilityFocus={})=>{go('weak');setCapabilityFocus(focus)};
+  const capabilityGPT=(id?:string)=>{go('import');setGptSection('capability');setCapabilityGptFocus(id)};
+  const capabilityEvidence=(id:number)=>{go('problems');setHistoryTab('answers');setAnswerFocus(id)};
   if(!data) return <div className="boot"><div className="spinner"/><strong>学習データを準備しています</strong>{error&&<p>{error}</p>}{schemaIssue&&<div className="boot-repair"><span>不足している保存先：{schemaIssue.missingStores.join("、")||"確認中"}</span><button className="primary" disabled={busy} onClick={repairDatabase}>データベースを安全に更新</button><button className="ghost" onClick={()=>navigator.clipboard.writeText(JSON.stringify(schemaIssue,null,2))}>診断情報をコピー</button></div>}</div>;
   const writeBusy=busy||!data.databaseStatus.valid;
   const primaryPage=page==='today'?'dashboard':page==='past'?'problems':page==='reviews'?'weak':page;
   const openTransfer=(key:string)=>{go('transfer');setActiveTransfer(key)};
-  const browseProblems=(filter='all',field='all')=>{go('problems');setHistoryTab('problems');setProblemFocus({filter,field})};
+  const beginCapabilityTransfer=async(id:string)=>{
+    let receipt:{key:string}|undefined;
+    const ok=await run(async()=>{receipt=await post('/api/transfer-training',{action:'begin-ability',capabilityId:id});return receipt},'GPT用の転移下書きを保存しました。能力状態・本番得点は変更しません。');
+    if(ok&&receipt)openTransfer(receipt.key);
+  };
+  const browseProblems=(filter='all',field='all')=>{go('problems');setHistoryTab(filter==='answers'?'answers':'problems');if(filter==='answers')setAnswerFocus(undefined);setProblemFocus({filter:filter==='answers'?'all':filter,field})};
   const openProblem=(p:Problem,task?:Task)=>{setStartingStudyTask(task||deriveProblemLearningView(data,p).nextTask||null);setSelected(p);window.scrollTo({top:0})};
   return <div className="app-shell five-screen-shell four-screen-shell">
     <aside className={`sidebar ${menu?"open":""}`}>
       <div className="brand"><div className="brand-mark">1</div><div><strong>統計一級</strong><span>STUDY TRACKER</span></div><button className="mobile-close" onClick={()=>setMenu(false)}><X/></button></div>
-      <div className="today-mini"><span>学習価値順の候補</span><strong>{data.today.tasks.filter(t=>!t.checked).length}件</strong><small>取り組む量は自分で決められます</small></div>
+      <div className="today-mini"><span>数学的能力の記録</span><strong>GPTと学び、証拠を残す</strong><small>未確認と未修復は区別します</small></div>
       <nav aria-label="4つの学習画面">{navGroups.map(group=><div className="nav-group" key={group.label}><span className="nav-section-label">{group.label}</span>{group.items.map(([key,Icon])=><button key={key} aria-current={primaryPage===key?'page':undefined} className={primaryPage===key?"active":""} onClick={()=>{go(key);if(key==='problems')setProblemFocus({filter:'all',field:'all'})}}><Icon size={19}/><span>{pageTitles[key]}</span></button>)}</div>)}</nav>
-      <button className="sidebar-settings" onClick={()=>go('reviews')}><CalendarCheck size={18}/>復習予定</button><button className="sidebar-settings" onClick={()=>go('import')}><ClipboardPaste size={18}/>GPT連携</button>
+      <button className="sidebar-settings" onClick={()=>go('reviews')}><CalendarCheck size={18}/>復習予定</button><button className="sidebar-settings" onClick={()=>capabilityGPT()}><ClipboardPaste size={18}/>GPT連携</button>
       <button className="sidebar-settings" onClick={()=>go('settings')}><Settings size={18}/>設定・バックアップ</button>
       <div className="sidebar-foot"><BookOpen size={17}/><span>紙・Goodnotesで解答</span><small className="app-version">v{__APP_VERSION__} · {__APP_COMMIT__.slice(0,7)}</small></div>
     </aside>
     {menu&&<div className="scrim" onClick={()=>setMenu(false)}/>}
     <main>
-      <header><button className="menu-btn" aria-label="メニューを開く" onClick={()=>setMenu(true)}><Menu/></button><div><span className="eyebrow">{data.dashboard.today.replaceAll("-",".")}</span><h1>{selected?selected.problem_id:pageTitles[page]}</h1></div><div className="header-tools"><button className="icon-btn" aria-label="GPT連携を開く" title="GPT連携" onClick={()=>go('import')}><ClipboardPaste size={19}/></button><button className={`icon-btn ${refreshing?"spinning":""}`} onClick={refresh} title="更新" disabled={refreshing}><RefreshCw size={19}/></button></div></header>
+      <header><button className="menu-btn" aria-label="メニューを開く" onClick={()=>setMenu(true)}><Menu/></button><div><span className="eyebrow">{data.dashboard.today.replaceAll("-",".")}</span><h1>{selected?selected.problem_id:pageTitles[page]}</h1></div><div className="header-tools"><button className="icon-btn" aria-label="GPT連携を開く" title="GPT連携" onClick={()=>capabilityGPT()}><ClipboardPaste size={19}/></button><button className={`icon-btn ${refreshing?"spinning":""}`} onClick={refresh} title="更新" disabled={refreshing}><RefreshCw size={19}/></button></div></header>
       {(message||error)&&<div className={`toast ${error?"danger":""}`} role={error?'alert':'status'}>{error||message}<button className="toast-close" aria-label="通知を閉じる" onClick={()=>{setMessage("");setError("")}}><X size={16}/></button></div>}
       {schemaIssue&&<div className="modal-backdrop" role="presentation"><section className="modal database-schema-dialog" role="dialog" aria-modal="true" aria-label="データベース更新"><div className="modal-head"><div><span className="eyebrow">SAFE DATABASE UPDATE</span><h2>保存先データベースの更新が必要です</h2></div><button onClick={()=>setSchemaIssue(null)} aria-label="閉じる"><X/></button></div><p>既存の学習履歴は削除せず、不足している保存先だけを作成・検証します。</p><dl><dt>不足している保存先</dt><dd>{schemaIssue.missingStores.join("、")||"確認中"}</dd><dt>現在のDBバージョン</dt><dd>{schemaIssue.databaseVersion}</dd><dt>必要なDBバージョン</dt><dd>{schemaIssue.requiredDatabaseVersion}</dd><dt>保存処理</dt><dd>{schemaIssue.operation}</dd></dl><div className="button-row"><button className="primary" disabled={busy} onClick={repairDatabase}>データベースを安全に更新</button><button className="ghost" onClick={()=>navigator.clipboard.writeText(JSON.stringify(schemaIssue,null,2))}><Copy size={15}/>診断情報をコピー</button><button className="ghost" onClick={()=>setSchemaIssue(null)}>キャンセル</button></div></section></div>}
       {databaseNotice&&<div className="update-banner" role="alert"><div><strong>{databaseNotice.title}</strong><span>{databaseNotice.message}</span></div>{databaseNotice.reload?<button className="primary small" onClick={()=>location.reload()}>安全に再読み込み</button>:<button className="ghost small" onClick={()=>setDatabaseNotice(null)}>閉じる</button>}</div>}
@@ -200,16 +213,16 @@ export default function App() {
       <nav className="workspace-mobile-nav" aria-label="学習画面を切り替え">{studyScreens.map(s=><button key={s.key} aria-current={primaryPage===s.key?'page':undefined} onClick={()=>{go(s.key);if(s.key==='problems')setProblemFocus({filter:'all',field:'all'})}}>{s.label}</button>)}</nav>
       <div className="content">
         {!selected&&!activeTransfer&&['import','reviews','settings','today','attempt'].includes(page)&&<div className="workspace-breadcrumb"><button className="text-btn" onClick={()=>go('dashboard')}>ホーム</button><span> / {pageTitles[page]}</span>{page!=='reviews'&&<button className="text-btn" onClick={()=>go('reviews')}>復習予定 →</button>}</div>}
-        {!selected&&(page==='problems'||page==='past')&&<div className="screen-tabs" aria-label="問題・答案履歴の表示"><button className={page==='problems'&&historyTab==='problems'?'active':''} onClick={()=>{go('problems');setHistoryTab('problems')}}>問題一覧</button><button className={page==='problems'&&historyTab==='answers'?'active':''} onClick={()=>{go('problems');setHistoryTab('answers')}}>答案・採点履歴</button><button className={page==='past'?'active':''} onClick={()=>go('past')}>過去問・年度別成績</button></div>}
+        {!selected&&(page==='problems'||page==='past')&&<div className="screen-tabs" aria-label="問題・答案履歴の表示"><button className={page==='problems'&&historyTab==='problems'?'active':''} onClick={()=>{go('problems');setHistoryTab('problems')}}>問題一覧</button><button className={page==='problems'&&historyTab==='answers'?'active':''} onClick={()=>{go('problems');setHistoryTab('answers');setAnswerFocus(undefined)}}>答案・採点履歴</button><button className={page==='past'?'active':''} onClick={()=>go('past')}>過去問・年度別成績</button></div>}
         {activeTransfer?<><button className="ghost" onClick={()=>setActiveTransfer(null)}>転移の一覧へ戻る</button><TransferTrainingPanel trainingKey={activeTransfer} onSaved={()=>void load()}/></>:selected?.generated_transfer?<><button onClick={()=>setSelected(null)}>問題一覧へ戻る</button><TransferTrainingPanel trainingKey={selected.generated_transfer.lineage.key} onSaved={()=>void load()}/></>:selected?<ProblemDetail problem={selected} entryPoint={page==='problems'?'problem_list':undefined} startingTask={startingStudyTask?.problem_id===selected.problem_id?startingStudyTask:undefined} data={data} run={run} busy={busy} onBack={()=>{setSelected(null);setStartingStudyTask(null)}} onImport={()=>{setSelected(null);setGptSection('grading');setPage("import")}} onExplain={explainAttempt} onOpenPastExam={year=>{go('past');setPastYear(year)}}/>:
-        page==="dashboard"?<DashboardView data={data} go={go} run={run} busy={writeBusy} select={openProblem} onAssess={()=>{setGptSection('assessment');go('import')}} onProblems={browseProblems} onTransfer={openTransfer}/>:
+        page==="dashboard"?<DashboardView data={data} go={go} run={run} busy={writeBusy} select={openProblem} onAssess={()=>{setGptSection('assessment');go('import')}} onProblems={browseProblems} onTransfer={openTransfer} onCapability={openCapability} onCapabilityGPT={()=>capabilityGPT()}/>:
         page==="today"?<TodayView data={data} busy={writeBusy} run={run} go={go} select={(p,task)=>{setStartingStudyTask(task||null);setSelected(p)}}/>:
-        page==="problems"?(historyTab==='answers'?<AnswerHistory data={data} onOpen={p=>openProblem(p)} onExplain={explainAttempt}/>:<ProblemsView key={`${problemFocus.filter}:${problemFocus.field}`} initialFilter={problemFocus.filter} initialField={problemFocus.field} data={data} select={p=>openProblem(p)} run={run} busy={writeBusy}/>):
+        page==="problems"?(historyTab==='answers'?<AnswerHistory key={answerFocus||'all'} data={data} focusAttemptId={answerFocus} onOpen={p=>openProblem(p)} onExplain={explainAttempt} onAbility={id=>openCapability({ability:id})}/>:<ProblemsView key={`${problemFocus.filter}:${problemFocus.field}`} initialFilter={problemFocus.filter} initialField={problemFocus.field} data={data} select={p=>openProblem(p)} run={run} busy={writeBusy}/>):
         page==="attempt"?<AttemptView problems={data.problems} run={run} busy={writeBusy}/>:
-        page==="import"?<><GPTWorkspace key={`${gptSection}:${gptTask?.grading_contract?.contractId||gptTask?.id||''}:${gptAttemptId||''}`} data={data} run={run} busy={writeBusy} initialSection={gptSection} contextTask={gptTask} contextAttemptId={gptAttemptId} onExplain={explainAttempt} onIssues={()=>go('weak')}/><details className="panel"><summary>採点による変化・据置理由</summary><LearningUpdateSummary data={data}/></details><details className="panel"><summary>従来の手入力（互換・任意）</summary><button className="ghost" onClick={()=>go('attempt')}>手入力の予備画面を開く</button></details></>:
+        page==="import"?<><GPTWorkspace key={`${gptSection}:${gptTask?.grading_contract?.contractId||gptTask?.id||''}:${gptAttemptId||''}:${capabilityGptFocus||''}`} data={data} run={run} busy={writeBusy} initialSection={gptSection} contextAbilityId={capabilityGptFocus} contextTask={gptTask} contextAttemptId={gptAttemptId} onExplain={explainAttempt} onIssues={()=>openCapability()}/><details className="panel"><summary>採点による変化・据置理由</summary><LearningUpdateSummary data={data}/></details><details className="panel"><summary>従来の手入力（互換・任意）</summary><button className="ghost" onClick={()=>go('attempt')}>手入力の予備画面を開く</button></details></>:
         page==="reviews"?(reviewHistory?<><button className="ghost" onClick={()=>setReviewHistory(false)}>復習・転移の予定へ戻る</button><ReviewsView data={data} run={run} busy={writeBusy} select={openProblem}/></>:<ReviewWorkspace data={data} onOpen={openProblem} onTransfer={openTransfer} onHistory={()=>setReviewHistory(true)}/>):
-        page==="weak"?<><WeakView data={data} run={run} busy={writeBusy} onTransfer={openTransfer} onToday={()=>go("today")} onReview={()=>go('reviews')} onProblems={()=>browseProblems()}/><CurrentIssueCards data={data} onOpen={openProblem} onGPT={task=>{setGptSection('consultation');go('import');setGptTask(task)}}/></>:
-        page==='transfer'?<TransferWorkspace data={data} onOpen={openTransfer} onWeak={()=>go('weak')} onSchedule={()=>go('reviews')} onSource={explainAttempt}/>:
+        page==="weak"?<><CapabilityExplorer data={data} focus={capabilityFocus} onGPT={capabilityGPT} onEvidence={capabilityEvidence} busy={writeBusy} onTrain={id=>void beginCapabilityTransfer(id)}/><details className="cap-legacy-tools" onToggle={e=>setLegacyWeakOpen(e.currentTarget.open)}><summary>旧プロフィール・個別問題の補修・転移作成（履歴と互換機能）</summary>{legacyWeakOpen&&<><WeakView data={data} run={run} busy={writeBusy} onTransfer={openTransfer} onToday={()=>go("today")} onReview={()=>go('reviews')} onProblems={()=>browseProblems()}/><CurrentIssueCards data={data} onOpen={openProblem} onGPT={task=>{setGptSection('consultation');go('import');setGptTask(task)}}/></>}</details></>:
+        page==='transfer'?<><CapabilityChecks data={data} onAbility={id=>openCapability({ability:id})} onGPT={()=>capabilityGPT()}/><TransferWorkspace data={data} onOpen={openTransfer} onWeak={()=>go('weak')} onSchedule={()=>go('reviews')} onSource={explainAttempt}/></>:
         page==="past"?<PastView data={data} go={go} run={run} busy={writeBusy} startingTask={startingPastTask} defaultYear={pastYear}/>:
         <SettingsView data={data} run={run} busy={busy}/>}
       </div>
@@ -268,10 +281,11 @@ function LearningUpdateSummary({data}:{data:Bootstrap}){
     {summary.change&&<details><summary>採点に記録された改善・残る課題</summary><p>{summary.change}</p></details>}
   </section>;
 }
-function DashboardView({data,go,select,run,busy,onAssess,onProblems,onTransfer}:{data:Bootstrap;go:(p:Page,task?:Task)=>void;select:(p:Problem,task?:Task)=>void;run:(a:()=>Promise<unknown>,s:string)=>Promise<boolean>;busy:boolean;onAssess:()=>void;onProblems:(filter?:string,field?:string)=>void;onTransfer:(key:string)=>void}) {
+function DashboardView({data,go,select,run,busy,onAssess,onProblems,onTransfer,onCapability,onCapabilityGPT}:{data:Bootstrap;go:(p:Page,task?:Task)=>void;select:(p:Problem,task?:Task)=>void;run:(a:()=>Promise<unknown>,s:string)=>Promise<boolean>;busy:boolean;onAssess:()=>void;onProblems:(filter?:string,field?:string)=>void;onTransfer:(key:string)=>void;onCapability:(focus?:CapabilityFocus)=>void;onCapabilityGPT:()=>void}) {
   const [panel,setPanel]=useState<'review'|'evidence'|null>(null);
+  const [legacyOpen,setLegacyOpen]=useState(false);
   const start=(task?:Task)=>{if(!task){go('reviews');return}if(task.transfer_training_key){onTransfer(task.transfer_training_key);return}if(task.stable_session_key){go('past',task);return}const p=data.problems.find(p=>p.problem_id===task.problem_id);if(p)select(p,task);};
-  return <><LearningDashboard data={data} onStart={start} onReview={onAssess} onEvidence={()=>setPanel('evidence')} onSchedule={()=>go('reviews')} onIssues={()=>go('weak')} onAllTasks={()=>go('today')} onProblems={onProblems} onTransfer={()=>go('transfer')}/>
+  return <><CapabilityDashboard data={data} onMap={onCapability} onGPT={onCapabilityGPT} onHistory={()=>onProblems('answers')} onSchedule={()=>go('transfer')} onOldSchedule={()=>go('reviews')} onFormal={()=>go('past')}/><details className="cap-legacy-tools" onToggle={e=>setLegacyOpen(e.currentTarget.open)}><summary>以前の本番測定・問題単位の分析・自動候補（互換機能）</summary>{legacyOpen&&<LearningDashboard data={data} onStart={start} onReview={onAssess} onEvidence={()=>setPanel('evidence')} onSchedule={()=>go('reviews')} onIssues={()=>go('weak')} onAllTasks={()=>go('today')} onProblems={onProblems} onTransfer={()=>go('transfer')}/>}</details>
     {panel==='review'&&<Modal title="ChatGPTで実力を再評価" close={()=>setPanel(null)}><CoachReviewControls data={data} run={run} busy={busy}/></Modal>}
     {panel==='evidence'&&<Modal title="本番測定の根拠と更新条件" close={()=>setPanel(null)}><p>補修・保持・生成訓練は、本番形式の得点や自然な転移成功に加算しません。改善後の本番形式を再測定するまで、測定値は据え置きます。</p>
       <ExamEvidenceSummary assessment={data.dashboard.kpis!.assessment}/>
@@ -980,7 +994,7 @@ function ProblemDetail({problem,data,run,busy,onBack,onImport,startingTask,onOpe
       {hintOpen&&<p role="status">参照あり：{hintText}</p>}</div>}
   </section>;
   const savedResult=latest&&(latest.id>firstSeenAttempt.current||learningView.workStatus==='graded')?latest:undefined;
-  return <><button className="back" onClick={onBack}>← 戻る</button><section className="panel answer-summary"><h2>{problemDisplayLabel(problem)}：解答後</h2>
+  return <><button className="back" onClick={onBack}>← 戻る</button><CapabilityAssociations data={data} problemId={canonicalId}/><section className="panel answer-summary"><h2>{problemDisplayLabel(problem)}：解答後</h2>
     <section className="task-introduction" aria-label="課題の対象と回収目標" data-task-identity={introduction.taskIdentity}>
       <h3>対象・今回の回収目標</h3><dl><dt>対象</dt><dd>{introduction.target} ／ {introduction.subparts}</dd>
       <dt>今回の作業</dt><dd>{introduction.workLabel} ・ {introduction.scope}</dd>
