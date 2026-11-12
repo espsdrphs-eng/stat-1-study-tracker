@@ -4,7 +4,7 @@ import type {Bootstrap} from './types';
 import {api,post} from './api';
 import {RawGPTArchive} from './RawGPTArchive';
 import {CAPABILITY_SYLLABUS,capabilityCatalog,capabilityDomains,capabilityStates,capabilityKinds,capabilityScope,capabilitySearchText,type CapabilityState} from './capabilityCatalog';
-import {projectCapabilityMap,capabilityDate,isInitialAllCapabilityContext,type CapabilityRecord, type buildCapabilityContext} from './capabilityEvidence';
+import {projectCapabilityMap,capabilityDate,isInitialAllCapabilityContext,type CapabilityRecord,type CapabilityContextScope,type CapabilityImportPlan,type buildCapabilityContext} from './capabilityEvidence';
 import './capabilityWorkspace.css';
 type View=ReturnType<typeof projectCapabilityMap>;
 type Ability=View['abilities'][number];
@@ -95,7 +95,7 @@ function CapabilityPreviewEntries({record}:{record:CapabilityRecord}){
 
 export function CapabilityExchange({data,run,busy,focusId}:{data:Bootstrap;run:Run;busy:boolean;focusId?:string}){
  const draftKey='stat1:capability-import-draft:v1';
- const [text,setText]=useState(()=>{try{return sessionStorage.getItem(draftKey)||''}catch{return ''}}),[preview,setPreview]=useState<{record:CapabilityRecord;duplicate:boolean}|null>(null),[confirmed,setConfirmed]=useState(false),[error,setError]=useState(''),[message,setMessage]=useState(''),[prompt,setPrompt]=useState(''),[working,setWorking]=useState(false);
+ const [text,setText]=useState(()=>{try{return sessionStorage.getItem(draftKey)||''}catch{return ''}}),[preview,setPreview]=useState<CapabilityImportPlan|null>(null),[held,setHeld]=useState<CapabilityImportPlan|null>(null),[confirmed,setConfirmed]=useState(false),[error,setError]=useState(''),[message,setMessage]=useState(''),[prompt,setPrompt]=useState(''),[working,setWorking]=useState(false);
  const [mode,setMode]=useState<'daily'|'all'|'initial'>('daily'),[domain,setDomain]=useState(capabilityCatalog.find(c=>c.id===focusId)?.domainId||capabilityDomains[0].id as string),[batch,setBatch]=useState(0);
  const initial=mode!=='daily',all=mode==='all';
  const [historyFile,setHistoryFile]=useState<Awaited<ReturnType<typeof buildCapabilityContext>>['historyAttachment']>();
@@ -103,11 +103,16 @@ export function CapabilityExchange({data,run,busy,focusId}:{data:Bootstrap;run:R
  const active=useRef(false),version=useRef(0);
  useEffect(()=>{try{sessionStorage.setItem(draftKey,text)}catch{setError('入力の一時保存ができません。閉じる前に原文をコピーしてください。')}},[text]);
  useEffect(()=>{version.current++;setPreview(null);setConfirmed(false);setHistoryFile(undefined)},[data]);
- const contextPath=()=>'/api/capabilities/context?'+new URLSearchParams(initial?{initial:'1',domain:all?'all':domain,batch:all?'0':String(batch)}:focusId?{ability:focusId}:{});
- const downloadHistory=async()=>{if(active.current)return;active.current=true;setWorking(true);setError('');try{const c=await api<Awaited<ReturnType<typeof buildCapabilityContext>>>(contextPath()),file=c.historyAttachment;if(!file)throw Error('初回評価を選択してください。');setHistoryFile(file);const url=URL.createObjectURL(new Blob([file.text],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download=file.name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);setMessage('評価用の履歴JSONを用意しました。同じChatGPT会話へ添付してください。復元用バックアップではありません。')}catch(e){setError(e instanceof Error?e.message:String(e))}finally{active.current=false;setWorking(false)}};
- const copy=async()=>{
+ const shown=preview||held,ready=shown?.entries.filter(e=>e.status==='ready')||[],saved=shown?.entries.filter(e=>e.status==='saved')||[],conflicts=shown?.entries.filter(e=>e.status==='conflict')||[];
+ const contextPath=(retry?:CapabilityContextScope)=>{
+  const q=new URLSearchParams(retry?(retry.initial?{initial:'1',domain:retry.domainId||'',batch:String(retry.batch||0)}:{}):initial?{initial:'1',domain:all?'all':domain,batch:all?'0':String(batch)}:focusId?{ability:focusId}:{});
+  for(const id of retry?.retryIds||[])q.append('retry',id);
+  return '/api/capabilities/context?'+q;
+ };
+ const downloadHistory=async(retry?:CapabilityContextScope)=>{if(active.current)return;active.current=true;setWorking(true);setError('');try{const c=await api<Awaited<ReturnType<typeof buildCapabilityContext>>>(contextPath(retry)),file=c.historyAttachment;if(!file)throw Error('初回評価を選択してください。');setHistoryFile(file);const url=URL.createObjectURL(new Blob([file.text],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download=file.name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);setMessage('評価用の履歴JSONを用意しました。同じChatGPT会話へ添付してください。復元用バックアップではありません。')}catch(e){setError(e instanceof Error?e.message:String(e))}finally{active.current=false;setWorking(false)}};
+ const copy=async(retry?:CapabilityContextScope)=>{
   if(active.current)return;active.current=true;setWorking(true);setError('');setMessage('');
-  const request=api<Awaited<ReturnType<typeof buildCapabilityContext>>>(contextPath()).then(c=>{setHistoryFile(c.historyAttachment);return c});
+  const request=api<Awaited<ReturnType<typeof buildCapabilityContext>>>(contextPath(retry)).then(c=>{setHistoryFile(c.historyAttachment);return c});
   try{
    // Safari must receive the clipboard request within the original tap. The
    // asynchronously prepared text is delivered as a ClipboardItem promise.
@@ -115,28 +120,34 @@ export function CapabilityExchange({data,run,busy,focusId}:{data:Bootstrap;run:R
     const blob=request.then(c=>{setPrompt(c.prompt);return new Blob([c.prompt],{type:'text/plain'})});
     await navigator.clipboard.write([new ClipboardItem({'text/plain':blob})]);
    }else{const c=await request;setPrompt(c.prompt);await navigator.clipboard.writeText(c.prompt)}
-   setMessage('学習の依頼をコピーしました。ChatGPT「勉強する」へ貼り付けてください。');
-  }catch{try{const c=await request;setPrompt(c.prompt);setMessage('依頼を用意しました。下の欄を全選択してコピーしてください。')}catch(e){setError(e instanceof Error?e.message:String(e))}}
+   setMessage(retry?'差分の評価依頼をコピーしました。ChatGPTで対象の能力だけを再照合してください。':'学習の依頼をコピーしました。ChatGPT「勉強する」へ貼り付けてください。');
+  }catch{try{const c=await request;setPrompt(c.prompt);setMessage('依頼を用意しました。上の「コピー用の依頼を表示」から全選択してコピーしてください。')}catch(e){setError(e instanceof Error?e.message:String(e))}}
   finally{active.current=false;setWorking(false)}
  };
- const parse=async()=>{if(active.current)return;active.current=true;setWorking(true);setError('');setMessage('');const current=++version.current;
-  try{const p=await post<{record:CapabilityRecord;duplicate:boolean}>('/api/capabilities/preview',{text});if(current===version.current){setPreview(p);setConfirmed(false)}}catch(e){setError(e instanceof Error?e.message:String(e))}finally{active.current=false;setWorking(false)}};
- const save=async()=>{if(active.current||!preview||!confirmed)return;active.current=true;setWorking(true);setError('');let receipt:{record:CapabilityRecord;duplicate:boolean}|undefined;
-  try{const ok=await run(async()=>{try{receipt=await post('/api/capabilities/save',{text,confirmed:true});return receipt}catch(e){setError(e instanceof Error?e.message:String(e));throw e}},'GPTの能力評価を保存しました。答案・得点・既存Reviewは未変更です。');
-   if(receipt){setPreview(null);setConfirmed(false);setMessage(receipt.duplicate?'同じ能力評価は保存済みです。重複追加しません。':ok?'能力評価とGPT回答原文を保存しました。ホームの能力マップに反映します。':'能力評価は保存済みです。表示更新に失敗したため再読み込みしてください。再保存しても重複しません。')}
+ const parse=async()=>{if(active.current)return;active.current=true;setWorking(true);setError('');setMessage('');setPreview(null);setHeld(null);setConfirmed(false);const current=++version.current;
+  try{const p=await post<CapabilityImportPlan>('/api/capabilities/preview',{text});if(current===version.current)setPreview(p)}catch(e){setError(e instanceof Error?e.message:String(e))}finally{active.current=false;setWorking(false)}};
+ const save=async()=>{if(active.current||!preview||!confirmed||!ready.length)return;active.current=true;setWorking(true);setError('');setConfirmed(false);let receipt:CapabilityImportPlan|undefined;
+  try{const ok=await run(async()=>{try{receipt=await post('/api/capabilities/save',{text,confirmed:true,confirmationToken:preview.confirmationToken});return receipt}catch(e){setError(e instanceof Error?e.message:String(e));throw e}},'GPTの能力評価を保存しました。答案・得点・既存Reviewは未変更です。');
+   if(receipt){setPreview(null);if(receipt.recoveryScope.retryIds?.length)setHeld({...receipt,entries:receipt.entries.map(e=>e.status==='ready'?{...e,status:'saved'}:e)});setMessage(receipt.duplicate?'同じ能力評価は保存済みです。重複追加しません。':ok?`能力評価 ${receipt.record?.items.length||0} 件とGPT回答原文を保存しました。保留した能力は変更していません。`:'能力評価は保存済みです。表示更新に失敗したため再読み込みしてください。再保存しても重複しません。')}
   }catch(e){setError(e instanceof Error?e.message:String(e))}finally{active.current=false;setWorking(false)}
  };
+ const updateText=(value:string)=>{version.current++;setText(value);setPreview(null);setHeld(null);setConfirmed(false);setError('');setMessage('')};
  return <div className="cap-workspace cap-exchange"><section className="cap-panel"><span className="cap-eyebrow">1 · GPTが指導、アプリが記録</span><h2>学習を続け、能力評価を残す</h2><p>学習記録と能力マップを「勉強する」へ。出題・採点・最初の誤りの補修・次回確認をGPTと相談します。答案画像は自分でChatGPTに添付します。</p>
   <div className="cap-review-selection"><label>GPTへ渡す範囲<select aria-label="GPTへ渡す範囲" disabled={working||busy} value={mode} onChange={e=>{setMode(e.target.value as typeof mode);setPrompt('')}}><option value="daily">日常の学習・更新</option><option value="all">初回・全分野評価（1回で取り込み）</option><option value="initial">初回・分野別評価（全期間の証拠）</option></select></label>
    {mode==='initial'&&<><label>初回評価の分野<select aria-label="初回評価の分野" value={domain} disabled={working||busy} onChange={e=>{setDomain(e.target.value);setBatch(0);setPrompt('')}}>{capabilityDomains.map(d=><option key={d.id} value={d.id}>{d.name}（{capabilityCatalog.filter(c=>c.domainId===d.id).length}操作）</option>)}</select></label>{batches>1&&<label>評価する区分<select aria-label="初回評価の区分" value={batch} onChange={e=>{setBatch(Number(e.target.value));setPrompt('')}}>{Array.from({length:batches},(_,i)=><option key={i} value={i}>{i+1}/{batches}（{domainRows.slice(i*12,(i+1)*12).length}操作）</option>)}</select></label>}</>}
   </div><small>端末にある答案：{data.attempts.length}件 ／ 記録日：{dates[0]||'未登録'}〜{dates.at(-1)||'未登録'}。未取り込みの別日データは含みません。</small>
   {initial&&<><p>最初に履歴JSONを保存し、ChatGPTの同じ会話へ添付してください。{all?`全${capabilityDomains.length}分野・${capabilityCatalog.length}操作を一度に確認し、根拠のある能力だけを1つの評価JSONで保存します。未確認は埋めません。`:'分野ごとの依頼は短くコピーできます。1回最大12能力。成功・失敗を対話で照合し、保存後に次の分野へ進みます。'}</p><button className="ghost" disabled={working||busy} onClick={()=>void downloadHistory()}>初回履歴JSONを保存</button>{historyFile&&<small>{historyFile.name} ／ 有効答案{historyFile.answerCount}件。ファイル名が同じなら再添付は不要です。メモ数は失敗回数ではありません。</small>}</>}
   <button className="primary" disabled={working||busy} onClick={()=>void copy()}><Sparkles size={17}/>{working?'準備中…':all?'全分野の依頼をコピー':initial?'初回評価の依頼をコピー':'能力の学習情報をコピー'}</button>{focusId&&!initial&&<p>対象：{capabilityCatalog.find(c=>c.id===focusId)?.name||focusId}</p>}{prompt&&<details className="cap-copy-details"><summary>コピー用の依頼を表示</summary><textarea aria-label="能力評価のコピー用依頼" readOnly rows={6} value={prompt} onFocus={e=>e.currentTarget.select()}/><button className="ghost" onClick={()=>navigator.clipboard.writeText(prompt).then(()=>setMessage('依頼をコピーしました。')).catch(()=>setMessage('入力欄を全選択してコピーしてください。'))}>用意した依頼をコピー</button></details>}</section>
-  <section className="cap-panel"><span className="cap-eyebrow">2 · 評価を確認して保存</span><h3>GPTの能力評価を戻す</h3><p>説明・補修は普通の文章で構いません。能力状態を反映するときだけ、依頼に含まれた形式のJSONを返してもらいます。問題の得点登録は「採点結果」です。</p><label>能力評価JSON<textarea aria-label="能力評価JSON" rows={7} value={text} disabled={working||busy} onChange={e=>{version.current++;setText(e.target.value);setPreview(null);setConfirmed(false);setError('');setMessage('')}} autoComplete="off"/></label><button className="ghost" disabled={!text.trim()||working||busy} onClick={()=>void parse()}>能力評価をプレビュー</button>
-   {preview&&<section className="cap-preview" aria-label="能力評価の保存前確認"><h3>{preview.duplicate?'同じ評価は保存済みです':'反映する能力を確認'}</h3><CapabilityPreviewEntries record={preview.record}/><label className="check-line"><input type="checkbox" checked={confirmed} onChange={e=>setConfirmed(e.target.checked)}/>能力・根拠・未確定事項を確認しました</label><button className="primary" disabled={!confirmed||working||busy} onClick={()=>void save()}>確認した能力評価を保存</button></section>}
-   {error&&<div className="cap-warning" role="alert"><strong>入力は消していません。</strong><p>{error}</p><p>現在の依頼とこのエラーをChatGPTへ渡してJSONを再出力するか、下から原文だけ保管できます。欠けた値やIDをアプリが推測で埋めることはありません。</p></div>}
+  <section className="cap-panel"><span className="cap-eyebrow">2 · 評価を確認して保存</span><h3>GPTの能力評価を戻す</h3><p>能力評価JSONには、今回確認した能力だけを含めます。含めなかった能力は変更されません。問題の得点登録は「採点結果」です。</p><label>能力評価JSON<textarea aria-label="能力評価JSON" rows={7} value={text} disabled={working||busy} onChange={e=>updateText(e.target.value)} autoComplete="off"/></label><button className="ghost" disabled={!text.trim()||working||busy} onClick={()=>void parse()}>能力評価をプレビュー</button>
+   {shown&&<section className="cap-preview" aria-label="能力評価の保存前確認"><h3>{!ready.length&&!conflicts.length?'同じ評価は保存済みです':'取り込みの内訳'}</h3><ul className="cap-import-summary"><li>取り込み可能 {ready.length}件</li><li>保存済み {saved.length}件</li><li>競合・保留 {conflicts.length}件</li></ul>
+    {ready.length>0&&shown.record&&<CapabilityPreviewEntries record={shown.record}/>}
+    {saved.length>0&&<details><summary>保存済みの能力（重複しません）</summary><ul>{saved.map(e=><li key={e.abilityId}>{capabilityCatalog.find(c=>c.id===e.abilityId)?.name}</li>)}</ul></details>}
+    {conflicts.length>0&&<aside className="cap-warning cap-import-hold"><strong>保留した能力は上書きしません</strong><details open={conflicts.length<=3}><summary>能力IDと保留理由（{conflicts.length}件）</summary><ul>{conflicts.map(e=><li key={e.abilityId}><b>{capabilityCatalog.find(c=>c.id===e.abilityId)?.name}</b> <small>{e.abilityId}</small><p>{e.reason}</p></li>)}</ul></details><p>必要なら、保留した能力だけをGPTで再照合できます。</p><button className="ghost" disabled={working||busy} onClick={()=>void copy(shown.recoveryScope)}>最新の評価依頼をコピー</button>{shown.recoveryScope.initial&&<button className="ghost" disabled={working||busy} onClick={()=>void downloadHistory(shown.recoveryScope)}>差分評価の履歴JSONを保存</button>}</aside>}
+    {ready.length>0&&<><label className="check-line"><input type="checkbox" checked={confirmed} disabled={working||busy} onChange={e=>setConfirmed(e.target.checked)}/>能力・根拠・未確定事項を確認しました</label><button className="primary" disabled={!confirmed||working||busy||!!error} onClick={()=>void save()}>確認した能力評価を保存</button></>}
+   </section>}
+   {error&&<div className="cap-warning cap-import-hold" role="alert"><strong>入力は消していません。</strong><p>{error}</p><p>再プレビューするか、最新の依頼で必要な能力だけを再照合してください。原文だけの保管もできます。</p>{!conflicts.length&&<button className="ghost" disabled={working||busy} onClick={()=>void copy()}>最新の評価依頼をコピー</button>}</div>}
    {message&&<p role="status">{message}</p>}
-   <details><summary>説明文・読み取れない返答を原文のまま保管</summary><RawGPTArchive problems={data.problems} run={run} busy={busy||working} text={text} onTextChange={v=>{setText(v);setPreview(null);setConfirmed(false)}} compact defaultKind="assessment"/></details>
+   <details><summary>説明文・読み取れない返答を原文のまま保管</summary><RawGPTArchive problems={data.problems} run={run} busy={busy||working} text={text} onTextChange={updateText} compact defaultKind="assessment"/></details>
   </section>
  </div>;
 }

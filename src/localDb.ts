@@ -79,7 +79,7 @@ import {reviewDueState,reviewPlanningDecision} from "./todayLearningPolicy.ts";
 import {deriveCanonicalStudyPlan,deriveRankedStudyCandidates} from "./canonicalStudyPlan.ts";
 import {canonicalizePastExamSessions,currentPastExamSessionExplanation,derivePastExamWorkspace,derivePastExamSessionState,pastExamSessionKey,pastExamSessionPurpose,reconcilePastExamSessionEvidence,stablePastExamSessionKey,validatePastExamSessionIdentity,validatePastExamTaskIdentity,projectPastExamSessionAdmissions,derivePastExamProblemStart,canStartProtectedProblemIndividually} from "./pastExamPlanning.ts";
 import {manuallySelectedPastExamYear} from './pastExamPlanning.ts';
-import {CAPABILITY_RECORD_PREFIX,buildCapabilityContext,prepareCapabilityUpdate,capabilityUpdateId,capabilityFactsSignature,readCapabilityRecords} from './capabilityEvidence.ts';
+import {CAPABILITY_RECORD_PREFIX,buildCapabilityContext,planCapabilityImport,capabilityFactsSignature,readCapabilityRecords} from './capabilityEvidence.ts';
 
 const PLANNER_RUNTIME_MODE_META_KEY="planner-runtime-mode";
 const CURRENT_PLAN_PROJECTION_META_KEY="current-plan-projection-version";
@@ -3398,7 +3398,7 @@ export async function localGet<T>(path:string):Promise<T>{
     await initialize();return readCapabilityRecords(await db.meta.where('key').startsWith(CAPABILITY_RECORD_PREFIX).toArray()) as T;
   }
   if(path==='/api/capabilities/context'||path.startsWith('/api/capabilities/context?')){
-    await initialize();const q=new URL(path,'https://local.invalid').searchParams;return await buildCapabilityContext(await capabilityFactsFromDb(),q.get('ability')||undefined,{initial:q.get('initial')==='1',domainId:q.get('domain')||undefined,batch:Number(q.get('batch')||0)}) as T;
+    await initialize();const q=new URL(path,'https://local.invalid').searchParams;return await buildCapabilityContext(await capabilityFactsFromDb(),q.get('ability')||undefined,{initial:q.get('initial')==='1',domainId:q.get('domain')||undefined,batch:Number(q.get('batch')||0),retryIds:q.getAll('retry')}) as T;
   }
   if(path==='/api/gpt-exchanges'){
     await initialize();
@@ -3840,21 +3840,21 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
   await initialize();
   if(path==='/api/capabilities/preview'||path==='/api/capabilities/save'){
     if(path.endsWith('/save')&&body.confirmed!==true)throw new Error('能力・根拠・未確定事項を確認してから保存してください。');
-    const id=await capabilityUpdateId(body.text),key=CAPABILITY_RECORD_PREFIX+id;
-    const old=await db.meta.get(key);
-    if(old)return {record:JSON.parse(old.value),duplicate:true} as T;
-    const facts=await capabilityFactsFromDb(),record=await prepareCapabilityUpdate(body.text,facts);
-    if(facts.records.some(r=>Date.parse(r.wire.evaluated_at)>Date.parse(record.wire.evaluated_at)&&r.items.some(i=>record.items.some(n=>n.ability_id===i.ability_id))))throw new Error('この能力には、より新しいGPT評価があります。古い評価で現在状態を置き換えず、原文だけ保管してください。');
-    if(path.endsWith('/preview'))return {record,duplicate:false} as T;
+    const facts=await capabilityFactsFromDb(),plan=await planCapabilityImport(body.text,facts),{record}=plan;
+    if(path.endsWith('/preview')||plan.duplicate)return plan as T;
+    const conflict=plan.entries.find(e=>e.status==='conflict');
+    if(!record)throw new Error(`保存できる差分がありません。${conflict?.abilityId||''} ${conflict?.reason||''}`);
+    if((conflict||body.confirmationToken!==undefined)&&body.confirmationToken!==plan.confirmationToken)throw new Error('取り込み対象が更新されました。入力を保持して再プレビューしてください。');
+    const key=CAPABILITY_RECORD_PREFIX+record.id;
     const snapshot=capabilityFactsSignature(facts),raw=await prepareGPTExchange({rawText:body.text,kind:'assessment',note:'能力マップのGPT評価。得点原本・既存Reviewは未変更。',confirmedByUser:true});
     const result=await db.transaction('rw',[db.meta,db.problems,db.attempts,db.reviews,db.pastSessions,db.weakNotes],async()=>{
-      const existing=await db.meta.get(key);if(existing)return {record:JSON.parse(existing.value),duplicate:true};
+      const existing=await db.meta.get(key);if(existing)return {...plan,record:JSON.parse(existing.value),duplicate:true};
       const live=await capabilityFactsFromDb();
       if(capabilityFactsSignature(live)!==snapshot)throw new Error('保存中に評価対象が更新されました。入力を保持して再プレビューしてください。');
       await db.meta.add({key,value:JSON.stringify(record)});
       if(!await db.meta.get(GPT_EXCHANGE_PREFIX+raw.id))await db.meta.add({key:GPT_EXCHANGE_PREFIX+raw.id,value:JSON.stringify(raw)});
       if((await db.meta.get(key))?.value!==JSON.stringify(record))throw new Error('能力評価の永続保存を確認できませんでした。再試行してください。');
-      return {record,duplicate:false};
+      return plan;
     });
     if(!result.duplicate)notifyStudyDataChanged({operation:'capability-evaluation'});
     return result as T;

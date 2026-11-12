@@ -6,14 +6,16 @@ import {attemptPlanningEligible,findingPlanningEligible} from './legacyKPolicy.t
 import {GENERATION_CHECKS,validateGeneratedContent} from './generatedTransfer.ts';
 
 export const CAPABILITY_RECORD_PREFIX='capability-evaluation:v1:';
-const INITIAL_ALL_CONTEXT_PREFIX='capability-context:iall:';
-export const isInitialAllCapabilityContext=(version:string)=>/^capability-context:iall:[0-9a-f]{64}$/.test(version);
+const contextPattern=/^(capability-context:(?:(iall|i([0-9a-z]+)p(\d+)):)?)(?:r2:([0-9a-z]+):)?[0-9a-f]{64}$/;
+export const isInitialAllCapabilityContext=(version:string)=>contextPattern.exec(version)?.[2]==='iall';
 export type CapabilityEvidence={attempt_id:number;part_ids:string[];kind:CapabilityKind;outcome:'success'|'failure'|'partial'|'uncertain';baseline_attempt_id:number|null;observation:string;transfer_conditions?:{different_structure:boolean;method_not_cued:boolean}};
 export type CapabilityEvaluation={ability_id:string;state:CapabilityState;certainty:'confirmed'|'provisional'|'conflicting';judgement:string;first_error:string|null;cause_hypothesis?:string|null;evidence:CapabilityEvidence[];next_check:{kind:CapabilityKind;due_date:string|null;task:string;success_condition:string}|null};
 export type CapabilityWire={schema_version:'stat1-capability-v1';catalog_version:string;context_version:string;evaluated_at:string;evaluations:CapabilityEvaluation[]};
-export type CapabilityRecord={schemaVersion:'stat1-capability-record-v1';id:string;createdAt:string;wire:CapabilityWire;items:Array<CapabilityEvaluation&{effectiveState:CapabilityState;warnings:string[]}>;sourceSignatures:Record<string,string>;sourceCutoffAttemptId?:number;rawHash:string};
+export type CapabilityRecord={schemaVersion:'stat1-capability-record-v1';id:string;createdAt:string;wire:CapabilityWire;items:Array<CapabilityEvaluation&{effectiveState:CapabilityState;warnings:string[]}>;sourceSignatures:Record<string,string>;sourceCutoffAttemptId?:number;rawHash:string;savedAfterCount?:number};
 export type CapabilityFacts={problems:Problem[];attempts:Attempt[];reviews?:Review[];pastSessions?:PastSession[];weakNotes?:WeakNote[];records?:CapabilityRecord[]};
-export type CapabilityContextScope={initial?:boolean;domainId?:string;batch?:number};
+export type CapabilityContextScope={initial?:boolean;domainId?:string;batch?:number;retryIds?:string[]};
+export type CapabilityImportEntry={abilityId:string;status:'ready'|'saved'|'conflict';reason?:string};
+export type CapabilityImportPlan={record:CapabilityRecord|null;entries:CapabilityImportEntry[];duplicate:boolean;confirmationToken:string;recoveryScope:CapabilityContextScope};
 export const canonicalValue=(v:unknown):string=>JSON.stringify(v,(_k,x)=>x&&typeof x==='object'&&!Array.isArray(x)?Object.fromEntries(Object.keys(x).sort().filter(k=>x[k]!==undefined).map(k=>[k,x[k]])):x);
 const hash=async(v:string)=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(v)))].map(n=>n.toString(16).padStart(2,'0')).join('');
 const usable=(a:Attempt)=>attemptPlanningEligible(a)&&!a.exclude_from_metrics&&!a.exclude_from_planning&&!a.duplicate_of_attempt_id&&!a.invalidated_at&&!a.superseded_by_attempt_id;
@@ -32,11 +34,44 @@ function attemptFact(a:Attempt){
 const sourceSignature=(a:Attempt)=>canonicalValue(attemptFact(a));
 export const capabilityDate=(iso:string)=>iso.length===10?iso:new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Tokyo',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(iso));
 const recordOrder=(a:CapabilityRecord,b:CapabilityRecord)=>Date.parse(b.wire.evaluated_at)-Date.parse(a.wire.evaluated_at)||b.id.localeCompare(a.id);
-/** Shared snapshot for request freshness and the atomic save guard. No cache,
- * current state, old score or old note is rewritten by this module. */
-export function capabilityFactsSignature(f:CapabilityFacts){
- return canonicalValue({catalog:CAPABILITY_CATALOG_VERSION,problems:[...f.problems].sort((a,b)=>a.problem_id.localeCompare(b.problem_id)).map(p=>({id:p.problem_id,source:p.source_type,generated:p.generated_transfer})),attempts:[...f.attempts].sort((a,b)=>a.id-b.id),
-  reviews:[...(f.reviews||[])].sort((a,b)=>a.id-b.id),sessions:[...(f.pastSessions||[])].sort((a,b)=>a.id-b.id),weakNotes:[...(f.weakNotes||[])].sort((a,b)=>a.id-b.id),records:(f.records||[]).map(r=>({id:r.id,wire:r.wire})).sort((a,b)=>a.id.localeCompare(b.id))});
+function sourceFacts(f:CapabilityFacts){
+ return {catalog:CAPABILITY_CATALOG_VERSION,problems:[...f.problems].sort((a,b)=>a.problem_id.localeCompare(b.problem_id)).map(p=>({id:p.problem_id,source:p.source_type,generated:p.generated_transfer})),attempts:[...f.attempts].sort((a,b)=>a.id-b.id),
+  reviews:[...(f.reviews||[])].sort((a,b)=>a.id-b.id),sessions:[...(f.pastSessions||[])].sort((a,b)=>a.id-b.id),weakNotes:[...(f.weakNotes||[])].sort((a,b)=>a.id-b.id)};
+}
+const recordFacts=(records:CapabilityRecord[])=>records.map(r=>({id:r.id,wire:r.wire})).sort((a,b)=>a.id.localeCompare(b.id));
+// Preserve the exact legacy serialization for previously issued requests.
+export const capabilityFactsSignature=(f:CapabilityFacts)=>canonicalValue({...sourceFacts(f),records:recordFacts(f.records||[])});
+const revisionVersion=async(stem:string,sourceHash:string,records:CapabilityRecord[])=>stem+`r2:${records.length.toString(36)}:`+await hash(canonicalValue([stem,sourceHash,recordFacts(records)]));
+
+async function findRequestBaseline(version:string,f:CapabilityFacts){
+ const match=contextPattern.exec(version),records=f.records||[];
+ if(!match)return {currentVersion:await hash(capabilityFactsSignature(f))};
+ const stem=match[1],count=match[5];
+ const evidence=sourceFacts(f),sourceHash=await hash(canonicalValue(evidence));
+ const currentVersion=await revisionVersion(stem,sourceHash,records);
+ if(currentVersion===version)return {currentVersion,baseline:records};
+ // Existing rows are immutable. Append order is explicit for new saves, and
+ // historical candidates are accepted only when the original digest matches.
+ const ordered=[...records].sort((a,b)=>(a.savedAfterCount??-1)-(b.savedAfterCount??-1)||a.createdAt.localeCompare(b.createdAt)||a.id.localeCompare(b.id));
+ if(count!==undefined){
+  const length=parseInt(count,36);
+  if(Number.isSafeInteger(length)&&length>=0&&length<ordered.length){
+   const baseline=ordered.slice(0,length);
+   if(await revisionVersion(stem,sourceHash,baseline)===version)return {currentVersion,baseline};
+  }
+ }else{
+  // Legacy versions have no count. Try the current state, the empty first
+  // assessment, and a bounded set of recent prefixes; never guess a match.
+  const {attempts,catalog,problems,reviews,sessions,weakNotes}=evidence;
+  const left=`{"attempts":${canonicalValue(attempts)},"catalog":${canonicalValue(catalog)},"problems":${canonicalValue(problems)},"records":`;
+  const right=`,"reviews":${canonicalValue(reviews)},"sessions":${canonicalValue(sessions)},"weakNotes":${canonicalValue(weakNotes)}}`;
+  const lengths=new Set([ordered.length,0,...Array.from({length:Math.min(ordered.length,24)},(_,i)=>ordered.length-1-i)]);
+  for(const length of lengths){
+   const baseline=ordered.slice(0,length);
+   if(stem+await hash(left+canonicalValue(recordFacts(baseline))+right)===version)return {currentVersion,baseline};
+  }
+ }
+ return {currentVersion};
 }
 function fail(path:string,message:string):never{throw new Error(`${path}：${message}`)}
 const obj=(v:unknown,p:string):Record<string,any>=>v&&typeof v==='object'&&!Array.isArray(v)?v as Record<string,any>:fail(p,'オブジェクトが必要です。');
@@ -52,7 +87,7 @@ export function parseCapabilityUpdate(raw:string):CapabilityWire{
  const root=obj(parsed,'能力評価'),v=obj(root.capability_update??root,'capability_update');
  oneOf(v.schema_version,['stat1-capability-v1'],'schema_version');
  if(v.catalog_version!==CAPABILITY_CATALOG_VERSION)fail('catalog_version','能力マップの版が異なります。現在の依頼をコピーし直してください。');
- text(v.context_version,'context_version',100);
+ text(v.context_version,'context_version',128);
  if(typeof v.evaluated_at!=='string'||!/^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:\d{2})$/.test(v.evaluated_at)||!Number.isFinite(Date.parse(v.evaluated_at)))fail('evaluated_at','時差付きの評価日時が必要です。');
  day(v.evaluated_at.slice(0,10),'evaluated_at');
  if(Date.parse(v.evaluated_at)>Date.now()+300000)fail('evaluated_at','評価日時が未来です。端末日時とGPTの評価日時を確認してください。');
@@ -110,7 +145,11 @@ function evaluationWarnings(e:CapabilityEvaluation,f:CapabilityFacts){
    if((a.transfer_lineage?.capabilityEvaluation?.abilityId===e.ability_id||a.transfer_lineage?.abilityProfile?.id===e.ability_id)&&(!a.target_skill_assessment||a.target_skill_assessment.outcome!=='success'||!a.target_skill_assessment.self_selected||!a.target_skill_assessment.major_calculation_success||!a.target_skill_assessment.no_major_error))warnings.push(`答案 #${a.id} の総合点とは別の対象能力判定が成功していません。`);
   }
   const baseline=s.baseline_attempt_id===null?undefined:byId.get(s.baseline_attempt_id);
-  if(s.kind==='immediate_reproduction'&&(!baseline||baseline.id===a.id||baseline.date>a.date))warnings.push(`答案 #${a.id} の再現前の根拠が不足しています。`);
+  if(s.kind==='immediate_reproduction'){
+   if(!baseline||!usable(baseline)||baseline.id===a.id||baseline.date>a.date||baseline.date===a.date&&baseline.id>a.id)warnings.push(`答案 #${a.id} の再現前の根拠が不足しています。`);
+   const repair=a.learning_purpose==='error_repair'||a.grading_contract?.learningPurpose==='error_repair'||a.assessment_timing==='same_session_correction';
+   if(s.outcome==='success'&&(repair&&a.reference_closed_reproduction!==true||a.assessment_timing==='delayed_retrieval'))warnings.push(`答案 #${a.id} の解説を閉じた直後の自力再現を確認できません。局所補修や遅延再現だけでは直後再現としません。`);
+  }
   if(s.kind==='delayed_transfer'){
    if(!baseline||baseline.problem_id===a.problem_id||baseline.id===a.id)warnings.push(`答案 #${a.id} は元問題と異なる課題の確認になっていません。`);
    // Date-only records cannot prove 24 hours across adjacent calendar dates.
@@ -150,8 +189,7 @@ function representativeAttempts(f:CapabilityFacts,focusId?:string){
  for(const a of usableRows.filter(a=>(a.graded_findings||[]).some(x=>!x.resolved)||a.error_point?.trim()).slice(0,8))ids.add(a.id);
  return usableRows.filter(a=>ids.has(a.id));
 }
-export async function buildCapabilityContext(f:CapabilityFacts,focusId?:string,selection:CapabilityContextScope={}){
- if(focusId&&!capabilityById.has(focusId))fail('ability_id','能力マップにありません。');
+function getCapabilityScope(selection:CapabilityContextScope){
  const initial=selection.initial===true,domainIndex=capabilityDomains.findIndex(d=>d.id===selection.domainId),batch=selection.batch??0;
  const all=initial&&selection.domainId==='all';
  if(initial&&(all?batch!==0:domainIndex<0||!Number.isInteger(batch)||batch<0))fail('分野','初回評価の分野と区分を選んでください。');
@@ -159,17 +197,27 @@ export async function buildCapabilityContext(f:CapabilityFacts,focusId?:string,s
  const operations=initial&&!all?domainRows.slice(batch*12,(batch+1)*12):capabilityCatalog;
  if(!operations.length)fail('分野','この評価区分は存在しません。');
  const scope={initial,domainId:initial?selection.domainId:null,batch,abilityIds:operations.map(c=>c.id),batchCount:all?1:Math.ceil(domainRows.length/12)};
- const version=(all?INITIAL_ALL_CONTEXT_PREFIX:'capability-context:'+(initial?`i${domainIndex.toString(36)}p${batch}:`:''))+await hash(capabilityFactsSignature(f));
+ return {initial,all,domainIndex,batch,operations,scope,stem:'capability-context:'+(all?'iall:':initial?`i${domainIndex.toString(36)}p${batch}:`:'')};
+}
+const eligibleAttempts=(f:CapabilityFacts,initial:boolean,focusId?:string)=>[...new Set([...(initial?f.attempts.filter(usable):representativeAttempts(f,focusId)).map(a=>a.id),...latestCapabilityItems(f).flatMap(({item})=>item.evidence.flatMap(s=>[s.attempt_id,...(s.baseline_attempt_id?[s.baseline_attempt_id]:[])]))])];
+
+export async function buildCapabilityContext(f:CapabilityFacts,focusId?:string,selection:CapabilityContextScope={}){
+ if(focusId&&!capabilityById.has(focusId))fail('ability_id','能力マップにありません。');
+ const {initial,all,domainIndex,batch,operations,scope,stem}=getCapabilityScope(selection);
+ const retryIds=[...new Set(selection.retryIds||[])];
+ if(retryIds.some(id=>!scope.abilityIds.includes(id)))fail('差分の対象能力','評価範囲に含まれないIDです。');
+ const requestedOperations=retryIds.length?operations.filter(c=>retryIds.includes(c.id)):operations;
+ const version=await revisionVersion(stem,await hash(canonicalValue(sourceFacts(f))),f.records||[]);
  const representatives=initial?[...f.attempts].filter(usable).sort((a,b)=>a.date.localeCompare(b.date)||a.id-b.id):representativeAttempts(f,focusId);
  const noteGroups=new Map<string,{attempt_id:number;problem_id:string;note_ids:number[];observation:string;correction_rule:string}>();
  if(initial)for(const n of f.weakNotes||[]){if(!representatives.some(a=>a.id===n.generated_from_attempt_id&&a.problem_id===n.problem_id))continue;
   const key=canonicalValue([n.generated_from_attempt_id,n.problem_id,n.mistake,n.correction_rule]),old=noteGroups.get(key);
   if(old)old.note_ids.push(n.id);else noteGroups.set(key,{attempt_id:n.generated_from_attempt_id!,problem_id:n.problem_id,note_ids:[n.id],observation:n.mistake,correction_rule:n.correction_rule});
  }
- const schema={capability_update:{schema_version:'stat1-capability-v1',catalog_version:CAPABILITY_CATALOG_VERSION,context_version:version,evaluated_at:'時差付きISO日時',evaluations:[{ability_id:initial?operations[0].id:focusId||'cross.request-to-math',state:'unconfirmed',certainty:'provisional',judgement:'観察事実と未確認を1〜2文で区別',first_error:null,cause_hypothesis:null,evidence:[{attempt_id:representatives[0]?.id||1,part_ids:representatives[0]?partIds(representatives[0]):[],kind:'diagnostic',outcome:'uncertain',baseline_attempt_id:null,observation:'答案で確認できた式・条件・記号。未確認は補完しない'}],next_check:{kind:'immediate_reproduction',due_date:null,task:'次に確認する操作を1件',success_condition:'参照なしで再現できたと判定する条件'}}]}};
+ const schema={capability_update:{schema_version:'stat1-capability-v1',catalog_version:CAPABILITY_CATALOG_VERSION,context_version:version,evaluated_at:'実際の評価日時（時差付きISO）',evaluations:[{ability_id:initial||retryIds.length?requestedOperations[0].id:focusId||'cross.request-to-math',state:'unconfirmed',certainty:'provisional',judgement:'観察事実と未確認を1〜2文で区別',first_error:null,cause_hypothesis:null,evidence:[{attempt_id:representatives[0]?.id||1,part_ids:representatives[0]?partIds(representatives[0]):[],kind:'diagnostic',outcome:'uncertain',baseline_attempt_id:null,observation:'答案で確認できた式・条件・記号。未確認は補完しない'}],next_check:{kind:'immediate_reproduction',due_date:null,task:'次に確認する操作を1件',success_condition:'参照なしで再現できたと判定する条件'}}]}};
  const facts={catalog_version:CAPABILITY_CATALOG_VERSION,context_version:version,focus_ability_id:focusId||null,review_scope:scope,
-  operation_catalog:operations.map(c=>({id:c.id,domain:capabilityDomains.find(d=>d.id===c.domainId)!.name,name:c.name,criterion:c.criterion})),
-  current_evaluations:latestCapabilityItems(f).map(({record,item:e})=>({evaluated_at:record.wire.evaluated_at,ability_id:e.ability_id,state:e.effectiveState,certainty:e.certainty,judgement:e.judgement,first_error:e.first_error,evidence:e.evidence,next_check:e.next_check})),
+  operation_catalog:requestedOperations.map(c=>({id:c.id,domain:capabilityDomains.find(d=>d.id===c.domainId)!.name,name:c.name,criterion:c.criterion})),
+  current_evaluations:latestCapabilityItems(f).filter(({item})=>!retryIds.length||retryIds.includes(item.ability_id)).map(({record,item:e})=>({evaluated_at:record.wire.evaluated_at,ability_id:e.ability_id,state:e.effectiveState,certainty:e.certainty,judgement:e.judgement,first_error:e.first_error,evidence:e.evidence,next_check:e.next_check})),
   representative_answers:representatives.map(a=>({id:a.id,problem_id:a.problem_id,date:a.date,problem_title:f.problems.find(p=>p.problem_id===a.problem_id)?.title,
    material_kind:f.problems.find(p=>p.problem_id===a.problem_id)?.source_type,score:a.score_numeric??null,grade_is_official:false,summary:a.result_summary||null,observed_errors:a.error_point||null,
    reference_level:a.actual_reference_level??a.reference_level??null,hint_used:a.hint_used??null,grading_confidence:a.grading_confidence??null,purpose:a.learning_purpose||null,timing:a.assessment_timing||null,
@@ -202,29 +250,27 @@ export async function buildCapabilityContext(f:CapabilityFacts,focusId?:string,s
   payload.history_attachment={name:historyAttachment.name,sha256:digest,answers:all.length,required_for_initial_review:true};
   payload.answer_index=all.map(a=>({id:a.id,problem_id:a.problem_id,date:a.date,success_parts:a.assessed_parts.filter(p=>p.resolved&&p.error_type==='none').map(p=>p.id),unresolved_parts:a.assessed_parts.filter(p=>!p.resolved).map(p=>p.id)}));
  }
- const prompt=(initial?(all?`【初回・全分野評価】全${capabilityDomains.length}分野の${operations.length}操作を一度に確認し、分野ごとに分割せず、取り込み用JSONを1個だけ返す。根拠のある能力だけを記録する。証拠不足の能力は無理に配列を埋めず、既存評価も新しい根拠がなければ変更しない。各能力の根拠は直接関係する1〜2件を目安にし、次回提案は優先3件まで（他はnull）。\n`:`【初回・分野別評価】今回は${capabilityDomains[domainIndex].name}の区分${batch+1}/${scope.batchCount}、operation_catalogの能力だけを評価する。`)+`過去の有効答案を最小射影で全期間含める。最初の誤りは記録上未確定なら推測しない。成功所見と失敗所見の両方、補修・後続答案を対話で照合する。同じ答案から派生したnote_idsの多さを失敗回数としない。Reviewのdoneだけで成功や定着を認定しない。分野名や問題テーマから能力を一括分類しない。必要な原答案は利用者に依頼し、不明はunconfirmedのままにする。\n`:'')+'統計検定1級・統計数理の学習を、ChatGPT「勉強する」で指導してください。以下はアプリに保存された証拠です。学習方針・出題・採点・原因仮説・習得評価はあなたが担当し、アプリは記録とID照合のみを担当します。\n'+
+ const prompt=(retryIds.length?`【差分の再評価】下の operation_catalog にある ${retryIds.length} 件だけを再照合し、変更を裏づけられる能力だけを evaluations に返す。旧JSONの context_version だけを差し替えない。既に保存済み・根拠不足の能力は繰り返さない。\n`:initial?(all?`【初回・全分野評価】全${capabilityDomains.length}分野の${operations.length}操作を一度に確認し、分野ごとに分割せず、取り込み用JSONを1個だけ返す。根拠のある能力だけを記録する。証拠不足の能力は無理に配列を埋めず、既存評価も新しい根拠がなければ変更しない。各能力の根拠は直接関係する1〜2件を目安にし、次回提案は優先3件まで（他はnull）。\n`:`【初回・分野別評価】今回は${capabilityDomains[domainIndex].name}の区分${batch+1}/${scope.batchCount}、operation_catalogの能力だけを評価する。`)+`過去の有効答案を最小射影で全期間含める。最初の誤りは記録上未確定なら推測しない。成功所見と失敗所見の両方、補修・後続答案を対話で照合する。同じ答案から派生したnote_idsの多さを失敗回数としない。Reviewのdoneだけで成功や定着を認定しない。分野名や問題テーマから能力を一括分類しない。必要な原答案は利用者に依頼し、不明はunconfirmedのままにする。\n`:'')+'統計検定1級・統計数理の学習を、ChatGPT「勉強する」で指導してください。以下はアプリに保存された証拠です。学習方針・出題・採点・原因仮説・習得評価はあなたが担当し、アプリは記録とID照合のみを担当します。\n'+
   (initial?'初回履歴JSON（history_attachmentの名前・hash）を同じ会話の添付として確認する。代表答案だけで全期間の評価を済ませず、answer_indexから古い成功・失敗の該当記録もファイルで照合する。ファイルがない・読めない場合は添付を依頼し、未確認を埋めない。最新の能力評価は今回の依頼を優先し、以前の添付内の情報から現在状態を勝手に戻さない。\n':'')+
   '2026-11-11版「学習停滞の診断と改善指導ルール」に従う。問題消化を目標にしない。最初の不正確な式・条件・記号1件を特定し、連鎖的失点と独立した誤りを区別する。原因は仮説と確信度を示し、局所計算ミスを概念不足と断定しない。未着手を未修復にしない。\n'+
   '初回採点は元得点として固定する。同じ学習で高影響の操作1個だけを必要な1〜3行から丁寧に補修し、解説を閉じて短い自力再現を確認する。説明を読んだだけでは成功としない。次回は原則24〜72時間後を目安に、構造・要求を変えた非誘導の未見問題で確認する。日時は提案であり、アプリが勝手に予定や既存Reviewを書き換えることはない。\n'+
   '診断・転移の出題時は弱点名・分野・定理・解法・正答を先に見せない。数値だけを変えた類題、同じ問題の再挑戦、援助ありを遅延転移成功としない。生成問題は下書き→別passの独立品質確認→自力答案固定→既存採点の順とする。不備は能力失敗でなく保留。\n'+
   '分野全体を一度で習得認定せず、下のoperation_catalogの操作IDと実際の採点範囲を対応させる。不確かな対応はcertainty=provisional、矛盾はconflicting。根拠がない能力はunconfirmedのままにする。過去プロフィールの名前一致だけで対応を確定しない。改善済みの操作を無条件で最優先へ戻さない。優先順位と確認時期は根拠を述べて提案し、同じ成功類題を漫然と追加しない。\n'+
-  '状態は unconfirmed / unrepaired / immediate_confirmed / delayed_transfer_confirmed / exam_confirmed。直後成功から後続段階を推測しない。各証拠kindは diagnostic / local_repair / immediate_reproduction / delayed_transfer / exam、outcomeは success / failure / partial / uncertain。遅延転移の証拠には transfer_conditions:{"different_structure":true|false,"method_not_cued":true|false} を付ける。基準答案はbaseline_attempt_idで指定する。日付しかない翌日の記録は24時間経過を立証できない。\n'+
-  `まず通常の文章で対話・解説してよい。保存時だけ下記スキーマの標準JSONを1個返す。Markdownフェンス・JSON外の文章は付けず、配列は[]、不明値は明示的null、空の値は禁止。評価は今回確認した最大${all?operations.length:12}能力、各説明1〜2文、次回行動は能力ごとに1件まで。evaluations配列はあなたが提案する重要度の順で、今回の重点を先頭に置く。${initial?'添付履歴のanswers（採点項目はassessed_parts）または保存済み能力評価':'代表答案または保存済み能力評価'}に明示されたIDだけを参照し、必要な古い原資料は利用者へ依頼する。得点の再出力・書換えは不要。\n`+JSON.stringify(schema)+'\n保存済み証拠：\n'+JSON.stringify(facts);
- const eligibleAttemptIds=[...new Set([...representatives.map(a=>a.id),...latestCapabilityItems(f).flatMap(({item})=>item.evidence.flatMap(s=>[s.attempt_id,...(s.baseline_attempt_id?[s.baseline_attempt_id]:[])]))])];
+  '状態は unconfirmed / unrepaired / immediate_confirmed / delayed_transfer_confirmed / exam_confirmed。根拠がない能力は列挙しない。first_error と cause_hypothesis は答案の記録から確認・推論できないときは null。局所補修の成功を直後の自力再現に読み替えず、直後成功から後続段階を推測しない。各証拠kindは diagnostic / local_repair / immediate_reproduction / delayed_transfer / exam、outcomeは success / failure / partial / uncertain。遅延転移の証拠には transfer_conditions:{"different_structure":true|false,"method_not_cued":true|false} を付ける。基準答案はbaseline_attempt_idで指定する。日付しかない翌日の記録は24時間経過を立証できない。\n'+
+  `まず通常の文章で対話・解説してよい。保存時だけ下記スキーマの標準JSONを1個返す。Markdownフェンス・JSON外の文章は付けず、配列は[]、不明値は明示的null、空の値は禁止。評価は今回確認した最大${retryIds.length?Math.min(retryIds.length,all?operations.length:12):all?operations.length:12}能力、各説明1〜2文、次回行動は能力ごとに1件まで。evaluations配列はあなたが提案する重要度の順で、今回の重点を先頭に置く。${initial?'添付履歴のanswers（採点項目はassessed_parts）または保存済み能力評価':'代表答案または保存済み能力評価'}に明示されたIDだけを参照し、必要な古い原資料は利用者へ依頼する。得点の再出力・書換えは不要。\n`+JSON.stringify(schema)+'\n保存済み証拠：\n'+JSON.stringify(facts);
+ const eligibleAttemptIds=eligibleAttempts(f,initial,focusId);
  return {version,catalogVersion:CAPABILITY_CATALOG_VERSION,prompt,eligibleAttemptIds,scope,historyAttachment,sourcePeriod:{first:[...f.attempts].map(a=>a.date).sort()[0]??null,last:[...f.attempts].map(a=>a.date).sort().at(-1)??null},answerCount:f.attempts.length};
 }
-export async function prepareCapabilityUpdate(raw:string,f:CapabilityFacts):Promise<CapabilityRecord>{
- const wire=parseCapabilityUpdate(raw),match=wire.context_version.match(/^capability-context:i([0-9a-z]+)p(\d+):/),context=await buildCapabilityContext(f,undefined,isInitialAllCapabilityContext(wire.context_version)?{initial:true,domainId:'all'}:match?{initial:true,domainId:capabilityDomains[parseInt(match[1],36)]?.id,batch:Number(match[2])}:{});
- if(wire.context_version!==context.version)fail('context_version','評価対象が更新されています。現在の依頼をコピーして再評価してください。原文は保管できます。');
- const byId=new Map(f.attempts.map(a=>[a.id,a])),allowed=new Set(context.eligibleAttemptIds),sourceSignatures:Record<string,string>={};
- for(const e of wire.evaluations){if(context.scope.initial&&!context.scope.abilityIds.includes(e.ability_id))fail('対象能力','今回の分野・区分に含まれません。分野別の依頼を確認してください。');for(const s of e.evidence){
+async function makeCapabilityRecord(raw:string,wire:CapabilityWire,f:CapabilityFacts,allowed:Set<number>):Promise<CapabilityRecord>{
+ const byId=new Map(f.attempts.map(a=>[a.id,a])),sourceSignatures:Record<string,string>={};
+ for(const e of wire.evaluations)for(const s of e.evidence){
   const a=byId.get(s.attempt_id);if(!a||!allowed.has(s.attempt_id))fail(`答案 #${s.attempt_id}`,'今回渡した根拠答案に存在しません。');
   if(!f.problems.some(p=>p.problem_id===a.problem_id))fail(`答案 #${a.id}`,'関連問題がありません。');
   if(s.part_ids.some(p=>!partIds(a).includes(p)))fail(`答案 #${a.id}`,'対象外または存在しない採点項目が指定されています。');
   if(a.date>capabilityDate(wire.evaluated_at))fail(`答案 #${a.id}`,'評価日時より後の答案です。');
   sourceSignatures[a.id]=sourceSignature(a);
-  if(s.baseline_attempt_id!==null){const b=byId.get(s.baseline_attempt_id);if(!b||!allowed.has(b.id))fail('baseline_attempt_id','今回の評価対象に存在しません。');sourceSignatures[b.id]=sourceSignature(b)}
- }}
+  if(s.baseline_attempt_id!==null){const b=byId.get(s.baseline_attempt_id);if(!b||!allowed.has(b.id)||b.date>capabilityDate(wire.evaluated_at))fail('baseline_attempt_id','今回の評価対象に存在しないか、評価日時より後の答案です。');sourceSignatures[b.id]=sourceSignature(b)}
+ }
  const invalidGenerated=new Set<string>();
  for(const problemId of new Set(wire.evaluations.flatMap(e=>e.evidence.map(s=>byId.get(s.attempt_id)!.problem_id)))){
   const p=f.problems.find(p=>p.problem_id===problemId);
@@ -239,7 +285,40 @@ export async function prepareCapabilityUpdate(raw:string,f:CapabilityFacts):Prom
   }
   return {...e,effectiveState:warnings.length?'unconfirmed' as const:e.state,warnings};
  });
- return {schemaVersion:'stat1-capability-record-v1',id:await hash(canonicalValue(wire)),createdAt:new Date().toISOString(),wire,items,sourceSignatures,sourceCutoffAttemptId:Math.max(0,...f.attempts.map(a=>a.id)),rawHash:await hash(raw)};
+ return {schemaVersion:'stat1-capability-record-v1',id:await hash(canonicalValue(wire)),createdAt:new Date().toISOString(),wire,items,sourceSignatures,sourceCutoffAttemptId:Math.max(0,...f.attempts.map(a=>a.id)),rawHash:await hash(raw),savedAfterCount:f.records?.length||0};
+}
+
+export async function planCapabilityImport(raw:string,f:CapabilityFacts):Promise<CapabilityImportPlan>{
+ const wire=parseCapabilityUpdate(raw),match=contextPattern.exec(wire.context_version),records=f.records||[];
+ const selection:CapabilityContextScope=match?.[2]==='iall'?{initial:true,domainId:'all'}:match?.[3]?{initial:true,domainId:capabilityDomains[parseInt(match[3],36)]?.id,batch:Number(match[4])}:{};
+ const {scope}=getCapabilityScope(selection);
+ if(wire.evaluations.some(e=>!scope.abilityIds.includes(e.ability_id)))fail('対象能力','今回の分野・区分に含まれません。分野別の依頼を確認してください。');
+ const {baseline,currentVersion}=await findRequestBaseline(wire.context_version,f),baselineIds=new Set(baseline?.map(r=>r.id));
+ const changedIds=new Set(records.filter(r=>!baselineIds.has(r.id)).flatMap(r=>r.items.map(i=>i.ability_id)));
+ const latest=new Map(latestCapabilityItems(f).map(pair=>[pair.item.ability_id,pair]));
+ const byId=new Map(f.attempts.map(a=>[a.id,a]));
+ const ready:CapabilityEvaluation[]=[];
+ const entries=wire.evaluations.map((e):CapabilityImportEntry=>{
+  const abilityId=e.ability_id,prior=latest.get(abilityId),at=Date.parse(wire.evaluated_at),same=(r:CapabilityRecord)=>r.wire.evaluations.some(item=>item.ability_id===abilityId&&canonicalValue(item)===canonicalValue(e));
+  if(records.some(r=>Date.parse(r.wire.evaluated_at)===at&&same(r)))return {abilityId,status:'saved'};
+  if(!baseline)return {abilityId,status:'conflict',reason:'依頼時点の状態を照合できません。答案・Reviewなどの更新、または元の履歴が確認できないため保存しません。'};
+  if(prior&&same(prior.record)&&e.evidence.every(s=>[s.attempt_id,s.baseline_attempt_id].every(id=>id===null||(byId.has(id)&&sourceSignature(byId.get(id)!)===prior.record.sourceSignatures[id]))))return {abilityId,status:'saved'};
+  if(changedIds.has(abilityId))return {abilityId,status:'conflict',reason:'依頼の作成後にこの能力の評価が保存されました。保存済みの評価を維持します。'};
+  if(prior&&Date.parse(prior.record.wire.evaluated_at)>=at)return {abilityId,status:'conflict',reason:'この能力には同じ日時か、より新しい評価が保存されています。現在の評価を維持します。'};
+  if(prior?.item.evidence.length&&!e.evidence.length)return {abilityId,status:'conflict',reason:'既存評価を見直す根拠答案が指定されていません。現在の評価を維持します。'};
+  ready.push(e);return {abilityId,status:'ready'};
+ });
+ const candidate=ready.length?await makeCapabilityRecord(raw,{...wire,evaluations:ready},f,new Set(eligibleAttempts({...f,records:baseline},scope.initial))):null;
+ const duplicate=!candidate&&entries.some(e=>e.status==='saved');
+ const record=candidate||(duplicate?records.find(r=>canonicalValue(r.wire)===canonicalValue(wire))||null:null);
+ return {record,entries,duplicate,confirmationToken:await hash(canonicalValue([raw,currentVersion,entries])),recoveryScope:{...selection,retryIds:entries.filter(e=>e.status==='conflict').map(e=>e.abilityId)}};
+}
+
+/** Strict single-record helper for callers that require the whole input. */
+export async function prepareCapabilityUpdate(raw:string,f:CapabilityFacts):Promise<CapabilityRecord>{
+ const plan=await planCapabilityImport(raw,f),conflict=plan.entries.find(e=>e.status==='conflict');
+ if(conflict)fail('context_version',conflict.reason!);
+ return plan.record||fail('evaluations','新しく保存する能力評価がありません。');
 }
 export const capabilityUpdateId=async(raw:string)=>hash(canonicalValue(parseCapabilityUpdate(raw)));
 export function readCapabilityRecords(meta:Array<{key:string;value:string}>){
