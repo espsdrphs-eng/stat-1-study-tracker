@@ -222,7 +222,7 @@ export function derivePastExamSessionState(session?:Partial<PastSession>|null):P
   if(!session)return "planned";
   if(session.session_state==="invalidated")return "invalidated";
   if(session.cancelled===true||session.session_state==="cancelled")return "cancelled";
-  if(session.deferred===true)return "deferred";
+  if(session.deferred===true||session.session_state==="deferred")return "deferred";
   if(session.session_kind==="scan_only"){
     const scanSaved=!!session.prompt_scanned_at||!!session.analysis||(session.questions||[]).some(row=>
       !!row.predictedType||!!row.firstStep||row.predictedScore!=null||row.selected===true||!!row.sinkRisk||!!row.selectionReason);
@@ -374,8 +374,12 @@ export function reconcilePastExamSessionEvidence(session:PastSession,attempts:At
   });
   const timingUnknown=selected.some(id=>{const q=questions.find(row=>row.problemId===id);return !!q?.sourceAttemptId&&q.actualMinutes==null});
   const selectedSolveMinutes=timingUnknown?undefined:selected.reduce((sum,id)=>sum+Number(questions.find(row=>row.problemId===id)?.actualMinutes||0),0);
-  const scanMinutes=Number(session.scan_minutes||0),sessionElapsedMinutes=selectedSolveMinutes==null?
-    (session.answer_finished_at&&Number(session.actual_total_minutes)>0?Number(session.actual_total_minutes):undefined):scanMinutes+selectedSolveMinutes;
+  const recordedMinutes=session.actual_total_minutes;
+  const finishedTotal=session.answer_finished_at&&typeof recordedMinutes==='number'&&Number.isFinite(recordedMinutes)&&recordedMinutes>0?recordedMinutes:undefined;
+  const scanMinutes=Number(session.scan_minutes||0),derivedMinutes=selectedSolveMinutes==null?undefined:scanMinutes+selectedSolveMinutes;
+  // The stopwatch at submission is a source fact, not a cache of summed
+  // per-question minutes. A shorter reconstructed duration cannot erase an overrun.
+  const sessionElapsedMinutes=finishedTotal===undefined?derivedMinutes:Math.max(finishedTotal,derivedMinutes??0);
   const selectedComplete=selected.length===3&&selectedAttempts.length===3;
   const allComparable=questions.length===5&&questions.every(row=>row.actualScore!=null&&row.answerTiming==='during_exam');
   const optimal=allComparable?[...questions].sort((a,b)=>Number(b.actualScore)-Number(a.actualScore)).slice(0,3).map(row=>row.problemId||row.questionLabel):[];
@@ -392,10 +396,13 @@ export function reconcilePastExamSessionEvidence(session:PastSession,attempts:At
     linked_attempt_ids:uniqueNumbers([...selectedAttempts,...calibrationAttempts].map(row=>row.id)),
     selected_timed_attempt_ids:selectedAttempts.map(row=>row.id),counterfactual_calibration_attempt_ids:calibrationAttempts.map(row=>row.id),
     selected_solve_minutes:selectedSolveMinutes,session_elapsed_minutes:sessionElapsedMinutes,
-    actual_total_minutes:selectedComplete?sessionElapsedMinutes:Number(session.actual_total_minutes||0),
+    ...(session.answer_finished_at?{}:{actual_total_minutes:selectedComplete?sessionElapsedMinutes:Number(recordedMinutes||0)}),
     selected_answer_count:selectedAttempts.length,attempt_started_at:selectedAttempts.length?session.attempt_started_at||`${selectedAttempts[0].date}T00:00:00`:session.attempt_started_at,
     attempt_completed_at:completedAt,simulation_completed_at:selectedComplete?session.simulation_completed_at||completedAt:session.simulation_completed_at,
-    exam_score_eligible:selectedComplete&&noReference&&sessionElapsedMinutes!=null&&sessionElapsedMinutes<=90,
+    exam_score_eligible:selectedComplete&&noReference&&!session.answer_exposure&&!session.superseded_by_session_id&&
+      !["deferred","cancelled","invalidated"].includes(derivePastExamSessionState(session))&&
+      !(session.session_state==="completed"&&session.exam_score_eligible===false)&&
+      sessionElapsedMinutes!=null&&sessionElapsedMinutes>0&&sessionElapsedMinutes<=90,
     selection_evaluation_eligible:allComparable,selection_evaluation_status:allComparable?"complete":"pending",
     optimal_selected_problem_ids:allComparable?optimal:session.optimal_selected_problem_ids,
     optimal_selection_basis:allComparable?"全5問の有効な採点結果による得点上位3問":session.optimal_selection_basis,

@@ -367,6 +367,7 @@ function ReviewPlanDetails({item:rawItem,compact=false,resolved}:{item:Partial<R
       panel==="official_answer"&&reference.official_answer||panel==="external_reference"&&reference.external_reference
         ?`${initial.replace(/を見る$/,"")}をもう一度見る`:initial;
   const usedReference=reference.actual_reference_level>0;
+  const immediateCheck=(resolved?.prescription.assessmentTiming??item.assessment_timing)==='same_session_correction';
   const reviewPrompt=actionable&&item.id&&item.problem_id?buildReviewGradingPrompt({
     reviewId:item.id,problemId:item.problem_id,title:item.title,theme:item.theme,date:todayString(),mode:reviewMode(item),
     previousDate:item.previous_date,previousScore:item.previous_score,previousErrors:item.previous_errors,
@@ -437,7 +438,7 @@ function ReviewPlanDetails({item:rawItem,compact=false,resolved}:{item:Partial<R
         <Field label="許可された参照"><input value={`${allowed}. ${referenceLabels[allowed]}まで`} readOnly/></Field>
         <Field label="実際に見た参照"><input value={`${reference.actual_reference_level}. ${referenceLabels[reference.actual_reference_level]}`} readOnly/></Field>
       </div>
-      {usedReference&&<label className="after-hint-check"><input type="checkbox" checked={referenceClosedReproduction} onChange={event=>{setReferenceClosedReproduction(event.target.checked);rememberReferenceClosed(item.id,event.target.checked)}}/><span>表示を隠してから、該当部分を白紙で再現した</span></label>}
+      {(usedReference||immediateCheck)&&<label className="after-hint-check"><input type="checkbox" checked={referenceClosedReproduction} onChange={event=>{setReferenceClosedReproduction(event.target.checked);rememberReferenceClosed(item.id,event.target.checked)}}/><span>{usedReference?'表示を隠してから、該当部分を白紙で再現した':'補修とは別に、解説を閉じて該当部分を白紙で自力再現した'}</span></label>}
       {reviewPrompt?<button className="ghost small review-prompt-copy" onClick={async()=>{try{await lockContract();await navigator.clipboard.writeText(reviewPrompt);setPromptCopied(true);setTimeout(()=>setPromptCopied(false),1800)}catch(error){window.alert(error instanceof Error?error.message:"この復習課題は現在実行できません")}}}>{promptCopied?<Check size={14}/>:<Copy size={14}/>} {promptCopied?"復習採点プロンプトをコピーしました":"GPT採点プロンプトをコピー"}</button>:
         <div className="review-consistency-warning" role="alert"><AlertTriangle size={16}/><span>GPT採点プロンプトを生成できません。採点契約を確認してください。</span></div>}
     </div>}

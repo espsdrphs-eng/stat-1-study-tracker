@@ -76,7 +76,7 @@ test('generated drafts and old transfer flags cannot certify a delayed or natura
 test('only a bound completed timed past-exam answer supports the exam stage, not local repair or generated training',async()=>{
  const {buildCapabilityContext,prepareCapabilityUpdate,projectCapabilityMap}=await core(),f=capabilityFacts();
  Object.assign(f.attempts[2],{parent_past_session_id:9,session_role:'selected_timed',exam_score_eligible:true,learning_purpose:'exam_performance',time_minutes:25,time_limit_minutes:30,conclusion_reached:true});
- f.pastSessions=[{id:9,year:2024,date:'2026-11-08',session_kind:'selected_three_timed',actual_total_minutes:90,exam_selected_problem_ids:['PY-2024-Q3','PY-2024-Q1','PY-2024-Q2'],answer_finished_at:'2026-11-08T12:00:00+09:00'}];
+ f.pastSessions=[{id:9,year:2024,date:'2026-11-08',session_kind:'selected_three_timed',exam_score_eligible:true,actual_total_minutes:90,exam_selected_problem_ids:['PY-2024-Q3','PY-2024-Q1','PY-2024-Q2'],answer_finished_at:'2026-11-08T12:00:00+09:00'}];
  const wire=async()=>{const ctx=await buildCapabilityContext(f),w=capabilityWire(ctx,{state:'exam_confirmed'});w.evaluations[0].evidence=[{attempt_id:3,part_ids:['major_calculation'],kind:'exam',outcome:'success',baseline_attempt_id:null,observation:'TEST: 時間内の指定操作を確認'}];return w};
  let r=await prepareCapabilityUpdate(JSON.stringify(await wire()),f);assert.equal(projectCapabilityMap(f,[r]).counts.exam_confirmed,1);
  f.attempts[2].learning_purpose='error_repair';r=await prepareCapabilityUpdate(JSON.stringify(await wire()),f);assert.equal(projectCapabilityMap(f,[r]).counts.exam_confirmed,0);
@@ -91,7 +91,8 @@ test('deleted or modified sources and same-time conflicting GPT states display a
 });
 test('an older failure alone does not undo a newer explicitly mapped success',async()=>{
  const {buildCapabilityContext,prepareCapabilityUpdate}=await core(),f=capabilityFacts();
- f.attempts[1].date='2026-11-03';let ctx=await buildCapabilityContext(f),r=await prepareCapabilityUpdate(JSON.stringify(capabilityWire(ctx)),f);f.records=[r];
+ let ctx=await buildCapabilityContext(f),r=await prepareCapabilityUpdate(JSON.stringify(capabilityWire(ctx)),f);f.records=[r];
+ assert.equal(r.items[0].effectiveState,'immediate_confirmed');
  ctx=await buildCapabilityContext(f);const w=capabilityWire(ctx,{state:'unrepaired'});w.evaluated_at='2026-11-11T11:00:00+09:00';w.evaluations[0].evidence=[{attempt_id:1,part_ids:['major_calculation'],kind:'diagnostic',outcome:'failure',baseline_attempt_id:null,observation:'古い失敗だけを再引用'}];
  r=await prepareCapabilityUpdate(JSON.stringify(w),f);assert.equal(r.items[0].effectiveState,'unconfirmed');assert.match(r.items[0].warnings.join(),/古い失敗/);
 });

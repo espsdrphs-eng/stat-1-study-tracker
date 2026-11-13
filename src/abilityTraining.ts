@@ -141,12 +141,13 @@ export function validAbilityLineage(l:TransferTrainingLineage|undefined){
 /** Adapter to the existing generation/quality/grading workflow, not another
  * generator or a mastery inference. Only an explicitly saved GPT mapping is used. */
 export function capabilityTrainingProfile(data:Bootstrap,id:string):AbilityProfileView|undefined{
- const ability=projectCapabilityMap(data,data.capabilityRecords||[]).abilities.find(a=>a.id===id),current=ability?.current;
- if(!ability||!current)return undefined;
- const sources=[...new Set(current.item.evidence.map(s=>s.attempt_id))].map(attemptId=>({attemptId,partIds:[...new Set(current.item.evidence.filter(e=>e.attempt_id===attemptId).flatMap(e=>e.part_ids))]}));
- const trainable=!ability.warnings.length&&sources.length>0&&current.item.next_check?.kind==='delayed_transfer';
- return {id:ability.id,name:ability.name,state:ability.state==='unrepaired'?'needs_practice':'uncertain',goal:current.item.next_check?.success_condition||ability.criterion,next:current.item.next_check?.task||'次回の確認をGPTへ相談する',sources,origin:'capability_evaluation',reviewedAt:current.record.wire.evaluated_at,revision:current.record.id,trainable,
-  reason:trainable?'保存済みGPT評価の対象操作と根拠を引き継ぎます。生成・品質確認・実施だけでは能力マップの状態を変更しません。':'根拠付きの能力評価と、GPTによる遅延転移の提案が必要です。未確定事項を確認してから能力評価を保存してください。'};
+ const ability=projectCapabilityMap(data,data.capabilityRecords||[]).abilities.find(a=>a.id===id),origin=ability?.proposalSource??ability?.current;
+ if(!ability||!origin)return undefined;
+ const check=ability.proposalSource?.item.next_check;
+ const linked=origin.observations.filter(o=>o.direct).map(o=>o.link);
+ const sources=[...new Set(linked.map(s=>s.attempt_id))].map(attemptId=>({attemptId,partIds:[...new Set(linked.filter(e=>e.attempt_id===attemptId).flatMap(e=>e.part_ids))]}));
+ return {id:ability.id,name:ability.name,state:ability.state==='unrepaired'?'needs_practice':'uncertain',goal:check?.success_condition||ability.criterion,next:check?.task||'次回の確認をGPTへ相談する',sources,origin:'capability_evaluation',reviewedAt:origin.record.wire.evaluated_at,revision:origin.record.id,trainable:ability.canTrain,
+  reason:ability.canTrain?'保存済みGPT評価の対象操作と根拠を引き継ぎます。生成・品質確認・実施だけでは能力マップの状態を変更しません。':'根拠付きの能力評価と、GPTによる遅延転移の提案が必要です。未確定事項を確認してから能力評価を保存してください。'};
 }
 export type AbilityOutcomeProof={attemptId:number;problemId:string;abilityId:string;outcome:ReturnType<typeof abilityTrainingOutcome>};
 export function validateAbilitySources(d:CoachDiagnosis,sources:Array<{attemptId:number;partIds:string[]}>,proofs:AbilityOutcomeProof[]=[]){

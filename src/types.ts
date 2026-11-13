@@ -604,6 +604,8 @@ export type LearningWork={id:string;problemId:string;mode:string;reviewId?:numbe
 export type Bootstrap = {
   capabilityRecords?:import('./capabilityEvidence.ts').CapabilityRecord[];
   capabilityRecordIssues?:string[];
+  /** Persisted facts for capability adjudication, not the reconciled exam display. */
+  capabilityPastSessions?:PastSession[];
   learningWorkByProblem?:Record<string,LearningWork>;
   taskAnswerScopeOverrides?:Record<string,import('./taskAnswerScope.ts').TaskAnswerScopeOverride>;
   problems:Problem[]; attempts:Attempt[]; reviews:Review[]; roadmap:Roadmap[];

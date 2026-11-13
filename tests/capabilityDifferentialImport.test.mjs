@@ -42,7 +42,7 @@ test('legacy all-domain JSON remains usable after one saved ability; only the sa
 });
 
 test('an error-repair attempt without a recorded closed-reference reproduction cannot be relabelled as immediate confirmation',async()=>{
- const f=capabilityFacts();Object.assign(f.attempts[1],{learning_purpose:'error_repair',assessment_timing:'same_session_correction'});
+ const f=capabilityFacts();Object.assign(f.attempts[1],{learning_purpose:'error_repair',assessment_timing:'same_session_correction',reference_closed_reproduction:false});
  const w=capabilityWire(await buildCapabilityContext(f));
  let r=await prepareCapabilityUpdate(JSON.stringify(w),f);assert.equal(r.items[0].effectiveState,'unconfirmed');
  f.attempts[1].reference_closed_reproduction=true;w.context_version=(await buildCapabilityContext(f)).version;

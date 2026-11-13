@@ -347,6 +347,7 @@ export function buildReviewGradingPrompt(context:ReviewPromptContext){
   const defaultAllowed=fullScope?0:(context.previousErrors||[]).some(error=>["K","N","W","C"].includes(error))?2:1;
   const allowedReferenceLevel=Math.min(5,Math.max(0,Number(context.allowedReferenceLevel??defaultAllowed)));
   const referenceClosed=context.referenceClosedReproduction??context.afterHintReproduced??false;
+  const recordedReproduction=referenceClosed&&(hintUsed||context.assessmentTiming==='same_session_correction');
   const scopeRule:Record<EffectiveReviewScope|"scan5",string>={
     targeted_patch:"targetedPartsだけを採点する。指定範囲外の空欄・省略・未提出をK/W/N/Cの根拠にしない。骨格全項目を要求しない。",
     full_skeleton:"骨格全体（方針、出発式、主役の量、条件、道具、流れ、最後に示すこと）を採点する。最終式・計算完了は要求しない。",
@@ -419,7 +420,7 @@ ${conditionText}
 参照した内容：${hintLabels[hintLevel]}
 許可された参照段階：${allowedReferenceLevel}
 実際の参照段階：${actualReferenceLevel}
-参照表示を隠してから白紙で再現したか：${hintUsed?(referenceClosed?"はい":"いいえ"):"該当なし"}
+${hintUsed?"参照表示を隠してから白紙で再現したか":"補修とは別に白紙で自力再現したか"}：${recordedReproduction?"はい":hintUsed||context.assessmentTiming==="same_session_correction"?"いいえ・未確認":"該当なし"}
 
 【今回の答案】
 今回の答案：
@@ -503,7 +504,7 @@ ${fullScope?"  assumed_correct_parts: []":"  assumed_correct_parts:\n    - \"提
   hint_used: ${hintUsed}
   hint_level: "${hintLevel}"
   after_hint_reproduced: ${hintUsed?referenceClosed:false}
-  reference_closed_reproduction: ${hintUsed?referenceClosed:false}
+  reference_closed_reproduction: ${recordedReproduction}
   allowed_reference_level: ${allowedReferenceLevel}
   actual_reference_level: ${actualReferenceLevel}
   reference_level: ${actualReferenceLevel}

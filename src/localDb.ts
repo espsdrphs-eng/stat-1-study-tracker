@@ -3362,7 +3362,7 @@ async function bootstrap(readOnly=false):Promise<Bootstrap>{
     conceptWeaknesses,pastExamRepairCandidates,plannerShadow,plannerMode,weaknessModel:"concept_evidence_v1" as const};
   const capabilityArchive=readCapabilityRecords(metaEntries);
   return {problems:problems.sort((a,b)=>(a.chapter||99)-(b.chapter||99)||a.category.localeCompare(b.category)||a.problem_number-b.problem_number),attempts,reviews,roadmap,weakNotes,pastSessions,answerIndex,problemAliases,dashboard:dashboardWithKpis,settings,masterStatus,databaseStatus,adaptiveLearning,
-    capabilityRecords:capabilityArchive.records,capabilityRecordIssues:capabilityArchive.issues,
+    capabilityRecords:capabilityArchive.records,capabilityRecordIssues:capabilityArchive.issues,capabilityPastSessions:rawPastSessions,
     coach,masteryByProblem,learningWorkByProblem:Object.fromEntries(metaEntries.filter(m=>m.key.startsWith("learning-work:")).flatMap(m=>{try{const w=JSON.parse(m.value);return [[w.problemId,w]];}catch{return [];}})),
     taskAnswerScopeOverrides:Object.fromEntries(metaEntries.filter(m=>m.key.startsWith('task-answer-scope:')).flatMap(m=>{try{const v=JSON.parse(m.value);return [[v.scopeKey,v]];}catch{return [];}})),
     today:{tasks,selectionExclusions:currentToday.exclusions,currentTask:canonicalStudyPlan.primaryAction||undefined,canonicalStudyPlan,totalLoad,plannedMinutes:plannedTotal,remainingMinutes,actualMinutes,targetMinutes:settings.daily_study_minutes,capacityPercent,warning,guidance,
@@ -3841,7 +3841,10 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
   if(path==='/api/capabilities/preview'||path==='/api/capabilities/save'){
     if(path.endsWith('/save')&&body.confirmed!==true)throw new Error('能力・根拠・未確定事項を確認してから保存してください。');
     const facts=await capabilityFactsFromDb(),plan=await planCapabilityImport(body.text,facts),{record}=plan;
-    if(path.endsWith('/preview')||plan.duplicate)return plan as T;
+    if(path.endsWith('/preview'))return plan as T;
+    const rejected=plan.entries.filter(e=>e.status==='rejected');
+    if(rejected.length)throw new Error(`入力に却下された評価があります。保存していません。${rejected.map(e=>`${e.abilityId}：${e.reason}`).join(' ／ ')}`);
+    if(plan.duplicate)return plan as T;
     const conflict=plan.entries.find(e=>e.status==='conflict');
     if(!record)throw new Error(`保存できる差分がありません。${conflict?.abilityId||''} ${conflict?.reason||''}`);
     if((conflict||body.confirmationToken!==undefined)&&body.confirmationToken!==plan.confirmationToken)throw new Error('取り込み対象が更新されました。入力を保持して再プレビューしてください。');
