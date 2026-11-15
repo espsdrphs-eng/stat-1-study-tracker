@@ -140,11 +140,16 @@ export function validAbilityLineage(l:TransferTrainingLineage|undefined){
 
 /** Adapter to the existing generation/quality/grading workflow, not another
  * generator or a mastery inference. Only an explicitly saved GPT mapping is used. */
-export function capabilityTrainingProfile(data:Bootstrap,id:string):AbilityProfileView|undefined{
- const ability=projectCapabilityMap(data,data.capabilityRecords||[]).abilities.find(a=>a.id===id),origin=ability?.proposalSource??ability?.current;
+export function capabilityTrainingProfile(data:Bootstrap,id:string,map=projectCapabilityMap(data,data.capabilityRecords||[])):AbilityProfileView|undefined{
+ const ability=map.abilities.find(a=>a.id===id),origin=ability?.proposalSource??ability?.current;
  if(!ability||!origin)return undefined;
  const check=ability.proposalSource?.item.next_check;
  const linked=origin.observations.filter(o=>o.direct).map(o=>o.link);
+ if(check?.aspect==='retention'&&ability.theory.lastOperation){
+  const anchor=ability.theory.lastOperation.attempt.id;
+  const signed=ability.history.flatMap(h=>h.observations).filter(o=>o.direct&&o.certainty==='confirmed'&&o.link.attempt_id===anchor&&o.link.outcome==='success'&&o.link.aspect!=='concept').map(o=>o.link);
+  linked.unshift(...signed);
+ }
  const sources=[...new Set(linked.map(s=>s.attempt_id))].map(attemptId=>({attemptId,partIds:[...new Set(linked.filter(e=>e.attempt_id===attemptId).flatMap(e=>e.part_ids))]}));
  return {id:ability.id,name:ability.name,state:ability.state==='unrepaired'?'needs_practice':'uncertain',goal:check?.success_condition||ability.criterion,next:check?.task||'次回の確認をGPTへ相談する',sources,origin:'capability_evaluation',reviewedAt:origin.record.wire.evaluated_at,revision:origin.record.id,trainable:ability.canTrain,
   reason:ability.canTrain?'保存済みGPT評価の対象操作と根拠を引き継ぎます。生成・品質確認・実施だけでは能力マップの状態を変更しません。':'根拠付きの能力評価と、GPTによる遅延転移の提案が必要です。未確定事項を確認してから能力評価を保存してください。'};

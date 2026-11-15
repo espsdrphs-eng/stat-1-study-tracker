@@ -6,6 +6,7 @@ import { japaneseizeMathText } from "./mathJapanese.ts";
 import { reviewDaysForErrors, sanitizeStudyUpdateTiming } from "./reviewTiming.ts";
 import { applyCanonicalMaster } from "./masterData.ts";
 import { normalizeDiagnosticUncertainties,normalizeWholeAnswerScan } from "./wholeAnswerDiagnostic.ts";
+import {conceptFocusLabels,type ConceptFocus} from './capabilityTheory.ts';
 
 const errorPriority=["K","N","W","C"];
 
@@ -229,11 +230,14 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
     const finding=item as Record<string,unknown>;
     const errorType=scalar(finding.error_type) as GradingErrorType;
     if(!["K","W","N","C","none"].includes(errorType))return [];
+    const focus=scalar(finding.concept_focus);
+    if(focus&&!Object.hasOwn(conceptFocusLabels,focus))throw new Error(`採点項目 ${scalar(finding.graded_part_id)} の concept_focus が不明です。意味・条件を実際に採点した場合だけ、プロンプトの指定値で返してください。`);
     return [{
       graded_part_id:scalar(finding.graded_part_id),
       error_type:errorType,
       evidence:japaneseizeMathText(scalar(finding.evidence)),
       resolved:booleanValue(finding.resolved)??false,
+      ...(focus?{concept_focus:focus as ConceptFocus}:{}),
     } satisfies GradedFinding];
   }).filter(item=>item.graded_part_id);
   const explicitlyOutOfScopeParts=stringArray(raw.explicitly_out_of_scope_parts).map(japaneseizeMathText);

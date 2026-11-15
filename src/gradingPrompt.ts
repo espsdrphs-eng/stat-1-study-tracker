@@ -140,6 +140,10 @@ ${contractParts.length?contractParts.map(part=>`- ${part.id}｜${part.label}｜�
 6. 試験答案として再現可能か
 7. K/W/N/C のどれが主な弱点か
 
+【理論理解と最初の誤り】
+答案中の最初の数学的な誤りを、白紙・判読不能と区別して error_point に明記する。そこから波及した採点項目と独立した誤りを result_summary で分ける。原因の推測は事実と分ける。
+意味・成立理由・必要な仮定・適用限界を実際に説明した（または説明に具体的な誤りが書かれた）場合だけ、該当の graded_findings に concept_focus を任意で付け、evidence に本人の説明を書く。許可値：meaning / justification / assumption / limit / distinction / mathematization。計算結果だけ、白紙、説明未要求の場合は省略する。新しい採点項目を発明せず、出題範囲・得点契約を変えない。
+
 【K/W/N/C】
 K：型・方針・入口が崩れている
 W：計算・式変形・積分・和・場合分けなどの作業で崩れている
@@ -448,6 +452,7 @@ ${allowed}
 9. STEP 1で確定したscore・score_label・success・graded_findingsは、STEP 2の発見を理由に絶対に変更しない。今回のscore・mark・successへ影響させない。
 ${wholeAnswerRules}
 10. 本番で明確な失点になる誤りだけをobserved_out_of_scope_findingsへ分離し、minor・自己訂正済み・改善案はtarget候補にしない。既に解消済みtargetを古い文言から復活させない。
+理論理解の確認を兼ねる場合も契約内の該当項目だけ採点する。答案に実際の説明がある場合だけ graded_findings に concept_focus: meaning / justification / assumption / limit / distinction / mathematization のいずれかを任意で付け、evidence に説明の根拠を記す。計算だけや白紙は概念確認にしない。最初の誤りとその波及・別の誤りを分ける。
 16. 最後に次のYAMLをコードブロックで出力する。空欄・null・[]は答案から判定した値で置き換える。
 
 study_update:

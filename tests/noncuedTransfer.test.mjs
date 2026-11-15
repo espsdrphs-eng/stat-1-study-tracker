@@ -63,12 +63,15 @@ test('noncued generation, independent quality, frozen reference conditions, grad
  let data=await localGet('/api/bootstrap'),map=projectCapabilityMap(data,data.capabilityRecords);assert.equal(map.counts.delayed_transfer_confirmed,0,'no automatic mastery');
  const ctx=await localGet('/api/capabilities/context'),w=capabilityWire(ctx,{ability_id:a.transfer_lineage.capabilityEvaluation.abilityId,state:'delayed_transfer_confirmed'});w.evaluated_at='2026-11-11T11:00:00+09:00';
  w.evaluations[0].evidence=[{attempt_id:a.id,part_ids:['major_calculation'],kind:'delayed_transfer',outcome:'success',baseline_attempt_id:2,observation:'TEST ONLY: 異構造の遅延確認という模擬判定。',transfer_conditions:{different_structure:true,method_not_cued:true}}];
+ w.evaluations[0].evidence.push({...w.evaluations[0].evidence[0],aspect:'retention'});
+ const planned=await localPost('/api/capabilities/preview',{text:JSON.stringify(w)});assert.equal(planned.entries[0].theory.retention.status,'success',planned.entries[0].theory.retention.reason);
  const result=await localPost('/api/capabilities/save',{text:JSON.stringify(w),confirmed:true});assert.equal(result.record.items[0].effectiveState,'delayed_transfer_confirmed',result.record.items[0].warnings.join());
  const again=await localPost('/api/capabilities/save',{text:JSON.stringify(w),confirmed:true});assert.equal(again.duplicate,true);
  const exported=await exportBackup(),pre=await previewBackupRestore(exported);await restoreBackup(exported,{mode:'original',sourceHash:pre.manifest.data_hash});db.close();await db.open();
  const restored=await exportBackup();for(const k of Object.keys(exported).filter(k=>Array.isArray(exported[k])))assert.deepEqual(restored[k],exported[k],k);
  for(const a of before.attempts)assert.deepEqual(await db.attempts.get(a.id),a);for(const k of ['reviews','weakNotes','pastSessions'])assert.deepEqual(restored[k],before[k]);
- data=await localGet('/api/bootstrap');assert.equal(projectCapabilityMap(data,data.capabilityRecords).counts.delayed_transfer_confirmed,1);
+ data=await localGet('/api/bootstrap');map=projectCapabilityMap(data,data.capabilityRecords);assert.equal(map.counts.delayed_transfer_confirmed,1);
+ assert.equal(map.abilities.find(skill=>skill.id===a.transfer_lineage.capabilityEvaluation.abilityId).theory.milestone,7);
 });
 
 test('app exposure cannot be undone by an external no-view declaration; viewed or unknown external conditions remain cued',async()=>{

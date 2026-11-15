@@ -93,6 +93,8 @@ export type GradedPartContract={
 };
 export type GradedFinding={
   graded_part_id:string;error_type:GradingErrorType;evidence:string;resolved:boolean;
+  /** Optional: the answer explicitly explained this, not inferred from calculation. */
+  concept_focus?:import('./capabilityTheory.ts').ConceptFocus;
   /** Finding-level planning eligibility. An invalid legacy K must not hide valid W/N siblings. */
   validity?:KPolicyValidity;planning_eligible?:boolean;recurrence_eligible?:boolean;
 };
@@ -613,7 +615,7 @@ export type Bootstrap = {
   adaptiveLearning:AdaptiveLearning;
   coach:CoachDiagnosisState;
   masteryByProblem:Record<string,ProblemMasteryState>;
-  settings:{exam_date:string;daily_study_minutes:number};
+  settings:{exam_date:string;daily_study_minutes:number;focus_exam?:boolean};
   masterStatus:{problem_count:number;answer_count:number;problem_version:string;answer_version:string;
     problem_updated_at:string;answer_updated_at:string;alias_updated_at:string;alias_version:string;alias_count:number;
     pdf_files:string[];pdf_documents:{document_key:string;kind?:string;source_book?:string;original_file_name?:string;

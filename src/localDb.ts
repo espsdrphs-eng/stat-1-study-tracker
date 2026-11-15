@@ -2879,7 +2879,8 @@ async function bootstrap(readOnly=false):Promise<Bootstrap>{
   const attemptMap=new Map(attempts.map(attempt=>[attempt.id,attempt]));
   const settings={
     exam_date:metaEntries.find(entry=>entry.key==="exam_date")?.value||"2026-11-15",
-    daily_study_minutes:Math.max(30,Number(metaEntries.find(entry=>entry.key==="daily_study_minutes")?.value||150))
+    daily_study_minutes:studyMinutes(metaEntries.find(entry=>entry.key==="daily_study_minutes")?.value),
+    focus_exam:metaEntries.some(entry=>entry.key==="theory:focus-exam"&&entry.value==="1")
   };
   const referenceRecord=storedExamReferencePack(metaEntries);
   const exposureOverrides=jsonMetaValue<Record<string,PastExamExposure>>(metaEntries,EXAM_REFERENCE_EXPOSURE_META_KEY,{});
@@ -3386,11 +3387,17 @@ async function bootstrap(readOnly=false):Promise<Bootstrap>{
         completed:completedTasks.length},completedTasks}} as Bootstrap;
 }
 
+function studyMinutes(value:unknown){
+  const n=Number(value||150);
+  return Number.isFinite(n)?Math.max(5,Math.min(600,Math.floor(n))):150;
+}
 async function capabilityFactsFromDb(){
- const [problems,attempts,reviews,pastSessions,meta]=await Promise.all([db.problems.toArray(),db.attempts.toArray(),db.reviews.toArray(),db.pastSessions.toArray(),db.meta.where('key').startsWith(CAPABILITY_RECORD_PREFIX).toArray()]);
+ const [problems,attempts,reviews,pastSessions,weakNotes,meta,preferences]=await Promise.all([db.problems.toArray(),db.attempts.toArray(),db.reviews.toArray(),db.pastSessions.toArray(),db.weakNotes.toArray(),
+  db.meta.where('key').startsWith(CAPABILITY_RECORD_PREFIX).toArray(),db.meta.bulkGet(['exam_date','daily_study_minutes','theory:focus-exam'])]);
  const parsed=readCapabilityRecords(meta);
  if(parsed.issues.length)throw new Error('既存の能力評価に読み取れない記録があります。上書きせず停止します。全データJSONを保存して確認してください。');
- return {problems,attempts,reviews,pastSessions,weakNotes:await db.weakNotes.toArray(),records:parsed.records};
+ return {problems,attempts,reviews,pastSessions,weakNotes,records:parsed.records,dashboard:{today:todayString()},
+  settings:{exam_date:preferences[0]?.value||'2026-11-15',daily_study_minutes:studyMinutes(preferences[1]?.value),focus_exam:preferences[2]?.value==='1'}};
 }
 export async function localGet<T>(path:string):Promise<T>{
   if(path==="/api/bootstrap") return await bootstrap() as T;
@@ -4168,18 +4175,13 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     if(body.checked) await db.meta.put({key,value:"1"}); else await db.meta.delete(key);
   } else if(path==="/api/settings") {
     const examDate=String(body.exam_date||"");
-    const dailyMinutes=Math.max(30,Math.min(600,Number(body.daily_study_minutes||150)));
-    await db.transaction("rw",db.meta,db.reviews,async()=>{
+    const dailyMinutes=studyMinutes(body.daily_study_minutes);
+    await db.transaction("rw",db.meta,async()=>{
       await db.meta.put({key:"exam_date",value:examDate});
       await db.meta.put({key:"daily_study_minutes",value:String(dailyMinutes)});
-      if(examDate&&examDate>todayString()){
-        const cap=addDays(examDate,-3),minimum=addDays(todayString(),1);
-        const due=cap>minimum?cap:minimum;
-        const pending=await db.reviews.filter(review=>
-          reviewExecutionState(review,todayString())==="actionable"&&review.due_date>=addDays(examDate,-2)).toArray();
-        for(const review of pending) await db.reviews.update(review.id,{due_date:due});
-      }
+      if(typeof body.focus_exam==='boolean')await db.meta.put({key:'theory:focus-exam',value:body.focus_exam?'1':'0'});
     });
+    notifyStudyDataChanged({operation:'study-settings'});
   } else if(/^\/api\/weak-notes\/\d+\/resolve$/.test(path)) {
     await db.weakNotes.update(Number(path.split("/")[3]),{is_resolved:1});
   } else if(/^\/api\/weak-notes\/\d+\/unresolve$/.test(path)) {
