@@ -2,6 +2,7 @@ import Dexie, { type EntityTable } from "dexie";
 import {prepareGPTExchange,GPT_EXCHANGE_PREFIX,type GPTExchange} from './gptExchange.ts';
 import {resolveCoachImport} from './coachFormatRepair.ts';
 import {buildRepairCheck,repairCheckForTask,repairTaskKey} from './repairCheck.ts';
+import {assertOriginalAnswerDate,buildOriginalExercise,checkOriginalGrading,isOriginalProblemId,knownOriginalReferences} from './originalExercise.ts';
 import {createSourceManifest,verifySourceBackup,compareSourceBackups,sourceRecordsEqual,SOURCE_TABLE_KEYS} from './sourceBackup.ts';
 import {gradingSubmissionKey,type GradingSaveReceipt} from './gradingSubmission.ts';
 import {normalizeGradingContextInput} from './gradingTaskContext.ts';
@@ -79,7 +80,9 @@ import {reviewDueState,reviewPlanningDecision} from "./todayLearningPolicy.ts";
 import {deriveCanonicalStudyPlan,deriveRankedStudyCandidates} from "./canonicalStudyPlan.ts";
 import {canonicalizePastExamSessions,currentPastExamSessionExplanation,derivePastExamWorkspace,derivePastExamSessionState,pastExamSessionKey,pastExamSessionPurpose,reconcilePastExamSessionEvidence,stablePastExamSessionKey,validatePastExamSessionIdentity,validatePastExamTaskIdentity,projectPastExamSessionAdmissions,derivePastExamProblemStart,canStartProtectedProblemIndividually} from "./pastExamPlanning.ts";
 import {manuallySelectedPastExamYear} from './pastExamPlanning.ts';
-import {CAPABILITY_RECORD_PREFIX,buildCapabilityContext,planCapabilityImport,capabilityFactsSignature,readCapabilityRecords} from './capabilityEvidence.ts';
+import {CAPABILITY_RECORD_PREFIX,buildCapabilityContext,planCapabilityImport,capabilityFactsSignature,readCapabilityRecords,capabilityDailyContextVersion,canonicalValue} from './capabilityEvidence.ts';
+import {DAILY_RECEIPT_PREFIX,dailyHash,readDailyReceipts,type DailyPreview,type DailyReceipt} from './dailyLearningContract.ts';
+import type {DailyAttemptBinding} from './dailyLearning.ts';
 
 const PLANNER_RUNTIME_MODE_META_KEY="planner-runtime-mode";
 const CURRENT_PLAN_PROJECTION_META_KEY="current-plan-projection-version";
@@ -1099,15 +1102,17 @@ async function scopeForGradingInput(problem:Problem,task:Partial<Review&Task>,in
     overrides:manual?{[key]:manual}:undefined});
 }
 
-async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorrectionLogs:PendingCorrectionLog[]=[]){
+async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorrectionLogs:PendingCorrectionLog[]=[],daily?:DailyAttemptBinding){
   input={...input,...sanitizeStudyUpdateTiming(input)};
   const submissionId=String(input.submission_id||"").trim()||`submission-${crypto.randomUUID()}`;
   const alreadySaved=(await db.attempts.toArray()).find(attempt=>attempt.submission_id===submissionId);
   if(alreadySaved)return alreadySaved.id;
   const problem=await db.problems.get(input.problem_id);
   if(!problem) throw new Error(`未登録の問題IDです: ${input.problem_id}`);
-  const generatedFields=problem.source_type==="generated"?generatedAttemptFields(problem,input):undefined;
-  const trainingContext=await db.meta.get(`transfer-training-context:${problem.problem_id}`);
+  const original=problem.source_type==='original';
+  if(original)assertOriginalAnswerDate(input.date,todayString());
+  const generatedFields=!daily&&problem.source_type==="generated"?generatedAttemptFields(problem,input):undefined;
+  const trainingContext=daily?undefined:await db.meta.get(`transfer-training-context:${problem.problem_id}`);
   const intentionalTraining=trainingContext?JSON.parse(trainingContext.value) as import("./generatedTransfer.ts").TransferTrainingLineage:undefined;
   if(intentionalTraining){
     const submission=(JSON.parse(trainingContext!.value) as {answer_submission?:{minutes:number|null;referenceLevel:number}}).answer_submission;
@@ -1148,12 +1153,17 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     else if(generation.kind==="mismatch")throw new Error(generation.message||"復習内容が更新されています。現在ReviewのGPT採点プロンプトを再生成してください");
   }
   const sourceReview=input.generated_from_review_id?await db.reviews.get(input.generated_from_review_id):undefined;
+  const originalReviewSource=original&&sourceReview?
+    await db.attempts.get(Number(sourceReview.grading_contract?.sourceAttemptId||sourceReview.generated_from_attempt_id)):undefined;
+  if(original&&sourceReview&&(!originalReviewSource||sourceReview.problem_id!==problem.problem_id||originalReviewSource.problem_id!==problem.problem_id||
+    originalReviewSource.date>input.date||originalReviewSource.invalidated_at||originalReviewSource.superseded_by_attempt_id))throw new Error('補修の基準答案・解答日・問題が一致しません。');
+  const sameDayOriginalRepair=originalReviewSource?.date===input.date&&sourceReview?.grading_contract?.learningPurpose==='error_repair'&&!sourceReview.postponed_to;
   if(input.generated_from_review_id&&!sourceReview)
     throw new Error(reviewExecutionMessage("missing"));
   if(sourceReview){
     const sourceState=reviewExecutionState(sourceReview,todayString());
     if(sourceState!=="actionable")throw new Error(reviewExecutionMessage(sourceState,sourceReview));
-    assertReviewExecutionAdmission(sourceReview,todayString());
+    if(!sameDayOriginalRepair)assertReviewExecutionAdmission(sourceReview,todayString());
   }
   const requestedContractId=String(input.contract_id||"");
   const requestedSessionId=Number(requestedContractId.match(/^past-session:(\d+):/)?.[1]||0);
@@ -1176,7 +1186,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
   const requestedInitialContract=requestedContractId.startsWith(`initial:${problem.problem_id}:`);
   // Root-level interventions have a contract but no Review ID. Only an app-
   // validated, started task snapshot may authorize that contract; never GPT IDs.
-  const startedRow=await db.meta.get(`learning-work:${problem.problem_id}`);
+  const startedRow=daily?undefined:await db.meta.get(`learning-work:${problem.problem_id}`);
   const started=startedRow?JSON.parse(startedRow.value) as import("./types.ts").LearningWork:undefined;
   if(!sourceReview&&!requestedContractId&&started?.stage==='awaiting_grading'&&started.task?.grading_contract)throw new Error('採点待ちの課題を特定できません。contract_id・contract_version・contract_hash・graded_part_ids を現在の採点プロンプトから返してください。');
   const startedTask=!sourceReview&&!requestedInitialContract&&started?.task?.grading_contract?.contractId===requestedContractId?started.task:undefined;
@@ -1191,7 +1201,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     input={...input,task_origin:"review_attempt",mode:c.mode,learning_purpose:c.learningPurpose,learning_stage:c.learningStage,
       assessment_timing:startedTask.assessment_timing||"same_session_correction",allowed_reference_level:c.allowedReferenceLevel};
   }
-  if(!sourceReview&&requestedContractId&&!requestedInitialContract&&!startedTask&&!sessionContract)
+  if(!daily&&!sourceReview&&requestedContractId&&!requestedInitialContract&&!startedTask&&!sessionContract)
     throw new Error("Review採点契約には対象Reviewが必要です。現在の採点プロンプトを再生成してください");
   if(requestedInitialContract){
     const [existingAttempts,existingReviews]=await Promise.all([
@@ -1207,9 +1217,10 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
   const initialContract=requestedInitialContract
     ?buildInitialGradingContract({problem,mode:String(input.mode||problem.recommended_mode),createdAt:String(input.date||todayString())})
     :undefined;
-  const gradingContract=sourceReview?.grading_contract||initialContract||startedTask?.grading_contract||sessionContract;
+  const gradingContract=daily?.contract||sourceReview?.grading_contract||initialContract||startedTask?.grading_contract||sessionContract;
+  if(original||daily)checkOriginalGrading(gradingContract,input.graded_findings);
   if(gradingContract){
-    if(!startedTask){
+    if(!daily&&!startedTask){
       const task=sourceReview||{problem_id:problem.problem_id,grading_contract:gradingContract};
       input=completeGradingTaskContext(gradingContract,input,await scopeForGradingInput(problem,task,input)) as StudyUpdate&Record<string,unknown>;
     }
@@ -1247,9 +1258,13 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
       throw new Error(`画面に表示した課題とGPT採点範囲が一致しません。\n${detail}`);
     }
     const primary=primaryErrorFromFindings(findings);
-    const errors=[...new Set(findings.filter(finding=>!finding.resolved).map(finding=>finding.error_type))];
+    const errors=[...new Set(findings.filter(finding=>!finding.resolved&&(!(original||daily)||finding.error_type!=='none')).map(finding=>finding.error_type))];
     input={...input,graded_findings:findings,graded_part_ids:gradingContract.gradedParts.map(part=>part.id),
       primary_error_type:primary,error_type:primary,error_types:errors.length?errors:["none"]};
+    if(original&&primary!=='none'&&(!input.error_point||input.error_point==='大きな問題なし')){
+      input={...input,error_point:findings.find(f=>!f.resolved&&f.error_type===primary)?.evidence??''};
+    }
+    if(original&&initialContract)input={...input,mode:'full',learning_purpose:'integration_check',learning_stage:'acquisition',assessment_timing:'independent_performance'};
   }
   if(sourceReview){
     const staleReason=await staleEvidenceReason(sourceReview);
@@ -1260,7 +1275,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
   const actualMinutes=rawMinutes==null||rawMinutes===""?null:Number(rawMinutes);
   // A root-based task has no Review ID. Its explicit aid is stored in the
   // existing paper-work record and must survive any grading import entrypoint.
-  const workRow=await db.meta.get(`learning-work:${problem.problem_id}`);
+  const workRow=daily?undefined:await db.meta.get(`learning-work:${problem.problem_id}`);
   let recordedRepairCheck:Attempt['repair_check'];
   if(workRow&&!sessionContract){
     const work=JSON.parse(workRow.value) as import("./types.ts").LearningWork;
@@ -1276,10 +1291,13 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     input.external_reference?5:input.official_answer?4:input.saved_gpt_feedback||input.gpt_explanation?3:
       input.previous_mistake?2:input.one_line_hint?1:0
   ))));
-  const referenceClosed=!!(input.reference_closed_reproduction??input.after_hint_reproduced);
+  const referenceKnown=original||daily?knownOriginalReferences(input):undefined;
+  const referenceClosed=referenceKnown!==false&&!!(input.reference_closed_reproduction??input.after_hint_reproduced);
+  if(original||daily)input={...input,reference_conditions_known:referenceKnown,reference_closed_reproduction:referenceClosed,after_hint_reproduced:referenceClosed};
   const related=[...new Set([...(problem.related_s_problem_ids||[]),...list(problem.linked_s_problems)])];
   const requestedAssessmentTiming=input.assessment_timing||(input.generated_from_review_id?"delayed_retrieval":"independent_performance");
   const scoreCandidate:Partial<Attempt>={
+    ...(daily?{daily_answer:daily.answer}:{}),
     mode:String(input.mode||problem.recommended_mode),score_numeric:input.score_numeric??null,
     time_minutes:actualMinutes,actual_reference_level:actualReferenceLevel,
     evaluation_scope:String(input.evaluation_scope||""),assessment_timing:requestedAssessmentTiming,
@@ -1288,7 +1306,8 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     session_role:input.session_role,
   };
   const examEligibility=examScoreEligibility(scoreCandidate,problem);
-  const lifecycleSource=sourceReview||(startedTask?{...startedTask,generated_from_attempt_id:gradingContract!.sourceAttemptId!,grading_contract:gradingContract} as Review:undefined);
+  const lifecycleSource=sameDayOriginalRepair&&sourceReview?{...sourceReview,assessment_timing:'same_session_correction' as const}:
+    sourceReview||(startedTask?{...startedTask,generated_from_attempt_id:gradingContract!.sourceAttemptId!,grading_contract:gradingContract} as Review:undefined);
   const sourceAttemptForTransition=lifecycleSource?await db.attempts.get(Number(lifecycleSource.generated_from_attempt_id||gradingContract?.sourceAttemptId||0)):undefined;
   const projected=projectStudyUpdateLifecycle({update:input,sourceReview:lifecycleSource,sourceAttempt:sourceAttemptForTransition,problem,
     defaultLearningPurpose:examEligibility.eligible?"exam_performance":input.generated_from_review_id?"error_repair":"integration_check"});
@@ -1316,7 +1335,10 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
   const localizedErrorPoint=japaneseizeMathText(input.error_point||(hasRealError?"":"大きな問題なし"));
   const completionResult=evaluation.reviewOutcome,objectiveGraduation=evaluation.graduated;
   const id=Number(await db.attempts.add({
+    ...(daily?{daily_answer:daily.answer,source_type:problem.source_type,reference_conditions_known:referenceKnown,
+      target_skill_prompted:daily.answer.reference.method_cued===true||daily.answer.shown.some(e=>e!=='statement')?true:daily.answer.reference.method_cued===false?false:undefined}:{}),
     ...(recordedRepairCheck?{repair_check:recordedRepairCheck}:{}),
+    ...(original?{source_type:'original' as const,reference_conditions_known:referenceKnown}:{}),
     id:undefined as unknown as number,problem_id:input.problem_id,date,mode:input.mode||problem.recommended_mode,
     source_problem_id:input.source_problem_id||undefined,
     time_minutes:actualMinutes,mark:input.mark||"△",score_label:input.score_label||"B",
@@ -1344,9 +1366,9 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     targeted_parts:input.targeted_parts||[],k_evidence:input.k_evidence||[],
     k_evidence_valid:input.k_evidence_valid==null?undefined:!!input.k_evidence_valid,effective_error_types:input.effective_error_types||[],hint_used:!!input.hint_used,
     hint_level:input.hint_level||"none",after_hint_reproduced:!!input.after_hint_reproduced,
-    reference_level:actualReferenceLevel,actual_reference_level:actualReferenceLevel,
+    reference_level:referenceKnown===false&&!actualReferenceLevel?undefined:actualReferenceLevel,actual_reference_level:referenceKnown===false&&!actualReferenceLevel?undefined:actualReferenceLevel,
     allowed_reference_level:allowedReference,reference_closed_reproduction:referenceClosed,
-    no_hint:input.no_hint??actualReferenceLevel===0,
+    no_hint:referenceKnown===false?undefined:input.no_hint??actualReferenceLevel===0,
     one_line_hint:!!input.one_line_hint,previous_mistake:!!input.previous_mistake,
     saved_gpt_feedback:!!input.saved_gpt_feedback||!!input.gpt_explanation,
     official_answer:!!input.official_answer,external_reference:!!input.external_reference,
@@ -1357,10 +1379,10 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
     correction_reason:input.correction_reason||"",consistency_score:input.consistency_score
     ,learning_purpose:learningPurpose
     ,learning_stage:input.learning_stage||gradingContract?.learningStage||(examEligibility.eligible?"performance":input.generated_from_review_id?"repair":"acquisition")
-    ,assessment_timing:assessmentTiming,task_score:taskScoreForAttempt(scoreCandidate),exam_score:examEligibility.examScore
-    ,exam_score_eligible:examEligibility.eligible,time_limit_minutes:examEligibility.timeLimitMinutes||undefined
+    ,assessment_timing:assessmentTiming,task_score:taskScoreForAttempt(scoreCandidate),exam_score:daily?null:examEligibility.examScore
+    ,exam_score_eligible:!daily&&examEligibility.eligible,time_limit_minutes:daily?undefined:examEligibility.timeLimitMinutes||undefined
     ,conclusion_reached:input.conclusion_reached,incomplete_reason:input.incomplete_reason
-    ,retention_eligible:assessmentTiming==="delayed_retrieval"
+    ,retention_eligible:!daily&&assessmentTiming==="delayed_retrieval"
     ,problem_type_key:problem.metadata_status==="ok"?problem.canonical_problem_type:undefined
     ,policy_validity:kPolicyValidity,exclude_from_planning:excludeWholeAttempt
     ,exclude_from_recurrence_metrics:excludeWholeAttempt
@@ -1381,6 +1403,10 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
      ,exclude_from_metrics:false
    }));
   await db.attempts.update(id,{canonical_attempt_id:id});
+  // A daily submission is not execution of an existing Review, a session, or
+  // an active paper-work slot. Keep its grade and let the same capability
+  // planner project the explicitly proposed checks from the new evidence.
+  if(daily)return id;
   if(started?.individualStartAcknowledgedAt&&!excludeWholeAttempt){
     // Manual opening permanently loses unseen status; a later saved answer
     // advances that exposure floor rather than leaving stale scan-only data.
@@ -1419,6 +1445,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
   if(input.generated_from_review_id){
     await db.reviews.update(input.generated_from_review_id,{
       status:"done",completion_result:completionResult,
+      ...(sameDayOriginalRepair?{assessment_timing:'same_session_correction' as const,retention_eligible:false}:{}),
       hint_used:!!input.hint_used,hint_level:input.hint_level||"none",
       after_hint_reproduced:!!input.after_hint_reproduced,
       reference_level:actualReferenceLevel,actual_reference_level:actualReferenceLevel,
@@ -1431,8 +1458,8 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
       completion_time_minutes:actualMinutes,completed_at:date
     });
   }
-  if(input.minimum_pass_condition_met===true||input.target_issue_resolved===true||
-    (input.error_types||[]).every(error=>error==="none")){
+  if(original?referenceKnown&&gradedFindings.every(f=>f.resolved&&f.error_type==='none'):
+    input.minimum_pass_condition_met===true||input.target_issue_resolved===true||(input.error_types||[]).every(error=>error==="none")){
     const succeededParts=new Set(input.graded_part_ids||sourceReview?.grading_contract?.gradedParts.map(part=>part.id)||[]);
     const older=succeededParts.size?(await db.reviews.where("problem_id").equals(input.problem_id).toArray()).filter(review=>
       review.id!==input.generated_from_review_id&&ACTIVE_REVIEW_STATUSES.has(review.status)&&
@@ -1464,7 +1491,7 @@ async function saveAttempt(input:StudyUpdate&Record<string,unknown>,pendingCorre
   const hasNewStableObservation=(input.observed_out_of_scope_findings||[]).some(row=>row.stable_target_key);
   const hasStructuredUnresolved=(input.graded_findings||[]).some(row=>!row.resolved&&row.error_type!=="none");
   const nextPurpose=lifecycleSource?transition?.nextPurpose:
-    (hasStructuredUnresolved||hasNewStableObservation)?undefined:effectiveErrors.length?"error_repair":
+    (hasStructuredUnresolved||hasNewStableObservation||original&&(referenceKnown===false||gradedFindings.some(f=>!f.resolved&&f.error_type==='none')))?undefined:effectiveErrors.length?"error_repair":
       problem.source_type==="past_exam"?undefined:"retrieval_check";
   const delayedPrescription=nextPurpose?resolveLearningPolicy({problemId:input.problem_id,problem,source:{...input,
     error_types:effectiveErrors.length?effectiveErrors:["none"],learning_purpose:nextPurpose,
@@ -1746,6 +1773,7 @@ async function completeReview(id:number,body:Record<string,unknown>){
   const source=await db.attempts.get(review.generated_from_attempt_id);
   const problem=await db.problems.get(review.problem_id);
   if(!source||!problem) throw new Error("復習元の採点データが見つかりません");
+  if(problem.source_type==='original')throw new Error('自作問題の補修・再確認は、実際の答案をGPTで採点して保存してください。完了操作だけでは採点結果を作りません。');
   const linkedS=review.task_origin==="linked_s_check"||review.review_type==="s_check";
   const requestedResult=["success","partial","failed"].includes(String(body.result))?String(body.result) as ReviewOutcome["result"]:"partial";
   const actualReferenceLevel=Math.min(5,Math.max(Number(review.actual_reference_level||0),0,Number(body.actual_reference_level??body.reference_level??0))) as ReferenceLevel;
@@ -1959,6 +1987,7 @@ async function importProblemMaster(raw:unknown){
   return await db.transaction('rw',[db.problems,db.sMemory,db.meta,db.importLogs],async()=>{
   for(const incoming of payload.problems){
     const old=await db.problems.get(String(incoming.problem_id));
+    if(isOriginalProblemId(incoming.problem_id)||old?.source_type==='original')throw new Error('自作問題は既存の問題マスター取り込みで更新できません。');
     const category=incoming.category as Problem["category"];
     const problem:Problem={
       ...(old||{}),...incoming,id:old?.id||Date.now()+Math.floor(Math.random()*100000),
@@ -2011,6 +2040,7 @@ async function importAnswerIndex(raw:unknown){
 
 async function importAliases(raw:unknown){
   const payload=parseAliasesPayload(raw),now=new Date().toISOString();
+  if(payload.aliases.some(row=>isOriginalProblemId(row.alias)))throw new Error('自作問題のIDを別の問題への別名にはできません。');
   await db.problemAliases.bulkPut(payload.aliases.map(alias=>({...alias,imported_at:now,alias_version:payload.version})));
   await db.meta.bulkPut([{key:"problem_alias_version",value:payload.version},{key:"problem_alias_updated_at",value:now}]);
   await appendImportHistory("aliases",payload.version,payload.aliases.length);
@@ -3391,16 +3421,90 @@ function studyMinutes(value:unknown){
   const n=Number(value||150);
   return Number.isFinite(n)?Math.max(5,Math.min(600,Math.floor(n))):150;
 }
-async function capabilityFactsFromDb(){
+async function capabilityFactsFromDb(readOnly=false){
  const [problems,attempts,reviews,pastSessions,weakNotes,meta,preferences]=await Promise.all([db.problems.toArray(),db.attempts.toArray(),db.reviews.toArray(),db.pastSessions.toArray(),db.weakNotes.toArray(),
   db.meta.where('key').startsWith(CAPABILITY_RECORD_PREFIX).toArray(),db.meta.bulkGet(['exam_date','daily_study_minutes','theory:focus-exam'])]);
  const parsed=readCapabilityRecords(meta);
- if(parsed.issues.length)throw new Error('既存の能力評価に読み取れない記録があります。上書きせず停止します。全データJSONを保存して確認してください。');
- return {problems,attempts,reviews,pastSessions,weakNotes,records:parsed.records,dashboard:{today:todayString()},
+ if(parsed.issues.length&&!readOnly)throw new Error('既存の能力評価に読み取れない記録があります。上書きせず停止します。全データJSONを保存して確認してください。');
+ return {problems,attempts,reviews,pastSessions,weakNotes,records:parsed.records,issues:parsed.issues,dashboard:{today:todayString()},
   settings:{exam_date:preferences[0]?.value||'2026-11-15',daily_study_minutes:studyMinutes(preferences[1]?.value),focus_exam:preferences[2]?.value==='1'}};
+}
+
+const dailyFactTables=()=>[db.problems,db.attempts,db.reviews,db.weakNotes,db.pastSessions,db.meta];
+function dailyReceiptMatches(r:DailyReceipt,f:Awaited<ReturnType<typeof capabilityFactsFromDb>>){
+  const problems=new Set(f.problems.map(p=>p.problem_id)),attempts=new Map(f.attempts.map(a=>[a.id,a]));
+  return r.problems.every(p=>problems.has(p.problem_id))&&r.answers.every(a=>{
+    const answer=attempts.get(a.attempt_id);
+    return answer?.problem_id===a.problem_id&&answer.daily_answer?.session_id===r.session_id&&answer.daily_answer.ref===a.ref&&
+      answer.daily_answer.baseline_attempt_id===a.baseline_attempt_id;
+  });
+}
+async function dailyLearningSnapshot(draftDate?:string){
+  const {buildDailyLearningSnapshot}=await import('./dailyLearningSnapshot.ts');
+  const {facts,archive,archivesPresent}=await db.transaction('r',dailyFactTables(),async()=>{
+    const facts=await capabilityFactsFromDb(true),archive=readDailyReceipts(await db.meta.where('key').startsWith(DAILY_RECEIPT_PREFIX).toArray());
+    const archivesPresent=await db.meta.bulkGet(archive.receipts.map(r=>GPT_EXCHANGE_PREFIX+r.archive_id));
+    return {facts,archive,archivesPresent};
+  });
+  const missing=archive.receipts.filter((r,i)=>!archivesPresent[i]||!dailyReceiptMatches(r,facts)),missingIds=new Set(missing.map(r=>r.session_id));
+  return buildDailyLearningSnapshot(facts,archive.receipts.filter(r=>!missingIds.has(r.session_id)),[...facts.issues,...archive.issues,
+    ...missing.map(r=>`日次記録 ${r.session_id} の答案またはGPT原文を照合できません。保存済みの履歴は残し、当日の完了に数えません。`)],undefined,draftDate);
+}
+
+class DailyPreviewRollback extends Error {readonly value:DailyPreview;constructor(value:DailyPreview){super('Daily preview transaction intentionally rolled back');this.value=value}}
+async function runDailyLearningImport(body:Record<string,unknown>,commit:boolean){
+  if(commit&&(body.confirmed!==true||typeof body.confirmationToken!=='string'))throw new Error('日次の差分をプレビューしてから、一括保存を確定してください。');
+  const {prepareDailyLearning,stageDailyLearning}=await import('./dailyLearning.ts');
+  const now=new Date().toISOString(),prepared=await prepareDailyLearning(body.text,now),w=prepared.wire,key=DAILY_RECEIPT_PREFIX+w.session_id;
+  const noncued=body.confirmNoncued===true&&prepared.can_confirm_noncued;
+  const raw=commit?await prepareGPTExchange({rawText:body.text,kind:'assessment',note:`日次学習パッケージ ${w.session_id}（${w.learning_date}）。元答案・Reviewは未変更。`,confirmedByUser:true}):null;
+  try{
+    const saved=await db.transaction('rw',[...dailyFactTables(),db.answerIndex,db.problemAliases],async()=>{
+      const facts=await capabilityFactsFromDb(),old=await db.meta.get(key);
+      if(old){
+        const receipt=readDailyReceipts([old]).receipts[0];
+        if(!receipt||!dailyReceiptMatches(receipt,facts)||!await db.meta.get(GPT_EXCHANGE_PREFIX+receipt.archive_id))throw new Error('同じセッションの保存済み記録と答案・原文を照合できません。上書きせず停止しました。');
+        if(receipt.package_hash!==prepared.hash)throw new Error(`セッションID ${w.session_id} は別の内容で保存済みです。既存の答案・評価は変更していません。`);
+        return {...receipt,duplicate:true,can_confirm_noncued:false,confirmationToken:''} satisfies DailyPreview;
+      }
+      const current=await Dexie.waitFor(capabilityDailyContextVersion(facts));
+      if(w.morning_context_version!==current)throw new Error(`朝の参照時点から記録が変わっています。既存データは変更していません。最新の学習情報をコピーし、ChatGPTに元の答案・評価との差分を照合させてください。版番号だけを差し替えないでください。\n受信 ${w.morning_context_version}\n現在 ${current}`);
+      const staged=await stageDailyLearning(prepared,{
+        facts:()=>capabilityFactsFromDb(),hasAlias:async id=>!!await db.problemAliases.get(id),addProblem:p=>db.problems.add(p),
+        saveAttempt:(input,binding)=>saveAttempt(input as StudyUpdate&Record<string,unknown>,[],binding),getAttempt:id=>db.attempts.get(id),wait:p=>Dexie.waitFor(p),
+      },facts,noncued);
+      // The resulting IDs and dispositions must still match what the learner
+      // confirmed. The post-write context itself includes actual save times
+      // and is regenerated in the committing transaction.
+      const confirmationToken=await Dexie.waitFor(dailyHash(canonicalValue([body.text,current,noncued,staged.data])));
+      const result={...staged.data,confirmationToken,can_confirm_noncued:prepared.can_confirm_noncued,duplicate:false} satisfies DailyPreview;
+      if(!commit)throw new DailyPreviewRollback(result);
+      if(body.confirmationToken!==confirmationToken)throw new Error('プレビュー後に保存候補が変わりました。入力は保持し、差分を確認し直してください。');
+      if(staged.record)await db.meta.add({key:CAPABILITY_RECORD_PREFIX+staged.record.id,value:JSON.stringify(staged.record)});
+      if(!await db.meta.get(GPT_EXCHANGE_PREFIX+raw!.id))await db.meta.add({key:GPT_EXCHANGE_PREFIX+raw!.id,value:JSON.stringify(raw)});
+      const receipt={...staged.data,archive_id:raw!.id,saved_at:now,assessment_context_version:staged.assessment_context_version} satisfies DailyReceipt;
+      const value=JSON.stringify(receipt);await db.meta.add({key,value});
+      if((await db.meta.get(key))?.value!==value)throw new Error('日次記録の保存を確認できなかったため、全件取り消しました。');
+      return {...result,...receipt};
+    });
+    if(commit&&!saved.duplicate)notifyStudyDataChanged({operation:'daily-learning'});
+    return saved;
+  }catch(e){if(e instanceof DailyPreviewRollback)return e.value;throw e;}
 }
 export async function localGet<T>(path:string):Promise<T>{
   if(path==="/api/bootstrap") return await bootstrap() as T;
+  if(path==='/api/daily-learning/snapshot'||path.startsWith('/api/daily-learning/snapshot?')){
+    const q=new URL(path,'https://local.invalid').searchParams;return await dailyLearningSnapshot(q.get('draft')||undefined) as T;
+  }
+  if(path==='/api/daily-learning/latest'||path.startsWith('/api/daily-learning/ability?')){
+    const q=new URL(path,'https://local.invalid').searchParams,id=q.get('id');
+    const rows=readDailyReceipts(await db.meta.where('key').startsWith(DAILY_RECEIPT_PREFIX).toArray()).receipts.sort((a,b)=>b.learning_date.localeCompare(a.learning_date)||b.saved_at.localeCompare(a.saved_at));
+    if(id)return rows.flatMap(r=>r.evaluations.filter(e=>e.ability_id===id).map(e=>({session_id:r.session_id,learning_date:r.learning_date,...e}))) as T;
+    if(path!=='/api/daily-learning/latest')return [] as T;
+    return db.transaction('r',dailyFactTables(),async()=>{
+      const latest=rows[0];return (latest&&await db.meta.get(GPT_EXCHANGE_PREFIX+latest.archive_id)&&dailyReceiptMatches(latest,await capabilityFactsFromDb(true))?latest:null) as T;
+    });
+  }
   if(path==='/api/capabilities/records'){
     await initialize();return readCapabilityRecords(await db.meta.where('key').startsWith(CAPABILITY_RECORD_PREFIX).toArray()) as T;
   }
@@ -3844,6 +3948,7 @@ async function saveWholeAnswerRediagnosis(attemptId:number,text:string){
 
 let transferRequestQueue:Promise<unknown>=Promise.resolve();
 export async function localPost<T>(path:string,body:any):Promise<T>{
+  if(path==='/api/daily-learning/preview'||path==='/api/daily-learning/save')return await runDailyLearningImport(body||{},path.endsWith('/save')) as T;
   await initialize();
   if(path==='/api/capabilities/preview'||path==='/api/capabilities/save'){
     if(path.endsWith('/save')&&body.confirmed!==true)throw new Error('能力・根拠・未確定事項を確認してから保存してください。');
@@ -4094,7 +4199,20 @@ export async function localPost<T>(path:string,body:any):Promise<T>{
     return {ok:true,mode,appliesFrom:"next-snapshot"} as T;
   } else if(path==="/api/today/recalculate"){
     return await replaceTodayWithAdaptivePlan(false) as T;
+  } else if(path==="/api/problems/original"){
+    const problem=await buildOriginalExercise(body);
+    return await db.transaction('rw',[db.problems,db.problemAliases],async()=>{
+      const existing=await db.problems.get(problem.problem_id);
+      if(existing){
+        if(existing.source_type!=='original'||existing.original_exercise?.statement!==problem.original_exercise!.statement)throw new Error('問題IDが衝突しています。既存の記録は変更していません。');
+        if(JSON.stringify(existing.original_exercise.parts)!==JSON.stringify(problem.original_exercise!.parts))throw new Error('同じ問題文が登録済みです。既存の採点項目は変更できません。');
+        return {problem:existing,replayed:true} as T;
+      }
+      if(await db.problemAliases.get(problem.problem_id))throw new Error('問題IDが既存の別名と衝突しています。');
+      await db.problems.add(problem);return {problem,replayed:false} as T;
+    });
   } else if(path==="/api/problems"){
+    if(body.source_type==='original'||body.category==='original'||body.original_exercise||isOriginalProblemId(body.problem_id))throw new Error('自作問題は専用の問題追加から登録してください。');
     if(body.source_type==="generated"||body.generated_transfer||String(body.problem_id||"").startsWith("GEN-"))
       throw new Error("生成問題は独立検証後の専用登録だけを使用してください");
     const chapter=body.chapter?Number(body.chapter):null,number=Number(body.problem_number),difficulty=body.difficulty?Number(body.difficulty):null;

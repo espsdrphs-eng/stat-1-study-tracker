@@ -7,6 +7,7 @@ import {reviewExecutionState} from './integrityEngine.ts';
 import {deriveTaskAnswerScope} from './taskAnswerScope.ts';
 import {priorityRepairTasks} from './learningOverview.ts';
 import {currentTaskIdentity} from './examOptimizationPolicy.ts';
+import {dailyKindLabels} from './dailyLearningContract.ts';
 
 export const studyScreens=[
  {key:'dashboard',label:'ホーム'},
@@ -17,6 +18,7 @@ export const studyScreens=[
 
 /** Presentation only. The planner, evidence gates and source records are unchanged. */
 export function studyEvidenceKind(a:Attempt){
+  if(a.daily_answer)return `日次・${dailyKindLabels[a.daily_answer.kind]}`;
   if(a.source_type==='generated'||/^GEN-/.test(a.problem_id))return '生成訓練';
   if(a.transfer_lineage)return '既存問題の転移訓練';
  if(a.session_role==='counterfactual_calibration')return '後日・選択検証';

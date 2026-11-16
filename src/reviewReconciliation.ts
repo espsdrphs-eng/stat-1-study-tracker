@@ -77,7 +77,9 @@ function activeReview(review:Review){
 
 function validAttempt(attempt:Attempt){
   const nonMathematical=new Set(["scan","scan5","scan_only"]);
-  return attemptPlanningEligible(attempt)&&
+  // Daily ability evidence has its own existing capability next_check. It is
+  // not completion or rescheduling of a legacy problem Review.
+  return !attempt.daily_answer&&attemptPlanningEligible(attempt)&&
     !nonMathematical.has(String(attempt.mode||""))&&!nonMathematical.has(String(attempt.evaluation_scope||""));
 }
 
@@ -144,6 +146,9 @@ function evidenceEvents(attempt:Attempt,catalog:Map<string,GradedPartContract>,s
   const explicit=attempt.graded_findings||[];
   if(explicit.length)return [...explicit.flatMap(finding=>{
     if(!finding.graded_part_id||!findingPlanningEligible(attempt,finding)||finding.error_type==="K"&&!kIsUsable(attempt))return [];
+    // Unknown should neither create a repair target (blank) nor retire an old
+    // one (a correct expression with unverified retrospective conditions).
+    if(attempt.source_type==='original'&&(!finding.resolved&&finding.error_type==='none'||finding.resolved&&attempt.reference_conditions_known===false))return [];
     const resolution=stableIndex.attemptPart(attempt.id,finding.graded_part_id);
     if(!resolution?.identityKey)return [];
     const part=resolution.part||catalog.get(finding.graded_part_id)||{

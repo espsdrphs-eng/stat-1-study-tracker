@@ -7,6 +7,7 @@ import { reviewDaysForErrors, sanitizeStudyUpdateTiming } from "./reviewTiming.t
 import { applyCanonicalMaster } from "./masterData.ts";
 import { normalizeDiagnosticUncertainties,normalizeWholeAnswerScan } from "./wholeAnswerDiagnostic.ts";
 import {conceptFocusLabels,type ConceptFocus} from './capabilityTheory.ts';
+import {assertOriginalAnswerDate} from './originalExercise.ts';
 
 const errorPriority=["K","N","W","C"];
 
@@ -172,6 +173,7 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
   const candidate=canonicalProblemId(alias?.problem_id||rawCandidate);
   const problemIdSource=alias?"alias":explicitProblemId?"yaml":useTextCandidate&&rawCandidate?"text":undefined;
   const master=matchMaster(candidate,problems);
+  if(master?.source_type==='original')assertOriginalAnswerDate(raw.date,todayString());
   const chapter=master?.chapter??(Number(raw.chapter)||null);
   const category=(master?.category||scalar(raw.category)||(/-S-/.test(candidate)?"S":/-A-/.test(candidate)?"A":candidate.startsWith("PY-")?"past_exam":"A")) as StudyUpdate["category"];
   const problemNumber=master?.problem_number??(Number(raw.problem_number)||0);
@@ -354,7 +356,8 @@ function normalizeUpdate(raw:Record<string,unknown>,text:string,problems:Problem
       ?scalar(raw.task_origin) as StudyUpdate["task_origin"]:undefined,
     review_outcome:["success","partial","failed"].includes(scalar(raw.review_outcome))
       ?scalar(raw.review_outcome) as StudyUpdate["review_outcome"]:undefined,
-    hint_used:raw.hint_used==null?undefined:/^(true|yes|1|はい)$/i.test(scalar(raw.hint_used)),
+    hint_used:master?.source_type==='original'?booleanValue(raw.hint_used):raw.hint_used==null?undefined:/^(true|yes|1|はい)$/i.test(scalar(raw.hint_used)),
+    ...(master?.source_type==='original'?{reference_conditions_known:raw.reference_conditions_known===true}:{}),
     hint_level:scalar(raw.hint_level)||undefined,
     after_hint_reproduced:raw.after_hint_reproduced==null?undefined:/^(true|yes|1|はい)$/i.test(scalar(raw.after_hint_reproduced)),
     reference_level:raw.reference_level==null?undefined:Number(raw.reference_level),

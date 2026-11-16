@@ -1,5 +1,6 @@
 export type Problem = {
-  id:number; problem_id:string; source_type:"whitebook"|"past_exam"|"generated"; category:"S"|"A"|"past_exam"|"generated";
+  id:number; problem_id:string; source_type:"whitebook"|"past_exam"|"generated"|"original"; category:"S"|"A"|"past_exam"|"generated"|"original";
+  original_exercise?:{statement:string;parts:Array<{id:string;label:string}>};
   generated_transfer?:import("./generatedTransfer.ts").GeneratedTransferContent;
   chapter:number|null; problem_number:number; title:string; theme:string; priority:string; role:string;
   recommended_mode:string; linked_past_exams:string; linked_s_problems:string; linked_a_problems:string;
@@ -172,6 +173,7 @@ export type ProblemContextPack={
   previousReviews:Array<{reviewId:number;status:string;reviewType:string;dueDate:string}>;verifiedRelations:ProblemRelation[];
 };
 export type Attempt = {
+  daily_answer?:import('./dailyLearningContract.ts').StoredDailyAnswer;
   repair_check?:RepairCheck;
   target_kind?:TargetKind;
   task_context?:import('./gradingTaskContext.ts').GradingTaskContext;
@@ -203,7 +205,7 @@ export type Attempt = {
   review_scope?:"targeted_patch"|"full_skeleton"|"main_calc_target"|"check_only"|"full_answer"|"scan5";
   targeted_parts?:string[]; k_evidence?:string[]; k_evidence_valid?:boolean;
   effective_error_types?:string[];
-  hint_used?:boolean; hint_level?:string; after_hint_reproduced?:boolean;
+  hint_used?:boolean; hint_level?:string; after_hint_reproduced?:boolean; reference_conditions_known?:boolean;
   reference_level?:number; no_hint?:boolean; one_line_hint?:boolean; previous_mistake?:boolean;
   official_answer?:boolean; gpt_explanation?:boolean;
   allowed_reference_level?:number; actual_reference_level?:number;
@@ -690,7 +692,7 @@ export type StudyUpdate = {
   date_expression_warnings?:string[]; date_expressions_removed?:boolean;
   source_text?:string; auto_imported?:boolean; import_confidence?:number;
   grading_confidence?:number|null; rubric_version?:string; uncertain_points?:string[];
-  generated_from_review_id?:number; review_outcome?:"success"|"partial"|"failed"; hint_used?:boolean;
+  generated_from_review_id?:number; review_outcome?:"success"|"partial"|"failed"; hint_used?:boolean; reference_conditions_known?:boolean;
   task_origin?:"first_attempt"|"review_attempt"|"linked_s_check"|"related_drill"|"past_exam_followup";
   hint_level?:string; after_hint_reproduced?:boolean; after_reference_reproduced?:boolean;
   reference_level?:number; no_hint?:boolean; one_line_hint?:boolean; previous_mistake?:boolean;

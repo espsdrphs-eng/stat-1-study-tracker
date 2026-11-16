@@ -206,7 +206,8 @@ export function resolveReviewCard({
     warnings.push({code:"attempt_problem_mismatch",message:"復習元Attemptの問題IDが対象問題と一致しません。",repairable:false,blocksSpecificGuidance:true});
   }
   const metadataStatus=(problem as (Problem&{metadata_status?:string})|undefined)?.metadata_status;
-  if(problem&&(!problem.theme||problem.theme==="要確認"||metadataStatus==="review_needed"||metadataStatus==="metadata_review_needed")){
+  const fixedOriginal=problem?.source_type==='original'&&!!problem.original_exercise?.statement&&!!problem.original_exercise.parts.length;
+  if(problem&&((!problem.theme||problem.theme==="要確認")&&!fixedOriginal||metadataStatus==="review_needed"||metadataStatus==="metadata_review_needed")){
     warnings.push({code:"metadata_review_needed",message:"問題マスターの内容確認が必要です。",repairable:false,blocksSpecificGuidance:true});
   }
   const origin=taskOriginFor(item,problem,!!targetAttempt,warnings);

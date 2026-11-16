@@ -3,6 +3,7 @@ import type { LearningPrescription } from "./learningPolicyResolver.ts";
 
 type ObjectiveRetentionEvidence={
   assessmentTiming?:string;result?:string;actualReferenceLevel?:number;hintUsed?:boolean;
+  referenceConditionsKnown?:boolean;
   targetIssueResolved?:boolean;minimumPassConditionMet?:boolean;errorTypes?:string[];
   unresolvedCarryover?:string[];gradedPartIds?:string[];
   gradedFindings?:Array<{graded_part_id:string;error_type:string;resolved:boolean}>;
@@ -46,7 +47,7 @@ function allPartsResolved(input:ObjectiveRetentionEvidence,required:boolean){
  */
 export function isObjectiveDelayedRetrievalSuccess(input:ObjectiveRetentionEvidence){
   if(input.assessmentTiming!=="delayed_retrieval"||input.result!=="success")return false;
-  if(Number(input.actualReferenceLevel||0)!==0||input.hintUsed)return false;
+  if(input.referenceConditionsKnown===false||Number(input.actualReferenceLevel||0)!==0||input.hintUsed)return false;
   if(input.targetIssueResolved!==true||input.minimumPassConditionMet!==true)return false;
   if((input.errorTypes||[]).some(error=>["K","W","N","C"].includes(String(error))))return false;
   if((input.unresolvedCarryover||[]).some(value=>String(value).trim()))return false;
@@ -62,7 +63,7 @@ export function resolveLearningEvaluation(input:LearningEvaluationEvidence):Lear
   const allResolved=allPartsResolved(input,input.requireGradedEvidence!==false);
   const actual=Math.max(0,Number(input.actualReferenceLevel||0));
   const allowed=Math.max(0,Number(input.allowedReferenceLevel||0));
-  const referenceValid=actual<=allowed&&(actual===0||input.referenceClosedReproduction===true);
+  const referenceValid=input.referenceConditionsKnown!==false&&actual<=allowed&&(actual===0||input.referenceClosedReproduction===true);
   const explicitPass=input.requireGradedEvidence===false
     ?realErrors.length===0&&input.reviewOutcome!=="failed"&&referenceValid
     :input.targetIssueResolved===true&&input.minimumPassConditionMet===true&&
@@ -91,7 +92,7 @@ export function resolveCanonicalLearningLifecycle(input:LearningEvaluationEviden
 }):CanonicalLearningLifecycleDecision{
   const evaluation=resolveLearningEvaluation(input);
   const graduationEligible=input.learningPurpose==="retrieval_check"&&input.assessmentTiming==="delayed_retrieval";
-  const referenceClosed=!!input.referenceClosedReproduction||Number(input.actualReferenceLevel||0)===0;
+  const referenceClosed=input.referenceConditionsKnown!==false&&(!!input.referenceClosedReproduction||Number(input.actualReferenceLevel||0)===0);
   const transition=input.prescription?resolveReviewTransition({
     prescription:input.prescription,result:evaluation.reviewOutcome,
     referenceClosedReproduction:referenceClosed,crossProblemEvidence:input.crossProblemEvidence,
@@ -125,6 +126,7 @@ export function resolvePersistedAttemptLifecycle(attempt:Attempt):CanonicalLearn
     learningPurpose,assessmentTiming,result:attempt.review_outcome,
     reviewOutcome:attempt.review_outcome,
     actualReferenceLevel:Number(attempt.actual_reference_level??attempt.reference_level??0),
+    referenceConditionsKnown:attempt.reference_conditions_known,
     allowedReferenceLevel:Number(attempt.allowed_reference_level??0),hintUsed:!!attempt.hint_used,
     referenceClosedReproduction:!!attempt.reference_closed_reproduction||!!attempt.after_hint_reproduced,
     targetIssueResolved:attempt.target_issue_resolved,

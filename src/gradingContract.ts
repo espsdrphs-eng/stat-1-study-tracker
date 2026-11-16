@@ -118,7 +118,8 @@ export function initialGradingContractMode(mode?:string):GradingContractSnapshot
 
 /** Immutable, Review-free contract for a problem's first formally graded answer. */
 export function buildInitialGradingContract(args:{problem:Problem;mode?:string;createdAt?:string}){
-  const mode=initialGradingContractMode(args.mode||args.problem.recommended_mode);
+  const original=args.problem.source_type==='original'?args.problem.original_exercise:undefined;
+  const mode=original?'full':initialGradingContractMode(args.mode||args.problem.recommended_mode);
   const part=(id:string,label:string,cueLabel:string,criterion:string,allowedErrorTypes:Array<"K"|"W"|"N"|"C"|"none">,
     masteryLevel:1|2)=>({id,label,cueLabel,completionCriterionId:criterion,allowedErrorTypes,
       stableTargetKey:`target:${args.problem.problem_id}:slot:${id}`,masteryLevel,
@@ -134,19 +135,20 @@ export function buildInitialGradingContract(args:{problem:Problem;mode?:string;c
     part("major_calculation","主要計算の完遂","主要計算","complete_major_calculation",["K","W","N","C","none"],2),
     part("answer_conclusion","結論への到達","結論","reach_requested_conclusion",["W","N","C","none"],2),
   ];
-  const gradedParts=mode==="check"||mode==="skeleton"?level1:mode==="main_calc"?[...level2]:[...level1,...level2];
+  const gradedParts=original?original.parts.map(p=>part(p.id,p.label,p.label,`completed:${p.id}`,["K","W","N","C","none"],2)):
+    mode==="check"||mode==="skeleton"?level1:mode==="main_calc"?[...level2]:[...level1,...level2];
   const reviewScope:GradingContractSnapshot["reviewScope"]=mode==="check"?"check_only":mode==="skeleton"?"full_skeleton":
     mode==="main_calc"?"main_calc_target":"full_answer";
   const sheetType:GradingContractSnapshot["sheetType"]=mode==="check"?"check_sheet":mode==="skeleton"?"skeleton_sheet":
     mode==="main_calc"?"main_calc_sheet":"full_answer_sheet";
   const isPastExam=args.problem.category==="past_exam"||args.problem.source_type==="past_exam";
-  const learningPurpose:LearningPurpose=args.problem.generated_transfer?"transfer_check":isPastExam||mode==="full"||mode==="check"?"exam_performance":"integration_check";
+  const learningPurpose:LearningPurpose=original?'integration_check':args.problem.generated_transfer?"transfer_check":isPastExam||mode==="full"||mode==="check"?"exam_performance":"integration_check";
   const completionCriteria=gradedParts.map(row=>({id:row.completionCriterionId,displayText:`${row.label}を今回の答案で確認できた`}));
   const explicitlyOutOfScopeParts=mode==="check"||mode==="skeleton"?["主要計算の完遂","最終結論"]:mode==="main_calc"?
     ["採点対象として指定していない問題全体の説明"]:[];
   const payload={
     contractVersion:GRADING_CONTRACT_VERSION,problemId:args.problem.problem_id,
-    learningPurpose,learningStage:args.problem.generated_transfer?"transfer" as const:isPastExam||mode==="full"?"performance" as const:"acquisition" as const,
+    learningPurpose,learningStage:original?'acquisition' as const:args.problem.generated_transfer?"transfer" as const:isPastExam||mode==="full"?"performance" as const:"acquisition" as const,
     mode,reviewScope,targetedParts:gradedParts.map(row=>row.label),gradedParts,
     explicitlyOutOfScopePartIds:explicitlyOutOfScopeParts.map(value=>`out_${hashText(value)}`),explicitlyOutOfScopeParts,
     completionCriteria,hiddenAnswerKey:[],completionConditions:completionCriteria.map(row=>row.displayText),
@@ -325,7 +327,7 @@ export function buildProblemContextPack(args:{
   const answer=args.answers?.find(row=>row.problem_id===canonicalProblemId);
   const attempts=(args.attempts||[]).filter(row=>resolveCanonicalProblemId(row.problem_id,args.aliases)===canonicalProblemId);
   const reviews=(args.reviews||[]).filter(row=>resolveCanonicalProblemId(row.problem_id,args.aliases)===canonicalProblemId);
-  const statement=String((problem as Problem&{question_excerpt?:string}).question_excerpt||"");
+  const statement=String(problem.original_exercise?.statement||(problem as Problem&{question_excerpt?:string}).question_excerpt||"");
   const official=String(problem.official_answer||"");
   const completeness=statement&&official?"complete":statement||official||answer?.answer_excerpt?"partial":"metadata_only";
   return {problemId:args.problemId,canonicalProblemId,displayLabel:problem.display_label||problem.title,title:problem.title,

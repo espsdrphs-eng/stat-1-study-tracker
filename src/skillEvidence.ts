@@ -39,6 +39,7 @@ export function referenceSkills(record:StoredExamReferencePack|null|undefined,pr
 }
 function unassistedAnswer(attempt:Attempt){
   return !attempt.exclude_from_metrics&&!attempt.duplicate_of_attempt_id&&
+    attempt.reference_conditions_known!==false&&
     Number(attempt.actual_reference_level??attempt.reference_level??NaN)===0&&!attempt.hint_used&&
     !["scan","scan5","scan_only"].includes(attempt.mode);
 }
@@ -51,6 +52,7 @@ export function gradedRepairEvidence(attempt:Attempt){
   const reference=Number(attempt.actual_reference_level??attempt.reference_level??NaN);
   const allowed=Number(attempt.grading_contract?.allowedReferenceLevel??0);
   return attempt.learning_purpose==='error_repair'&&!attempt.exclude_from_metrics&&!attempt.duplicate_of_attempt_id&&
+    attempt.reference_conditions_known!==false&&
     Number.isInteger(reference)&&reference>=0&&reference<=5&&allowed>=0&&allowed<=5&&reference<=allowed&&(!attempt.hint_used||reference>0)&&
     !['scan','scan5','scan_only'].includes(attempt.mode);
 }
@@ -65,7 +67,7 @@ export function confidentGrading(attempt:Attempt){
 export function findingEvidenceStatus(attempt:Attempt,finding:GradedFinding){
   const skillIds=findingSkillIds(attempt,finding);
   const assisted=!!attempt.hint_used||Number(attempt.actual_reference_level??attempt.reference_level)>0;
-  const referenceKnown=Number.isInteger(attempt.actual_reference_level??attempt.reference_level);
+  const referenceKnown=attempt.reference_conditions_known!==false&&Number.isInteger(attempt.actual_reference_level??attempt.reference_level);
   const good=finding.resolved&&finding.error_type==='none';
   const bad=!finding.resolved&&finding.error_type!=='none';
   const outcome=!attemptPlanningEligible(attempt)||attempt.exclude_from_planning||!findingPlanningEligible(attempt,finding)?'excluded':

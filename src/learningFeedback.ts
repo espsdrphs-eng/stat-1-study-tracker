@@ -25,6 +25,8 @@ const recordedTopics=(text:string)=>[...new Set(text.match(/係数|指数(?!分�
 export function deriveProblemReference(problem:Problem,catalog:Pick<ExamReferenceCatalogItem,"canonicalProblemId"|"subject"|"year"|"questionNumber">[]=[]){
   const missing:string[]=[];
   let locator:string;
+  if(problem.source_type==='original')return {locator:`自作問題 ・ ${problem.display_label||problem.title}`,
+    missing:problem.original_exercise?.statement?[]:['問題文'],statement:problem.original_exercise?.statement||null,availability:'会話などで出題された問題。過去問・白本とは別の診断です。'};
   if(problem.source_type==="generated"){
     locator=`生成転移問題 ・ ${problem.display_label||problem.title||problem.problem_id}`;
   }else if(problem.source_type==="past_exam"){
@@ -98,7 +100,8 @@ export function deriveTaskIntroduction(data:Bootstrap,problem:Problem,item?:Part
   const goals=!blind?contract?.completionCriteria?.map(c=>criterionLabels[c.id]).filter(Boolean)||[]:[];
   const partGoals=!blind&&contract?.completionCriteria?.length?parts.map(p=>criterionLabels[p.completionCriterionId]).filter(Boolean):[];
   return {taskIdentity:task?currentTaskIdentity(task as Task):`problem:${problemId}`,target:deriveProblemReference(problem,data.adaptiveLearning?.pastExamCatalog).locator,
-    workLabel,blind,answerScope,subparts:taskAnswerScopeText(answerScope),
+    workLabel,blind,answerScope,subparts:problem.source_type==='original'&&contract?.gradedParts.length?
+      contract.gradedParts.map(p=>`${p.id}（${problem.original_exercise?.parts.find(r=>r.id===p.id)?.label||p.cueLabel}）`).join(' ／ '):taskAnswerScopeText(answerScope),
     scope:blind?taskAnswerScopeText(answerScope):scope.length?[...new Set(scope)].join(" / "):"対象範囲未登録",
     previousDifficulty:blind?"独立性を守るため解答前は表示しません":failures.length?[...new Set(failures)].join(" / "):"診断未登録",
     recoveryGoal:blind?"問題文の要求に対して自力で答案を作成し、採点後に確認します":goals.length||partGoals.length?[...new Set([...goals,...partGoals])].join(" / ")+(contract?.allowedReferenceLevel===0&&!goals.some(g=>g.includes("参照なし"))?"（参照なし）":""):"回収条件未設定",

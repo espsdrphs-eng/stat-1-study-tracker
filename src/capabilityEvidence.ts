@@ -42,8 +42,8 @@ const partIds=(a:Attempt)=>(legacyUsable(a)?gradedParts(a):survivingParts(a)).ma
 function attemptFact(a:Attempt){
  return {id:a.id,problem_id:a.problem_id,date:a.date,mode:a.mode,score_numeric:a.score_numeric,score_max:a.score_max,error_point:a.error_point,result_summary:a.result_summary,
   error_type:a.error_type,error_types:a.error_types,primary_error_type:a.primary_error_type,secondary_error_type:a.secondary_error_type,k_evidence_valid:a.k_evidence_valid,k_evidence:a.k_evidence,policy_validity:a.policy_validity,effective_error_types:a.effective_error_types,rubric_version:a.rubric_version,
-  graded_findings:a.graded_findings,contract_id:a.contract_id,contract_hash:a.contract_hash,grading_contract:a.grading_contract,
-  reference_level:a.actual_reference_level??a.reference_level??null,hint_used:a.hint_used??null,grading_confidence:a.grading_confidence??null,
+  graded_findings:a.graded_findings,contract_id:a.contract_id,contract_hash:a.contract_hash,grading_contract:a.grading_contract,daily_answer:a.daily_answer,
+  reference_level:a.actual_reference_level??a.reference_level??null,hint_used:a.hint_used??null,reference_conditions_known:a.reference_conditions_known,grading_confidence:a.grading_confidence??null,
   one_line_hint:a.one_line_hint,previous_mistake:a.previous_mistake,official_answer:a.official_answer,gpt_explanation:a.gpt_explanation,external_reference:a.external_reference,reference_closed_reproduction:a.reference_closed_reproduction,
   learning_purpose:a.learning_purpose,assessment_timing:a.assessment_timing,generated_from_review_id:a.generated_from_review_id,
   transfer_lineage:a.transfer_lineage,target_skill_assessment:a.target_skill_assessment,target_skill_prompted:a.target_skill_prompted,
@@ -54,7 +54,7 @@ const sourceSignature=(a:Attempt)=>canonicalValue(attemptFact(a));
 export const capabilityDate=(iso:string)=>iso.length===10?iso:new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Tokyo',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(iso));
 const recordOrder=(a:CapabilityRecord,b:CapabilityRecord)=>Date.parse(b.wire.evaluated_at)-Date.parse(a.wire.evaluated_at)||b.id.localeCompare(a.id);
 function sourceFacts(f:CapabilityFacts){
- return {catalog:CAPABILITY_CATALOG_VERSION,problems:[...f.problems].sort((a,b)=>a.problem_id.localeCompare(b.problem_id)).map(p=>({id:p.problem_id,source:p.source_type,generated:p.generated_transfer})),attempts:[...f.attempts].sort((a,b)=>a.id-b.id),
+ return {catalog:CAPABILITY_CATALOG_VERSION,problems:[...f.problems].sort((a,b)=>a.problem_id.localeCompare(b.problem_id)).map(p=>({id:p.problem_id,source:p.source_type,generated:p.generated_transfer,original:p.original_exercise})),attempts:[...f.attempts].sort((a,b)=>a.id-b.id),
   reviews:[...(f.reviews||[])].sort((a,b)=>a.id-b.id),sessions:[...(f.pastSessions||[])].sort((a,b)=>a.id-b.id),weakNotes:[...(f.weakNotes||[])].sort((a,b)=>a.id-b.id)};
 }
 const recordFacts=(records:CapabilityRecord[])=>records.map(r=>({id:r.id,wire:r.wire})).sort((a,b)=>a.id.localeCompare(b.id));
@@ -213,6 +213,7 @@ const selectedBinding=(a:Attempt,s:PastSession|undefined)=>{
 };
 const immediateReproduction=(a:Attempt)=>a.assessment_timing==='same_session_correction'&&a.reference_closed_reproduction===true;
 function recordedExerciseKind(a:Attempt,p:Problem|undefined,s:PastSession|undefined){
+ if(a.daily_answer)return ({diagnostic:'日次・診断答案',local_repair:'日次・局所補修',immediate_reproduction:'日次・直後の自力再現',delayed_transfer:'日次・後日の確認',exam:'日次・本番形式の練習（正式得点外）'})[a.daily_answer.kind];
  if(p?.source_type==='generated'||a.source_type==='generated'||/^GEN-/.test(a.problem_id))return '生成問題の訓練';
  if(a.transfer_lineage)return '別問題での確認';
  if(a.session_role==='counterfactual_calibration'&&s?.post_session_answers?.[a.problem_id])return '後日解答・選択判断の検証';
@@ -248,6 +249,12 @@ function inspectEvidence(s:CapabilityEvidence,h:EvaluationHistory,x:EvidenceInde
  if(s.baseline_attempt_id!==null&&(!baseline||!usable(baseline)||!x.problems.has(baseline.problem_id)||attemptOrder(baseline,a)>=0||x.signature(baseline)!==record.sourceSignatures[baseline.id]))warnings.push(`基準答案 #${s.baseline_attempt_id} の順序・有効性・原記録を確認できません。`);
  if(s.part_ids.some(p=>!x.parts(a).includes(p)))warnings.push(`答案 #${a.id} に対象外または存在しない採点項目があります。`);
  const findings=(a.graded_findings||[]).filter(p=>s.part_ids.includes(p.graded_part_id));
+ const daily=a.daily_answer;
+ if(daily&&s.outcome!=='uncertain'){
+  if(daily.kind!==s.kind||daily.baseline_attempt_id!==s.baseline_attempt_id)warnings.push(`答案 #${a.id} の保存済みの実施区分・基準答案と一致しません。`);
+  const observed=daily.parts.filter(p=>s.part_ids.includes(p.part_id));
+  if(!s.part_ids.length||observed.length!==s.part_ids.length||observed.some(p=>p.status==='unattempted'||p.status==='unreadable'||!p.quote))warnings.push(`答案 #${a.id} の対象に未着手・判定不能・引用未確認の採点項目があります。`);
+ }
  const failureParts=observedFailureParts(a,s.part_ids);
  const operationFindings=s.outcome==='success'?findings:failureParts;
  if(s.aspect&&s.outcome!=='uncertain'&&(!s.part_ids.length||calendarDaysBetween(a.date,evaluatedDate)===null||['scan','scan5','scan_only'].includes(a.mode)))warnings.push(`答案 #${a.id} に観点を確認できる解答日・採点項目がありません。`);
@@ -267,7 +274,7 @@ const operationStageEvidence=(o:InspectedEvidence)=>examStageEvidence(o.link)&&(
 
 function referenceWarnings(a:Attempt){
  const warnings:string[]=[];
- if((a.actual_reference_level??a.reference_level)!==0||a.hint_used!==false)warnings.push(`答案 #${a.id} の参照なし・ヒントなしを確認できません。`);
+ if(a.reference_conditions_known===false||(a.actual_reference_level??a.reference_level)!==0||a.hint_used!==false)warnings.push(`答案 #${a.id} の参照なし・ヒントなしを確認できません。`);
  if(a.one_line_hint||a.previous_mistake||a.official_answer||a.gpt_explanation||a.saved_gpt_feedback||a.external_reference)warnings.push(`答案 #${a.id} の参照フラグと自力成功の申告が矛盾しています。`);
  return warnings;
 }
@@ -275,6 +282,11 @@ function noncuedWarnings(s:CapabilityEvidence,a:Attempt,x:EvidenceIndex,abilityI
  const warnings:string[]=[];
  if(a.target_skill_prompted===true||s.transfer_conditions?.method_not_cued!==true)warnings.push(`答案 #${a.id} が方法の誘導なしだったことを確認できません。`);
  const problem=x.problems.get(a.problem_id);
+ const daily=a.daily_answer;
+ if(daily){
+  if(daily.reference.method_cued!==false||daily.shown.length!==1||daily.shown[0]!=='statement')warnings.push(`答案 #${a.id} は、出題時に問題文以外を見ていないことを確認できません。`);
+  if(s.transfer_conditions?.different_structure!==false&&(!daily.noncued_quality||!abilityId||!daily.noncued_quality.ability_ids.includes(abilityId)))warnings.push(`答案 #${a.id} の対象操作・出題前の独立品質確認または非閲覧条件を確認できません。`);
+ }else if(problem?.source_type==='original'&&s.transfer_conditions?.different_structure!==false)warnings.push(`答案 #${a.id} は自作の診断問題で、対象・解法を答案固定まで隠した記録がありません。非誘導の異構造確認は「確認・転移」から行ってください。`);
  if(problem?.source_type==='generated'){
   const c=problem.generated_transfer;
   if(!c?.answer_submission||!c.validation||GENERATION_CHECKS.some(k=>c.validation.checks[k]?.pass!==true)||c.validation.draft_hash!==c.content_hash||c.generator_pass_id===c.validation.validator_pass_id)warnings.push(`答案 #${a.id} の生成問題に独立品質確認・自力答案固定の証拠が不足しています。`);
@@ -288,7 +300,7 @@ const trainingSuccess=(a:Attempt)=>a.target_skill_assessment?.outcome==='success
 function recordedAnswerTime(a:Attempt,x:EvidenceIndex){
  const problem=x.problems.get(a.problem_id),session=x.sessions.get(a.parent_past_session_id??-1);
  const content=problem?.generated_transfer,generatedTime=content&&a.transfer_lineage?.key===content.lineage.key?content.answer_submission?.submittedAt:undefined;
- const timestamp=generatedTime||(selectedBinding(a,session)&&session&&!sessionExcluded(session)?session.answer_finished_at:undefined);
+ const timestamp=generatedTime||a.daily_answer?.answered_at||(selectedBinding(a,session)&&session&&!sessionExcluded(session)?session.answer_finished_at:undefined);
  // Date notation must agree with the attempt. Never use the grading import time.
  return timestamp&&/^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:\d{2})$/.test(timestamp)&&Number.isFinite(Date.parse(timestamp))&&capabilityDate(timestamp)===a.date?timestamp:undefined;
 }
@@ -307,7 +319,7 @@ function successStageWarnings(e:Pick<CapabilityEvaluation,'ability_id'>,s:Capabi
   if(!immediateReproduction(a))warnings.push(`答案 #${a.id} に参照なしの直後再現の実施記録がありません。同日中の独立演習・局所補修だけでは直後再現としません。`);
  }
   if(s.kind==='delayed_transfer'){
-   warnings.push(...noncuedWarnings(s,a,x,s.aspect==='transfer'||s.aspect==='retention'?e.ability_id:undefined));
+   warnings.push(...noncuedWarnings(s,a,x,a.daily_answer||s.aspect==='transfer'||s.aspect==='retention'?e.ability_id:undefined));
    if(!baseline||baseline.problem_id===a.problem_id||baseline.id===a.id||s.transfer_conditions?.different_structure!==true)warnings.push(`答案 #${a.id} に構造の異なる別問題の裏付けがありません。`);
    if(!baseline||(intervalFor(baseline,a,x)?.minimumDays??0)<1)warnings.push(`答案 #${a.id} の24時間以上の遅延間隔を確認できません（日付のみなら2暦日以上必要です）。`);
    if(x.byProblem.get(a.problem_id)?.some(old=>attemptOrder(old,a)<0))warnings.push(`答案 #${a.id} は既習問題の再挑戦です。`);
@@ -344,6 +356,7 @@ function derivationWarnings(s:CapabilityEvidence,a:Attempt){
  const warnings=referenceWarnings(a);
  if(s.method_not_cued!==true||a.target_skill_prompted===true)warnings.push(`答案 #${a.id} で公式・解法の指定なしに操作を選べたことを確認できません。`);
  if(s.kind==='local_repair'||a.assessment_timing==='same_session_correction'&&s.kind!=='immediate_reproduction')warnings.push(`答案 #${a.id} の補修を、独立した導出の成功には数えません。`);
+ if(a.daily_answer&&(a.daily_answer.reference.method_cued!==false||a.daily_answer.shown.some(x=>x!=='statement')))warnings.push(`答案 #${a.id} の保存済みの出題・解答条件では、方法を自力で選んだと確認できません。`);
  return warnings;
 }
 function resolveEvaluation(e:CapabilityEvaluation,own:InspectedEvidence[],history:InspectedEvidence[],x:EvidenceIndex){
@@ -367,12 +380,15 @@ function resolveEvaluation(e:CapabilityEvaluation,own:InspectedEvidence[],histor
 }
 function comparableEvidence(e:CapabilityEvaluation,a:InspectedEvidence,b:InspectedEvidence,x:EvidenceIndex){
  const left=a.attempt!,right=b.attempt!;
+ const success=a.link.outcome==='success'?a:b,prior=success===a?b:a;
+ if(success.attempt?.daily_answer&&(success.link.kind==='local_repair'||referenceWarnings(success.attempt).length||
+  success.link.aspect==='derivation'&&derivationWarnings(success.link,success.attempt).length||
+  success.link.kind!=='diagnostic'&&successStageWarnings(e,success.link,success.attempt,success.baseline,x).length))return false;
  if(left.id===right.id)return a.outcomePartIds.some(id=>b.outcomePartIds.includes(id));
  if(left.problem_id===right.problem_id)return a.outcomePartIds.some(id=>b.outcomePartIds.some(other=>samePart(left,id,right,other)));
  // Different problems: a deliberately linked, independently checked transfer
  // can contradict a prior result. Generic slots such as "major_calculation"
  // are not evidence that unrelated parts in two problems are comparable.
- const success=a.link.outcome==='success'?a:b,prior=success===a?b:a;
  return success.link.kind==='delayed_transfer'&&success.link.baseline_attempt_id===prior.attempt!.id&&
   !successStageWarnings(e,success.link,success.attempt!,success.baseline,x).length;
 }
@@ -400,7 +416,10 @@ function theoryEvidence(abilityId:string,observations:AssessmentObservation[],x:
   let interval:TheoryObservation['interval'],relation:TheoryObservation['relation'];
   if(a&&o.direct){
    if(aspect==='derivation'&&s.outcome==='success')warnings.push(...derivationWarnings(s,a),...(s.kind==='immediate_reproduction'?successStageWarnings({ability_id:abilityId},s,a,b,x):[]));
-   if(aspect==='concept'&&s.outcome==='success')warnings.push(...referenceWarnings(a));
+   if(aspect==='concept'&&s.outcome==='success'){
+    warnings.push(...referenceWarnings(a));
+    if(a.daily_answer&&s.kind==='local_repair')warnings.push('指導を受けた局所補修は、意味・条件を自力で説明できた証拠とは別です。');
+   }
    if(aspect==='transfer'){
     if(s.kind!=='delayed_transfer')warnings.push('転移は遅延した別問題の採点結果で照合します。');
     else if(s.outcome==='success'){
@@ -487,6 +506,13 @@ function getCapabilityScope(selection:CapabilityContextScope){
 }
 const eligibleAttempts=(f:CapabilityFacts,initial:boolean,requested?:string[],legacy=false)=>[...new Set([...(initial?f.attempts.filter(legacy?legacyUsable:usable):representativeAttempts(f,requested,legacy)).map(a=>a.id),...requestedItems(f,requested).flatMap(({item})=>item.evidence.flatMap(s=>[s.attempt_id,...(s.baseline_attempt_id?[s.baseline_attempt_id]:[])]))])];
 
+/** The batch adapter uses the same real, all-scope revision after staging new
+ * answers, without generating the full-history attachment or a chat prompt. */
+export async function capabilityDailyContextVersion(f:CapabilityFacts){
+ const {stem}=getCapabilityScope({initial:true,domainId:'all'});
+ return scopedRevisionVersion(stem,await hash(canonicalValue(sourceFacts(f))),f,{initial:true,mask:'all',revision:'r4'});
+}
+
 export async function buildCapabilityContext(f:CapabilityFacts,focusId?:string,selection:CapabilityContextScope={}){
  if(focusId&&!capabilityById.has(focusId))fail('ability_id','能力マップにありません。');
  const {initial,all,domainIndex,batch,operations,scope:baseScope,stem}=getCapabilityScope(selection);
@@ -530,11 +556,13 @@ export async function buildCapabilityContext(f:CapabilityFacts,focusId?:string,s
   }),
   representative_answers:representatives.map(a=>({id:a.id,problem_id:a.problem_id,date:a.date,problem_title:f.problems.find(p=>p.problem_id===a.problem_id)?.title,
    material_kind:f.problems.find(p=>p.problem_id===a.problem_id)?.source_type,score:a.score_numeric??null,grade_is_official:false,summary:a.result_summary||null,observed_errors:a.error_point||null,
-   reference_level:a.actual_reference_level??a.reference_level??null,hint_used:a.hint_used??null,grading_confidence:a.grading_confidence??null,purpose:a.learning_purpose||null,timing:a.assessment_timing||null,
+   reference_level:a.actual_reference_level??a.reference_level??null,hint_used:a.reference_conditions_known===false?null:a.hint_used??null,reference_conditions_known:a.reference_conditions_known,grading_confidence:a.grading_confidence??null,purpose:a.learning_purpose||null,timing:a.assessment_timing||null,
    mode:a.mode,answer_scope:a.review_scope??a.grading_contract?.reviewScope??null,reference_closed_reproduction:a.reference_closed_reproduction??null,
+   ...(a.source_type==='original'?{source_attempt_id:a.grading_contract?.sourceAttemptId??null,source_review_id:a.source_review_id??null}:{}),
    reference_flags:{one_line_hint:a.one_line_hint??null,previous_mistake:a.previous_mistake??null,official_answer:a.official_answer??null,gpt_explanation:a.gpt_explanation??null,external_reference:a.external_reference??null},
    prior_recorded_answer_ids:f.attempts.filter(old=>old.problem_id===a.problem_id&&(old.date<a.date||old.date===a.date&&old.id<a.id)).map(old=>old.id),novelty:'既習答案がなければ初見と確定せず、アプリ外の既習は未記録',
-   assessed_parts:(a.graded_findings||[]).filter(p=>partIds(a).includes(p.graded_part_id)).map(p=>({id:p.graded_part_id,error_type:p.error_type,resolved:p.resolved,evidence:p.evidence,concept_focus:p.concept_focus})),
+   assessed_parts:(a.graded_findings||[]).filter(p=>partIds(a).includes(p.graded_part_id)).map(p=>({id:p.graded_part_id,
+    ...(a.source_type==='original'?{label:a.grading_contract?.gradedParts.find(q=>q.id===p.graded_part_id)?.label}:{}),error_type:p.error_type,resolved:p.resolved,evidence:p.evidence,concept_focus:p.concept_focus})),
    transfer:a.transfer_lineage?{source_attempt_id:a.transfer_lineage.sourceAttemptId,ability_id:a.transfer_lineage.capabilityEvaluation?.abilityId||a.transfer_lineage.abilityProfile?.id,target_skill_prompted:a.target_skill_prompted??null,assessment:a.target_skill_assessment}:null,
    formal_session_id:a.parent_past_session_id??null,session_role:a.session_role??null,exam_score_eligible:a.exam_score_eligible??null,time_minutes:a.time_minutes??null,time_limit_minutes:a.time_limit_minutes??null,conclusion_reached:a.conclusion_reached??null,
    review_ids:(f.reviews||[]).filter(r=>r.generated_from_attempt_id===a.id).map(r=>r.id)})),
@@ -715,7 +743,10 @@ export function projectCapabilityMap(f:CapabilityFacts,records:CapabilityRecord[
   const previous=history.slice(history.indexOf(stateSource)+1).find(h=>!annotation(h)),recurrence=state==='unrepaired'&&history.slice(1).some(h=>expectedKind[h.item.effectiveState]);
   const improved=!!previous&&!!expectedKind[state]&&state!==previous.item.effectiveState;
   const knownIds=new Set(history.flatMap(h=>h.item.evidence.map(s=>s.attempt_id)));
-  const newerLinkedAnswers=f.attempts.filter(a=>usable(a)&&a.transfer_lineage?.capabilityEvaluation?.abilityId===c.id&&!knownIds.has(a.id));
+  const newerLinkedAnswers=f.attempts.filter(a=>usable(a)&&!knownIds.has(a.id)&&(
+   a.transfer_lineage?.capabilityEvaluation?.abilityId===c.id||a.daily_answer&&
+   (a.daily_answer.target_ability_ids.includes(c.id)||a.daily_answer.repair?.ability_id===c.id)&&
+   (!current||a.id>(current.record.sourceCutoffAttemptId??0))));
   const assessed=theoryEvidence(c.id,all,x);
   const failures=new Map<number,Attempt>();
   for(const axis of Object.values(assessed.aspects))if(axis.status==='failure'){

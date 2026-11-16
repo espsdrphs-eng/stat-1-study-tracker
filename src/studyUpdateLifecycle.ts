@@ -42,7 +42,8 @@ export function projectStudyUpdateLifecycle(args:{
   // are evidence metadata and cannot promote a repair execution to retrieval.
   const learningPurpose=prescription?.learningPurpose||update.learning_purpose||args.defaultLearningPurpose||
     (update.generated_from_review_id?"error_repair":"integration_check");
-  const assessmentTiming=prescription?.assessmentTiming||args.sourceReview?.assessment_timing||update.assessment_timing||
+  const originalSameDay=args.problem?.source_type==='original'&&learningPurpose==='error_repair'&&args.sourceAttempt?.problem_id===update.problem_id&&args.sourceAttempt.date===update.date;
+  const assessmentTiming=originalSameDay?'same_session_correction':prescription?.assessmentTiming||args.sourceReview?.assessment_timing||update.assessment_timing||
     (update.generated_from_review_id?"delayed_retrieval":"independent_performance");
   const actualReferenceLevel=Math.min(5,Math.max(0,Number(update.actual_reference_level??update.reference_level??(
     update.external_reference?5:update.official_answer?4:update.saved_gpt_feedback||update.gpt_explanation?3:
@@ -53,10 +54,11 @@ export function projectStudyUpdateLifecycle(args:{
   const lifecycle=resolveCanonicalLearningLifecycle({
     prescription,learningPurpose,assessmentTiming,result:String(update.review_outcome||"") as "success"|"partial"|"failed",
     reviewOutcome:update.review_outcome,actualReferenceLevel,allowedReferenceLevel,hintUsed:!!update.hint_used,
+    referenceConditionsKnown:update.reference_conditions_known,
     referenceClosedReproduction:!!(update.reference_closed_reproduction??update.after_hint_reproduced),
     targetIssueResolved:update.target_issue_resolved,minimumPassConditionMet:update.minimum_pass_condition_met,
     errorTypes:effectiveErrors.length?effectiveErrors:["none"],unresolvedCarryover:update.unresolved_carryover,
-    gradedPartIds,gradedFindings:update.graded_findings,requireGradedEvidence:!!args.sourceReview,
+    gradedPartIds,gradedFindings:update.graded_findings,requireGradedEvidence:!!args.sourceReview||args.problem?.source_type==='original',
     crossProblemEvidence:false,verifiedTransferTargetAvailable:false,
   });
   const rawMark=String(update.mark||""),corrections=[

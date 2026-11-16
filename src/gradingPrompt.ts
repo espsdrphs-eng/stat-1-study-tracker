@@ -57,10 +57,15 @@ const wholeAnswerYaml=`whole_answer_scan:
   observed_out_of_scope_findings: [] # finding_id, mastery_level, finding, evidence, correction, materiality, confidence, create_target_candidate, root_cause_key
   diagnostic_uncertainties: [] # region_id, description, reason, potential_materiality, confidence, candidate_interpretations, user_action_required`;
 
+const originalGradeRules=`【自作問題の記録】実際に解答した日付を YYYY-MM-DD で返す。過去の会話を登録する場合に、取り込み日へ置き換えない。
+指定された採点項目IDを各1回使う。実際の答案の成立・誤りを evidence へ引用する。白紙・未着手・判読不能は error_type:none, resolved:false とし、何が未確認かを書く。未着手を能力失敗や concept_focus の根拠にしない。
+本人の申告・確定記録で参照条件を確認できた場合だけ reference_conditions_known:true とし、actual_reference_level と hint_used を実値で返す。未確認の場合は false・null・null。本番得点や非誘導の遅延転移にはしない。`;
+
 export function buildFirstAttemptGradingPrompt(context:FirstAttemptPromptContext){
   const mode=context.gradingContract?.mode||context.mode||"full";
   const contract=context.gradingContract;
   const problemContext=context.problemContext;
+  const original=problemContext?.problemMaster.source_type==='original';
   const contractParts=contract?.gradedParts||[];
   const initial=!contract||contract.contractId.startsWith('initial:');
   const lineage=context.repairLineage;
@@ -162,6 +167,7 @@ mark、次回状態、卒業可否、review_after_daysはアプリが答案証�
 指定modeの採点範囲外でも、答案に実際に書かれたmajorな誤りはobserved_out_of_scope_findingsへ分離してください。
 その観察で今回のscoreを下げず、minor・自己訂正済み・単なる改善案はtarget候補にしないでください。
 ${wholeAnswerRules}
+${original?originalGradeRules:''}
 
 \`\`\`yaml
 study_update:
@@ -170,8 +176,8 @@ ${gradingTaskContextYaml(contract)}  target_kind: "${contract?.targetKind||''}"
   contract_version: "${contract?.contractVersion||""}"
   contract_hash: "${contract?.contractHash||""}"
   problem_id: "${context.problemId}"
-${linkedSkillTask?`  source_problem_id: "${lineage.sourceProblemId}"\n`:""}  display_label: "${context.displayLabel||context.problemId}"
-  date: "auto_today"
+${linkedSkillTask?`  source_problem_id: "${lineage.sourceProblemId}"\n`:""}  display_label: ${JSON.stringify(context.displayLabel||context.problemId)}
+  date: ${original?'"YYYY-MM-DD"':'"auto_today"'}
   task_origin: "${initial?'first_attempt':'review_attempt'}"
   mode: "${mode}"
   learning_purpose: "${assignedPurpose}"
@@ -198,7 +204,7 @@ ${linkedSkillTask?`  source_problem_id: "${lineage.sourceProblemId}"\n`:""}  dis
   weak_notes: []
   s_check_suggestions: []
   grading_confidence: null
-  rubric_version: "${GRADING_RUBRIC_VERSION}"
+${original?'  reference_conditions_known: false\n  actual_reference_level: null\n  hint_used: null\n':''}  rubric_version: "${GRADING_RUBRIC_VERSION}"
   evaluation_scope: "${contract?.reviewScope||"full_answer"}"
   graded_part_ids: ${contractParts.length?`\n${contractParts.map(part=>`    - "${part.id}"`).join("\n")}`:"[]"}
   graded_findings:
@@ -206,7 +212,7 @@ ${contractParts.length?contractParts.map(part=>`    - graded_part_id: "${part.id
       error_type: "" # K/W/N/C/none
       evidence: ""
       resolved: null`).join("\n"):"    []"}
-  graded_parts: ${contractParts.length?`\n${contractParts.map(part=>`    - "${part.label}"`).join("\n")}`:"[]"}
+  graded_parts: ${contractParts.length?`\n${contractParts.map(part=>`    - ${JSON.stringify(part.label)}`).join("\n")}`:"[]"}
   assumed_correct_parts: []
   unresolved_carryover: []
   ${wholeAnswerYaml}
@@ -453,6 +459,7 @@ ${allowed}
 ${wholeAnswerRules}
 10. 本番で明確な失点になる誤りだけをobserved_out_of_scope_findingsへ分離し、minor・自己訂正済み・改善案はtarget候補にしない。既に解消済みtargetを古い文言から復活させない。
 理論理解の確認を兼ねる場合も契約内の該当項目だけ採点する。答案に実際の説明がある場合だけ graded_findings に concept_focus: meaning / justification / assumption / limit / distinction / mathematization のいずれかを任意で付け、evidence に説明の根拠を記す。計算だけや白紙は概念確認にしない。最初の誤りとその波及・別の誤りを分ける。
+${problemContext?.problemMaster.source_type==='original'?originalGradeRules:''}
 16. 最後に次のYAMLをコードブロックで出力する。空欄・null・[]は答案から判定した値で置き換える。
 
 study_update:
@@ -506,13 +513,13 @@ ${fullScope?"  assumed_correct_parts: []":"  assumed_correct_parts:\n    - \"提
   uncertain_points: []
   generated_from_review_id: ${context.reviewId||0}
   review_outcome: "" # success/partial/failed
-  hint_used: ${hintUsed}
+${problemContext?.problemMaster.source_type==='original'?'  reference_conditions_known: false\n':''}  hint_used: ${problemContext?.problemMaster.source_type==='original'?'null':hintUsed}
   hint_level: "${hintLevel}"
   after_hint_reproduced: ${hintUsed?referenceClosed:false}
   reference_closed_reproduction: ${recordedReproduction}
   allowed_reference_level: ${allowedReferenceLevel}
-  actual_reference_level: ${actualReferenceLevel}
-  reference_level: ${actualReferenceLevel}
+  actual_reference_level: ${problemContext?.problemMaster.source_type==='original'?'null':actualReferenceLevel}
+  reference_level: ${problemContext?.problemMaster.source_type==='original'?'null':actualReferenceLevel}
   no_hint: ${actualReferenceLevel===0}
   one_line_hint: ${context.oneLineHint??hintLevel==="minimal_hint"}
   previous_mistake: ${context.previousMistake??hintLevel==="previous_mistake"}

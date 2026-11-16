@@ -141,9 +141,9 @@ export function calculateExamReadinessMetrics(args: {
     ...(s.selected_timed_attempt_ids||[]),...(s.counterfactual_calibration_attempt_ids||[])]));
   const skillProblems=new Map<string,Set<string>>();
   for(const p of problems)for(const id of problemSkillIds(p))skillProblems.set(id,new Set([...(skillProblems.get(id)||[]),p.problem_id]));
-  const examAttempts=attempts.filter(a=>!/^PY-2025-Q\d+$/.test(a.problem_id)&&
-    a.source_type!=="generated"&&a.evidence_strength!=="training"&&
-    problems.find(p=>p.problem_id===a.problem_id)?.source_type!=="generated");
+  const examAttempts=attempts.filter(a=>!a.daily_answer&&!/^PY-2025-Q\d+$/.test(a.problem_id)&&
+    a.source_type!=="generated"&&a.source_type!=='original'&&a.evidence_strength!=="training"&&
+    !['generated','original'].includes(problems.find(p=>p.problem_id===a.problem_id)?.source_type||''));
   for(const a of examAttempts)for(const id of (a.graded_findings||[]).flatMap(f=>findingSkillIds(a,f)))
     skillProblems.set(id,new Set([...(skillProblems.get(id)||[]),a.problem_id]));
   const allTransferRows=deriveTransferEvidence(attempts);
