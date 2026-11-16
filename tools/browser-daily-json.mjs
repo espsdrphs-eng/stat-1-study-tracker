@@ -1,0 +1,63 @@
+import assert from 'node:assert/strict';
+import {preview} from 'vite';
+import {chromium} from 'playwright-core';
+import {dailyFixture} from '../tests/dailyLearningFixture.mjs';
+
+// Run after npm run build. Optional argument: a separate local build folder.
+const outDir=process.argv[2]||'dist';
+const server=await preview({configFile:false,publicDir:false,base:'./',build:{outDir},preview:{host:'127.0.0.1',port:0,open:false}});
+const origin=`http://127.0.0.1:${server.httpServer.address().port}`;
+let browser;
+try{
+ browser=await chromium.launch({executablePath:process.env.EDGE_PATH||'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',headless:true});
+ const context=await browser.newContext({viewport:{width:820,height:1180},hasTouch:true,serviceWorkers:'block',permissions:['clipboard-read','clipboard-write']});
+ await context.route('**/*',r=>new URL(r.request().url()).origin===origin?r.continue():r.abort());
+ const page=await context.newPage(),errors=[];
+ page.on('pageerror',e=>errors.push(String(e)));
+ const button=name=>page.getByRole('button',{name,exact:true});
+ const msg=value=>page.locator('.daily-action-message').filter({hasText:value}).first().waitFor();
+ const morning=()=>button('今日の能力JSONをコピー').first().tap();
+ const clipboard=()=>page.evaluate(()=>navigator.clipboard.readText());
+ const fit=async(width,height)=>{await page.setViewportSize({width,height});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),`${width}px overflow`)};
+ const home=page.locator('.capability-dashboard');
+ const night=page.getByRole('region',{name:'日次学習の一括取り込み'});
+ const field=night.getByRole('textbox',{name:'今日の学習結果JSON'});
+ const paste=async value=>{
+  await field.fill('');await page.evaluate(t=>navigator.clipboard.writeText(t),value);await field.focus();await page.keyboard.press('Control+v');
+  assert.equal(await field.inputValue(),value);
+ };
+ await page.goto(origin);await home.waitFor();
+ await fit(820,1180);await fit(1180,820);
+ await page.getByText('初回の設定・詳しい根拠',{exact:true}).tap();
+ await button('初回用の指導ルールをコピー').tap();await msg('指導ルールをコピーしました。');
+ assert.match(await clipboard(),/候補外/);
+ await button('全75能力の詳しいJSONをコピー').tap();await msg('全75能力の詳しいJSONをコピーしました。');
+ const details=JSON.parse(await clipboard());assert.equal(details.abilities.length,75);
+ await morning();await msg('能力JSONをコピーしました。');
+ const raw=await clipboard(),brief=JSON.parse(raw);
+ assert.equal(brief.schema_version,'stat1-daily-brief-v1');assert.equal(brief.context_version,details.context_version);
+ assert.deepEqual(brief.counts,details.counts);assert.equal(Object.values(brief.counts).reduce((a,b)=>a+b,0),75);
+ await button('GPT連携を開く').tap();await night.waitFor();await fit(620,900);await fit(390,844);
+ await button('夜の出力依頼をコピー').tap();await msg('夜の出力依頼をコピーしました。');
+ const guide=await clipboard();assert.match(guide,/stat1-daily-learning-v1/);assert.ok(!guide.includes(brief.context_version));
+ await paste(raw);await button('差分をプレビュー').tap();
+ await night.getByText(/これは朝の能力JSONです/).waitFor();assert.equal(await field.inputValue(),raw);
+ const payload=dailyFixture(brief);payload.created_at=new Date().toISOString();const reply=JSON.stringify(payload);
+ await paste(reply);await button('差分をプレビュー').tap();
+ const diff=night.getByRole('region',{name:'一括取り込みの差分'});await diff.waitFor();assert.match(await diff.innerText(),/55\/100点/);
+ await button('確認して一括保存').tap();
+ await night.getByRole('region',{name:'日次学習の保存結果'}).waitFor();
+ await paste(reply);await button('差分をプレビュー').tap();await night.getByText(/答案や能力評価を重複登録しません/).waitFor();
+ await morning();await msg('能力JSONをコピーしました。');
+ const next=JSON.parse(await clipboard());assert.notEqual(next.context_version,brief.context_version);
+ assert.equal(next.recent_daily.new_attempt_ids.length,6);assert.ok(next.recent_daily.held_ability_ids.includes('testing.errors-power'));
+ assert.equal(Object.values(next.counts).reduce((a,b)=>a+b,0),75);
+ assert.deepEqual(errors,[]);
+ const denied=await browser.newContext({serviceWorkers:'block'});
+ await denied.route('**/*',r=>new URL(r.request().url()).origin===origin?r.continue():r.abort());
+ await denied.addInitScript(()=>{Object.defineProperty(navigator,'clipboard',{value:{write:()=>Promise.reject(new Error('test denial'))}})});
+ const fallback=await denied.newPage();await fallback.goto(origin);
+ await fallback.getByRole('button',{name:'今日の能力JSONをコピー',exact:true}).first().click();
+ assert.equal(JSON.parse(await fallback.getByRole('textbox',{name:'コピー用の内容'}).inputValue()).schema_version,'stat1-daily-brief-v1');
+ console.log(JSON.stringify({status:'PASS',widths:[390,620,820,1180],capabilities:75,storedFixtureAnswers:6,clipboardDeniedFallback:true},null,2));
+}finally{await browser?.close();await server.close()}

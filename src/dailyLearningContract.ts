@@ -5,6 +5,8 @@ import type {GradingErrorType} from './types.ts';
 import {GENERATION_CHECKS} from './generatedTransfer.ts';
 
 export const DAILY_LEARNING_VERSION='stat1-daily-learning-v1' as const;
+export const DAILY_BRIEF_VERSION='stat1-daily-brief-v1' as const;
+export const DAILY_SNAPSHOT_VERSION='stat1-daily-snapshot-v1' as const;
 export const DAILY_RECEIPT_PREFIX='daily-learning:v1:';
 export const dailyKindLabels={diagnostic:'診断・初回答案',local_repair:'局所補修',immediate_reproduction:'直後の自力再現',delayed_transfer:'後日の確認',exam:'本番形式の練習'} as const;
 export const dailyPartLabels={correct:'正しくできた',incorrect:'未達',partial:'部分成功',unattempted:'未着手',unreadable:'判定不能'} as const;
@@ -85,6 +87,8 @@ export function decodeDailyLearning(raw:unknown,now=new Date().toISOString()):Da
  const t=raw.trim(),fenced=t.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/iu);let parsed:unknown;
  try{parsed=JSON.parse(fenced?fenced[1]:t)}catch{return dailyFail('日次JSON','標準JSONとして読み取れません。原文を保持し、ChatGPTにJSONコードブロック1つだけを再出力させてください。');}
  const v=object(parsed,'日次JSON');
+ if(v.schema_version===DAILY_BRIEF_VERSION||v.schema_version===DAILY_SNAPSHOT_VERSION)
+  dailyFail('schema_version','これは朝の能力JSONです。「夜の出力依頼をコピー」をChatGPTへ渡し、返ってきた学習結果JSONを貼り付けてください。');
  choice(v.schema_version,'schema_version',[DAILY_LEARNING_VERSION]);choice(v.learning_goal,'learning_goal',['long_term_theory']);
  if(v.catalog_version!==CAPABILITY_CATALOG_VERSION)dailyFail('catalog_version','能力マップの版が異なります。朝の情報を取得し直してください。');
  const session_id=tempRef(v.session_id,'session_id'),learning_date=day(v.learning_date,'learning_date'),created_at=timestamp(v.created_at,'created_at');

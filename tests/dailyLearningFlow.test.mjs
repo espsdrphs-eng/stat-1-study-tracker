@@ -12,24 +12,30 @@ import {dailyFixture} from './dailyLearningFixture.mjs';
 const morning=()=>localGet('/api/daily-learning/snapshot');
 const preview=text=>localPost('/api/daily-learning/preview',{text});
 const save=(text,p)=>localPost('/api/daily-learning/save',{text,confirmationToken:p.confirmationToken,confirmed:true});
-const copiedData=prompt=>JSON.parse(prompt.split('【保存済みスナップショット】\n')[1]);
+const copiedData=out=>JSON.parse(out.json);
 
-test('the ordinary clipboard prompt is short, keeps all 75 states and binds the exact same import as the detailed prompt',async()=>{
+test('morning copies pure compact or detailed JSON; a separate evening guide uses the original morning context',async()=>{
  await localGet('/api/bootstrap');
  const unchanged=await exportBackup(),compact=await morning(),full=await localGet('/api/daily-learning/snapshot?detail=1');
- const brief=copiedData(compact.prompt),detailed=copiedData(full.prompt);
- assert.ok(Buffer.byteLength(compact.prompt)<Buffer.byteLength(full.prompt)*.4);
+ const brief=copiedData(compact),detailed=copiedData(full);
+ assert.ok(Buffer.byteLength(compact.json)<Buffer.byteLength(full.json)*.4);
+ assert.equal(brief.schema_version,'stat1-daily-brief-v1');
+ assert.equal(detailed.schema_version,'stat1-daily-snapshot-v1');
  assert.equal(detailed.abilities.length,75);
  assert.deepEqual(Object.entries(brief.abilities_by_state).flatMap(([state,rows])=>rows.map(([id])=>[id,state])).sort(),
   detailed.abilities.map(a=>[a.ability_id,a.effective_state]).sort());
  assert.equal(brief.context_version,detailed.context_version);
  assert.deepEqual(brief.counts,detailed.counts);
- assert.match(compact.prompt,/stat1-daily-learning-v1/);
- assert.match(compact.prompt,/capability_update.{0,8}返さない/);
- assert.match(compact.prompt,/"ref":"a1","problem_ref":"p1"/);
- const example=JSON.parse(compact.prompt.split('【夜の形式例】\n')[1].split('\n【保存済みスナップショット】')[0]);
- assert.equal(example.morning_context_version,brief.context_version);
- const reply={...example,created_at:new Date().toISOString()};
+ const rules=await localGet('/api/daily-learning/guide?part=rules'),night=await localGet('/api/daily-learning/guide?part=night');
+ assert.match(rules,/候補外/);assert.match(rules,/未確認.{0,8}未達ではない/);
+ assert.match(night,/stat1-daily-learning-v1/);assert.match(night,/capability_update.{0,8}返さない/);
+ assert.ok(!night.includes(brief.context_version),'night guide must not substitute a newly generated version');
+ const example=JSON.parse(night.split('【夜の形式例】\n')[1]);
+ assert.equal(example.morning_context_version,'<朝のJSONのcontext_version>');
+ await assert.rejects(()=>preview(compact.json),/朝の能力JSON.*夜の出力依頼/);
+ await assert.rejects(()=>preview(full.json),/朝の能力JSON.*夜の出力依頼/);
+ await assert.rejects(()=>preview(JSON.stringify({...example,learning_date:brief.study_date})),/実際の日時/);
+ const reply={...example,catalog_version:brief.catalog_version,learning_date:brief.study_date,morning_context_version:brief.context_version,created_at:new Date().toISOString()};
  reply.problems[0].statement='取込テスト用：サイコロ1個の目の期待値を求めよ。';
  reply.answers[0].source='chat_text';reply.answers[0].parts[0]={part_id:'q1',status:'correct',quote:'7/2',finding:'取込テスト用の実行記録',error_type:'none'};
  assert.equal((await preview(JSON.stringify(reply))).answers.length,1);
@@ -42,7 +48,7 @@ test('morning → 4 original problems and 6 separate answers → next snapshot, 
  assert.equal(new Set(m.snapshot.abilities.map(a=>a.ability_id)).size,75);
  assert.ok(m.snapshot.candidates.length<=3);assert.equal(m.snapshot.learning_goal,'long_term_theory');
  assert.ok(sourceRecordsEqual(before,await exportBackup()),'morning is read-only');
- const session=dailyFixture(m.snapshot),text=JSON.stringify(session),p=await preview(text);
+ const session=dailyFixture(copiedData(m)),text=JSON.stringify(session),p=await preview(text);
  assert.equal(p.problems.length,4);assert.equal(p.answers.length,6);
  assert.ok(sourceRecordsEqual(before,await exportBackup()),'preview rolls back all writes');
  const result=await save(text,p),after=await exportBackup();
@@ -65,7 +71,7 @@ test('morning → 4 original problems and 6 separate answers → next snapshot, 
  assert.equal(Object.values(next.snapshot.counts).reduce((s,n)=>s+n,0),75);
  assert.equal(next.snapshot.recent_daily_sessions.at(-1).session_id,session.session_id);
  assert.equal(next.snapshot.recent_daily_sessions.at(-1).coaching_without_answer.length,1);
- const brief=copiedData(next.prompt),recentBrief=brief.recent_daily;
+ const brief=copiedData(next),recentBrief=brief.recent_daily;
  const recentC=recentBrief?.observations.filter(e=>e[recentBrief.observation_columns.indexOf('ability_id')]==='testing.errors-power');
  assert.deepEqual(recentC.map(row=>row[recentBrief.observation_columns.indexOf('attempt_id')]),[rows.aC.id,rows.rC.id]);
  assert.ok(recentBrief.held_ability_ids.includes('testing.errors-power'));
@@ -92,7 +98,8 @@ test('morning → 4 original problems and 6 separate answers → next snapshot, 
 });
 
 test('structural errors, a stale snapshot and a late write error leave the complete archive unchanged',async()=>{
- const m=(await morning()).snapshot,day=theoryAddDays(m.study_date,-1),base=await exportBackup();
+ const m=copiedData(await morning()),day=theoryAddDays(m.study_date,-1),base=await exportBackup();
+ const night=await localGet('/api/daily-learning/guide?part=night');
  const w=dailyFixture(m,day);w.session_id='failure-rollback';
  for(const p of w.problems)p.statement+=' 【別フィクスチャ】';
  const stray=structuredClone(w);stray.evaluations[0].evidence[0].part_ids=['imaginary'];
@@ -117,10 +124,14 @@ test('structural errors, a stale snapshot and a late write error leave the compl
  assert.deepEqual((await preview(text)).answers,p.answers,'auto-increment keys are not consumed by failed attempts');
  await localPost('/api/problems/original',{title:'別タブの更新',statement:'別タブで追加した問題',parts:['記述']});
  const changed=await exportBackup();
+ assert.notEqual(copiedData(await morning()).context_version,m.context_version);
+ assert.equal(await localGet('/api/daily-learning/guide?part=night'),night,'copying the evening guide cannot silently rebase a study session');
+ await assert.rejects(()=>preview(text),/朝の参照時点から記録が変わっています/);
  await assert.rejects(()=>save(text,p),/朝の参照時点から記録が変わっています/);
  assert.ok(sourceRecordsEqual(changed,await exportBackup()));
  const draft=await localGet('/api/daily-learning/snapshot?draft='+day);
  assert.equal(draft.snapshot.previous_day.status,'local_draft_not_confirmed');
+ assert.equal(copiedData(draft).previous_day.status,'local_draft_not_confirmed');
 });
 
 test('an unverified same-day reproduction neither promotes the capability nor cancels the saved failure',async()=>{
@@ -181,7 +192,7 @@ test('confirmed direct reproduction, externally checked blind transfer, retentio
  assert.ok(a.directEvidence.some(x=>x.attempt.id===oldId&&x.outcomes.includes('success')));
  assert.ok(a.directEvidence.some(x=>x.attempt.id===r2.answers[0].attempt_id&&x.outcomes.includes('success')));assert.equal(a.theory.milestone,30);
  const newMorning=await morning();assert.equal(newMorning.snapshot.abilities.find(a=>a.ability_id===ability).growth.independently_graded_comparisons[0].compared.result,'recurrence');
- const evidence=copiedData(newMorning.prompt).ability_facts[ability];
+ const evidence=copiedData(newMorning).ability_facts[ability];
  assert.equal(evidence.outcomes.failure[0],r3.answers[0].attempt_id);
  assert.equal(evidence.outcomes.success[0],r2.answers[0].attempt_id);
  assert.equal(evidence.outcomes.success[2],'delayed_transfer');assert.equal(evidence.retention_days_at_least,30);

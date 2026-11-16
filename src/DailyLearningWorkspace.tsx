@@ -13,27 +13,44 @@ const dateOfDraft=()=>{
 };
 const errorMessage=(e:unknown)=>e instanceof Error?e.message:String(e);
 
-export function DailyMorningCopy(){
- const [pending,setPending]=useState(false),[fallback,setFallback]=useState(''),[feedback,setFeedback]=useState(''),[warning,setWarning]=useState(''),active=useRef(false);
- const copy=async(detailed=false)=>{
-  if(active.current)return;active.current=true;setPending(true);setFeedback('');setWarning('');setFallback('');
-  const draft=dateOfDraft(),q=new URLSearchParams();if(draft)q.set('draft',draft);if(detailed)q.set('detail','1');
-  const query=q.toString(),path='/api/daily-learning/snapshot'+(query?'?'+query:'');
-  const request=api<Awaited<ReturnType<typeof buildDailyLearningSnapshot>>>(path).then(x=>{setWarning(x.snapshot.previous_day.warning||'');return x.prompt});
+function useDailyCopy(){
+ const [pending,setPending]=useState(false),[fallback,setFallback]=useState(''),[feedback,setFeedback]=useState(''),active=useRef(false);
+ const copy=async(load:()=>Promise<string>,success:string)=>{
+  if(active.current)return;active.current=true;setPending(true);setFeedback('');setFallback('');
+  const request=load();
   try{
    // On WebKit the clipboard call must start inside the tap, before waiting
    // for IndexedDB. Provide a direct-tap fallback if permissions are denied.
    if(typeof ClipboardItem!=='undefined'&&navigator.clipboard?.write)await navigator.clipboard.write([new ClipboardItem({'text/plain':request.then(v=>new Blob([v],{type:'text/plain'}))})]);
    else await navigator.clipboard.writeText(await request);
-   setFeedback(detailed?'全75能力の詳しい情報をコピーしました。':'学習情報の短い版をコピーしました。ChatGPTに貼り付けてください。');
+   setFeedback(success);
   }catch{try{setFallback(await request);setFeedback('自動コピーが許可されなかったため、下にコピー用の文面を用意しました。');}catch(e){setFeedback(errorMessage(e));}}
   finally{active.current=false;setPending(false);}
  };
- return <div className="daily-morning-copy"><button className="primary" onClick={()=>void copy()} disabled={pending}><Copy size={16}/>今日の学習情報をGPTへコピー</button>
-  <details><summary>詳しい根拠が必要なとき</summary><button className="ghost" onClick={()=>void copy(true)} disabled={pending}>全75能力の詳しい情報をコピー</button></details>
-  {(feedback||warning||pending)&&<div className="daily-action-message" aria-live="polite">{pending?'最新の答案と能力を照合しています…':feedback}{warning&&<small>{warning}</small>}</div>}
-  {fallback&&<div className="daily-fallback"><label>コピー用の学習情報<textarea rows={4} readOnly value={fallback} onFocus={e=>e.currentTarget.select()}/></label>
-   <button className="ghost" onClick={async()=>{try{await navigator.clipboard.writeText(fallback);setFeedback('学習情報をコピーしました。')}catch{setFeedback('上の欄をすべて選択してコピーしてください。')}}}>用意した学習情報をコピー</button></div>}
+ return {copy,pending,feedback,fallback,retry:async()=>{try{await navigator.clipboard.writeText(fallback);setFallback('');setFeedback('用意した内容をコピーしました。')}catch{setFeedback('上の欄をすべて選択してコピーしてください。')}}};
+}
+
+function DailyCopyFeedback({state,warning}:{state:ReturnType<typeof useDailyCopy>;warning?:string}){
+ const {pending,feedback,fallback,retry}=state;
+ return <>{(feedback||warning||pending)&&<div className="daily-action-message" aria-live="polite">{pending?'コピー内容を用意しています…':feedback}{warning&&<small>{warning}</small>}</div>}
+  {fallback&&<div className="daily-fallback"><label>コピー用の内容<textarea rows={4} readOnly value={fallback} onFocus={e=>e.currentTarget.select()}/></label>
+   <button className="ghost" onClick={()=>void retry()}>用意した内容をコピー</button></div>}</>;
+}
+
+export function DailyMorningCopy(){
+ const state=useDailyCopy(),[warning,setWarning]=useState('');
+ const copySnapshot=(detailed=false)=>void state.copy(async()=>{
+  setWarning('');
+  const draft=dateOfDraft(),q=new URLSearchParams();if(draft)q.set('draft',draft);if(detailed)q.set('detail','1');
+  const query=q.toString(),path='/api/daily-learning/snapshot'+(query?'?'+query:'');
+  const result=await api<{snapshot:Awaited<ReturnType<typeof buildDailyLearningSnapshot>>;json:string}>(path);
+  setWarning(result.snapshot.previous_day.warning||'');return result.json;
+ },detailed?'全75能力の詳しいJSONをコピーしました。':'能力JSONをコピーしました。学習用のChatGPTチャットに貼り付けてください。');
+ return <div className="daily-morning-copy"><button className="primary" onClick={()=>copySnapshot()} disabled={state.pending}><Copy size={16}/>今日の能力JSONをコピー</button>
+  <details><summary>初回の設定・詳しい根拠</summary><p>初回や新しいChatGPTのチャットでは、先に指導ルールを貼り付けてください。以降は能力JSONだけで始められます。</p><div className="button-row">
+   <button className="ghost" disabled={state.pending} onClick={()=>void state.copy(async()=>{setWarning('');return api<string>('/api/daily-learning/guide?part=rules')},'指導ルールをコピーしました。')}>初回用の指導ルールをコピー</button>
+   <button className="ghost" onClick={()=>copySnapshot(true)} disabled={state.pending}>全75能力の詳しいJSONをコピー</button></div></details>
+  <DailyCopyFeedback state={state} warning={warning}/>
  </div>;
 }
 
@@ -79,7 +96,7 @@ function DailyDiff({value,saved,onEvidence}:{value:ImportResult;saved:boolean;on
 export function DailyLearningWorkspace({busy,run,onEvidence}:{busy:boolean;run:Run;onEvidence?:(id:number)=>void}){
  const [text,setText]=useState(getDraft),[working,setWorking]=useState(false),[preview,setPreview]=useState<DailyPreview|null>(null),[receipt,setReceipt]=useState<ImportResult|null>(null),
   [error,setError]=useState(''),[message,setMessage]=useState(''),[draftError,setDraftError]=useState(false),[noncued,setNoncued]=useState(false);
- const active=useRef(false);
+ const active=useRef(false),nightCopy=useDailyCopy();
  useEffect(()=>{let alive=true;void api<DailyReceipt|null>('/api/daily-learning/latest').then(r=>{if(alive&&r)setReceipt(prev=>prev??r)}).catch(()=>undefined);return()=>{alive=false}},[]);
  useEffect(()=>{try{if(text)sessionStorage.setItem(draftKey,text);else sessionStorage.removeItem(draftKey);setDraftError(false)}catch{setDraftError(!!text)}},[text]);
  const parse=async(value=noncued)=>{
@@ -98,13 +115,15 @@ export function DailyLearningWorkspace({busy,run,onEvidence}:{busy:boolean;run:R
    if(r){setReceipt(r);setPreview(null);setNoncued(false);setText('');setMessage(r.duplicate?'同じセッションは保存済みです。':ok?'問題・答案・能力の証拠とGPT原文を保存しました。翌朝のコピーに反映されます。':'保存済みです。表示を更新できなければ再読み込みしてください。');}
   }finally{active.current=false;setWorking(false);}
  };
- return <div className="cap-workspace daily-workspace"><section className="cap-panel"><span className="cap-eyebrow">朝 · 75能力の現在地</span><h2>今日の学習を始める</h2><p>最新の根拠と優先候補をChatGPTへ。学習と答案の提示はChatGPT側だけで進められます。</p><DailyMorningCopy/></section>
-  <section className="cap-panel" aria-label="日次学習の一括取り込み"><span className="cap-eyebrow">夜 · 1つのJSONで記録</span><h2>今日の学習結果を一括取り込み</h2><p>ChatGPTに「今日の学習結果をアプリへ」と伝え、返ってきたJSONを1回貼り付けます。手書き画像の再登録は不要です。</p>
+ return <div className="cap-workspace daily-workspace"><section className="cap-panel"><span className="cap-eyebrow">朝 · 75能力の現在地</span><h2>今日の学習を始める</h2><p>能力JSONを学習用のChatGPTへ。取り組む内容は根拠を見たChatGPTが選びます。</p><DailyMorningCopy/></section>
+  <section className="cap-panel" aria-label="日次学習の一括取り込み"><span className="cap-eyebrow">夜 · 1つのJSONで記録</span><h2>今日の学習結果を一括取り込み</h2><p>夜の出力依頼を朝と同じChatGPTチャットに貼り、返ってきたJSONを下に貼り付けます。手書き画像の再登録は不要です。</p>
+   <button className="ghost" disabled={nightCopy.pending} onClick={()=>void nightCopy.copy(()=>api<string>('/api/daily-learning/guide?part=night'),'夜の出力依頼をコピーしました。')}><Copy size={16}/>夜の出力依頼をコピー</button>
+   <DailyCopyFeedback state={nightCopy}/>
    <label className="daily-input-label">今日の学習結果JSON<textarea aria-label="今日の学習結果JSON" rows={7} value={text} disabled={busy||working} autoComplete="off" spellCheck={false} onChange={e=>{setText(e.target.value);setPreview(null);setError('');setNoncued(false);setMessage('')}}/></label>
    <button className="ghost" disabled={!text.trim()||busy||working} onClick={()=>void parse()}><ClipboardPaste size={16}/>差分をプレビュー</button>
    {working&&<span role="status"> 照合中…</span>}
    {draftError&&<p role="alert">原文をタブに一時保存できません。閉じる前にコピーしておいてください。</p>}
-   {error&&<div className="cap-warning daily-error" role="alert"><strong>保存していません。入力原文は残っています。</strong><p>{error}</p><small>形式に問題がある場合は、ChatGPTに採点を変えず標準JSONを再出力させてください。</small></div>}
+   {error&&<div className="cap-warning daily-error" role="alert"><strong>保存していません。入力原文は残っています。</strong><p>{error}</p><small>形式に問題がある場合は「夜の出力依頼をコピー」を使い、ChatGPTに採点を変えずに再出力させてください。</small></div>}
    {preview&&<><DailyDiff value={preview} saved={false}/>{preview.can_confirm_noncued&&<label className="check-line daily-proof"><input type="checkbox" checked={noncued} disabled={busy||working} onChange={e=>{const v=e.target.checked;setNoncued(v);void parse(v)}}/>
     別の品質確認が出題前に済み、答案を提出するまで対象・方法・解答・品質内容は見ていません。不明な場合は選択不要です。</label>}
     <button className="primary" disabled={busy||working||!!error} onClick={()=>void save()}>確認して一括保存</button></>}

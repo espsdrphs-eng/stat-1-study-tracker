@@ -3440,16 +3440,16 @@ function dailyReceiptMatches(r:DailyReceipt,f:Awaited<ReturnType<typeof capabili
   });
 }
 async function dailyLearningSnapshot(draftDate?:string,detailed=false){
-  const {buildDailyLearningSnapshot,buildBriefDailyPrompt}=await import('./dailyLearningSnapshot.ts');
+  const {buildDailyLearningSnapshot,buildBriefDailySnapshot}=await import('./dailyLearningSnapshot.ts');
   const {facts,archive,archivesPresent}=await db.transaction('r',dailyFactTables(),async()=>{
     const facts=await capabilityFactsFromDb(true),archive=readDailyReceipts(await db.meta.where('key').startsWith(DAILY_RECEIPT_PREFIX).toArray());
     const archivesPresent=await db.meta.bulkGet(archive.receipts.map(r=>GPT_EXCHANGE_PREFIX+r.archive_id));
     return {facts,archive,archivesPresent};
   });
   const missing=archive.receipts.filter((r,i)=>!archivesPresent[i]||!dailyReceiptMatches(r,facts)),missingIds=new Set(missing.map(r=>r.session_id));
-  const out=await buildDailyLearningSnapshot(facts,archive.receipts.filter(r=>!missingIds.has(r.session_id)),[...facts.issues,...archive.issues,
+  const snapshot=await buildDailyLearningSnapshot(facts,archive.receipts.filter(r=>!missingIds.has(r.session_id)),[...facts.issues,...archive.issues,
     ...missing.map(r=>`日次記録 ${r.session_id} の答案またはGPT原文を照合できません。保存済みの履歴は残し、当日の完了に数えません。`)],undefined,draftDate);
-  return detailed?out:{snapshot:out.snapshot,prompt:buildBriefDailyPrompt(out.snapshot)};
+  return {snapshot,json:JSON.stringify(detailed?snapshot:buildBriefDailySnapshot(snapshot))};
 }
 
 class DailyPreviewRollback extends Error {readonly value:DailyPreview;constructor(value:DailyPreview){super('Daily preview transaction intentionally rolled back');this.value=value}}
@@ -3494,6 +3494,10 @@ async function runDailyLearningImport(body:Record<string,unknown>,commit:boolean
 }
 export async function localGet<T>(path:string):Promise<T>{
   if(path==="/api/bootstrap") return await bootstrap() as T;
+  if(path==='/api/daily-learning/guide?part=rules'||path==='/api/daily-learning/guide?part=night'){
+    const {dailyLearningRules,dailyLearningNightGuide}=await import('./dailyLearningSnapshot.ts');
+    return (path.endsWith('=night')?dailyLearningNightGuide():dailyLearningRules()) as T;
+  }
   if(path==='/api/daily-learning/snapshot'||path.startsWith('/api/daily-learning/snapshot?')){
     const q=new URL(path,'https://local.invalid').searchParams;return await dailyLearningSnapshot(q.get('draft')||undefined,q.get('detail')==='1') as T;
   }
