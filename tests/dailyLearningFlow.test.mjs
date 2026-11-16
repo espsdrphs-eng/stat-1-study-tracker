@@ -12,6 +12,29 @@ import {dailyFixture} from './dailyLearningFixture.mjs';
 const morning=()=>localGet('/api/daily-learning/snapshot');
 const preview=text=>localPost('/api/daily-learning/preview',{text});
 const save=(text,p)=>localPost('/api/daily-learning/save',{text,confirmationToken:p.confirmationToken,confirmed:true});
+const copiedData=prompt=>JSON.parse(prompt.split('【保存済みスナップショット】\n')[1]);
+
+test('the ordinary clipboard prompt is short, keeps all 75 states and binds the exact same import as the detailed prompt',async()=>{
+ await localGet('/api/bootstrap');
+ const unchanged=await exportBackup(),compact=await morning(),full=await localGet('/api/daily-learning/snapshot?detail=1');
+ const brief=copiedData(compact.prompt),detailed=copiedData(full.prompt);
+ assert.ok(Buffer.byteLength(compact.prompt)<Buffer.byteLength(full.prompt)*.4);
+ assert.equal(detailed.abilities.length,75);
+ assert.deepEqual(Object.entries(brief.abilities_by_state).flatMap(([state,rows])=>rows.map(([id])=>[id,state])).sort(),
+  detailed.abilities.map(a=>[a.ability_id,a.effective_state]).sort());
+ assert.equal(brief.context_version,detailed.context_version);
+ assert.deepEqual(brief.counts,detailed.counts);
+ assert.match(compact.prompt,/stat1-daily-learning-v1/);
+ assert.match(compact.prompt,/capability_update.{0,8}返さない/);
+ assert.match(compact.prompt,/"ref":"a1","problem_ref":"p1"/);
+ const example=JSON.parse(compact.prompt.split('【夜の形式例】\n')[1].split('\n【保存済みスナップショット】')[0]);
+ assert.equal(example.morning_context_version,brief.context_version);
+ const reply={...example,created_at:new Date().toISOString()};
+ reply.problems[0].statement='取込テスト用：サイコロ1個の目の期待値を求めよ。';
+ reply.answers[0].source='chat_text';reply.answers[0].parts[0]={part_id:'q1',status:'correct',quote:'7/2',finding:'取込テスト用の実行記録',error_type:'none'};
+ assert.equal((await preview(JSON.stringify(reply))).answers.length,1);
+ assert.ok(sourceRecordsEqual(unchanged,await exportBackup()));
+});
 
 test('morning → 4 original problems and 6 separate answers → next snapshot, replay and restore',async()=>{
  await localGet('/api/bootstrap');
@@ -42,6 +65,19 @@ test('morning → 4 original problems and 6 separate answers → next snapshot, 
  assert.equal(Object.values(next.snapshot.counts).reduce((s,n)=>s+n,0),75);
  assert.equal(next.snapshot.recent_daily_sessions.at(-1).session_id,session.session_id);
  assert.equal(next.snapshot.recent_daily_sessions.at(-1).coaching_without_answer.length,1);
+ const brief=copiedData(next.prompt),recentBrief=brief.recent_daily;
+ const recentC=recentBrief?.observations.filter(e=>e[recentBrief.observation_columns.indexOf('ability_id')]==='testing.errors-power');
+ assert.deepEqual(recentC.map(row=>row[recentBrief.observation_columns.indexOf('attempt_id')]),[rows.aC.id,rows.rC.id]);
+ assert.ok(recentBrief.held_ability_ids.includes('testing.errors-power'));
+ assert.ok(recentBrief.coaching_without_answer.some(row=>row[1]===rows.aA.id));
+ const cFacts=brief.ability_facts['testing.errors-power'];
+ assert.equal(cFacts.outcomes.failure[0],rows.aC.id);
+ assert.deepEqual(cFacts.outcomes.success.slice(0,5),[rows.rC.id,['q2'],'local_repair','concept',true]);
+ const repairEvidence=brief.representative_answers.find(a=>a.attempt_id===rows.rC.id);
+ assert.equal(repairEvidence.conditions[brief.answer_columns.indexOf('reference_level')],null);
+ assert.equal(cFacts.needs_review,true);
+ assert.ok(brief.representative_answers.some(a=>a.attempt_id===rows.aC.id));
+ assert.ok(brief.abilities_by_state.unconfirmed.some(([id])=>id==='asymptotics.clt'));
  assert.equal(next.snapshot.abilities.find(a=>a.ability_id==='asymptotics.clt').effective_state,'unconfirmed');
  assert.equal((await preview(JSON.stringify(session,null,2))).duplicate,true);assert.equal((await save(text,p)).duplicate,true);
  const sameId=structuredClone(session);sameId.answers[3].score.points=99;
@@ -144,7 +180,11 @@ test('confirmed direct reproduction, externally checked blind transfer, retentio
  baseline=await exportBackup();const a=projectCapabilityMap(baseline,readCapabilityRecords(baseline.meta).records).abilities.find(a=>a.id===ability);
  assert.ok(a.directEvidence.some(x=>x.attempt.id===oldId&&x.outcomes.includes('success')));
  assert.ok(a.directEvidence.some(x=>x.attempt.id===r2.answers[0].attempt_id&&x.outcomes.includes('success')));assert.equal(a.theory.milestone,30);
- assert.equal((await morning()).snapshot.abilities.find(a=>a.ability_id===ability).growth.independently_graded_comparisons[0].compared.result,'recurrence');
+ const newMorning=await morning();assert.equal(newMorning.snapshot.abilities.find(a=>a.ability_id===ability).growth.independently_graded_comparisons[0].compared.result,'recurrence');
+ const evidence=copiedData(newMorning.prompt).ability_facts[ability];
+ assert.equal(evidence.outcomes.failure[0],r3.answers[0].attempt_id);
+ assert.equal(evidence.outcomes.success[0],r2.answers[0].attempt_id);
+ assert.equal(evidence.outcomes.success[2],'delayed_transfer');assert.equal(evidence.retention_days_at_least,30);
 });
 
 test('existing material is linked without changing the master, formal scores, or legacy schedules',async()=>{

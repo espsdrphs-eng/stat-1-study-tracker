@@ -15,20 +15,22 @@ const errorMessage=(e:unknown)=>e instanceof Error?e.message:String(e);
 
 export function DailyMorningCopy(){
  const [pending,setPending]=useState(false),[fallback,setFallback]=useState(''),[feedback,setFeedback]=useState(''),[warning,setWarning]=useState(''),active=useRef(false);
- const copy=async()=>{
+ const copy=async(detailed=false)=>{
   if(active.current)return;active.current=true;setPending(true);setFeedback('');setWarning('');setFallback('');
-  const draft=dateOfDraft(),path='/api/daily-learning/snapshot'+(draft?'?draft='+encodeURIComponent(draft):'');
+  const draft=dateOfDraft(),q=new URLSearchParams();if(draft)q.set('draft',draft);if(detailed)q.set('detail','1');
+  const query=q.toString(),path='/api/daily-learning/snapshot'+(query?'?'+query:'');
   const request=api<Awaited<ReturnType<typeof buildDailyLearningSnapshot>>>(path).then(x=>{setWarning(x.snapshot.previous_day.warning||'');return x.prompt});
   try{
    // On WebKit the clipboard call must start inside the tap, before waiting
    // for IndexedDB. Provide a direct-tap fallback if permissions are denied.
    if(typeof ClipboardItem!=='undefined'&&navigator.clipboard?.write)await navigator.clipboard.write([new ClipboardItem({'text/plain':request.then(v=>new Blob([v],{type:'text/plain'}))})]);
    else await navigator.clipboard.writeText(await request);
-   setFeedback('75能力の最新情報をコピーしました。ChatGPTに貼り付けてください。');
+   setFeedback(detailed?'全75能力の詳しい情報をコピーしました。':'学習情報の短い版をコピーしました。ChatGPTに貼り付けてください。');
   }catch{try{setFallback(await request);setFeedback('自動コピーが許可されなかったため、下にコピー用の文面を用意しました。');}catch(e){setFeedback(errorMessage(e));}}
   finally{active.current=false;setPending(false);}
  };
  return <div className="daily-morning-copy"><button className="primary" onClick={()=>void copy()} disabled={pending}><Copy size={16}/>今日の学習情報をGPTへコピー</button>
+  <details><summary>詳しい根拠が必要なとき</summary><button className="ghost" onClick={()=>void copy(true)} disabled={pending}>全75能力の詳しい情報をコピー</button></details>
   {(feedback||warning||pending)&&<div className="daily-action-message" aria-live="polite">{pending?'最新の答案と能力を照合しています…':feedback}{warning&&<small>{warning}</small>}</div>}
   {fallback&&<div className="daily-fallback"><label>コピー用の学習情報<textarea rows={4} readOnly value={fallback} onFocus={e=>e.currentTarget.select()}/></label>
    <button className="ghost" onClick={async()=>{try{await navigator.clipboard.writeText(fallback);setFeedback('学習情報をコピーしました。')}catch{setFeedback('上の欄をすべて選択してコピーしてください。')}}}>用意した学習情報をコピー</button></div>}
